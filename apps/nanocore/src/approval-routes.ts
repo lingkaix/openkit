@@ -78,6 +78,11 @@ export function registerApprovalRoutes({
   requestStore,
   workerDelivery,
   assistantDelivery,
+  coordinatorDelivery,
+  goalTerminal,
+  requestCommitted,
+  requesterAuthority,
+  checkCommandIntent,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
@@ -94,6 +99,11 @@ export function registerApprovalRoutes({
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly workerDelivery?: PendingWorkerDelivery;
   readonly assistantDelivery?: PendingWorkerDelivery;
+  readonly coordinatorDelivery?: PendingWorkerDelivery;
+  readonly goalTerminal?: PendingAdmissionDependencies['goalTerminal'];
+  readonly requestCommitted?: PendingAdmissionDependencies['requestCommitted'];
+  readonly requesterAuthority?: PendingAdmissionDependencies['requesterAuthority'];
+  readonly checkCommandIntent?: PendingAdmissionDependencies['checkCommandIntent'];
 }): void {
   const admission = (): PendingAdmissionDependencies => ({
     ...(coreDb ? { coreDb } : {}),
@@ -101,6 +111,11 @@ export function registerApprovalRoutes({
     openWorkspace: repositoryWorkspaceDb,
     ...(workerDelivery ? { workerDelivery } : {}),
     ...(assistantDelivery ? { assistantDelivery } : {}),
+    ...(coordinatorDelivery ? { coordinatorDelivery } : {}),
+    ...(goalTerminal ? { goalTerminal } : {}),
+    ...(requestCommitted ? { requestCommitted } : {}),
+    ...(requesterAuthority ? { requesterAuthority } : {}),
+    ...(checkCommandIntent ? { checkCommandIntent } : {}),
   });
 
   app.post('/api/approvals/:approvalRequestId/respond', async (c) => {

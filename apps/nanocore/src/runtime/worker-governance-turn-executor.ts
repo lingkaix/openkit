@@ -39,11 +39,6 @@ import {
   writeWorkerContextPackageFiles,
   writeWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
-import {
-  deleteAppliedPendingUserTurnRecord,
-  getPendingUserTurnRecord,
-  type PendingUserTurnRecord,
-} from '../goal-steering-authority.js';
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-manager.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -65,8 +60,6 @@ import {
 import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   consumeQueuedThreadMaterialRevision,
-  getWorkspaceMaterial,
-  getWorkspaceMaterialRevision,
   type QueuedThreadMaterialSelection,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
@@ -217,8 +210,6 @@ interface WorkerTurnBackendLifecycle {
 
 /** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
 export interface PreparedWorkerTurnContext {
-  /** Exact applied steering claim consumed only after accepted trace verification. */
-  readonly appliedPending: PendingUserTurnRecord | null;
   /** Exact diagnostic checkpoint whose lineage is frozen into the trace. */
   readonly checkpoint: WorkerCheckpointRecord;
   /** Canonical package bytes and immutable identity. */
@@ -297,22 +288,6 @@ export function prepareWorkerTurnContextPackage(
       409
     );
   }
-  const pending = getPendingUserTurnRecord(workspaceDb, input.workspaceId, input.threadId);
-  let appliedPending: PendingUserTurnRecord | null = null;
-  if (pending?.goalId === checkpoint.goalId && pending.terminalClaimKind !== null) {
-    if (
-      pending.terminalClaimKind !== 'applied' ||
-      pending.terminalClaimId !== `ctxpkg_${input.turnId}` ||
-      pending.terminalClaimedAt === null
-    ) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'Worker Context Package applied steering claim is contradictory.',
-        409
-      );
-    }
-    appliedPending = pending;
-  }
   const workerRequestItemId = `it_user_${input.turnId}`;
   const requestedItemIds = new Set(workerRequest.requestedItemIds);
   requestedItemIds.delete(workerRequestItemId);
@@ -326,104 +301,12 @@ export function prepareWorkerTurnContextPackage(
       409
     );
   }
-  if (
-    appliedPending &&
-    !includedPriorItems.some((item) => item.id === appliedPending.contentItemId)
-  ) {
-    throw new TurnStartValidationError(
-      'recovery_required',
-      'Worker Context Package applied steering Item is unavailable.',
-      409
-    );
-  }
-
   const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, input.threadId);
   const materialSelections: WorkerContextPackageMaterialSelectionInput[] = [];
   const materialExclusions: WorkerContextPackageMaterialExclusion[] = [];
   let selectedContextBytes = Buffer.byteLength(input.workerRequest, 'utf8');
   let queuedMaterialSelection: QueuedThreadMaterialSelection | null = null;
-  let steeringMaterialId: string | null = null;
-  if (appliedPending?.inputKind === 'material') {
-    if (!appliedPending.materialId || !appliedPending.revisionId || !appliedPending.contentDigest) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'Worker Context Package steering Material tuple is incomplete.',
-        409
-      );
-    }
-    let material: ReturnType<typeof getWorkspaceMaterial>;
-    let revision: ReturnType<typeof getWorkspaceMaterialRevision>;
-    try {
-      material = getWorkspaceMaterial(workspaceDb, appliedPending.materialId);
-      revision = getWorkspaceMaterialRevision(
-        workspaceDb,
-        appliedPending.materialId,
-        appliedPending.revisionId
-      );
-    } catch {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'Worker Context Package steering Material authority is unavailable.',
-        409
-      );
-    }
-    if (revision.contentDigest !== appliedPending.contentDigest) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'Worker Context Package steering Material digest is contradictory.',
-        409
-      );
-    }
-    if (material.sensitivity === 'restricted') {
-      throw new TurnStartValidationError(
-        'sensitive_content',
-        'Restricted Material cannot enter a worker Context Package.',
-        409
-      );
-    }
-    const steeringContentBytes = Buffer.byteLength(revision.content, 'utf8');
-    if (Math.ceil((selectedContextBytes + steeringContentBytes) / 4) > contextBudgetTokens) {
-      throw new TurnStartValidationError(
-        'goal_steering_delivery_unavailable',
-        'Worker Context Package steering Material exceeds the context budget.',
-        503
-      );
-    }
-    selectedContextBytes += steeringContentBytes;
-    const matchingQueuedRevision =
-      queuedMaterial?.materialId === appliedPending.materialId &&
-      queuedMaterial.revisionId === appliedPending.revisionId &&
-      queuedMaterial.inclusionState === 'included';
-    materialSelections.push({
-      bindingMutationRequestId: matchingQueuedRevision
-        ? queuedMaterial.bindingMutationRequestId
-        : null,
-      content: revision.content,
-      contentDigest: revision.contentDigest,
-      inclusionReason: 'goal_steering',
-      materialId: appliedPending.materialId,
-      mediaType: revision.mediaType,
-      parentRevisionId: revision.parentRevisionId,
-      revisionId: appliedPending.revisionId,
-      sensitivity: material.sensitivity,
-    });
-    steeringMaterialId = appliedPending.materialId;
-    queuedMaterialSelection = matchingQueuedRevision ? queuedMaterial : null;
-  } else if (
-    appliedPending &&
-    (appliedPending.materialId !== null ||
-      appliedPending.revisionId !== null ||
-      appliedPending.contentDigest !== null)
-  ) {
-    throw new TurnStartValidationError(
-      'recovery_required',
-      'Worker Context Package message steering tuple is contradictory.',
-      409
-    );
-  }
-
-  const bindingCandidate =
-    queuedMaterial?.materialId === steeringMaterialId ? null : queuedMaterial;
+  const bindingCandidate = queuedMaterial;
   if (bindingCandidate?.inclusionState === 'excluded') {
     materialExclusions.push({
       materialId: bindingCandidate.materialId,
@@ -533,7 +416,6 @@ export function prepareWorkerTurnContextPackage(
   );
   writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
   return {
-    appliedPending,
     checkpoint,
     knowledgeExclusions,
     knowledgeSelectionInput,
@@ -609,15 +491,6 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
         queuedMaterial.revisionId,
         queuedMaterial.bindingMutationRequestId
       );
-    }
-    const appliedPending = preparedContext.appliedPending;
-    if (appliedPending) {
-      deleteAppliedPendingUserTurnRecord(workspaceDb, {
-        contextPackageId: trace.contextPackageId,
-        pendingTurnId: appliedPending.pendingTurnId,
-        threadId: appliedPending.threadId,
-        workspaceId: appliedPending.workspaceId,
-      });
     }
   })();
 

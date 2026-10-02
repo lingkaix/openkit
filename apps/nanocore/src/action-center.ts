@@ -5,7 +5,6 @@ import {
   ListHumanAttentionResponseSchema,
   operationHttpPath,
 } from '@openkit/app-api-schemas';
-import type { StopReason } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listArtifactReviews } from './artifact-reviews.js';
@@ -13,12 +12,8 @@ import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
-import { readPendingGoalSteeringProjection } from './context/worker-context-projection.js';
-import { GoalSteeringAuthorityError } from './goal-steering-authority.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import { listGoalReviewRecordsForTask } from './runtime/goal-review-records.js';
-import { type GoalRecord, listGoalRecordsForThread, listGoalTasks } from './runtime/goal-store.js';
 import { pendingRequestPresentation } from './runtime/pending-request-flow.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
@@ -88,9 +83,6 @@ export function registerActionCenterRoutes({
         workspaceDb?.sqlite.close();
       }
     } catch (error) {
-      if (error instanceof GoalSteeringAuthorityError) {
-        return asApiError(error.message, error.code, error.status);
-      }
       return asApiError(publishedErrorMessage(error));
     }
   });
@@ -119,7 +111,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
       }));
   const rows = [
     ...(approvalDecisionAuthorized ? pendingRequestRows(input) : []),
-    ...runtimeRows(input, reviewDecisionAuthorized),
+    ...runtimeRows(input),
     ...agentReadinessRows(input.store, input.workspaceId),
     ...(reviewDecisionAuthorized ? artifactReviewRows(input) : []),
     ...durableWorkspaceReviewRows(input, reviewDecisionAuthorized),
@@ -469,13 +461,9 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
  * Projects app-local runtime rows backed by the Core database.
  *
  * @param input Projection dependencies and workspace scope.
- * @param reviewDecisionAuthorized Whether the actor may apply review decisions.
- * @returns Runtime-backed rows with Goal reviews filtered by current authority.
+ * @returns Runtime-backed rows admitted by current Workspace and Thread authority.
  */
-function runtimeRows(
-  input: BuildHumanAttentionRowsInput,
-  reviewDecisionAuthorized: boolean
-): HumanAttentionRow[] {
+function runtimeRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
   if (!input.coreDb) {
     return [];
   }
@@ -499,91 +487,7 @@ function runtimeRows(
         )
       : []),
     ...(input.workspaceDb ? workspaceRecoveryRows(input.workspaceDb, input.workspaceId) : []),
-    ...(input.workspaceDb
-      ? goalRows(
-          input.workspaceDb,
-          input.workspaceId,
-          reviewDecisionAuthorized,
-          visibleThreadsForActor(input)
-        )
-      : []),
-    ...(input.workspaceDb ? pendingGoalSteeringRows(input) : []),
   ];
-}
-
-/**
- * Projects the singular verified pending Goal input for each Thread.
- *
- * @param input Existing read-only authority owners and Workspace scope.
- * @returns Product-safe pending input rows without input text or Material tuples.
- */
-function pendingGoalSteeringRows(input: BuildHumanAttentionRowsInput): HumanAttentionRow[] {
-  const { coreDb, workspaceDb } = input;
-  if (!coreDb || !workspaceDb) {
-    return [];
-  }
-
-  return visibleThreadsForActor(input).flatMap((thread) => {
-    const projection = readPendingGoalSteeringProjection({
-      coreDb,
-      store: input.store,
-      workspaceDb,
-      threadId: thread.id,
-    });
-    if (!projection) {
-      return [];
-    }
-
-    const { owner, state } = projection;
-    const actions: HumanAttentionAction[] = [openThreadAction(owner.threadId)];
-    if (state === 'queued' && projection.originalGoalTerminal) {
-      const href = `/api/app/workspaces/${owner.workspaceId}/threads/${owner.threadId}/goal/steering/${owner.pendingTurnId}`;
-      actions.push(
-        {
-          kind: 'run_follow_up',
-          label: 'Convert to follow-up',
-          method: 'POST',
-          href: `${href}/follow-up`,
-        },
-        { kind: 'abort', label: 'Cancel', method: 'POST', href: `${href}/cancel` }
-      );
-    }
-
-    return [
-      {
-        id: `pending-input:${owner.pendingTurnId}`,
-        kind: 'pending_input',
-        workspaceId: owner.workspaceId,
-        threadId: owner.threadId,
-        turnId: owner.activeTurnId,
-        itemId: owner.contentItemId,
-        goalId: owner.goalId,
-        title: state === 'queued' ? 'Goal input is queued' : 'Goal input was delivered',
-        summary:
-          state === 'queued'
-            ? 'Accepted input is waiting for its owning Goal.'
-            : 'Accepted input has exact worker delivery proof and is awaiting cleanup.',
-        severity: 'info',
-        createdAt: owner.receivedAt,
-        recommendedAction:
-          state === 'queued' && projection.originalGoalTerminal
-            ? 'Convert the input to follow-up history or cancel it.'
-            : 'Open the thread to inspect the current Goal.',
-        source: {
-          type: 'pending_input',
-          workspaceId: owner.workspaceId,
-          threadId: owner.threadId,
-          pendingTurnId: owner.pendingTurnId,
-          requestId: owner.requestId,
-          contentItemId: owner.contentItemId,
-          goalId: owner.goalId,
-          activeTurnId: owner.activeTurnId,
-          state,
-        },
-        actions,
-      },
-    ];
-  });
 }
 
 /**
@@ -898,179 +802,6 @@ function workspaceRecoveryRows(workspaceDb: WorkspaceDb, workspaceId: string): H
 }
 
 /**
- * Projects goal, goal task, and goal review attention rows for caller-supplied Threads.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id to inspect.
- * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
- * @param threads Threads the caller already selected as eligible.
- * @returns Goal status rows plus currently authorized Goal review rows.
- */
-export function goalRows(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  reviewDecisionAuthorized: boolean,
-  threads: readonly { readonly id: string }[]
-): HumanAttentionRow[] {
-  return threads.flatMap((thread) =>
-    listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id }).flatMap((goal) => [
-      ...goalStatusRows(goal, reviewDecisionAuthorized),
-      ...(reviewDecisionAuthorized ? goalReviewRows(workspaceDb, goal) : []),
-    ])
-  );
-}
-
-/**
- * Projects goal lifecycle states into rows.
- *
- * @param goal Goal record to inspect.
- * @param reviewDecisionAuthorized Whether the actor may apply Goal review decisions.
- * @returns Goal state rows.
- */
-function goalStatusRows(goal: GoalRecord, reviewDecisionAuthorized: boolean): HumanAttentionRow[] {
-  if (goal.pendingPlanItemId !== null) {
-    if (!reviewDecisionAuthorized) {
-      return [];
-    }
-    return [
-      goalRow(
-        goal,
-        'artifact_review',
-        'Goal plan needs review',
-        `Review pending Plan ${goal.pendingPlanItemId} against active Plan ${goal.planItemId ?? 'none'} and the current Goal intent.`,
-        'needs_input',
-        'review_goal_plan'
-      ),
-    ];
-  }
-
-  if (goal.status === 'awaiting_user') {
-    return [
-      goalRow(
-        goal,
-        'blocked_turn',
-        'Goal is waiting for input',
-        'The goal cannot continue until the user responds.',
-        'blocked',
-        'open_thread'
-      ),
-    ];
-  }
-
-  if (goal.status === 'blocked' || goal.status === 'failed' || goal.status === 'aborted') {
-    return [
-      goalRow(
-        goal,
-        goalKindForStopReason(goal.terminalStopReason),
-        goalTitleForStopReason(goal.terminalStopReason, goal.status),
-        goalSummaryForStopReason(goal.terminalStopReason, goal.status),
-        goalSeverityForStopReason(goal.terminalStopReason),
-        'open_thread'
-      ),
-    ];
-  }
-
-  return [];
-}
-
-/**
- * Builds one goal lifecycle row.
- *
- * @param goal Goal record to project.
- * @param kind Human attention kind.
- * @param title Row title.
- * @param summary Row summary.
- * @param severity Row severity.
- * @param primaryAction Primary action kind.
- * @returns Human Attention row.
- */
-function goalRow(
-  goal: GoalRecord,
-  kind: HumanAttentionRow['kind'],
-  title: string,
-  summary: string,
-  severity: HumanAttentionRow['severity'],
-  primaryAction: HumanAttentionAction['kind']
-): HumanAttentionRow {
-  return {
-    id: `goal:${goal.workspaceId}:${goal.threadId}:${goal.goalId}`,
-    kind,
-    workspaceId: goal.workspaceId,
-    threadId: goal.threadId,
-    goalId: goal.goalId,
-    title,
-    summary,
-    severity,
-    createdAt: goal.updatedAt,
-    source: {
-      type: 'goal',
-      goalId: goal.goalId,
-      workspaceId: goal.workspaceId,
-      threadId: goal.threadId,
-      status: goal.status,
-    },
-    actions: [
-      primaryAction === 'open_thread'
-        ? openThreadAction(goal.threadId)
-        : {
-            kind: primaryAction,
-            label: 'Review plan',
-            method: 'GET',
-            href: `/threads/${goal.threadId}`,
-          },
-    ],
-  };
-}
-
-/**
- * Projects a unique actionable unresolved Goal Review into a row.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param goal Goal whose tasks should be inspected.
- * @returns The unique actionable row, or none for zero or multiple unresolved Reviews.
- */
-function goalReviewRows(workspaceDb: WorkspaceDb, goal: GoalRecord): HumanAttentionRow[] {
-  const task = listGoalTasks(workspaceDb, goal).find(
-    (candidate) => candidate.taskId === goal.currentTaskId
-  );
-  if (goal.status !== 'reviewing' || task?.status !== 'reviewing') {
-    return [];
-  }
-
-  const unresolvedReviews = listGoalReviewRecordsForTask(workspaceDb, {
-    ...goal,
-    taskId: task.taskId,
-  }).filter((review) => review.resolvedAt === null && review.reviewId.length > 0);
-  if (unresolvedReviews.length !== 1) {
-    return [];
-  }
-
-  return unresolvedReviews.map((review) => ({
-    id: `goal-review:${review.workspaceId}:${review.threadId}:${review.goalId}:${review.reviewId}`,
-    kind: 'artifact_review' as const,
-    workspaceId: review.workspaceId,
-    threadId: review.threadId,
-    turnId: review.turnId,
-    artifactId: review.artifactIds[0] ?? undefined,
-    goalId: review.goalId,
-    taskId: review.taskId,
-    title: 'Review worker output',
-    summary: review.prompt,
-    severity: 'needs_input' as const,
-    createdAt: review.updatedAt,
-    source: {
-      type: 'goal_review',
-      reviewId: review.reviewId,
-      goalId: review.goalId,
-      taskId: review.taskId,
-      workspaceId: review.workspaceId,
-      threadId: review.threadId,
-    },
-    actions: goalReviewActions(review),
-  }));
-}
-
-/**
  * Projects blocked or degraded agent readiness records into rows.
  *
  * @param store Request-scoped workspace store.
@@ -1275,96 +1006,4 @@ function workspaceRecoveryActions(
     { kind: 'mark_blocked', label: 'Quarantine', method: 'POST', href },
     { kind: 'abort', label: 'Abandon', method: 'POST', href },
   ];
-}
-
-/**
- * Builds review actions for one goal review row.
- *
- * @param review Goal Review record to resolve.
- * @returns Human Attention actions.
- */
-function goalReviewActions(review: {
-  readonly workspaceId: string;
-  readonly threadId: string;
-  readonly goalId: string;
-  readonly reviewId: string;
-}): HumanAttentionAction[] {
-  const href = `/api/app/workspaces/${review.workspaceId}/threads/${review.threadId}/goals/${review.goalId}/reviews/${review.reviewId}/decision`;
-
-  return [
-    { kind: 'accept_review', label: 'Accept review', method: 'POST', href },
-    { kind: 'request_refinement', label: 'Request refinement', method: 'POST', href },
-    { kind: 'retry_work', label: 'Retry work', method: 'POST', href },
-    { kind: 'abort', label: 'Abort goal', method: 'POST', href },
-  ];
-}
-
-/**
- * Maps a terminal stop reason to a Human Attention kind.
- *
- * @param stopReason Optional terminal stop reason.
- * @returns Human Attention kind.
- */
-function goalKindForStopReason(stopReason: StopReason | null): HumanAttentionRow['kind'] {
-  if (stopReason === 'budget_exhausted') {
-    return 'budget';
-  }
-
-  if (stopReason === 'length') {
-    return 'review_cap';
-  }
-
-  return 'blocked_turn';
-}
-
-/**
- * Maps a terminal stop reason to a row title.
- *
- * @param stopReason Optional terminal stop reason.
- * @param status Goal lifecycle status.
- * @returns Human-readable title.
- */
-function goalTitleForStopReason(stopReason: StopReason | null, status: string): string {
-  if (stopReason === 'budget_exhausted') {
-    return 'Budget exhausted';
-  }
-
-  if (stopReason === 'length') {
-    return 'Review cap reached';
-  }
-
-  return `Goal is ${status}`;
-}
-
-/**
- * Maps a terminal stop reason to a row summary.
- *
- * @param stopReason Optional terminal stop reason.
- * @param status Goal lifecycle status.
- * @returns Human-readable summary.
- */
-function goalSummaryForStopReason(stopReason: StopReason | null, status: string): string {
-  if (stopReason === 'budget_exhausted') {
-    return 'The worker stopped after exhausting its budget.';
-  }
-
-  if (stopReason === 'length') {
-    return 'The worker reached the review cap or maximum iteration limit.';
-  }
-
-  return `The goal entered ${status} state and needs review.`;
-}
-
-/**
- * Maps a terminal stop reason to a row severity.
- *
- * @param stopReason Optional terminal stop reason.
- * @returns Human Attention severity.
- */
-function goalSeverityForStopReason(stopReason: StopReason | null): HumanAttentionRow['severity'] {
-  if (stopReason === 'budget_exhausted' || stopReason === 'length') {
-    return 'risk';
-  }
-
-  return 'blocked';
 }

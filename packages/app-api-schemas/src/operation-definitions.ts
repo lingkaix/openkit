@@ -24,6 +24,7 @@ import {
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from './action-center.js';
 import { ListThreadItemsResponseSchema, ThreadDashboardResponseSchema } from './dashboard.js';
+import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
 import {
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
@@ -599,6 +600,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...KNOWLEDGE_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   ...ARTIFACT_OPERATION_DEFINITIONS,
+  ...GOAL_OPERATION_DEFINITIONS,
 } as const;
 
 /** Static composition of the implemented families; this is not a registration surface. */

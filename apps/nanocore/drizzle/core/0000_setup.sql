@@ -264,7 +264,7 @@ CREATE TABLE `sandbox_runtime_records` (
 	`drain_state` text NOT NULL,
 	`cleanup_state` text NOT NULL,
 	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL, `pinned_goal_id` text,
+	`updated_at` text NOT NULL,
 	CONSTRAINT `sandbox_runtime_records_open_capacity_check` CHECK (`max_open_sessions` >= 2),
 	CONSTRAINT `sandbox_runtime_records_harness_capacity_check` CHECK (`max_harnesses` >= 2),
 	CONSTRAINT `sandbox_runtime_records_turn_capacity_check` CHECK (`max_active_turns` = 1)

@@ -75,6 +75,7 @@ const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandRec
       'task-handoff',
       'goal-handoff',
       'worker-turn',
+      'goal-intent',
       'goal-steering',
       'refused',
     ]),
@@ -561,24 +562,7 @@ function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string)
     return;
   }
 
-  db.sqlite
-    .prepare(
-      `DELETE FROM idempotency_requests
-       WHERE expires_at <= ?
-         AND NOT (
-           command_name = 'goal.steering.send'
-           AND response_kind = 'pending_user_turn'
-           AND EXISTS (
-             SELECT 1
-             FROM pending_user_turn_records AS pending
-             WHERE pending.pending_turn_id = idempotency_requests.response_id
-               AND pending.request_id = idempotency_requests.request_id
-               AND pending.workspace_id = json_extract(idempotency_requests.scope_json, '$.workspaceId')
-               AND pending.thread_id = json_extract(idempotency_requests.scope_json, '$.threadId')
-           )
-         )`
-    )
-    .run(referenceTime);
+  db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
 }
 
 /**

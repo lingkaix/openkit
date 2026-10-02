@@ -81,7 +81,7 @@ describe('dashboard and search Thread audiences', () => {
       privateOwnerUserId: 'user_local',
     });
     const app = createApp({ store });
-    for (const mode of ['task', 'goal']) {
+    for (const mode of ['task']) {
       const response = await app.request(
         `/api/app/workspaces/${workspace.id}/threads/${thread.id}/${mode}`,
         {
@@ -96,11 +96,37 @@ describe('dashboard and search Thread audiences', () => {
       );
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({
-        code: mode === 'goal' ? 'goal_mode_unavailable' : 'shared_thread_required',
+        code: 'shared_thread_required',
       });
       expect(store.getThread(workspace.id, thread.id).visibility).toBe('private');
       expect(store.listThreadTurns(workspace.id, thread.id)).toEqual([]);
     }
+  });
+
+  it('creates a new shared Goal from a private origin without changing its audience', async () => {
+    const store = new FsStore();
+    const ws = store.createWorkspace('Goal inception');
+    const origin = store.createThread(ws.id, 'Private origin', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'user_local',
+    });
+    const app = createApp({ store });
+    const response = await app.request('/api/app/operations/goal.create', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-openkit-request-id': '12345678-1234-4234-8234-123456789012',
+      },
+      body: JSON.stringify({
+        workspaceId: ws.id,
+        originThreadId: origin.id,
+        intent: 'Review design',
+      }),
+    });
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(store.getThread(ws.id, data.goal.threadId).visibility).toBe('workspace');
+    expect(store.getThread(ws.id, origin.id).visibility).toBe('private');
   });
 
   it('isolates private content before discovery and preserves shared work for members and admin', async () => {

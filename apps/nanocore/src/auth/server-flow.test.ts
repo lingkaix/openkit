@@ -475,33 +475,41 @@ describe('server auth flow', () => {
 
       expect(firstScope).not.toEqual(secondScope);
 
-      const firstGoal = await app.request(
-        `/api/app/workspaces/${firstScope.workspaceId}/threads/${firstScope.threadId}/goal`,
-        {
+      const create = async (scope: typeof firstScope, cookie: string, id: string) =>
+        app.request('/api/app/operations/goal.create', {
           method: 'POST',
-          headers: { cookie: firstCookie, 'content-type': 'application/json' },
+          headers: { cookie, 'content-type': 'application/json', 'x-openkit-request-id': id },
           body: JSON.stringify({
-            requestId: 'goal-start-first-user',
-            objective: 'First user goal.',
+            workspaceId: scope.workspaceId,
+            intent: 'Review design',
+            originThreadId: scope.threadId,
           }),
-        }
+        });
+      const firstGoal = await create(
+        firstScope,
+        firstCookie,
+        '11111111-1111-4111-8111-111111111111'
       );
-      const secondGoal = await app.request(
-        `/api/app/workspaces/${secondScope.workspaceId}/threads/${secondScope.threadId}/goal`,
-        {
-          method: 'POST',
-          headers: { cookie: secondCookie, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'goal-start-second-user',
-            objective: 'Second user goal.',
-          }),
-        }
+      const secondGoal = await create(
+        secondScope,
+        secondCookie,
+        '22222222-2222-4222-8222-222222222222'
       );
-
-      expect(firstGoal.status).toBe(409);
-      expect(await firstGoal.json()).toMatchObject({ code: 'goal_mode_unavailable' });
-      expect(secondGoal.status).toBe(409);
-      expect(await secondGoal.json()).toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(firstGoal.status).toBe(200);
+      expect(secondGoal.status).toBe(200);
+      const first = await firstGoal.json();
+      const second = await secondGoal.json();
+      expect(first.goal.workspaceId).not.toBe(second.goal.workspaceId);
+      const denied = await app.request('/api/app/operations/goal.read', {
+        method: 'POST',
+        headers: { cookie: secondCookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: first.goal.workspaceId,
+          threadId: first.goal.threadId,
+          goalId: first.goal.goalId,
+        }),
+      });
+      expect(denied.status).toBe(403);
     } finally {
       coreDb.sqlite.close();
     }

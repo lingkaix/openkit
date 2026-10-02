@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  createWorkerCoordinatorDecision,
-  createWorkerCoordinatorGoalPlanDraft,
-  createWorkerCoordinatorGoalStopDecision,
-  projectWorkerCoordinatorGoalPlanDraft,
-} from './worker-coordinator.js';
+import { createWorkerCoordinatorDecision } from './worker-coordinator.js';
 
 const READY_CODEX = {
   agentId: 'agent_codex',
@@ -206,58 +201,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     });
   });
 
-  it('drafts one complete deterministic Goal Plan for review', () => {
-    const input = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      goalId: 'goal_demo',
-      title: 'Ship release',
-      objective: 'Make the next release ready.',
-    };
-    const draft = createWorkerCoordinatorGoalPlanDraft(input);
-
-    expect(draft).toMatchObject({
-      mode: 'goal',
-      sourceAgentId: 'worker-coordinator',
-      requiredApprovals: ['plan_approval'],
-      plan: {
-        schemaVersion: 1,
-        goalSummary: 'Make the next release ready.',
-        assumptions: [
-          'This is a single bounded Worker task draft.',
-          'Human review of decomposition and scope is required before worker execution.',
-        ],
-        tasks: [
-          {
-            taskId: 'task_1',
-            title: 'Ship release',
-            objective: 'Make the next release ready.',
-            dependsOnTaskIds: [],
-            reviewPolicy: {
-              required: true,
-              reviewers: ['human'],
-              instructions:
-                'Review the actual Worker result against the objective and acceptance criteria before continuing Goal Mode.',
-            },
-          },
-        ],
-        questions: [],
-        verificationApproach:
-          'Use manual review of the actual Worker result before treating the task as complete.',
-      },
-    });
-    expect(
-      [
-        ...draft.plan.assumptions,
-        ...draft.plan.risks,
-        draft.plan.verificationApproach,
-        draft.plan.tasks[0].reviewPolicy.instructions,
-      ].join('\n')
-    ).not.toMatch(/test support|fallback/i);
-    const storedPlan = { ...draft.plan, risks: ['Preserve the immutable Plan on replay.'] };
-    expect(projectWorkerCoordinatorGoalPlanDraft(input, storedPlan).plan).toBe(storedPlan);
-  });
-
   it('keeps candidate order when the prompt names a runtime', () => {
     const decision = createWorkerCoordinatorDecision({
       prompt: 'Use OpenCode to inspect the project and propose the smallest fix.',
@@ -404,31 +347,6 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       selectedWorkerCandidate: null,
       workerRequest: null,
     });
-  });
-
-  it.each([
-    'Run Goal Mode step: Plan a release checklist.',
-    'Run Goal Mode step: Review the current implementation.',
-    'Run Goal Mode step: Refine the current implementation.',
-    'Run Goal Mode step: Hand off findings into a document.',
-    'Run Goal Mode step: Retry the focused verification.',
-    '  Run Goal Mode step: Implement the accepted task.\n',
-  ])('does not reclassify an approved Goal Mode step prompt: %s', (prompt) => {
-    const decision = createWorkerCoordinatorDecision({
-      prompt,
-      readiness: [READY_CODEX],
-      routingContext: 'goal_step',
-      threadState: { status: 'idle', threadId: 'th_demo' },
-      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
-    });
-
-    expect(decision).toMatchObject({
-      decision: 'worker_turn',
-      selectedWorkerCandidate: {
-        agentId: 'agent_codex',
-      },
-    });
-    expect(decision.workerRequest?.objective).toBe(prompt);
   });
 
   it.each([
@@ -822,82 +740,5 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       selectedWorkerCandidate: { agentId: 'agent_codex' },
     });
     expect(routing.workerRequest?.objective).toBe(prompt);
-  });
-
-  it('creates evidence-backed Goal Mode stop decisions', () => {
-    const decision = createWorkerCoordinatorGoalStopDecision({
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      requestId: 'req_goal_step',
-      goalId: 'goal_demo',
-      taskId: 'task_demo',
-      turnId: 'turn_worker',
-      stopDecision: {
-        outcome: 'review',
-        shouldStop: true,
-        stopReason: 'completed',
-      },
-      hasOtherIncompleteTasksAfterAddressedTaskCompletion: false,
-      evidence: {
-        itemIds: ['it_worker_terminal'],
-        artifactIds: ['artifact_release_log'],
-      },
-    });
-
-    expect(decision).toEqual({
-      schemaVersion: 1,
-      mode: 'goal',
-      sourceAgentId: 'worker-coordinator',
-      requestId: 'req_goal_step',
-      outcome: 'review',
-      shouldStop: true,
-      stopReason: 'completed',
-      rationale: 'Worker turn completed and needs human review before Goal Mode continues.',
-      contextRefs: [
-        { kind: 'workspace', id: 'ws_demo' },
-        { kind: 'thread', id: 'th_demo' },
-      ],
-      evidence: {
-        itemIds: ['it_worker_terminal'],
-        artifactIds: ['artifact_release_log'],
-      },
-    });
-  });
-
-  it('decides Goal continuation from pre-mutation task state', () => {
-    const input = {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      requestId: 'req_goal_step',
-      goalId: 'goal_demo',
-      taskId: 'task_demo',
-      turnId: 'turn_worker',
-      stopDecision: {
-        outcome: 'complete' as const,
-        shouldStop: true,
-        stopReason: 'completed' as const,
-      },
-      evidence: { itemIds: [], artifactIds: [] },
-    };
-
-    expect(
-      createWorkerCoordinatorGoalStopDecision({
-        ...input,
-        hasOtherIncompleteTasksAfterAddressedTaskCompletion: true,
-      })
-    ).toMatchObject({ outcome: 'continue', shouldStop: false });
-    expect(
-      createWorkerCoordinatorGoalStopDecision({
-        ...input,
-        hasOtherIncompleteTasksAfterAddressedTaskCompletion: false,
-      })
-    ).toMatchObject({ outcome: 'complete', shouldStop: true });
-    expect(() =>
-      createWorkerCoordinatorGoalStopDecision({
-        ...input,
-        hasOtherIncompleteTasksAfterAddressedTaskCompletion: true,
-        stopDecision: { outcome: 'continue', shouldStop: false, stopReason: 'length' },
-      })
-    ).toThrow('lower-level continue');
   });
 });

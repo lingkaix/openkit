@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { type Actor, ensureLocalUser } from '../auth/identity.js';
 import type { FsStore } from '../lib/store.js';
-import { createGoalRecord } from '../runtime/goal-store.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   activateWorkerStorageAttachment,
@@ -21,7 +20,6 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerEnvironmentOperations } from './worker-environment-operations.js';
 
@@ -232,55 +230,6 @@ describe('Worker environment operations', () => {
           confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
           expectedRevision: fixture.binding.revision,
           requestId: '00000000-0000-4000-8000-000000000005',
-          storageRef: fixture.binding.storageRef,
-        }
-      )
-    ).rejects.toMatchObject({ code: 'purge_blocked' });
-    expect(purgeCalls).toBe(0);
-  });
-  it('refuses to purge idle storage still selected by a nonterminal Goal', async () => {
-    let purgeCalls = 0;
-    const fixture = createFixture({
-      purgeStorage: async ({ binding }) => {
-        purgeCalls += 1;
-        return { state: 'purged', storageRef: binding.storageRef };
-      },
-    });
-    const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.workspaceId);
-    try {
-      applyScopedMigrations(workspaceDb);
-      const initialIntentItemId = createInitialGoalIntentItem({
-        store: fixture.store,
-        workspaceId: fixture.workspaceId,
-        threadId: fixture.threadId,
-        objective: 'Continue related work using this environment.',
-        userId: 'user_local',
-      });
-      createGoalRecord(workspaceDb, {
-        goalId: 'goal-retaining-storage',
-        createdByItemId: initialIntentItemId,
-        objective: 'Continue related work using this environment.',
-        threadId: fixture.threadId,
-        title: 'Retained work',
-        workerStorageChoice: {
-          expectedRevision: fixture.binding.revision,
-          kind: 'selected',
-          purpose: 'work',
-          storageRef: fixture.binding.storageRef,
-        },
-        workspaceExists: () => true,
-        workspaceId: fixture.workspaceId,
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-    await expect(
-      fixture.operations.purge(
-        { actor: fixture.actor, workspaceId: fixture.workspaceId },
-        {
-          confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
-          expectedRevision: fixture.binding.revision,
-          requestId: '00000000-0000-4000-8000-000000000004',
           storageRef: fixture.binding.storageRef,
         }
       )

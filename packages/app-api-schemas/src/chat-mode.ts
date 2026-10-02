@@ -28,7 +28,7 @@ export const ConversationTargetSchema = z
     kind: z.enum([
       'assistant',
       'knowledge-manager',
-      'goal-orchestrator',
+      'goal-coordinator',
       'warm-worker',
       'running-worker',
       'new-task-worker',

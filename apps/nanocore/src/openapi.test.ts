@@ -1049,232 +1049,6 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal']?.get
-    ).toMatchObject({
-      operationId: 'getThreadGoalSummary',
-      tags: ['modes'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ThreadGoalSummaryResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal']?.post
-    ).toMatchObject({
-      operationId: 'startThreadGoal',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/StartThreadGoalRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/StartThreadGoalResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering']?.post
-    ).toMatchObject({
-      operationId: 'submitThreadGoalSteering',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SubmitThreadGoalSteeringRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '202': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/SubmitThreadGoalSteeringResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan']?.post
-    ).toMatchObject({
-      operationId: 'createThreadGoalPlan',
-      tags: ['modes'],
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/CreateThreadGoalPlanRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CreateThreadGoalPlanResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan/approve']?.post
-    ).toMatchObject({
-      operationId: 'approveThreadGoalPlan',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/ApproveThreadGoalPlanRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ApproveThreadGoalPlanResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan/revise']?.post
-    ).toMatchObject({
-      operationId: 'reviseThreadGoalPlan',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/ReviseThreadGoalPlanRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ReviseThreadGoalPlanResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/pause']?.post
-    ).toMatchObject({
-      operationId: 'pauseThreadGoal',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/PauseThreadGoalRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/PauseThreadGoalResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/resume']?.post
-    ).toMatchObject({
-      operationId: 'resumeThreadGoal',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/ResumeThreadGoalRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ResumeThreadGoalResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/step']?.post
-    ).toMatchObject({
-      operationId: 'runThreadGoalStep',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/RunThreadGoalStepRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RunThreadGoalStepResponse',
-              },
-            },
-          },
-        },
-      },
-    });
 
     expect(document.paths).not.toHaveProperty(
       '/api/app/workspaces/{workspaceId}/knowledge/claims/{claimId}/promotion'
@@ -1524,35 +1298,6 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review']?.post
     ).toBeUndefined();
-
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/goals/{goalId}/reviews/{reviewId}/decision'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'submitGoalReviewDecision',
-      tags: ['reviews'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SubmitGoalReviewDecisionRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/SubmitGoalReviewDecisionResponse',
-              },
-            },
-          },
-        },
-      },
-    });
     expect(document.components.schemas.ListWorkspaceSyncReviewsResponse).toMatchObject({
       type: 'object',
       required: ['items'],
@@ -2156,58 +1901,6 @@ describe('app api openapi projection', () => {
     });
   });
 
-  it('projects the exact Stage 3 Goal steering terminal commands', () => {
-    const document = createAppOpenApiDocument();
-    const operations = [
-      [
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/follow-up',
-        'convertGoalSteeringToFollowUp',
-        'ConvertGoalSteeringToFollowUpRequest',
-        'ConvertGoalSteeringToFollowUpResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/cancel',
-        'cancelGoalSteering',
-        'CancelGoalSteeringRequest',
-        'CancelGoalSteeringResponse',
-      ],
-    ] as const;
-
-    for (const [path, operationId, requestSchema, responseSchema] of operations) {
-      expect(document.paths[path]?.post, path).toMatchObject({
-        operationId,
-        parameters: [
-          { name: 'workspaceId', in: 'path', required: true },
-          { name: 'threadId', in: 'path', required: true },
-          { name: 'pendingTurnId', in: 'path', required: true },
-        ],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: { $ref: `#/components/schemas/${requestSchema}` },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: { $ref: `#/components/schemas/${responseSchema}` },
-              },
-            },
-          },
-          default: {
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ApiError' },
-              },
-            },
-          },
-        },
-      });
-    }
-  });
-
   it('projects the Stage 2 Artifact and Material operations from shared schemas', () => {
     const document = createAppOpenApiDocument();
     const operations = [
@@ -2746,12 +2439,6 @@ describe('app api openapi projection', () => {
       missingMetadata: [],
       staleMetadata: [],
     });
-    expect(PUBLIC_OPERATION_ACCESS.reviseThreadGoalIntent).toEqual({
-      mutating: true,
-      policyOperation: 'turn.run',
-      resolver: 'workspace-child-lineage',
-      scope: 'workspace',
-    });
   });
 
   it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
@@ -3199,19 +2886,6 @@ describe('app api openapi projection', () => {
       'listConversationNavigation',
       'getWorkspaceDashboard',
       'startTaskMode',
-      'getThreadGoalSummary',
-      'getThreadGoalPlan',
-      'startThreadGoal',
-      'submitThreadGoalSteering',
-      'convertGoalSteeringToFollowUp',
-      'cancelGoalSteering',
-      'createThreadGoalPlan',
-      'approveThreadGoalPlan',
-      'reviseThreadGoalIntent',
-      'reviseThreadGoalPlan',
-      'pauseThreadGoal',
-      'resumeThreadGoal',
-      'runThreadGoalStep',
       'listInterruptedWorkers',
       'retryInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
@@ -3253,7 +2927,6 @@ describe('app api openapi projection', () => {
       'purgeWorkerEnvironment',
       'prepareWorkerEnvironment',
       'activateWorkerEnvironment',
-      'submitGoalReviewDecision',
     ]);
   });
 

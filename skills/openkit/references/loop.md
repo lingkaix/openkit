@@ -24,14 +24,14 @@ Read `thread.dashboard` for `taskInputs`: each `{ itemId, objective }` summarize
 
 Do not promote work to a heavier mode merely because that mode exists. Let NanoCore report when an accepted handoff or transition is required.
 
-New Goal execution is unavailable until the Goal implementation lands. The legacy Goal interface, including its proposal-only planning tool, affected-Task holds, planning gates, successor Task dispositions, and the old step and review path, is legacy implementation only and is unavailable for new Goal execution.
+Use `goal.create` to capture current intent and `goal.read` to inspect intent, cards, separate proposed and active immutable Plans, exact Pending Requests, linked ordinary Tasks and disposition. `goal.intent.revise`, `goal.card.create`, `goal.card.edit` and `goal.card.cancel` change current desired work without steering a running worker. Human Plan and completion decisions use `goal.plan.approve` and `goal.completion.accept` with the captured Pending Request identity. A grant waits for the Goal owner to consume it; activation alone starts no worker. `goal.cancel` closes the Goal and invalidates unconsumed requests.
 
 Use `usage.read` for durably recorded model usage; process-local diagnostics are not the Workspace ledger.
 
 ## Run bounded work
 
 1. Search and describe the required operation when its contract is not already known.
-2. Goal work uses immutable Plan approval and completion acceptance through Pending Requests; the Coordinator dispatches ordinary Tasks within the approved version through the shared operations, and card edits do not steer a running worker. New Goal execution is unavailable until the Goal implementation lands.
+2. Goal work uses immutable Plan approval and completion acceptance through Pending Requests; the Coordinator dispatches ordinary Tasks within the approved version through the shared operations, and card edits do not steer a running worker.
 3. Invoke one mutation through stdin.
 4. Re-read the thread, mode state, Action Center, artifacts, and evidence.
 5. Explain the durable result and any pending human decision.

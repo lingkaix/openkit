@@ -13,6 +13,7 @@ export * from './diagnostics.js';
 export * from './evidence-bundles.js';
 export * from './feedback.js';
 export * from './generative-ui.js';
+export * from './goal.js';
 export * from './knowledge-manager.js';
 export * from './light-apps.js';
 export * from './material.js';

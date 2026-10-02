@@ -1,154 +1,103 @@
 import { randomUUID } from 'node:crypto';
+import type { GoalView } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
-
 afterEach(async () => {
-  const current = harness;
-  harness = null;
-
-  if (current) {
-    await current.stop();
-    await removeDataRoot(current.dataRoot);
+  if (harness) {
+    await harness.stop();
+    await removeDataRoot(harness.dataRoot);
+    harness = null;
   }
 });
-
-describe('nanocore e2e goal planning', () => {
-  it('creates, approves, supervises, and completes a deterministic Goal Mode plan without providers', async () => {
+describe('Goal atomic cutover e2e', () => {
+  it('uses derived commands for one continuous intent, exact proposed Plan, human resolution, cards and cancellation', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
-
-    const requestId = randomUUID();
-    const threadResponse = await fetch(`${harness.baseUrl}/api/app/operations/thread.create`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        name: 'Goal planning e2e',
-        visibility: 'workspace',
-        requestId,
-      }),
+    async function operation(id: string, input: Record<string, unknown>): Promise<GoalView> {
+      const response = await fetch(`${harness!.baseUrl}/api/app/operations/${id}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(id === 'goal.read' ? {} : { 'x-openkit-request-id': randomUUID() }),
+        },
+        body: JSON.stringify(input),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json()) as GoalView;
+    }
+    const created = await operation('goal.create', {
+      workspaceId: 'ws_demo',
+      originThreadId: 'th_demo',
+      intent: 'Review a release design',
     });
-    const thread = (await threadResponse.json()) as { id: string };
-
-    expect(threadResponse.status).toBe(200);
-    expect(thread.id).toMatch(/^th_/);
-
-    const goalResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          objective: 'Make v0.0.6 ready to publish.',
-          title: 'Ship v0.0.6',
-        }),
-      }
-    );
-
-    expect(goalResponse.status, await goalResponse.clone().text()).toBe(200);
-
-    const planResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: randomUUID() }),
-      }
-    );
-    const planPayload = (await planResponse.json()) as {
-      goal: { goalId: string; status: string };
-      planItemId: string;
-      plan: { tasks: readonly [{ taskId: string; title: string }] };
-      status: string;
+    const scope = {
+      workspaceId: 'ws_demo',
+      threadId: created.goal!.threadId,
+      goalId: created.goal!.goalId,
     };
-
-    expect(planResponse.status).toBe(200);
-    expect(planPayload).toMatchObject({
-      status: 'awaiting_plan_approval',
-      goal: { status: 'awaiting_plan_approval' },
-      plan: { tasks: [{ taskId: 'task_1', title: 'Ship v0.0.6' }] },
+    expect(created.tasks).toEqual([]);
+    expect(created.goal!.activePlanVersionId).toBeNull();
+    const cards = await operation('goal.card.create', {
+      ...scope,
+      description: 'Design schema',
+      priority: 1,
     });
-
-    const approveResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan/approve`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          planItemId: planPayload.planItemId,
-        }),
-      }
+    const card = cards.cards[0]!;
+    await operation('goal.card.edit', {
+      ...scope,
+      cardId: card.cardId,
+      expectedRevision: 0,
+      description: 'Design schema with examples',
+      priority: 2,
+    });
+    const read = await operation('goal.read', scope);
+    const proposed = await operation('goal.plan.propose', {
+      ...scope,
+      expectedRevision: read.goal!.changeRevision,
+      commitment: {
+        intentBasis: { revision: 0, intent: created.goal!.intent },
+        cards: [
+          {
+            cardId: card.cardId,
+            revision: 1,
+            description: 'Design schema with examples',
+            priority: 2,
+          },
+        ],
+        permittedAdjustments: 'Research without implementation',
+        completionEvidence: ['Reviewed report'],
+        boundaries: 'No external publication',
+      },
+    });
+    const version = proposed.versions[0]!;
+    await operation('goal.intent.revise', {
+      ...scope,
+      expectedRevision: 0,
+      intent: 'Review a release design without implementation',
+    });
+    const granted = await operation('goal.plan.approve', {
+      ...scope,
+      pendingRequestId: version.pendingRequestId,
+      decision: 'granted',
+    });
+    expect(
+      granted.requests.find((request) => request.requestId === version.pendingRequestId)
+    ).toMatchObject({ resolution: 'granted', claim: 'unclaimed' });
+    expect(granted.goal!.activePlanVersionId).toBeNull();
+    expect(granted.versions[0]!.bytes).toBe(version.bytes);
+    expect(granted.tasks).toEqual([]);
+    const ended = await operation('goal.cancel', {
+      ...scope,
+      expectedRevision: granted.goal!.changeRevision,
+      reason: 'Person stops the outcome',
+    });
+    expect(ended.goal!.disposition?.kind).toBe('cancelled');
+    expect((await operation('goal.read', scope)).goal!.intentHistory).toHaveLength(2);
+    const retired = await fetch(
+      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${scope.threadId}/goal/step`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }
     );
-
-    expect(approveResponse.status).toBe(200);
-    await expect(approveResponse.json()).resolves.toMatchObject({
-      goal: {
-        goalId: planPayload.goal.goalId,
-        status: 'running',
-        taskCounts: {
-          ready: 1,
-        },
-      },
-      readyTasks: [{ taskId: 'task_1', status: 'ready' }],
-      startsWorkerTurn: false,
-    });
-
-    const summaryResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal`
-    );
-
-    expect(summaryResponse.status).toBe(200);
-    await expect(summaryResponse.json()).resolves.toMatchObject({
-      goal: {
-        status: 'running',
-        currentTask: null,
-        taskCounts: {
-          ready: 1,
-          pending: 0,
-        },
-      },
-    });
-
-    const superviseResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal/test/supervise/step`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      }
-    );
-
-    expect(superviseResponse.status).toBe(200);
-    await expect(superviseResponse.json()).resolves.toMatchObject({
-      goal: {
-        status: 'completed',
-        taskCounts: {
-          completed: 1,
-          ready: 0,
-        },
-        terminalState: {
-          status: 'completed',
-          stopReason: 'completed',
-        },
-      },
-      task: {
-        taskId: 'task_1',
-        status: 'completed',
-      },
-      worker: {
-        stopReason: 'completed',
-        checkpointStage: 'completed',
-      },
-      review: {
-        verdict: 'accept',
-      },
-      advance: {
-        outcome: 'complete_goal',
-        nextReadyTaskId: null,
-      },
-    });
+    expect(retired.status).toBe(404);
   });
 });

@@ -147,66 +147,6 @@ test('native environment administration maps exact public reads and revision-bou
   assert.equal(update.inputSchema.safeParse({ ...updateInput, arbitrary: true }).success, false);
 });
 
-test('Goal plan recovery uses the read operation without invoking plan creation', async () => {
-  const { operationCatalog } = await operations();
-  const operation = operationCatalog.find((entry) => entry.id === 'goal.plan-read');
-  assert.ok(operation);
-  assert.equal(operation.mutating, false);
-  const input = operation.inputSchema.parse({ workspaceId: 'ws_test', threadId: 'th_test' });
-  const calls = [];
-  const result = await operation.handler(
-    {
-      client: {
-        app: {
-          getThreadGoalPlan: async (...args) => {
-            calls.push(args);
-            return { planItemId: 'plan_current' };
-          },
-          createThreadGoalPlan: () => assert.fail('Reading must not generate a plan'),
-        },
-      },
-    },
-    input
-  );
-  assert.deepEqual(calls, [['ws_test', 'th_test']]);
-  assert.equal(result.planItemId, 'plan_current');
-  assert.equal(
-    operation.inputSchema.safeParse({ ...input, planItemId: 'old_plan' }).success,
-    false
-  );
-});
-
-test('Goal intent revision forwards the exact new intent and affected Task selection', async () => {
-  const { operationCatalog } = await operations();
-  const operation = operationCatalog.find((entry) => entry.id === 'goal.intent-revise');
-  assert.ok(operation);
-  const input = operation.inputSchema.parse({
-    workspaceId: 'ws_test',
-    threadId: 'th_test',
-    requestId: '10000000-0000-4000-8000-000000000001',
-    objective: 'Revised outcome',
-    revision: 'Clarify the delivery boundary',
-    affectedTaskIds: [],
-  });
-  let observed;
-  await operation.handler(
-    {
-      client: {
-        app: {
-          reviseThreadGoalIntent: async (...args) => {
-            observed = args;
-            return { accepted: true };
-          },
-        },
-      },
-    },
-    input
-  );
-  const { workspaceId, threadId, ...body } = input;
-  assert.deepEqual(observed, [workspaceId, threadId, body]);
-  assert.deepEqual(body.affectedTaskIds, []);
-});
-
 test('Worker environment discovery preserves admin scope and exact target routing', async () => {
   const { operationCatalog } = await operations();
   const status = operationCatalog.find((entry) => entry.id === 'worker-environment.status');
@@ -1355,9 +1295,6 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
     'material.unbind': 'unbindThreadMaterial',
     'material.exclude': 'excludeThreadMaterial',
     'material.restore': 'restoreThreadMaterial',
-    'goal.steering-send': 'submitThreadGoalSteering',
-    'goal.steering-follow-up': 'convertGoalSteeringToFollowUp',
-    'goal.steering-cancel': 'cancelGoalSteering',
   };
   const mapped = Object.fromEntries(
     operationCatalog
@@ -1388,19 +1325,6 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
       decision: 'accepted',
     }).success,
     false
-  );
-  assert.equal(
-    operationCatalog
-      .find((entry) => entry.id === 'goal.steering-send')
-      .inputSchema.safeParse({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: 'req_material',
-        materialId: 'material_demo',
-        revisionId: 'revision_demo',
-        contentDigest: `sha256:${'a'.repeat(64)}`,
-      }).success,
-    true
   );
 });
 
@@ -2979,4 +2903,45 @@ test('bundled dashboard and search reads retain authorization errors without lea
       assert.doesNotMatch(result.stdout + result.stderr, /okt_fake_visibility/);
     }
   }
+});
+
+test('Goal publishes precisely its ten derived semantic operations and retires step and steering', async () => {
+  const { operationCatalog } = await operations();
+  const ids = operationCatalog
+    .filter((operation) => operation.id.startsWith('goal.'))
+    .map((operation) => operation.id)
+    .sort();
+  assert.deepEqual(
+    ids,
+    [
+      'goal.create',
+      'goal.intent.revise',
+      'goal.card.create',
+      'goal.card.edit',
+      'goal.card.cancel',
+      'goal.plan.propose',
+      'goal.plan.approve',
+      'goal.cancel',
+      'goal.completion.accept',
+      'goal.read',
+    ].sort()
+  );
+  const read = operationCatalog.find((operation) => operation.id === 'goal.read');
+  const input = { workspaceId: 'ws_test', threadId: 'th_test' };
+  let observed;
+  const result = await read.handler(
+    {
+      client: {
+        operations: {
+          'goal.read': async (value) => {
+            observed = value;
+            return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
+          },
+        },
+      },
+    },
+    read.inputSchema.parse(input)
+  );
+  assert.deepEqual(observed, input);
+  assert.equal(result.goal, null);
 });

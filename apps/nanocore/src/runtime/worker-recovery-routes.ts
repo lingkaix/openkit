@@ -19,7 +19,6 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { updateGoalStatus, updateGoalTask } from './goal-store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { updateWorkerCheckpoint } from './worker-checkpoints.js';
@@ -229,7 +228,6 @@ function runInterruptedWorkerRetryCommand(input: {
       );
     }
 
-    const checkpoint = decision.checkpoint;
     updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: input.authorityActor,
       diagnosticsSummary: 'Interrupted worker attempt released for a later fresh start.',
@@ -239,23 +237,6 @@ function runInterruptedWorkerRetryCommand(input: {
       turnId: input.turnId,
       workspaceId: input.workspaceId,
     });
-
-    if (checkpoint.goalId && checkpoint.taskId) {
-      updateGoalTask(input.workspaceDb, {
-        goalId: checkpoint.goalId,
-        status: 'ready',
-        taskId: checkpoint.taskId,
-        threadId: input.threadId,
-        workspaceId: input.workspaceId,
-      });
-      updateGoalStatus(input.workspaceDb, {
-        currentTaskId: null,
-        goalId: checkpoint.goalId,
-        status: 'running',
-        threadId: input.threadId,
-        workspaceId: input.workspaceId,
-      });
-    }
 
     input.store.recordCommandRequest(
       {

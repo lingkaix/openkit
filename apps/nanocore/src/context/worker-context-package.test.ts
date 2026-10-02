@@ -359,20 +359,6 @@ function createAcceptedFixture(
       workspaceHandoffState: 'complete',
       workspaceId: 'ws_context',
     }),
-    readGoalTask: () => ({
-      gateContextItemIds: ['it_gate_request', 'it_gate_response'],
-      goal: {
-        goalId: 'goal_context',
-        threadId: 'th_context',
-        workspaceId: 'ws_context',
-      },
-      task: {
-        goalId: 'goal_context',
-        taskId: 'task_context',
-        threadId: 'th_context',
-        workspaceId: 'ws_context',
-      },
-    }),
     readMaterialRevision: (_workspaceId, materialId, revisionId) =>
       materials.get(`${materialId}:${revisionId}`) ?? null,
     readThreadItems: () => [
@@ -1134,27 +1120,6 @@ describe('worker Context Package owner', () => {
                 .map((item) =>
                   item.id === 'it_request' ? { ...item, text: '{"task":"changed"}' } : item
                 ),
-          }),
-      ],
-      [
-        'Goal task',
-        () =>
-          verify({
-            ...fixture.authorities,
-            readGoalTask: () => null,
-          }),
-      ],
-      [
-        'Goal gate context',
-        () =>
-          verify({
-            ...fixture.authorities,
-            readGoalTask: (...args) => {
-              const pair = fixture.authorities.readGoalTask(...args);
-              return pair
-                ? { ...pair, gateContextItemIds: ['it_gate_request', 'it_excluded'] }
-                : null;
-            },
           }),
       ],
       [

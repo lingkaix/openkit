@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { SURFACES } from '../../app/surfaces';
-import { STATUS_CLASS } from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
 import { useSaveWorkspaceMaterialRevision } from './data';
 
@@ -71,21 +70,6 @@ const REVISION_2_SUMMARY = {
 
 const THREAD_QUEUED_REVISION_ID = 'revision_queued';
 const THREAD_RESTORED_QUEUE_ID = 'revision_restored';
-const DELIVERY_PENDING_TURN_ID = 'pending_material_delivery';
-const DELIVERY_REQUEST_ID = 'request_material_delivery';
-
-const QUEUED_DELIVERY = {
-  state: 'queued' as const,
-  pendingTurnId: DELIVERY_PENDING_TURN_ID,
-  requestId: DELIVERY_REQUEST_ID,
-  contentItemId: 'item_material_delivery',
-  goalId: 'goal_material_delivery',
-  activeTurnId: 'turn_material_delivery',
-  materialId: MATERIAL_ID,
-  revisionId: REVISION_2.revisionId,
-  contentDigest: REVISION_2.contentDigest,
-};
-
 const THREAD_MATERIAL = {
   workspaceId: WORKSPACE_ID,
   threadId: THREAD_ID,
@@ -172,34 +156,6 @@ function makeClient(
         materialId: MATERIAL_ID,
         threadId: THREAD_ID,
         outcome: 'included',
-      }),
-      submitThreadGoalSteering: vi.fn().mockResolvedValue({
-        state: 'queued',
-        pendingTurnId: DELIVERY_PENDING_TURN_ID,
-        requestId: DELIVERY_REQUEST_ID,
-        contentItemId: QUEUED_DELIVERY.contentItemId,
-        goalId: QUEUED_DELIVERY.goalId,
-        activeTurnId: QUEUED_DELIVERY.activeTurnId,
-      }),
-      convertGoalSteeringToFollowUp: vi.fn().mockResolvedValue({
-        state: 'follow-up',
-        pendingTurnId: DELIVERY_PENDING_TURN_ID,
-        requestId: 'request_material_follow_up',
-        sourceRequestId: DELIVERY_REQUEST_ID,
-        contentItemId: QUEUED_DELIVERY.contentItemId,
-        goalId: QUEUED_DELIVERY.goalId,
-        activeTurnId: QUEUED_DELIVERY.activeTurnId,
-        followUpTurnId: 'turn_material_follow_up',
-        followUpItemId: 'item_material_follow_up',
-      }),
-      cancelGoalSteering: vi.fn().mockResolvedValue({
-        state: 'cancelled',
-        pendingTurnId: DELIVERY_PENDING_TURN_ID,
-        requestId: 'request_material_cancel',
-        sourceRequestId: DELIVERY_REQUEST_ID,
-        contentItemId: QUEUED_DELIVERY.contentItemId,
-        goalId: QUEUED_DELIVERY.goalId,
-        activeTurnId: QUEUED_DELIVERY.activeTurnId,
       }),
       submitConversation: vi.fn(),
       startTaskMode: vi.fn(),
@@ -306,9 +262,6 @@ describe('S19-F Material Workspace discovery barrier', () => {
       client.app.unbindThreadMaterial,
       client.app.excludeThreadMaterial,
       client.app.restoreThreadMaterial,
-      client.app.submitThreadGoalSteering,
-      client.app.convertGoalSteeringToFollowUp,
-      client.app.cancelGoalSteering,
     ];
     renderMaterial(client);
 
@@ -360,54 +313,6 @@ describe('S19-F Material Workspace discovery barrier', () => {
       );
       expect(client.app.getThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID);
     });
-  });
-
-  it('keeps Workspace discovery failure retryable without projecting Material or Thread Material failure', async () => {
-    const user = userEvent.setup();
-    const retry = createDeferred<{ items: { workspace: { id: string; name: string } }[] }>();
-    const listWorkspaces = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('workspace discovery unavailable'))
-      .mockReturnValueOnce(retry.promise);
-    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
-    const materialOperations = [
-      client.app.listWorkspaceMaterials,
-      client.app.createWorkspaceMaterial,
-      client.app.getWorkspaceMaterial,
-      client.app.listWorkspaceMaterialRevisions,
-      client.app.getWorkspaceMaterialRevision,
-      client.app.saveWorkspaceMaterialRevision,
-      client.app.getThreadMaterial,
-      client.app.bindThreadMaterial,
-      client.app.unbindThreadMaterial,
-      client.app.excludeThreadMaterial,
-      client.app.restoreThreadMaterial,
-      client.app.submitThreadGoalSteering,
-      client.app.convertGoalSteeringToFollowUp,
-      client.app.cancelGoalSteering,
-    ];
-
-    renderMaterial(client);
-
-    expect(await screen.findByText("Couldn't load workspaces")).toBeInTheDocument();
-    expect(
-      screen.queryByText(/couldn't load (?:workspace materials|this material|thread material)/i)
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/choose a workspace first|create your first material/i)
-    ).not.toBeInTheDocument();
-    expect(
-      screen
-        .queryAllByRole('button')
-        .filter((button) => MATERIAL_ACTION_NAME.test(button.textContent ?? ''))
-    ).toHaveLength(0);
-    for (const operation of materialOperations) expect(operation).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: /try again/i }));
-
-    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(screen.getAllByRole('status', { name: /loading/i }).length).toBeGreaterThan(0);
-    for (const operation of materialOperations) expect(operation).not.toHaveBeenCalled();
   });
 });
 
@@ -931,304 +836,5 @@ describe('Workspace Material Plane 1 S12', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(excludeThreadMaterial).toHaveBeenCalledOnce();
     expect(getThreadMaterial).toHaveBeenCalledOnce();
-  });
-});
-
-describe('Workspace Material Plane 1 S13', () => {
-  it('submits the exact current revision and reports delivery only after the authoritative re-read', async () => {
-    const user = userEvent.setup();
-    let resolveAuthoritativeRead:
-      | ((response: {
-          material: Omit<typeof THREAD_MATERIAL, 'activeDelivery'> & {
-            activeDelivery: Omit<typeof QUEUED_DELIVERY, 'state'> & {
-              state: 'queued' | 'applied';
-            };
-          };
-        }) => void)
-      | undefined;
-    const getThreadMaterial = vi
-      .fn()
-      .mockResolvedValueOnce({ material: THREAD_MATERIAL })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveAuthoritativeRead = resolve;
-          })
-      );
-    const submitThreadGoalSteering = vi.fn().mockResolvedValue({
-      state: 'queued',
-      pendingTurnId: DELIVERY_PENDING_TURN_ID,
-      requestId: DELIVERY_REQUEST_ID,
-      contentItemId: QUEUED_DELIVERY.contentItemId,
-      goalId: QUEUED_DELIVERY.goalId,
-      activeTurnId: QUEUED_DELIVERY.activeTurnId,
-    });
-    const client = makeClient({ app: { getThreadMaterial, submitThreadGoalSteering } });
-    renderMaterial(client);
-
-    await user.click(
-      await screen.findByRole('button', { name: /send.*now|send.*current revision/i })
-    );
-
-    await waitFor(() =>
-      expect(submitThreadGoalSteering).toHaveBeenCalledWith(
-        WORKSPACE_ID,
-        THREAD_ID,
-        expect.objectContaining({
-          materialId: MATERIAL_ID,
-          revisionId: REVISION_2.revisionId,
-          contentDigest: REVISION_2.contentDigest,
-        })
-      )
-    );
-    await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText(/^queued$/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^applied$/i)).not.toBeInTheDocument();
-
-    resolveAuthoritativeRead?.({
-      material: {
-        ...THREAD_MATERIAL,
-        activeDelivery: { ...QUEUED_DELIVERY, state: 'applied' },
-      },
-    });
-
-    expect(await screen.findByText(/^applied$/i)).toBeInTheDocument();
-    expect(screen.queryByText(/^queued$/i)).not.toBeInTheDocument();
-    expect(getThreadMaterial.mock.invocationCallOrder[1]).toBeGreaterThan(
-      submitThreadGoalSteering.mock.invocationCallOrder[0]
-    );
-  });
-
-  it.each([
-    {
-      state: 'follow-up' as const,
-      tone: 'positive' as const,
-      buttonName: /follow.?up/i,
-      method: 'convertGoalSteeringToFollowUp' as const,
-      response: {
-        state: 'follow-up' as const,
-        pendingTurnId: DELIVERY_PENDING_TURN_ID,
-        requestId: 'request_material_follow_up',
-        sourceRequestId: DELIVERY_REQUEST_ID,
-        contentItemId: QUEUED_DELIVERY.contentItemId,
-        goalId: QUEUED_DELIVERY.goalId,
-        activeTurnId: QUEUED_DELIVERY.activeTurnId,
-        followUpTurnId: 'turn_material_follow_up',
-        followUpItemId: 'item_material_follow_up',
-      },
-    },
-    {
-      state: 'cancelled' as const,
-      tone: 'neutral' as const,
-      buttonName: /cancel/i,
-      method: 'cancelGoalSteering' as const,
-      response: {
-        state: 'cancelled' as const,
-        pendingTurnId: DELIVERY_PENDING_TURN_ID,
-        requestId: 'request_material_cancel',
-        sourceRequestId: DELIVERY_REQUEST_ID,
-        contentItemId: QUEUED_DELIVERY.contentItemId,
-        goalId: QUEUED_DELIVERY.goalId,
-        activeTurnId: QUEUED_DELIVERY.activeTurnId,
-      },
-    },
-  ])('uses the authoritative pending identity and displays only the exact $state terminal response', async ({
-    state,
-    tone,
-    buttonName,
-    method,
-    response,
-  }) => {
-    const user = userEvent.setup();
-    const pendingTurnId = 'pending_reloaded_material_delivery';
-    const terminalResponse = { ...response, pendingTurnId };
-    let resolveTerminal: ((value: typeof response) => void) | undefined;
-    const terminal = vi.fn().mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveTerminal = resolve;
-        })
-    );
-    const getThreadMaterial = vi
-      .fn()
-      .mockResolvedValueOnce({
-        material: {
-          ...THREAD_MATERIAL,
-          activeDelivery: { ...QUEUED_DELIVERY, pendingTurnId },
-        },
-      })
-      .mockResolvedValueOnce({ material: THREAD_MATERIAL });
-    const client = makeClient({
-      app: {
-        getThreadMaterial,
-        [method]: terminal,
-      },
-    });
-    renderMaterial(client);
-
-    const delivery = await screen.findByRole('region', { name: /active-turn delivery/i });
-    const queuedStatus = await within(delivery).findByRole('status');
-    expect(queuedStatus).toHaveTextContent(/^queued$/i);
-    expect(within(queuedStatus).getByText(/^queued$/i)).toHaveClass(
-      ...STATUS_CLASS.neutral.split(' ')
-    );
-    await user.click(await screen.findByRole('button', { name: buttonName }));
-
-    await waitFor(() =>
-      expect(terminal).toHaveBeenCalledWith(
-        WORKSPACE_ID,
-        THREAD_ID,
-        pendingTurnId,
-        expect.any(Object)
-      )
-    );
-    expect(screen.queryByText(new RegExp(`^${state}$`, 'i'))).not.toBeInTheDocument();
-    expect(getThreadMaterial).toHaveBeenCalledOnce();
-    expect(client.app.submitThreadGoalSteering).not.toHaveBeenCalled();
-
-    resolveTerminal?.(terminalResponse);
-
-    await waitFor(() => {
-      const terminalStatus = within(
-        screen.getByRole('region', { name: /active-turn delivery/i })
-      ).getByRole('status');
-      expect(terminalStatus).toHaveTextContent(new RegExp(`^${state}$`, 'i'));
-      expect(within(terminalStatus).getByText(new RegExp(`^${state}$`, 'i'))).toHaveClass(
-        ...STATUS_CLASS[tone].split(' ')
-      );
-    });
-    await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText(/^queued$/i)).not.toBeInTheDocument();
-    expect(getThreadMaterial.mock.invocationCallOrder[1]).toBeGreaterThan(
-      terminal.mock.invocationCallOrder[0]
-    );
-  });
-
-  it('keeps delivery submission disabled while the connection probe is checking', async () => {
-    const meta = vi.fn().mockImplementation(() => new Promise(() => undefined));
-    const client = makeClient({
-      core: { meta },
-      app: { getThreadMaterial: vi.fn().mockResolvedValue({ material: THREAD_MATERIAL }) },
-    });
-    renderMaterial(client);
-
-    expect(
-      await screen.findByRole('button', { name: /send.*now|send.*current revision/i })
-    ).toBeDisabled();
-    expect(client.app.submitThreadGoalSteering).not.toHaveBeenCalled();
-  });
-
-  it('keeps terminal delivery writes disabled after the connection probe fails', async () => {
-    const client = makeClient({
-      core: { meta: vi.fn().mockRejectedValue(new Error('offline')) },
-      app: {
-        getThreadMaterial: vi.fn().mockResolvedValue({
-          material: { ...THREAD_MATERIAL, activeDelivery: QUEUED_DELIVERY },
-        }),
-      },
-    });
-    renderMaterial(client);
-
-    expect(await screen.findByRole('button', { name: /follow.?up/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /cancel/i })).toBeDisabled();
-    expect(client.app.convertGoalSteeringToFollowUp).not.toHaveBeenCalled();
-    expect(client.app.cancelGoalSteering).not.toHaveBeenCalled();
-  });
-
-  it('prohibits restricted Material delivery without invoking the send command', async () => {
-    const user = userEvent.setup();
-    const restrictedMaterial = {
-      ...THREAD_MATERIAL,
-      resource: { ...MATERIAL, sensitivity: 'restricted' as const },
-    };
-    const client = makeClient({
-      app: {
-        getThreadMaterial: vi.fn().mockResolvedValue({ material: restrictedMaterial }),
-      },
-    });
-    renderMaterial(client);
-
-    const send = await screen.findByRole('button', {
-      name: /send.*now|send.*current revision/i,
-    });
-    expect(send).toBeDisabled();
-    expect(screen.getByText(/restricted material cannot be delivered/i)).toBeInTheDocument();
-    await user.click(send);
-    expect(client.app.submitThreadGoalSteering).not.toHaveBeenCalled();
-  });
-
-  it('renders authoritative applied state without terminal delivery actions', async () => {
-    const client = makeClient({
-      app: {
-        getThreadMaterial: vi.fn().mockResolvedValue({
-          material: {
-            ...THREAD_MATERIAL,
-            activeDelivery: { ...QUEUED_DELIVERY, state: 'applied' },
-          },
-        }),
-      },
-    });
-    renderMaterial(client);
-
-    const delivery = await screen.findByRole('region', { name: /active-turn delivery/i });
-    const status = await within(delivery).findByRole('status');
-    expect(status).toHaveTextContent(/^applied$/i);
-    expect(within(status).getByText(/^applied$/i)).toHaveClass(...STATUS_CLASS.positive.split(' '));
-    expect(within(delivery).queryByRole('button', { name: /follow.?up/i })).not.toBeInTheDocument();
-    expect(within(delivery).queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
-  });
-
-  it.each([
-    {
-      command: 'send' as const,
-      buttonName: /send.*now|send.*current revision/i,
-      activeDelivery: null,
-      method: 'submitThreadGoalSteering' as const,
-    },
-    {
-      command: 'follow-up' as const,
-      buttonName: /follow.?up/i,
-      activeDelivery: QUEUED_DELIVERY,
-      method: 'convertGoalSteeringToFollowUp' as const,
-    },
-    {
-      command: 'cancel' as const,
-      buttonName: /cancel/i,
-      activeDelivery: QUEUED_DELIVERY,
-      method: 'cancelGoalSteering' as const,
-    },
-  ])('disables every rendered delivery write while $command is pending', async ({
-    buttonName,
-    activeDelivery,
-    method,
-  }) => {
-    const user = userEvent.setup();
-    const pendingMutation = vi.fn().mockImplementation(() => new Promise(() => undefined));
-    const client = makeClient({
-      app: {
-        getThreadMaterial: vi.fn().mockResolvedValue({
-          material: { ...THREAD_MATERIAL, activeDelivery },
-        }),
-        [method]: pendingMutation,
-      },
-    });
-    renderMaterial(client);
-
-    const delivery = await screen.findByRole('region', { name: /active-turn delivery/i });
-    await user.click(within(delivery).getByRole('button', { name: buttonName }));
-    await waitFor(() => expect(pendingMutation).toHaveBeenCalledOnce());
-
-    const controls = within(delivery).getAllByRole('button');
-    for (const control of controls) expect(control).toBeDisabled();
-    for (const control of controls) await user.click(control);
-    expect(client.app.submitThreadGoalSteering).toHaveBeenCalledTimes(
-      method === 'submitThreadGoalSteering' ? 1 : 0
-    );
-    expect(client.app.convertGoalSteeringToFollowUp).toHaveBeenCalledTimes(
-      method === 'convertGoalSteeringToFollowUp' ? 1 : 0
-    );
-    expect(client.app.cancelGoalSteering).toHaveBeenCalledTimes(
-      method === 'cancelGoalSteering' ? 1 : 0
-    );
   });
 });

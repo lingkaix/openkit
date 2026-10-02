@@ -1721,8 +1721,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 sandbox_compatibility_key AS sandboxCompatibilityKey,
                 origin_physical_epoch AS originPhysicalEpoch,
                 lifecycle_state AS lifecycleState, health_state AS healthState,
-                drain_state AS drainState, cleanup_state AS cleanupState,
-                pinned_goal_id AS pinnedGoalId
+                drain_state AS drainState, cleanup_state AS cleanupState
          FROM sandbox_runtime_records
          WHERE runtime_target_id = ?
          ORDER BY sandbox_runtime_id`
@@ -1733,7 +1732,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly healthState: string;
       readonly lifecycleState: string;
       readonly originPhysicalEpoch: string;
-      readonly pinnedGoalId: string | null;
       readonly sandboxBindingRef: string;
       readonly sandboxCompatibilityKey: string;
       readonly sandboxRuntimeId: string;
@@ -1794,7 +1792,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       return null;
     }
     if (
-      sandbox.pinnedGoalId !== null ||
       (!physicalAbsent &&
         [...this.sessions.values()].some(
           (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
@@ -1934,7 +1931,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           .prepare(
             `UPDATE sandbox_runtime_records
              SET drain_state = 'draining', updated_at = ?
-             WHERE sandbox_runtime_id = ? AND pinned_goal_id IS NULL
+             WHERE sandbox_runtime_id = ?
                AND (? = 1 OR (lifecycle_state = 'open' AND health_state = 'ready'
                      AND drain_state = 'accepting' AND cleanup_state = 'clean'))`
           )

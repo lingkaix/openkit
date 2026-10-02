@@ -60,7 +60,7 @@ import {
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import {
-  claimPersonGrant,
+  claimCommandIntentGrant,
   finishPendingExecution,
   readPendingRequest,
 } from './runtime/pending-requests.js';
@@ -1086,7 +1086,7 @@ export async function executeRepositoryPush(
           }
           workspaceDb.sqlite
             .transaction(() => {
-              const claimed = claimPersonGrant(
+              const claimed = claimCommandIntentGrant(
                 workspaceDb.sqlite,
                 pending.requestId,
                 new Date().toISOString()

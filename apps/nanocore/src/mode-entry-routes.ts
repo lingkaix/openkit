@@ -49,7 +49,6 @@ import {
   type RuntimeConfigSnapshot,
   resolveDefaultAgentId,
 } from './config/runtime-config.js';
-import { goalStartOwnerIds, submitGoalSteeringCommand } from './goal-routes.js';
 import { assembleBuiltInSystemPrompt } from './internal-agents/builtin-prompts.js';
 import {
   createStructuredWorkerDelegationRequest,
@@ -87,7 +86,12 @@ import { registerAppApiRoute } from './openapi.js';
 import { createOperationInvocation } from './operation-invocation.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
-import { getGoalRecord, listGoalRecordsForThread } from './runtime/goal-store.js';
+import {
+  executeGoalOperation,
+  type GoalOwnerServices,
+  listGoalsForThread,
+  readGoalView,
+} from './runtime/goal-owner.js';
 import {
   chatTaskModeTurnId,
   commandInputHash,
@@ -168,6 +172,7 @@ const CONVERSATION_RESULT_ITEM_PREFIX = {
   'task-handoff': 'it_chat_task_',
   'goal-handoff': 'it_chat_goal_',
   'worker-turn': 'it_worker_result_',
+  'goal-intent': 'it_chat_goal_intent_',
   'goal-steering': 'it_steering_result_',
   refused: 'it_chat_refused_',
 } satisfies Record<ConversationCommandResultKind, string>;
@@ -479,18 +484,6 @@ function replayConversationCommand(
       ) {
         throw new Error('Conversation Goal steering result is contradictory.');
       }
-      const workspaceDb = repositoryWorkspaceDb(metadata.receivingWorkspaceId);
-      try {
-        const goal = getGoalRecord(
-          workspaceDb,
-          metadata.receivingWorkspaceId,
-          metadata.receivingThreadId,
-          metadata.downstream.goalId
-        );
-        if (!goal) throw new Error('Conversation Goal steering owner is missing.');
-      } finally {
-        workspaceDb.sqlite.close();
-      }
       return {
         body: ConversationCommandBodySchema.parse({
           outcome: 'accepted',
@@ -640,6 +633,11 @@ function replayConversationCommand(
       outcome = 'task-handoff';
       explanation = resultItem.summary;
       handoff = { targetMode: 'task', reason: resultItem.summary, statusItemId: resultItem.id };
+    } else if (metadata.resultKind === 'goal-intent') {
+      if (resultItem.type !== 'status' || metadata.downstream?.kind !== 'goal')
+        throw new Error('Goal intent result contradicts its receipt.');
+      outcome = 'accepted';
+      explanation = resultItem.summary ?? 'Goal intent revised.';
     } else if (metadata.resultKind === 'goal-handoff') {
       if (
         resultItem.type !== 'status' ||
@@ -651,42 +649,7 @@ function replayConversationCommand(
         throw new Error('Chat Goal handoff owner contradiction.');
       }
 
-      const goalTurn = store.getTurnById(metadata.downstream.turnId);
-      const ids = goalStartOwnerIds({
-        actorId,
-        owningCommand: 'conversation.submit',
-        requestId: record.requestId,
-        workspaceId,
-        threadId,
-      });
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
-
-      try {
-        const goal = getGoalRecord(workspaceDb, workspaceId, threadId, metadata.downstream.goalId);
-        const creationItem = goal?.createdByItemId
-          ? goalTurn.items.find((item) => item.id === goal.createdByItemId)
-          : null;
-
-        if (
-          goalTurn.id === currentTurn.id ||
-          goalTurn.id !== ids.turnId ||
-          goalTurn.workspaceId !== workspaceId ||
-          goalTurn.threadId !== threadId ||
-          goalTurn.status !== 'completed' ||
-          !goalTurn.completedAt ||
-          creationItem?.type !== 'user-message' ||
-          creationItem.id !== ids.objectiveItemId ||
-          creationItem.status !== 'completed' ||
-          !creationItem.completedAt ||
-          creationItem.causationId !== record.requestId ||
-          goal?.goalId !== ids.goalId ||
-          creationItem.text !== goal?.objective
-        ) {
-          throw new Error('Chat Goal downstream owner contradiction.');
-        }
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      // Shared handoff history remains readable when its former Goal owner is absent.
 
       outcome = 'goal-handoff';
       explanation = resultItem.summary;
@@ -839,47 +802,18 @@ function replayTaskModeCommand(
     }
 
     const goalId = statusItem.id.slice('it_task_goal_'.length, -statusItemSuffix.length);
-    const ids = goalStartOwnerIds({
-      actorId,
-      owningCommand: 'task.start',
-      requestId: record.requestId,
-      workspaceId,
-      threadId,
-    });
     const workspaceDb = repositoryWorkspaceDb(workspaceId);
 
     try {
-      const goal = goalId ? getGoalRecord(workspaceDb, workspaceId, threadId, goalId) : null;
-      const creationItem = goal?.createdByItemId
-        ? currentTurn.items.find((item) => item.id === goal.createdByItemId)
-        : null;
-
-      if (
-        !goal ||
-        goal.goalId !== ids.goalId ||
-        currentTurn.id !== ids.turnId ||
-        currentTurn.status !== 'completed' ||
-        !currentTurn.completedAt ||
-        creationItem?.type !== 'user-message' ||
-        creationItem.id !== ids.objectiveItemId ||
-        creationItem.status !== 'completed' ||
-        !creationItem.completedAt ||
-        creationItem.causationId !== record.requestId ||
-        creationItem.text !== goal.objective ||
-        statusItem.status !== 'completed' ||
-        !statusItem.completedAt ||
-        !statusItem.summary
-      ) {
-        throw new Error('Task escalation owner contradiction.');
-      }
-
+      if (statusItem.status !== 'completed' || !statusItem.completedAt || !statusItem.summary)
+        throw new Error('Task handoff Item contradicts its receipt.');
       return StartTaskModeResponseSchema.parse({
         state: 'escalated-to-goal',
         turn: currentTurn,
         evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, currentTurn),
         escalation: {
           targetMode: 'goal',
-          goalId: goal.goalId,
+          goalId,
           reason: statusItem.summary,
         },
       });
@@ -1545,6 +1479,7 @@ function createTaskModeDelegation(input: {
   /** User task prompt. */
   readonly prompt: string;
   /** Resolves ready worker candidates for the workspace. */
+  readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string
@@ -2166,6 +2101,7 @@ export function registerQuickAndChatModeRoutes({
   runtimeConfig,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
+  goalServices,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly assertProjectWorkspace: (
@@ -2200,6 +2136,7 @@ export function registerQuickAndChatModeRoutes({
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
     readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
+  readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string
@@ -2302,28 +2239,18 @@ export function registerQuickAndChatModeRoutes({
     if (requestedThreadId && coreDb) {
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        const goal = listGoalRecordsForThread(workspaceDb, {
-          workspaceId,
-          threadId: requestedThreadId,
-        }).findLast((candidate) =>
-          [
-            'planning',
-            'awaiting_plan_approval',
-            'running',
-            'paused',
-            'awaiting_user',
-            'reviewing',
-          ].includes(candidate.status)
+        const goal = listGoalsForThread(workspaceDb, requestedThreadId).findLast(
+          (candidate) => candidate.disposition === null
         );
         if (goal) {
           const goalOrchestrator = internalRoleSelection('goal-orchestrator', userId, workspaceId);
           targets.push({
-            targetRef: `goal-orchestrator:${goal.goalId}`,
-            kind: 'goal-orchestrator',
-            label: 'Goal Orchestrator',
-            description: 'Steers the active Goal in this Thread.',
-            availability: 'unavailable',
-            unavailableReason: 'Goal mode is unavailable during the communication redesign.',
+            targetRef: `goal-coordinator:${goal.goalId}`,
+            kind: 'goal-coordinator',
+            label: 'Goal Coordinator',
+            description: 'Revise this Goal’s current intent.',
+            availability: 'available',
+            unavailableReason: null,
             threadId: requestedThreadId,
             profileId: null,
             logicalModels: goalOrchestrator?.logicalModels.map(conversationModelChoice) ?? [],
@@ -2751,10 +2678,6 @@ export function registerQuickAndChatModeRoutes({
     } catch (error) {
       if (error instanceof HTTPException) throw error;
       return asApiError('Conversation Thread is unavailable.', 'target_missing', 409);
-    }
-    // The Goal freeze precedes the command ledger so historical receipts cannot accept steering.
-    if (chatInput.targetRef.startsWith('goal-orchestrator:')) {
-      return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
     }
     const triggerActor = {
       kind: 'user',
@@ -3456,56 +3379,73 @@ export function registerQuickAndChatModeRoutes({
         };
       }
 
-      if (acceptedTarget.kind === 'goal-orchestrator') {
-        if (!coreDb || !acceptedTarget.threadId) {
-          throw new TurnStartValidationError(
-            'target_unavailable',
-            'Goal steering storage is unavailable.',
-            503
-          );
-        }
-        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+      /** Private Artifact bytes need disclosure admission even when a Goal is explicitly addressed. */
+      const privateGoalArtifact = artifacts.some(
+        (artifact) =>
+          artifact.origin.kind !== 'imported' &&
+          store.getThread(workspaceId, artifact.origin.threadId).visibility === 'private'
+      );
+      if (acceptedTarget.kind === 'goal-coordinator' && privateGoalArtifact)
+        return {
+          body: createRefusedResponse(
+            'Share private Artifact input explicitly before sending it to Goal work.'
+          ),
+          downstream: null,
+          resultKind: 'refused',
+          status: 200,
+        };
+      if (acceptedTarget.kind === 'goal-coordinator') {
+        const goalDb = repositoryWorkspaceDb(workspaceId);
         try {
-          const steering = await submitGoalSteeringCommand({
-            coreDb,
+          const goalId = acceptedTarget.targetRef.slice('goal-coordinator:'.length);
+          const goal = readGoalView(store, goalDb, goalId).goal;
+          if (!goal || goal.disposition)
+            throw new TurnStartValidationError('target_unavailable', 'Goal is unavailable.', 409);
+          await executeGoalOperation(
+            'goal.intent.revise',
+            {
+              workspaceId,
+              threadId: goal.threadId,
+              goalId,
+              requestId: goalHandoffRequestId(actorId, workspaceId, threadId, chatInput.requestId),
+              intent: conversationPrompt,
+              expectedRevision: goal.intentRevision,
+            },
+            { actor: c.get('actor') },
             store,
-            workspaceDb,
-            inflightCommands,
-            actorId,
+            goalDb,
+            goalServices?.()
+          );
+          const turn = createChatTurn(new Date().toISOString());
+          const at = new Date().toISOString();
+          const item = store.createItem({
+            id: `it_chat_goal_intent_${turn.id}`,
             workspaceId,
-            threadId: acceptedTarget.threadId,
-            requestId: chatInput.requestId,
-            commandInput: { message: conversationPrompt },
-            expectedGoalId: acceptedTarget.targetRef.slice('goal-orchestrator:'.length),
+            threadId,
+            turnId: turn.id,
+            type: 'status',
+            status: 'completed',
+            level: 'info',
+            title: 'Goal intent revised',
+            summary: 'The Coordinator will consider the current intent.',
+            createdAt: at,
+            completedAt: at,
           });
-          const item = store
-            .listThreadItems(workspaceId, acceptedTarget.threadId)
-            .find((candidate) => candidate.id === steering.contentItemId);
-          if (!item) {
-            throw new TurnStartValidationError(
-              'recovery_required',
-              'Goal steering accepted without its source Item.',
-              409
-            );
-          }
+          const ended = store.updateTurn(turn.id, { status: 'completed', completedAt: at });
           return {
             body: ConversationCommandBodySchema.parse({
               outcome: 'accepted',
-              explanation: 'The active Goal Orchestrator accepted the steering input.',
-              turn: store.getTurn(workspaceId, acceptedTarget.threadId, steering.activeTurnId),
+              explanation: 'Goal intent revised.',
+              turn: ended,
               item,
               handoff: null,
             }),
-            downstream: {
-              kind: 'goal',
-              goalId: steering.goalId,
-              turnId: steering.activeTurnId,
-            },
-            resultKind: 'goal-steering',
+            downstream: { kind: 'goal', goalId, turnId: ended.id },
+            resultKind: 'goal-intent',
             status: 202,
           };
         } finally {
-          workspaceDb.sqlite.close();
+          goalDb.sqlite.close();
         }
       }
 
@@ -3634,11 +3574,40 @@ export function registerQuickAndChatModeRoutes({
       }
 
       if (delegation?.coordinator.decision === 'goal') {
-        throw new TurnStartValidationError(
-          'goal_mode_unavailable',
-          'Goal mode is unavailable.',
-          409
-        );
+        // Thread sharing owns private-to-shared disclosure; automatic routing supplies no confirmation.
+        if (store.getThread(workspaceId, threadId).visibility === 'private' || privateGoalArtifact)
+          return {
+            body: createRefusedResponse(
+              'Explicit disclosure admission is required before a private Assistant input becomes shared Goal work.'
+            ),
+            downstream: null,
+            resultKind: 'refused',
+            status: 200,
+          };
+        const db = repositoryWorkspaceDb(workspaceId);
+        try {
+          const created = await executeGoalOperation(
+            'goal.create',
+            {
+              workspaceId,
+              requestId: goalHandoffRequestId(actorId, workspaceId, threadId, chatInput.requestId),
+              intent: conversationPrompt,
+            },
+            { actor: c.get('actor') },
+            store,
+            db,
+            goalServices?.()
+          );
+          const body = createHandoffResponse('goal', delegation.coordinator.explanation);
+          return {
+            body,
+            downstream: { kind: 'goal', goalId: created.goal!.goalId, turnId: body.turn.id },
+            resultKind: 'goal-handoff',
+            status: 202,
+          };
+        } finally {
+          db.sqlite.close();
+        }
       }
 
       if (delegation && delegation.coordinator.decision !== 'quick_chat') {
@@ -4212,12 +4181,39 @@ export function registerQuickAndChatModeRoutes({
           store.updateTurn(turn.id, { status: 'completed', completedAt });
           return;
         }
-        if (delegation.coordinator.decision === 'goal')
-          throw new TurnStartValidationError(
-            'goal_mode_unavailable',
-            'Goal mode is unavailable.',
-            409
-          );
+        if (delegation.coordinator.decision === 'goal') {
+          if (store.getThread(turn.workspaceId, turn.threadId).visibility === 'private')
+            throw new TurnStartValidationError(
+              'handoff_disclosure_required',
+              'Private Assistant outcomes need explicit disclosure admission before shared Goal work.',
+              409
+            );
+          const db = repositoryWorkspaceDb(turn.workspaceId);
+          try {
+            await executeGoalOperation(
+              'goal.create',
+              {
+                workspaceId: turn.workspaceId,
+                requestId: goalHandoffRequestId(
+                  actorId,
+                  turn.workspaceId,
+                  turn.threadId,
+                  sourceInputHash
+                ),
+                intent: prompt,
+                originThreadId: turn.threadId,
+              },
+              { actor: { kind: 'session', userId: actorId }, originTurnId: turn.id },
+              store,
+              db,
+              goalServices?.()
+            );
+          } finally {
+            db.sqlite.close();
+          }
+          store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+          return;
+        }
         const history = store
           .listThreadItems(turn.workspaceId, turn.threadId)
           .flatMap<OpenAICompatibleChatMessage>((item) =>
@@ -4284,6 +4280,7 @@ export function registerTaskModeRoute({
   requestStore,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
+  goalServices,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly assertProjectWorkspace: (
@@ -4308,6 +4305,7 @@ export function registerTaskModeRoute({
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   }) => Promise<z.infer<typeof TurnSchema>>;
+  readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string
@@ -4397,11 +4395,49 @@ export function registerTaskModeRoute({
       });
 
       if (delegation.coordinator.decision === 'goal') {
-        throw new TurnStartValidationError(
-          'goal_mode_unavailable',
-          'Goal mode is unavailable.',
-          409
-        );
+        const db = repositoryWorkspaceDb(workspaceId);
+        try {
+          const created = await executeGoalOperation(
+            'goal.create',
+            {
+              workspaceId,
+              requestId: goalHandoffRequestId(actorId, workspaceId, threadId, taskInput.requestId),
+              intent: taskInput.input,
+            },
+            { actor: c.get('actor') },
+            store,
+            db,
+            goalServices?.()
+          );
+          const turn = store.createTurn(workspaceId, threadId, taskInput.input, triggerActor);
+          const at = new Date().toISOString();
+          store.createItem({
+            id: `it_task_goal_${created.goal!.goalId}_${turn.id}`,
+            workspaceId,
+            threadId,
+            turnId: turn.id,
+            type: 'status',
+            status: 'completed',
+            level: 'info',
+            title: 'Goal created',
+            summary: delegation.coordinator.explanation,
+            createdAt: at,
+            completedAt: at,
+          });
+          const ended = store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+          return StartTaskModeResponseSchema.parse({
+            state: 'escalated-to-goal',
+            turn: ended,
+            evidence: { itemIds: ended.items.map((item) => item.id), artifactIds: [] },
+            escalation: {
+              targetMode: 'goal',
+              goalId: created.goal!.goalId,
+              reason: delegation.coordinator.explanation,
+            },
+          });
+        } finally {
+          db.sqlite.close();
+        }
       }
 
       const taskDecision = delegation.taskDecision;
@@ -4664,4 +4700,17 @@ export function registerTaskModeRoute({
       return asCommandError(error, 'task_mode_start_failed');
     }
   });
+}
+
+/** Stable Goal command identity derived from the originating command, including opaque historical request ids. */
+function goalHandoffRequestId(
+  actorId: string,
+  workspaceId: string,
+  threadId: string,
+  requestId: string
+): string {
+  const hex = createHash('sha256')
+    .update(JSON.stringify([actorId, workspaceId, threadId, requestId]))
+    .digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

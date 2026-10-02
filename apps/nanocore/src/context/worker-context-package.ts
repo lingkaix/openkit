@@ -385,27 +385,6 @@ export interface WorkerContextPackageAuthorityReader {
     readonly workspaceHandoffState: string;
     readonly readinessEvidence: readonly { readonly kind: string; readonly ref: string }[];
   } | null;
-  /** Reads and validates one optional Goal and Task lineage pair. */
-  readonly readGoalTask: (
-    workspaceId: string,
-    threadId: string,
-    goalId: string,
-    taskId: string
-  ) => {
-    /** Exact Gate request and response Item ids already proven by the Goal owner. */
-    readonly gateContextItemIds: readonly string[];
-    readonly goal: {
-      readonly workspaceId: string;
-      readonly threadId: string;
-      readonly goalId: string;
-    };
-    readonly task: {
-      readonly workspaceId: string;
-      readonly threadId: string;
-      readonly goalId: string;
-      readonly taskId: string;
-    };
-  } | null;
   /** Reads one exact immutable Material revision. */
   readonly readMaterialRevision: (
     workspaceId: string,
@@ -1052,33 +1031,8 @@ function verifyWorkerContextPackagePortableOwners(
   ) {
     throw new Error('Worker Context Package AgentSession mismatch.');
   }
-  let gateContextItemIds: readonly string[] = [];
-  if (trace.goalId && trace.taskId) {
-    const pair = authorities.readGoalTask(
-      trace.workspaceId,
-      trace.threadId,
-      trace.goalId,
-      trace.taskId
-    );
-    if (
-      !pair ||
-      pair.goal.workspaceId !== trace.workspaceId ||
-      pair.goal.threadId !== trace.threadId ||
-      pair.goal.goalId !== trace.goalId ||
-      pair.task.workspaceId !== trace.workspaceId ||
-      pair.task.threadId !== trace.threadId ||
-      pair.task.goalId !== trace.goalId ||
-      pair.task.taskId !== trace.taskId ||
-      (pair.gateContextItemIds.length !== 0 && pair.gateContextItemIds.length !== 2)
-    ) {
-      throw new Error('Worker Context Package Goal task mismatch.');
-    }
-    gateContextItemIds = pair.gateContextItemIds;
-    assertUnique(gateContextItemIds, 'Goal Gate context Item');
-    for (const itemId of gateContextItemIds) {
-      assertSafeWorkspacePathSegment(itemId, 'Goal Gate context Item id');
-    }
-  }
+  // Retained Goal/Task ids are historical lineage and require no deleted owner.
+  const gateContextItemIds: readonly string[] = [];
 
   const items = authorities.readThreadItems(trace.workspaceId, trace.threadId);
   assertUnique(

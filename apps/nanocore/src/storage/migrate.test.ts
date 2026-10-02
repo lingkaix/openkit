@@ -77,20 +77,18 @@ const WORKSPACE_TABLES = [
   'evidence_bundles',
   'generative_presentations',
   'git_push_records',
-  'goal_plan_records',
-  'goal_records',
-  'goal_review_records',
-  'goal_tasks',
-  'goal_verification_records',
+  'goal_card_tasks',
+  'goal_cards',
+  'goal_plan_versions',
+  'goals',
   'idempotency_requests',
   'mcp_tool_schema_snapshots',
   'pending_requests',
-  'pending_user_turn_records',
   'permission_decisions',
   'resolved_agent_setups',
   'runtime_evidence',
   'staged_workspace_reviews',
-  'steering_terminal_outcomes',
+  'task_turn_terminal_facts',
   'thread_material_bindings',
   'usage_records',
   'vault_use_records',
@@ -377,7 +375,6 @@ describe('database setup', () => {
         'cleanup_state',
         'created_at',
         'updated_at',
-        'pinned_goal_id',
       ]);
       expect(listColumnNames(coreDb, 'harness_instance_records')).toEqual([
         'harness_instance_id',
@@ -654,28 +651,7 @@ describe('database setup', () => {
         'recorded_at',
         'responsible_user_id',
       ]);
-      expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([
-        'review_id',
-        'workspace_id',
-        'thread_id',
-        'goal_id',
-        'task_id',
-        'turn_id',
-        'item_ids_json',
-        'artifact_ids_json',
-        'verification_evidence_json',
-        'prompt',
-        'created_by_request_id',
-        'verdict',
-        'reason',
-        'revision_instruction',
-        'created_at',
-        'updated_at',
-        'resolved_at',
-        'resolution_request_id',
-        'resolved_by_actor_id',
-        'resolution_snapshot_json',
-      ]);
+      expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([]);
       expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([
         'workspace_id',
         'resource_id',
@@ -879,6 +855,9 @@ describe('database setup', () => {
       .filter((path) => !path.endsWith(`generative-kernel${sep}native.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}physical-epoch-cutover.test.ts`))
+      // Accepted Goal removal uses one one-way cutover and its populated migration fixture.
+      .filter((path) => !path.endsWith(`storage${sep}goal-cutover.ts`))
+      .filter((path) => !path.endsWith(`storage${sep}goal-cutover-migration.test.ts`))
       .filter((path) => schemaMutationPattern.test(readFileSync(path, 'utf8')))
       .map((path) => relative(process.cwd(), path));
 

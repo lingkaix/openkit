@@ -1355,7 +1355,7 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it('keeps pinned_goal_id nullable on sandbox_runtime_records and keeps session.open and turn.start free of pin fields', () => {
+  it('omits Goal pinning from Sandbox records, session.open and turn.start', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-goal-pin-')));
     try {
       applyMigrations(coreDb);
@@ -1363,8 +1363,7 @@ describe('private NanoHost Harness records', () => {
       const sandboxColumns = coreDb.sqlite
         .prepare('PRAGMA table_info(sandbox_runtime_records)')
         .all() as { name: string; notnull: number }[];
-      expect(sandboxColumns.map((column) => column.name)).toContain('pinned_goal_id');
-      expect(sandboxColumns.find((column) => column.name === 'pinned_goal_id')?.notnull).toBe(0);
+      expect(sandboxColumns.map((column) => column.name)).not.toContain('pinned_goal_id');
 
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',

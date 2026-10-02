@@ -232,6 +232,13 @@ export type CommandRequestName =
   | 'knowledge.proposal.draft'
   | 'knowledge.proposal.decide'
   | 'knowledge.proposal.reverse'
+  | 'goal.create'
+  | 'goal.card.create'
+  | 'goal.card.edit'
+  | 'goal.card.cancel'
+  | 'goal.plan.propose'
+  | 'goal.cancel'
+  | 'goal.completion.accept'
   | 'goal.start'
   | 'goal.plan'
   | 'goal.plan.approve'
@@ -333,6 +340,7 @@ export interface ConversationCommandReceiptMetadata {
     | 'task-handoff'
     | 'goal-handoff'
     | 'worker-turn'
+    | 'goal-intent'
     | 'goal-steering'
     | 'refused';
   /** Original successful HTTP status for the closed outcome. */
@@ -555,13 +563,15 @@ interface CreateTurnOptions {
   /** Trigger recorded at admission. */
   triggerSource?: Turn['triggerSource'];
   /** Executor that this admission may freeze outcomes for. */
-  executorKind?: 'worker' | 'assistant' | 'person';
+  executorKind?: 'worker' | 'assistant' | 'coordinator' | 'person';
 }
 
 /** Hooks invoked when a Turn is admitted or first becomes terminal. */
 export interface TurnAdmissionHooks {
   /** Freezes matching ready outcomes into the admitted Turn. */
   onAdmitted?: (turn: Turn) => void;
+  /** Commits the minimal Task result before canonical file publication. */
+  onTerminalFact?: (turn: Turn) => void;
   /** Admits the next outcome Turn after a terminal barrier. */
   onTerminal?: (turn: Turn) => void;
 }
@@ -1156,7 +1166,7 @@ export class FsStore {
   private streams = new Map<string, TurnStreamState>();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
-  private turnExecutors = new Map<string, 'worker' | 'assistant' | 'person'>();
+  private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private turnAdmissionHooks: TurnAdmissionHooks | null = null;
   private terminalHookDepth = 0;
   private readonly dataRoot: string | null;
@@ -2714,7 +2724,7 @@ export class FsStore {
    * @param turnId Turn id.
    * @returns Executor, or null when admission did not declare one.
    */
-  public getTurnExecutor(turnId: string): 'worker' | 'assistant' | 'person' | null {
+  public getTurnExecutor(turnId: string): 'worker' | 'assistant' | 'coordinator' | 'person' | null {
     return this.turnExecutors.get(turnId) ?? null;
   }
 
@@ -2858,6 +2868,8 @@ export class FsStore {
         throw terminalTurnWriteRejected(turnId);
       }
     }
+    if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
+      this.turnAdmissionHooks?.onTerminalFact?.(updated);
     this.turns.set(turnId, updated);
     this.persist(turn.workspaceId);
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {

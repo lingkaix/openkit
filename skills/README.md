@@ -38,7 +38,7 @@ Public Vault secret administration exposes `vault.secret-create`, `vault.secret-
 
 The public administration reference distinguishes current implementation diagnostics from the accepted catalog-only Git source target. Future Worker source selection uses a remote URL and pinned commit. Web and Skill use the same public configuration/reload operations; neither grants host privileges.
 
-`goal.intent-revise` and `goal.plan-read` are legacy implementation operations that are not the new Goal contract. Accepted Goal behavior is in the [bounded loop reference](openkit/references/loop.md): Goal work uses immutable Plan approval and completion acceptance through Pending Requests, and new Goal execution is unavailable until the Goal implementation lands.
+The ten Goal CLI operations derive from `GOAL_OPERATION_DEFINITIONS` and invoke `client.operations[id]`: `goal.create`, `goal.intent.revise`, `goal.card.create`, `goal.card.edit`, `goal.card.cancel`, `goal.plan.propose`, `goal.plan.approve`, `goal.cancel`, `goal.completion.accept`, and `goal.read`. Plan and completion decisions resolve exact shared Pending Requests; the Goal Coordinator consumes eligible grants and admits ordinary Tasks separately. The source catalog retains no old Goal aliases, steering, pause, resume, start or step operations.
 
 The recovery reference explains normalized Git HTTP-refusal evidence from the existing Turn read surface: unavailable attribution remains explicit, and a new Task still requires current authority and cleanup/storage admission. It does not promise delegated policy writes or whole-service recovery.
 

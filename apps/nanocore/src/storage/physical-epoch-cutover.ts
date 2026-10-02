@@ -102,7 +102,7 @@ const SUCCESSOR_TARGET_SQL = PREDECESSOR_TARGET_SQL.replace(
 const SUCCESSOR_SANDBOX_SQL = PREDECESSOR_SANDBOX_SQL.replace(
   'runtime_target_id text NOT NULL REFERENCES nanohost_runtime_targets(target_id) ON DELETE RESTRICT,',
   'runtime_target_id text NOT NULL REFERENCES nanohost_runtime_targets(target_id) ON DELETE RESTRICT, origin_physical_epoch text NOT NULL,'
-);
+).replace('    pinned_goal_id text,\n', '');
 const SUCCESSOR_BACKEND_SQL = PREDECESSOR_BACKEND_SQL.replace(
   'runtime_target_id text,',
   'runtime_target_id text, origin_physical_epoch text NOT NULL,'
@@ -460,7 +460,6 @@ function rebuildSandboxRuntimeRecords(sqlite: Database.Database): void {
       cleanup_state text NOT NULL,
       created_at text NOT NULL,
       updated_at text NOT NULL,
-      pinned_goal_id text,
       CONSTRAINT sandbox_runtime_records_open_capacity_check CHECK (max_open_sessions >= 2),
       CONSTRAINT sandbox_runtime_records_harness_capacity_check CHECK (max_harnesses >= 2),
       CONSTRAINT sandbox_runtime_records_turn_capacity_check CHECK (max_active_turns = 1)
@@ -469,12 +468,12 @@ function rebuildSandboxRuntimeRecords(sqlite: Database.Database): void {
       sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
       sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
       max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
-      cleanup_state, created_at, updated_at, pinned_goal_id
+      cleanup_state, created_at, updated_at
     ) SELECT
       sandbox_runtime_id, runtime_target_id, '${PRE_WITNESS_ORIGIN}', sandbox_binding_ref,
       sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
       max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
-      cleanup_state, created_at, updated_at, pinned_goal_id
+      cleanup_state, created_at, updated_at
     FROM sandbox_runtime_records;
     DROP TABLE sandbox_runtime_records;
     ALTER TABLE physical_epoch_sandbox_runtime_records RENAME TO sandbox_runtime_records;

@@ -305,7 +305,7 @@ describe('pending requests', () => {
           record: { ...record, canonicalArgumentsJson: JSON.stringify({ message }) },
           store,
           coreDb,
-          actor: { kind: 'local', userId },
+          actor: { kind: userId === 'user_local' ? 'local' : 'session', userId },
         });
       const empty = preview('');
       expect(empty.status).toBe('available');
@@ -347,7 +347,7 @@ describe('pending requests', () => {
           record: { ...record, threadId: privateThread.id },
           store,
           coreDb,
-          actor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'user_local' },
         })
       ).toMatchObject({ status: 'unavailable' });
       coreDb.sqlite
@@ -360,7 +360,7 @@ describe('pending requests', () => {
           record: { ...record, responsibleUserId: 'another-user' },
           store,
           coreDb,
-          actor: { kind: 'local', userId: 'another-user' },
+          actor: { kind: 'session', userId: 'another-user' },
         })
       ).toMatchObject({ status: 'unavailable' });
       expect(
@@ -368,7 +368,7 @@ describe('pending requests', () => {
           record: { ...record, serverId: null, governedIntent: null },
           store,
           coreDb,
-          actor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'user_local' },
         })
       ).toMatchObject({ status: 'unavailable' });
 
@@ -377,7 +377,7 @@ describe('pending requests', () => {
           record: { ...record, canonicalArgumentsJson: '{' },
           store,
           coreDb,
-          actor: { kind: 'local', userId: 'user_local' },
+          actor: { kind: 'session', userId: 'user_local' },
         })
       ).toEqual({ status: 'unavailable', reason: 'Complete captured effect could not be loaded.' });
       const summary = approvalCardCopy('🙂'.repeat(2000), '多'.repeat(2000));

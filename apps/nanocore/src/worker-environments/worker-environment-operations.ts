@@ -24,7 +24,6 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
-import { hasNonterminalGoalWorkerStorageReference } from '../runtime/goal-store.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -40,7 +39,7 @@ import {
   type WorkerStorageContributor,
 } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
-import { type CoreDb, openBootVerifiedWorkspaceDb } from '../storage/db.js';
+import type { CoreDb } from '../storage/db.js';
 
 /** Current user and target Workspace supplied to one in-process environment operation. */
 export interface WorkerEnvironmentOperationContext {
@@ -309,15 +308,7 @@ function hasSurvivingWork(
     })
   )
     return true;
-  const workspaceDb = openBootVerifiedWorkspaceDb(
-    dependencies.coreDb.dataRoot,
-    binding.workspaceId
-  );
-  try {
-    return hasNonterminalGoalWorkerStorageReference(workspaceDb, binding.storageRef);
-  } finally {
-    workspaceDb.sqlite.close();
-  }
+  return false;
 }
 
 /** Projects one durable purge settlement into its bounded command response. */

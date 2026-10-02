@@ -42,13 +42,6 @@ import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
-import {
-  claimPendingUserTurnRecord,
-  createPendingUserTurnRecord,
-  deleteAppliedPendingUserTurnRecord,
-  derivePendingUserTurnIds,
-  getPendingUserTurnRecord,
-} from '../goal-steering-authority.js';
 import type { FsStore } from '../lib/store.js';
 import type {
   LLMGatewayDispatchContext,
@@ -78,7 +71,6 @@ import {
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
-import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -101,7 +93,6 @@ import {
 } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
-import { createGoalRecord, createGoalTask, updateGoalStatus } from './goal-store.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -425,22 +416,12 @@ function expectedTaskModeTurnId(
   }).slice(-16);
   return `turn_${requestId}_${suffix}`;
 }
-
-/**
- * Creates the single scheduler, checkpoint, Item, and Material tuple used by S39 executor tests.
- *
- * @param name Stable isolated fixture suffix.
- * @param options Optional steering, budget, and claim variants.
- * @returns Exact execution owners plus their canonical package paths.
- */
+/** Creates ordinary Task checkpoint, Material and governed Knowledge state for S39 checks. */
 function createWorkerContextExecutorFixture(
   name: string,
   options: {
-    readonly inputKind?: 'material' | 'message';
     readonly materialContent?: string;
     readonly maxContextTokens?: number;
-    readonly mismatchedClaim?: boolean;
-    readonly steeringContent?: string;
     readonly turnId?: string;
     readonly workerRequest?: string;
   } = {}
@@ -449,13 +430,6 @@ function createWorkerContextExecutorFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore({ dataRoot });
-  const initialIntentItemId = createInitialGoalIntentItem({
-    store,
-    workspaceId: 'ws_demo',
-    threadId: 'th_demo',
-    objective: 'Prepare the accepted worker context.',
-    userId: 'user_local',
-  });
   const requestId = '00000000-0000-4000-8000-000000000270';
   const turn = createAssignedTurn(
     store,
@@ -465,24 +439,14 @@ function createWorkerContextExecutorFixture(
     options.turnId
   );
   const contextItemId = `it_context_${name}`;
-  const goalId = `goal_context_${name}`;
-  const taskId = `task_context_${name}`;
-  const maxContextTokens = options.maxContextTokens ?? 12_000;
-  const pendingIds = derivePendingUserTurnIds({
-    requestId: `request_steering_context_${name}`,
-    threadId: turn.threadId,
-    workspaceId: turn.workspaceId,
-  });
+  const maxContextTokens = options.maxContextTokens ?? 12000;
   const workerRequest =
     options.workerRequest ??
     JSON.stringify({
       schemaVersion: 1,
       objective: 'Prepare the accepted worker context.',
       acceptanceCriteria: ['The requested context is available.'],
-      contextRefs: [
-        { kind: 'item', id: contextItemId },
-        { kind: 'item', id: pendingIds.contentItemId },
-      ],
+      contextRefs: [{ kind: 'item', id: contextItemId }],
       resources: [],
       expectedArtifacts: [],
       constraints: { maxContextTokens, maxWorkerIterations: 1 },
@@ -506,21 +470,6 @@ function createWorkerContextExecutorFixture(
     type: 'assistant-message',
     workspaceId: turn.workspaceId,
   });
-  const steeringReceivedAt = '2026-07-18T00:59:59.000Z';
-  store.createItem({
-    actor: turn.triggerActor,
-    causationId: `request_steering_context_${name}`,
-    completedAt: steeringReceivedAt,
-    createdAt: steeringReceivedAt,
-    id: pendingIds.contentItemId,
-    parentItemId: null,
-    status: 'completed',
-    text: 'Apply this accepted steering input.',
-    threadId: turn.threadId,
-    turnId: turn.id,
-    type: 'user-message',
-    workspaceId: turn.workspaceId,
-  });
   const agentSessionId = `as_context_${name}`;
   const sandboxBindingRef = `lease-binding:context-${name}`;
   dispatchExecutorLease(coreDb, {
@@ -532,56 +481,33 @@ function createWorkerContextExecutorFixture(
     turnId: turn.id,
     turnInput: workerRequest,
   });
+  const retrievalTraceId = 'krt_0190f4c8-0000-7000-8000-000000000397';
+  retrieveWorkspaceKnowledge({
+    caller: 'task-mode',
+    dataRoot,
+    limit: 5,
+    pinnedConceptIds: [],
+    query: 'Prepare worker context',
+    traceId: retrievalTraceId,
+    workspaceId: turn.workspaceId,
+  });
   const workspaceDb = openTestWorkspaceDb(coreDb);
-  createGoalRecord(workspaceDb, {
-    goalId,
-    createdByItemId: initialIntentItemId,
-    objective: 'Prepare the accepted worker context.',
-    threadId: turn.threadId,
-    title: 'Prepare worker context',
-    workspaceExists: (workspaceId) => workspaceId === turn.workspaceId,
-    workspaceId: turn.workspaceId,
-  });
-  updateGoalStatus(workspaceDb, {
-    goalId,
-    planItemId: `it_plan_context_${name}`,
-    status: 'running',
-    threadId: turn.threadId,
-    workspaceId: turn.workspaceId,
-  });
-  createGoalTask(workspaceDb, {
-    acceptanceCriteria: ['The requested context is available.'],
-    contextBudgetTokens: maxContextTokens,
-    dependsOnTaskIds: [],
-    escalationConditions: [],
-    expectedArtifacts: [],
-    goalId,
-    objective: 'Prepare the accepted worker context.',
-    orderIndex: 0,
-    planItemId: `it_plan_context_${name}`,
-    resources: [],
-    reviewPolicy: {
-      instructions: 'Review the accepted context.',
-      required: true,
-      reviewers: ['human'],
-    },
-    status: 'running',
-    taskId,
-    threadId: turn.threadId,
-    title: 'Prepare worker context',
-    verificationChecks: [{ description: 'Inspect the worker context.', kind: 'manual' }],
-    workspaceId: turn.workspaceId,
-  });
   upsertWorkerCheckpoint(workspaceDb, {
-    goalId,
+    goalId: null,
+    taskId: null,
     iteration: 0,
     requestId,
     requestInputHash: commandInputHash({}),
     stage: 'preparing',
-    taskId,
     threadId: turn.threadId,
     turnId: turn.id,
     workspaceId: turn.workspaceId,
+    diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+      contextDigest: commandInputHash(workerRequest),
+      contextRefs: [{ kind: 'item', id: contextItemId }],
+      knowledgeSelectionInput: options.workerRequest ? null : { retrievalTraceId },
+      repositoryResourceId: 'repo_default',
+    }),
   });
   const materialContent = options.materialContent ?? '# Exact queued context\n';
   const materialContentDigest = turnRuntimeSha256(Buffer.from(materialContent, 'utf8'));
@@ -610,59 +536,11 @@ function createWorkerContextExecutorFixture(
     threadId: turn.threadId,
   });
   const queuedMaterial = selectQueuedThreadMaterialRevision(workspaceDb, turn.threadId);
-  const steeringMaterial =
-    options.inputKind === 'material'
-      ? createWorkspaceMaterial(workspaceDb, {
-          acceptedAt: '2026-07-18T01:00:03.000Z',
-          actorId: LOCAL_USER_ID,
-          kind: 'markdown',
-          requestId: `request_create_steering_context_${name}`,
-          sensitivity: 'internal',
-          title: 'Steering context material',
-        })
-      : null;
-  const steeringContent = options.steeringContent ?? '# Exact steering context\n';
-  const steeringContentDigest = turnRuntimeSha256(Buffer.from(steeringContent, 'utf8'));
-  const steeringRevision = steeringMaterial
-    ? saveWorkspaceMaterialRevision(workspaceDb, {
-        acceptedAt: '2026-07-18T01:00:04.000Z',
-        actorId: LOCAL_USER_ID,
-        content: steeringContent,
-        contentDigest: steeringContentDigest,
-        expectedRevisionId: null,
-        materialId: steeringMaterial.materialId,
-        requestId: `request_save_steering_context_${name}`,
-      })
-    : null;
-  const pending = createPendingUserTurnRecord(workspaceDb, {
-    activeTurnId: turn.id,
-    goalId,
-    input:
-      steeringMaterial && steeringRevision
-        ? {
-            contentDigest: steeringContentDigest,
-            kind: 'material',
-            materialId: steeringMaterial.materialId,
-            revisionId: steeringRevision.revisionId,
-          }
-        : { kind: 'message' },
-    receivedAt: steeringReceivedAt,
-    requestId: `request_steering_context_${name}`,
-    threadId: turn.threadId,
-    workspaceId: turn.workspaceId,
-  });
-  claimPendingUserTurnRecord(workspaceDb, {
-    pendingTurnId: pending.pendingTurnId,
-    terminalClaimId: options.mismatchedClaim ? 'ctxpkg_wrong_turn' : `ctxpkg_${turn.id}`,
-    terminalClaimKind: 'applied',
-    terminalClaimedAt: '2026-07-18T01:00:05.000Z',
-    threadId: turn.threadId,
-    workspaceId: turn.workspaceId,
-  });
   workspaceDb.sqlite.close();
-  const workspaceRoot = join(dataRoot, 'workspaces', turn.workspaceId);
   const packageRoot = join(
-    workspaceRoot,
+    dataRoot,
+    'workspaces',
+    turn.workspaceId,
     'threads',
     turn.threadId,
     'turns',
@@ -676,14 +554,11 @@ function createWorkerContextExecutorFixture(
     material,
     materialContentDigest,
     packageRoot,
-    pending,
     queuedMaterial,
     requestId,
     revision,
     sandboxBindingRef,
     store,
-    steeringMaterial,
-    steeringRevision,
     tracePath: `${packageRoot}.json`,
     turn,
     workerRequest,
@@ -5605,109 +5480,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it.each([
-    { inputKind: 'message', name: 'happy-message' },
-    { inputKind: 'material', name: 'happy-material' },
-  ] as const)('verifies $inputKind steering cleanup before worker launch', async ({
-    inputKind,
-    name,
-  }) => {
-    const fixture = createWorkerContextExecutorFixture(name, { inputKind });
-    const {
-      agentSessionId,
-      contextItemId,
-      coreDb,
-      material,
-      packageRoot,
-      pending,
-      requestId,
-      revision,
-      sandboxBindingRef,
-      steeringMaterial,
-      steeringRevision,
-      store,
-      tracePath,
-      turn,
-      workerRequest,
-    } = fixture;
-    const backend = new FakeWorkerGovernanceBackend();
-    const launch = backend.launch.bind(backend);
-    const launchSpy = vi.spyOn(backend, 'launch').mockImplementation(async (...args) => {
-      const trace = JSON.parse(readFileSync(tracePath, 'utf8')) as {
-        contextPackageDigest: string;
-        includedItemIds: string[];
-        materialSelections: Array<{
-          inclusionReason: string;
-          materialId: string;
-          revisionId: string;
-        }>;
-      };
-      expect(trace.contextPackageDigest).toMatch(/^ctxpkg_sha256_[0-9a-f]{64}$/);
-      expect(trace.includedItemIds).toEqual([
-        `it_user_${turn.id}`,
-        pending.contentItemId,
-        contextItemId,
-      ]);
-      expect(trace.materialSelections).toHaveLength(inputKind === 'material' ? 2 : 1);
-      expect(trace.materialSelections).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            inclusionReason: 'thread_binding',
-            materialId: material.materialId,
-            revisionId: revision.revisionId,
-          }),
-          ...(steeringMaterial && steeringRevision
-            ? [
-                expect.objectContaining({
-                  inclusionReason: 'goal_steering',
-                  materialId: steeringMaterial.materialId,
-                  revisionId: steeringRevision.revisionId,
-                }),
-              ]
-            : []),
-        ])
-      );
-      const prelaunchDb = openTestWorkspaceDb(coreDb);
-      expect(getPendingUserTurnRecord(prelaunchDb, turn.workspaceId, turn.threadId)).toBeNull();
-      expect(selectQueuedThreadMaterialRevision(prelaunchDb, turn.threadId)).toBeNull();
-      prelaunchDb.sqlite.close();
-      return launch(...args);
-    });
-    const executor = new WorkerGovernanceTurnExecutor({
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      environmentBackend: {
-        kind: 'openshell',
-      },
-      now: () => '2026-07-15T00:00:03.000Z',
-    });
-
-    try {
-      await executor.startTurn(store, turn.id, workerRequest, {
-        agentSessionId,
-        agentSetup: createTestAgentSetup(),
-        requestId,
-        sandboxBindingRef,
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
-      expect(launchSpy).toHaveBeenCalledTimes(1);
-      expect(backend.lastContext?.workspaceRoots).toEqual([
-        {
-          access: 'read-only',
-          id: `context_${turn.id}`,
-          sourceKind: 'materialized-dir',
-          sourcePath: packageRoot,
-          workerPath: `/openkit/sessions/${agentSessionId}/context`,
-        },
-      ]);
-    } finally {
-      launchSpy.mockRestore();
-      coreDb.sqlite.close();
-    }
-  });
-
   it('accepts the exact Artifact Review follow-up request through the S39 boundary', async () => {
     const artifactContent = 'Redo this exact Artifact.';
     const workerRequest = JSON.stringify({
@@ -5730,14 +5502,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const fixture = createWorkerContextExecutorFixture('artifact-follow-up', { workerRequest });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
-    workspaceDb.sqlite.transaction(() => {
-      deleteAppliedPendingUserTurnRecord(workspaceDb, {
-        workspaceId: fixture.turn.workspaceId,
-        threadId: fixture.turn.threadId,
-        pendingTurnId: fixture.pending.pendingTurnId,
-        contextPackageId: `ctxpkg_${fixture.turn.id}`,
-      });
-    })();
+    workspaceDb.sqlite.transaction(() => {})();
     workspaceDb.sqlite.close();
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -5819,7 +5584,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         materialSelections: [],
       });
       const reopenedDb = openTestWorkspaceDb(coreDb);
-      expect(getPendingUserTurnRecord(reopenedDb, turn.workspaceId, turn.threadId)).toBeNull();
       expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
       reopenedDb.sqlite.close();
     } finally {
@@ -5891,12 +5655,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture.turn.id
     )!;
     workspaceDb.sqlite.transaction(() => {
-      deleteAppliedPendingUserTurnRecord(workspaceDb, {
-        contextPackageId: `ctxpkg_${fixture.turn.id}`,
-        pendingTurnId: fixture.pending.pendingTurnId,
-        threadId: fixture.turn.threadId,
-        workspaceId: fixture.turn.workspaceId,
-      });
       upsertWorkerCheckpoint(workspaceDb, {
         diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
           contextDigest: commandInputHash(fixture.workerRequest),
@@ -6314,106 +6072,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(prepared.knowledgeSelectionInput).toBeNull();
     expect(prepared.packageFiles.knowledgeSelections).toEqual([]);
     expect(prepared.knowledgeExclusions).toEqual([]);
-  });
-
-  it.each([
-    {
-      expectedError: 'Worker Context Package file digest mismatch: instructions.md.',
-      failure: 'corrupt package bytes',
-      name: 'corrupt',
-    },
-    {
-      expectedError: 'Worker Context Package applied steering claim is contradictory.',
-      failure: 'mismatched applied claim',
-      name: 'claim',
-    },
-    {
-      expectedError: 'Worker Context Package scheduler binding is unavailable.',
-      failure: 'missing scheduler binding',
-      name: 'binding',
-    },
-    {
-      expectedError: {
-        code: 'goal_steering_delivery_unavailable',
-        message: 'Worker Context Package steering Material exceeds the context budget.',
-        status: 503,
-      },
-      failure: 'oversized steering Material',
-      name: 'steering-budget',
-    },
-  ] as const)('fails closed before launch for $failure and preserves the Material queue', async ({
-    expectedError,
-    failure,
-    name,
-  }) => {
-    const fixture = createWorkerContextExecutorFixture(name, {
-      inputKind: failure === 'oversized steering Material' ? 'material' : undefined,
-      maxContextTokens: failure === 'oversized steering Material' ? 1_000 : undefined,
-      mismatchedClaim: failure === 'mismatched applied claim',
-      steeringContent: failure === 'oversized steering Material' ? 'S'.repeat(5_000) : undefined,
-    });
-    const {
-      agentSessionId,
-      coreDb,
-      packageRoot,
-      pending,
-      queuedMaterial,
-      requestId,
-      sandboxBindingRef,
-      store,
-      tracePath,
-      turn,
-      workerRequest,
-    } = fixture;
-    const backend = new FakeWorkerGovernanceBackend();
-    const materialize = backend.materialize.bind(backend);
-    const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
-      const result = await materialize(...args);
-      if (failure === 'corrupt package bytes') {
-        writeFileSync(join(packageRoot, 'instructions.md'), 'corrupt');
-      }
-      return result;
-    });
-    const launchSpy = vi.spyOn(backend, 'launch');
-    const executor = new WorkerGovernanceTurnExecutor({
-      backend,
-      coreDb,
-      createAgentSessionId: () => agentSessionId,
-      environmentBackend: {
-        kind: 'openshell',
-      },
-      now: () => '2026-07-15T00:00:03.000Z',
-    });
-
-    try {
-      const execution = executor.startTurn(store, turn.id, workerRequest, {
-        agentSessionId,
-        agentSetup: createTestAgentSetup(),
-        requestId,
-        ...(failure === 'missing scheduler binding' ? {} : { sandboxBindingRef }),
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
-      if (typeof expectedError === 'string') {
-        await expect(execution).rejects.toThrow(expectedError);
-      } else {
-        await expect(execution).rejects.toMatchObject(expectedError);
-      }
-      expect(materializeSpy).toHaveBeenCalledTimes(failure === 'corrupt package bytes' ? 1 : 0);
-      expect(launchSpy).not.toHaveBeenCalled();
-      expect(existsSync(tracePath)).toBe(false);
-      const reopenedDb = openTestWorkspaceDb(coreDb);
-      expect(selectQueuedThreadMaterialRevision(reopenedDb, turn.threadId)).toEqual(queuedMaterial);
-      expect(getPendingUserTurnRecord(reopenedDb, turn.workspaceId, turn.threadId)).toMatchObject({
-        pendingTurnId: pending.pendingTurnId,
-        terminalClaimKind: 'applied',
-      });
-      reopenedDb.sqlite.close();
-    } finally {
-      launchSpy.mockRestore();
-      materializeSpy.mockRestore();
-      coreDb.sqlite.close();
-    }
   });
 
   it('keeps recovery maintenance out of a live accepted-final-status closeout', async () => {

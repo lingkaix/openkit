@@ -551,16 +551,6 @@ registerOperations(
     'retrySchedulerAdmission',
     'cancelSchedulerAdmission',
     'startTaskMode',
-    'startThreadGoal',
-    'submitThreadGoalSteering',
-    'convertGoalSteeringToFollowUp',
-    'cancelGoalSteering',
-    'createThreadGoalPlan',
-    'reviseThreadGoalIntent',
-    'reviseThreadGoalPlan',
-    'pauseThreadGoal',
-    'resumeThreadGoal',
-    'runThreadGoalStep',
     'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
   ],
   {
@@ -602,12 +592,7 @@ registerOperations(catalog, ['purgeWorkerEnvironment'], {
 });
 registerOperations(
   catalog,
-  [
-    'getThreadGoalSummary',
-    'getThreadGoalPlan',
-    'getThreadMaterial',
-    'GET /api/workspaces/:workspaceId/threads/:threadId/events',
-  ],
+  ['getThreadMaterial', 'GET /api/workspaces/:workspaceId/threads/:threadId/events'],
   {
     mutating: false,
     policyOperation: 'thread.read',
@@ -617,12 +602,7 @@ registerOperations(
 );
 registerOperations(
   catalog,
-  [
-    'approveThreadGoalPlan',
-    'submitGoalReviewDecision',
-    'submitWorkspaceSyncReviewDecision',
-    'submitWorkspaceRecoveryDecision',
-  ],
+  ['submitWorkspaceSyncReviewDecision', 'submitWorkspaceRecoveryDecision'],
   {
     mutating: true,
     policyOperation: 'review.apply',

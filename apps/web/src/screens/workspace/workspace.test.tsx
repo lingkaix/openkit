@@ -200,29 +200,33 @@ const OPEN_ONLY_ROW = {
   ],
 };
 
-const GOAL_REVIEW_ROW = {
-  id: 'goal-review:ws1:th_goal:goal1:rev1',
+const ARTIFACT_INSPECTION_ROW = {
+  id: 'artifact-review:rev1',
   kind: 'artifact_review',
   workspaceId: 'ws1',
   threadId: 'th_goal',
   title: 'Review worker output',
-  summary: 'Inspect the Goal before choosing a verdict.',
+  artifactId: 'ar1',
+  artifactVersion: 1,
+  summary: 'Inspect this exact Artifact version before choosing a verdict.',
   severity: 'needs_input',
   createdAt: TIMESTAMP_OLD,
-  recommendedAction: 'Open the Goal to accept, refine, retry, or abort.',
+  recommendedAction: 'Inspect this exact Artifact version through its owning API.',
   source: {
-    type: 'goal_review',
+    type: 'artifact_review',
     reviewId: 'rev1',
-    goalId: 'goal1',
-    taskId: 'task1',
+    artifactId: 'ar1',
+    artifactVersion: 1,
     workspaceId: 'ws1',
     threadId: 'th_goal',
   },
   actions: [
-    { kind: 'accept_review', label: 'Accept review', method: 'POST' },
-    { kind: 'request_refinement', label: 'Request refinement', method: 'POST' },
-    { kind: 'retry_work', label: 'Retry work', method: 'POST' },
-    { kind: 'abort', label: 'Abort goal', method: 'POST' },
+    {
+      kind: 'open_artifact',
+      label: 'Open artifact',
+      method: 'POST',
+      href: '/api/app/operations/artifact.read',
+    },
   ],
 };
 
@@ -2023,19 +2027,19 @@ describe('Overview / Action Center (board 07)', () => {
     );
   });
 
-  it('opens a Goal review for inspection and does not decide it inline', async () => {
+  it('opens an Artifact Review for inspection and does not decide it inline', async () => {
     renderApp(
       '/',
       makeClient({
         actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [GOAL_REVIEW_ROW] }),
+          listHumanAttention: vi.fn().mockResolvedValue({ items: [ARTIFACT_INSPECTION_ROW] }),
         },
       })
     );
     expect(await screen.findByText('Review worker output')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
       'href',
-      '/goals/ws1/th_goal'
+      '/goals/ws1/th_goal/artifacts/ar1'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();

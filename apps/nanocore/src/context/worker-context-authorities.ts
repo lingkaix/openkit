@@ -1,7 +1,5 @@
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
-import { getGoalRecord, listGoalTasks } from '../runtime/goal-store.js';
-import { latestGateContextRefs } from '../runtime/goal-task-delegation.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
 import {
   listWorkspaceInputSnapshots,
@@ -139,24 +137,6 @@ export function createWorkerContextPackageAuthorityReader(
               readinessEvidence: materialization.readinessEvidence,
             }
           : null;
-      }),
-    readGoalTask: (workspaceId, threadId, goalId, taskId) =>
-      readOrNull(() => {
-        const goal = getGoalRecord(workspaceDb, workspaceId, threadId, goalId);
-        const task = goal
-          ? listGoalTasks(workspaceDb, { workspaceId, threadId, goalId }).find(
-              (candidate) => candidate.taskId === taskId
-            )
-          : null;
-        if (!goal || !task || goal.planItemId === null || task.planItemId !== goal.planItemId) {
-          return null;
-        }
-        const gateContextItemIds = latestGateContextRefs(
-          store,
-          task,
-          store.listThreadItems(workspaceId, threadId)
-        ).map((reference) => reference.id);
-        return { goal, task, gateContextItemIds };
       }),
     readMaterialRevision: (workspaceId, materialId, revisionId) =>
       readOrNull(() => {

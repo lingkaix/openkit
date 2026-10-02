@@ -1,6 +1,9 @@
 import type { ApprovalEffectPreview } from '@openkit/app-api-schemas';
 import type { Actor } from '../auth/identity.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentWorkspaceAuthority,
+  isCurrentDeploymentAdministrator,
+} from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
@@ -29,9 +32,10 @@ export function projectApprovalEffect(input: {
   actor?: Actor | undefined;
 }): ApprovalEffectPreview {
   const { record, store, actor, coreDb } = input;
+  const administrator = Boolean(coreDb && actor && isCurrentDeploymentAdministrator(coreDb, actor));
   if (
     !actor ||
-    actor.userId !== record.responsibleUserId ||
+    (actor.userId !== record.responsibleUserId && !administrator) ||
     (coreDb &&
       !currentWorkspaceAuthority(
         coreDb,
@@ -41,7 +45,7 @@ export function projectApprovalEffect(input: {
         true,
         actor
       )) ||
-    !isThreadIdVisible(store, record.workspaceId, record.threadId, actor.userId)
+    !isThreadIdVisible(store, record.workspaceId, record.threadId, actor.userId, administrator)
   )
     return { status: 'unavailable', reason: 'Current Thread access is unavailable.' };
   try {

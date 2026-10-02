@@ -1117,3 +1117,239 @@ describe('Workspace Thread Turn projection cutover', () => {
     }
   });
 });
+
+import { GOAL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { createGoalTools } from './runtime/goal-coordinator.js';
+import { openWorkspaceDb } from './storage/db.js';
+import { applyScopedMigrations } from './storage/migrate.js';
+
+describe('Goal definition projections', () => {
+  it('joins HTTP, Core Client, CLI and Coordinator Tools to the same Goal owner', async () => {
+    const f = await operationFixture();
+    try {
+      const projections = await publicJourneyProjections(f);
+      const created = (await projections.client('goal.create', {
+        workspaceId: 'ws_demo',
+        requestId: randomUUID(),
+        intent: 'Review design',
+      })) as import('@openkit/app-api-schemas').GoalView;
+      const goal = created.goal!;
+      const scope = { workspaceId: goal.workspaceId, threadId: goal.threadId, goalId: goal.goalId };
+      for (const project of Object.values(projections))
+        expect(
+          ((await project('goal.read', scope)) as import('@openkit/app-api-schemas').GoalView).goal!
+            .goalId
+        ).toBe(goal.goalId);
+      const db = openWorkspaceDb(f.command.dataRoot, goal.workspaceId);
+      applyScopedMigrations(db);
+      try {
+        const previous = f.store
+          .listThreadTurns(goal.workspaceId, goal.threadId)
+          .filter((turn) => turn.agentId === 'goal-coordinator');
+        for (const turn of previous)
+          if (turn.status === 'running')
+            f.store.updateTurn(turn.id, {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+            });
+        const turn = f.store.createTurn(
+          goal.workspaceId,
+          goal.threadId,
+          'Projection check',
+          { kind: 'user', id: 'user_local' },
+          undefined,
+          { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+        );
+        const tools = createGoalTools({
+          store: f.store,
+          db,
+          actor: { kind: 'local', userId: 'user_local' },
+          goalId: goal.goalId,
+          turnId: turn.id,
+          services: {},
+          invoke: createOperationInvocation({
+            coreDb: f.coreDb,
+            store: f.store,
+            repositoryWorkspaceDb: (workspaceId) => {
+              const db = openWorkspaceDb(f.command.dataRoot, workspaceId);
+              applyScopedMigrations(db);
+              return db;
+            },
+            inflightCommands: new WeakMap(),
+            workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          }),
+        });
+        expect(tools.map((tool) => tool.name).sort()).toEqual(
+          Object.entries(GOAL_OPERATION_DEFINITIONS)
+            .filter(([, definition]) =>
+              (definition.credentials as readonly string[]).includes('coordinator')
+            )
+            .map(([id]) => operationToolName(id))
+            .sort()
+        );
+        const read = await tools.find((tool) => tool.name === 'goal_read')!.execute({});
+        expect(read.isError).not.toBe(true);
+        expect(JSON.parse((read.content[0] as { text: string }).text).goal.goalId).toBe(
+          goal.goalId
+        );
+
+        expect(
+          (
+            (await projections.http('goal.card.create', {
+              ...scope,
+              requestId: randomUUID(),
+              description: 'Verify API',
+              priority: 0,
+            })) as import('@openkit/app-api-schemas').GoalView
+          ).cards
+        ).toHaveLength(1);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('preserves read-only, wrong-audience and revocation refusals before Goal effects', async () => {
+    const f = await operationFixture();
+    try {
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const readOnly = await publicJourneyProjections(f, issued.secret);
+      await expect(
+        readOnly.http('goal.create', {
+          workspaceId: 'ws_demo',
+          requestId: randomUUID(),
+          intent: 'Denied',
+        })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied' });
+      const foreign = f.store.createThread('ws_demo', 'Private', undefined, 'conversation', {
+        visibility: 'private',
+        privateOwnerUserId: 'user_foreign',
+      });
+      await expect(
+        readOnly.http('goal.read', { workspaceId: 'ws_demo', threadId: foreign.id })
+      ).rejects.toMatchObject({ code: 'not_found' });
+      revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+      await expect(
+        readOnly.http('goal.read', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+      ).rejects.toMatchObject({ code: expect.any(String) });
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+});
+
+import { executeGoalOperation } from './runtime/goal-owner.js';
+
+it('discloses and grants a Coordinator proposal to the current administrator without membership, retaining actual attribution and refusing revoked consumption', async () => {
+  const f = await operationFixture();
+  const db = openWorkspaceDb(f.command.dataRoot, 'ws_demo');
+  applyScopedMigrations(db);
+  try {
+    f.coreDb.sqlite
+      .prepare(
+        "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,last_seen_at) SELECT 'user_admin',kind,display_name,'admin@local.openkit.invalid',email_verified,created_at,updated_at,last_seen_at FROM users WHERE id='user_local'"
+      )
+      .run();
+    const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_admin',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const context = { actor: { kind: 'local' as const, userId: 'user_local' } };
+    const created = await executeGoalOperation(
+      'goal.create',
+      { workspaceId: 'ws_demo', requestId: randomUUID(), intent: 'Review design' },
+      context,
+      f.store,
+      db
+    );
+    const goal = created.goal!;
+    const scope = { workspaceId: 'ws_demo', threadId: goal.threadId, goalId: goal.goalId };
+    const turn = f.store.createTurn(
+      'ws_demo',
+      goal.threadId,
+      'Coordinate',
+      { kind: 'user', id: 'user_local' },
+      undefined,
+      { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+    );
+    const coordinator = { ...context, coordinatorTurnId: turn.id };
+    const proposed = await executeGoalOperation(
+      'goal.plan.propose',
+      {
+        ...scope,
+        requestId: randomUUID(),
+        expectedRevision: goal.changeRevision,
+        commitment: {
+          intentBasis: { intent: goal.intent, revision: 0 },
+          cards: [],
+          permittedAdjustments: 'Research only',
+          completionEvidence: ['Report'],
+          boundaries: 'No writes',
+        },
+      },
+      coordinator,
+      f.store,
+      db
+    );
+    const request = proposed.requests[0]!;
+    const admin = await publicJourneyProjections(f, issued.secret);
+    const resolved = (await admin.client('goal.plan.approve', {
+      ...scope,
+      requestId: randomUUID(),
+      pendingRequestId: request.requestId,
+      decision: 'granted',
+    })) as import('@openkit/app-api-schemas').GoalView;
+    expect(resolved.requests[0]).toMatchObject({
+      decidingActorId: 'user_admin',
+      claim: 'unclaimed',
+      disposition: null,
+    });
+    const consuming = f.store.createTurn(
+      'ws_demo',
+      goal.threadId,
+      'Consume exact outcome',
+      { kind: 'user', id: 'user_admin' },
+      undefined,
+      { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+    );
+    coordinator.coordinatorTurnId = consuming.id;
+    revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+    await expect(
+      executeGoalOperation(
+        'goal.plan.approve',
+        {
+          ...scope,
+          requestId: randomUUID(),
+          pendingRequestId: request.requestId,
+          decision: 'granted',
+        },
+        coordinator,
+        f.store,
+        db,
+        { coreDb: f.coreDb }
+      )
+    ).rejects.toMatchObject({ code: 'grant_conflict' });
+    expect(
+      db.sqlite
+        .prepare(
+          'SELECT deciding_actor_id,claim,disposition FROM pending_requests WHERE request_id=?'
+        )
+        .get(request.requestId)
+    ).toEqual({
+      deciding_actor_id: 'user_admin',
+      claim: 'unclaimed',
+      disposition: 'denied-not-executed',
+    });
+  } finally {
+    db.sqlite.close();
+    f.coreDb.sqlite.close();
+  }
+});

@@ -18,7 +18,6 @@ import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
 import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
-import { GoalPlanApprovalError } from './runtime/goal-plan-approval.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -138,9 +137,6 @@ export function registerTurnRoutes({
       }
 
       if (error instanceof TurnStartValidationError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-      if (error instanceof GoalPlanApprovalError) {
         return asApiError(error.message, error.code, error.status);
       }
 

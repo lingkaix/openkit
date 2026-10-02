@@ -44,7 +44,6 @@ import {
   type RuntimeConfigSnapshot,
   unknownModelContextFailure,
 } from './config/runtime-config.js';
-import { classifyGoalStepCheckpointAfterSchedulerRecovery } from './goal-routes.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
@@ -886,13 +885,6 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
         try {
           if (checkpoint.goalId === null && checkpoint.taskId === null) {
             await classifyDirectTaskCheckpointAfterSchedulerRecovery({
-              coreDb: recoveryCoreDb,
-              store,
-              workspaceDb,
-              checkpoint,
-            });
-          } else if (checkpoint.goalId !== null && checkpoint.taskId !== null) {
-            await classifyGoalStepCheckpointAfterSchedulerRecovery({
               coreDb: recoveryCoreDb,
               store,
               workspaceDb,

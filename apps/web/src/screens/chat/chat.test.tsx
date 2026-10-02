@@ -866,7 +866,7 @@ describe('chat starter (board 01)', () => {
     const workspaceId = 'ws/space ?#%';
     const thread = { ...THREAD, workspaceId, id: 'th/space ?#%', name: 'Encoded conversation' };
     const getThread = vi.fn().mockResolvedValue(thread);
-    const getThreadGoalSummary = vi.fn().mockResolvedValue({ goal: null });
+    const readGoal = vi.fn().mockResolvedValue({ goal: null, cards: [], versions: [], tasks: [] });
     renderApp(
       '/chat',
       makeClient(
@@ -885,7 +885,7 @@ describe('chat starter (board 01)', () => {
           'thread.read': getThread,
         },
         {
-          getThreadGoalSummary,
+          'goal.read': readGoal,
           listConversationNavigation: vi.fn().mockResolvedValue({
             items: [{ thread, activity, state: 'idle', lastActivityAt: thread.updatedAt }],
           }),
@@ -896,14 +896,14 @@ describe('chat starter (board 01)', () => {
     await user.click(await within(recent).findByRole('button', { name: thread.name }));
 
     if (activity === 'goal') {
-      expect(await screen.findByText('No goal on this thread')).toBeInTheDocument();
-      expect(getThreadGoalSummary).toHaveBeenCalledWith(workspaceId, thread.id);
+      expect(await screen.findByRole('heading', { name: 'Create Goal' })).toBeInTheDocument();
+      expect(readGoal).toHaveBeenCalledWith({ workspaceId, threadId: thread.id });
       expect(getThread).not.toHaveBeenCalled();
     } else {
       expect(await screen.findByRole('heading', { name: thread.name })).toBeInTheDocument();
       expect(getThread).toHaveBeenCalledWith({ workspaceId: workspaceId, threadId: thread.id });
       expect(screen.queryByRole('img', { name: 'Task' })).not.toBeInTheDocument();
-      expect(getThreadGoalSummary).not.toHaveBeenCalled();
+      expect(readGoal).not.toHaveBeenCalled();
     }
   });
 

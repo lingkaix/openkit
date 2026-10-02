@@ -6,6 +6,7 @@ import {
   responsibleUserIdForActor,
   type TurnSchema,
 } from '@openkit/protocol';
+import type { Actor } from '../auth/identity.js';
 import type { CommandRequestRecord } from '../lib/store.js';
 import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
@@ -50,8 +51,58 @@ export class PendingRequestCommandError extends Error {
   }
 }
 
+/** Identifies captured command intent independently of who requested it. */
+export function isCommandIntentApproval(
+  record: Pick<PendingRequestRecord, 'kind' | 'serverId' | 'governedIntent'>
+): boolean {
+  return record.kind === 'approval' && record.serverId === null && record.governedIntent !== null;
+}
+
+/** Ends only pending requests of the named Goal; granted intents remain for owner re-evaluation. */
+export function invalidateGoalPendingRequests(
+  sqlite: Database.Database,
+  goalId: string,
+  reason: string,
+  actor: PendingRequestActor,
+  now: string,
+  plansOnly = false
+): number {
+  return sqlite.transaction(() => {
+    const rows = sqlite
+      .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests WHERE state = 'pending'`)
+      .all() as PendingRequestRow[];
+    let count = 0;
+    for (const row of rows) {
+      const record = parsePendingRequestRow(row);
+      if (
+        !isCommandIntentApproval(record) ||
+        record.governedIntent?.goalId !== goalId ||
+        (plansOnly && record.governedIntent.operation !== 'goal.plan.approve')
+      )
+        continue;
+      if (invalidatePendingRequest(sqlite, record.requestId, reason, actor, now)) count++;
+    }
+    return count;
+  })();
+}
+
+/** Records a refused unclaimed command intent without rewriting its recorded grant. */
+export function refuseCommandIntentGrant(
+  sqlite: Database.Database,
+  requestId: string,
+  reason: string,
+  now: string
+): PendingRequestRecord | null {
+  const changed = sqlite
+    .prepare(
+      `UPDATE pending_requests SET disposition = 'denied-not-executed', disposition_reason = ?, updated_at = ? WHERE request_id = ? AND state = 'resolved' AND resolution = 'granted' AND claim = 'unclaimed' AND disposition IS NULL AND server_id IS NULL AND governed_intent_json IS NOT NULL`
+    )
+    .run(reason, now, requestId);
+  return changed.changes === 1 ? readPendingRequest(sqlite, requestId) : null;
+}
+
 /** Who asked. */
-export type PendingRequesterKind = 'worker' | 'assistant' | 'person';
+export type PendingRequesterKind = 'worker' | 'assistant' | 'coordinator' | 'person';
 
 /** Record kind. */
 export type PendingRequestKind = 'approval' | 'user-input';
@@ -87,7 +138,7 @@ export type PendingRequestDelivery =
 export type PendingDeliveryCause = 'outcome' | 'carried';
 
 /** Executor that may receive an outcome. */
-export type PendingExecutorKind = 'worker' | 'assistant' | 'person';
+export type PendingExecutorKind = 'worker' | 'assistant' | 'coordinator' | 'person';
 
 /** Actor recorded on a decision or ending. */
 export interface PendingRequestActor {
@@ -161,6 +212,8 @@ export interface PendingRequestRecord {
   readonly resolution: PendingRequestResolution | null;
   /** Deciding actor. */
   readonly decidingActor: PendingRequestActor | null;
+  /** Non-secret credential identity retained so the effect owner can recheck revocation at claim. */
+  readonly decidingActorContext: Actor | null;
   /** Decision or answer time. */
   readonly decidedAt: string | null;
   /** Answer map for a user-input resolution. */
@@ -191,7 +244,7 @@ export interface PendingRequestRecord {
   readonly policyDecisionId: string | null;
   /** Originating authorization context. */
   readonly authorizationContext: PendingAuthorizationContext | null;
-  /** Exact governed-command intent for a person's approval. */
+  /** Exact governed-command intent for a command-intent approval. */
   readonly governedIntent: Readonly<Record<string, unknown>> | null;
   /** Questions for a user-input request. */
   readonly questions: readonly Readonly<Record<string, unknown>>[] | null;
@@ -213,7 +266,7 @@ export interface PendingRequestRecord {
   readonly heldResult: unknown;
   /** Publication Turn, set once. */
   readonly publicationTurnId: string | null;
-  /** Invalidation Turn for a person's grant, set once. */
+  /** Invalidation Turn for a command-intent grant, set once. */
   readonly invalidationTurnId: string | null;
   /** Delivery state. */
   readonly delivery: PendingRequestDelivery;
@@ -261,7 +314,7 @@ export interface RaisePendingRequestInput {
     readonly policyDecisionId: string | null;
     readonly authorizationContext: PendingAuthorizationContext;
   };
-  /** Person's governed intent. */
+  /** Exact governed-command intent. */
   readonly governedIntent?: Readonly<Record<string, unknown>> | null;
   /** User-input questions. */
   readonly questions?: readonly Readonly<Record<string, unknown>>[] | null;
@@ -318,6 +371,7 @@ interface PendingRequestRow {
   resolution: string | null;
   deciding_actor_kind: string | null;
   deciding_actor_id: string | null;
+  deciding_actor_context_json: string | null;
   decided_at: string | null;
   answer_map_json: string | null;
   ending: string | null;
@@ -356,7 +410,7 @@ interface PendingRequestRow {
 const SELECT_COLUMNS = `
   request_id, workspace_id, thread_id, raising_turn_id, request_item_id, kind, requester_kind,
   agent_id, agent_session_id, responsible_user_id, state, resolution, deciding_actor_kind,
-  deciding_actor_id, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
+  deciding_actor_id, deciding_actor_context_json, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
   ending_actor_id, ended_at, server_id, catalog_revision, schema_snapshot_id, tool_name,
   canonical_arguments_json, arguments_digest, package_digest, policy_decision_id,
   authorization_context_json, governed_intent_json, questions_json, approval_kind, title,
@@ -366,7 +420,7 @@ const SELECT_COLUMNS = `
 `;
 
 const KINDS = new Set<PendingRequestKind>(['approval', 'user-input']);
-const REQUESTERS = new Set<PendingRequesterKind>(['worker', 'assistant', 'person']);
+const REQUESTERS = new Set<PendingRequesterKind>(['worker', 'assistant', 'coordinator', 'person']);
 const STATES = new Set<PendingRequestState>(['pending', 'resolved', 'ended']);
 const RESOLUTIONS = new Set<PendingRequestResolution>(['granted', 'denied', 'answered']);
 const ENDINGS = new Set<PendingRequestEnding>(['withdrawn', 'invalidated']);
@@ -611,12 +665,14 @@ export function preflightPendingRequest(
  * @param actor Deciding user.
  * @param now Decision time.
  * @returns Updated record, or null when the compare-and-set lost.
+ * @param decisionContext Non-secret credential identity used for current deciding authority.
  */
 export function denyPendingRequest(
   sqlite: Database.Database,
   requestId: string,
   actor: PendingRequestActor,
-  now: string
+  now: string,
+  decisionContext?: Actor
 ): PendingRequestRecord | null {
   const deny = sqlite.transaction(() => {
     const current = readPendingRequest(sqlite, requestId);
@@ -626,13 +682,14 @@ export function denyPendingRequest(
       .prepare(
         `UPDATE pending_requests
          SET state = 'resolved', resolution = 'denied', deciding_actor_kind = ?, deciding_actor_id = ?,
-             decided_at = ?, claim = 'unclaimed', disposition = ?, disposition_reason = ?, updated_at = ?
+             decided_at = ?, deciding_actor_context_json = ?, claim = 'unclaimed', disposition = ?, disposition_reason = ?, updated_at = ?
          WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed'`
       )
       .run(
         actor.kind,
         actor.id,
         now,
+        decisionContext ? JSON.stringify(decisionContext) : null,
         governsCall ? 'denied-not-executed' : null,
         governsCall ? 'denied' : null,
         now,
@@ -652,23 +709,33 @@ export function denyPendingRequest(
  * @param answers Answer map.
  * @param now Answer time.
  * @returns Updated record, or null when the compare-and-set lost.
+ * @param decisionContext Non-secret credential identity used for current deciding authority.
  */
 export function answerPendingRequest(
   sqlite: Database.Database,
   requestId: string,
   actor: PendingRequestActor,
   answers: Readonly<Record<string, readonly [string]>>,
-  now: string
+  now: string,
+  decisionContext?: Actor
 ): PendingRequestRecord | null {
   const answer = sqlite.transaction(() => {
     const result = sqlite
       .prepare(
         `UPDATE pending_requests
          SET state = 'resolved', resolution = 'answered', deciding_actor_kind = ?, deciding_actor_id = ?,
-             decided_at = ?, answer_map_json = ?, updated_at = ?
+             decided_at = ?, deciding_actor_context_json = ?, answer_map_json = ?, updated_at = ?
          WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed' AND kind = 'user-input'`
       )
-      .run(actor.kind, actor.id, now, JSON.stringify(answers), now, requestId);
+      .run(
+        actor.kind,
+        actor.id,
+        now,
+        decisionContext ? JSON.stringify(decisionContext) : null,
+        JSON.stringify(answers),
+        now,
+        requestId
+      );
     return result.changes === 1 ? readPendingRequest(sqlite, requestId) : null;
   });
   return answer();
@@ -726,13 +793,15 @@ export function invalidatePendingRequest(
  * @param now Decision time.
  * @param evaluate Synchronous re-evaluation. It must not commit this request.
  * @returns Applied step and the record.
+ * @param decisionContext Non-secret credential identity used for current deciding authority.
  */
 export function claimOrRefuseGrant(
   sqlite: Database.Database,
   requestId: string,
   actor: PendingRequestActor,
   now: string,
-  evaluate: () => GrantEvaluation
+  evaluate: () => GrantEvaluation,
+  decisionContext?: Actor
 ): GrantStepResult {
   const step = sqlite.transaction(() => {
     const current = readPendingRequest(sqlite, requestId);
@@ -766,11 +835,19 @@ export function claimOrRefuseGrant(
         .prepare(
           `UPDATE pending_requests
            SET state = 'resolved', resolution = 'granted', deciding_actor_kind = ?, deciding_actor_id = ?,
-               decided_at = ?, claim = 'unclaimed', disposition = 'denied-not-executed',
+               decided_at = ?, deciding_actor_context_json = ?, claim = 'unclaimed', disposition = 'denied-not-executed',
                disposition_reason = ?, updated_at = ?
            WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed'`
         )
-        .run(actor.kind, actor.id, now, evaluation.reason, now, requestId);
+        .run(
+          actor.kind,
+          actor.id,
+          now,
+          decisionContext ? JSON.stringify(decisionContext) : null,
+          evaluation.reason,
+          now,
+          requestId
+        );
       const record = readPendingRequest(sqlite, requestId) ?? current;
       return { applied: result.changes === 1 ? ('refused' as const) : ('lost' as const), record };
     }
@@ -779,10 +856,18 @@ export function claimOrRefuseGrant(
       .prepare(
         `UPDATE pending_requests
          SET state = 'resolved', resolution = 'granted', deciding_actor_kind = ?, deciding_actor_id = ?,
-             decided_at = ?, claim = 'claimed', execution_call_id = ?, updated_at = ?
+             decided_at = ?, deciding_actor_context_json = ?, claim = 'claimed', execution_call_id = ?, updated_at = ?
          WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed'`
       )
-      .run(actor.kind, actor.id, now, callId, now, requestId);
+      .run(
+        actor.kind,
+        actor.id,
+        now,
+        decisionContext ? JSON.stringify(decisionContext) : null,
+        callId,
+        now,
+        requestId
+      );
     const record = readPendingRequest(sqlite, requestId) ?? current;
     return { applied: result.changes === 1 ? ('claimed' as const) : ('lost' as const), record };
   });
@@ -790,43 +875,52 @@ export function claimOrRefuseGrant(
 }
 
 /**
- * Records a person's grant with claim left unclaimed.
+ * Records a command-intent grant with claim left unclaimed.
  *
  * @param sqlite Workspace database.
  * @param requestId Request id.
  * @param actor Deciding user.
  * @param now Decision time.
  * @returns Updated record, or null when the compare-and-set lost.
+ * @param decisionContext Non-secret credential identity used for current deciding authority.
  */
-export function grantPersonPendingRequest(
+export function grantCommandIntentRequest(
   sqlite: Database.Database,
   requestId: string,
   actor: PendingRequestActor,
-  now: string
+  now: string,
+  decisionContext?: Actor
 ): PendingRequestRecord | null {
   const grant = sqlite.transaction(() => {
     const result = sqlite
       .prepare(
         `UPDATE pending_requests
          SET state = 'resolved', resolution = 'granted', deciding_actor_kind = ?, deciding_actor_id = ?,
-             decided_at = ?, updated_at = ?
-         WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed' AND requester_kind = 'person'`
+             decided_at = ?, deciding_actor_context_json = ?, updated_at = ?
+         WHERE request_id = ? AND state = 'pending' AND claim = 'unclaimed' AND server_id IS NULL AND governed_intent_json IS NOT NULL`
       )
-      .run(actor.kind, actor.id, now, now, requestId);
+      .run(
+        actor.kind,
+        actor.id,
+        now,
+        decisionContext ? JSON.stringify(decisionContext) : null,
+        now,
+        requestId
+      );
     return result.changes === 1 ? readPendingRequest(sqlite, requestId) : null;
   });
   return grant();
 }
 
 /**
- * Claims a person's unclaimed grant for the governed command.
+ * Claims an unclaimed command-intent grant for the governed command.
  *
  * @param sqlite Workspace database.
  * @param requestId Request id.
  * @param now Claim time.
  * @returns Updated record, or null when the grant was not claimable.
  */
-export function claimPersonGrant(
+export function claimCommandIntentGrant(
   sqlite: Database.Database,
   requestId: string,
   now: string
@@ -838,7 +932,7 @@ export function claimPersonGrant(
         `UPDATE pending_requests
          SET claim = 'claimed', execution_call_id = ?, updated_at = ?
          WHERE request_id = ? AND state = 'resolved' AND resolution = 'granted' AND claim = 'unclaimed'
-           AND requester_kind = 'person' AND disposition IS NULL`
+           AND server_id IS NULL AND governed_intent_json IS NOT NULL AND disposition IS NULL`
       )
       .run(callId, now, requestId);
     return result.changes === 1 ? readPendingRequest(sqlite, requestId) : null;
@@ -1113,7 +1207,7 @@ export function applyPendingCloseout(
       }
       const current = readPendingRequest(sqlite, record.requestId) ?? record;
       if (
-        current.requesterKind === 'person' &&
+        isCommandIntentApproval(current) &&
         current.resolution === 'granted' &&
         current.claim === 'unclaimed' &&
         current.disposition === null
@@ -1135,7 +1229,7 @@ export function applyPendingCloseout(
       const next = readPendingRequest(sqlite, record.requestId) ?? current;
       const outstandingInvalidation =
         next.disposition === 'denied-not-executed' &&
-        next.requesterKind === 'person' &&
+        isCommandIntentApproval(next) &&
         next.resolution === 'granted' &&
         next.invalidationTurnId === null;
       if (outstandingInvalidation) {
@@ -1188,13 +1282,13 @@ export function isReadyOutcome(record: PendingRequestRecord): boolean {
  * Returns whether the record has a final outcome.
  *
  * @param record Pending request.
- * @returns True for an answer, denial, ending, recorded agent grant, or a person's grant.
+ * @returns True for an answer, denial, ending, recorded agent grant, or a command-intent grant.
  */
 export function isFinalOutcome(record: PendingRequestRecord): boolean {
   if (record.state === 'ended') return true;
   if (record.state !== 'resolved' || record.resolution === null) return false;
   if (record.resolution === 'denied' || record.resolution === 'answered') return true;
-  if (record.requesterKind === 'person') return true;
+  if (isCommandIntentApproval(record)) return true;
   return record.disposition !== null;
 }
 
@@ -1300,7 +1394,9 @@ export function validateCanonicalLoad(
     return { requestId: record.requestId, reason: 'request-item-lineage' };
   }
   if (
-    (record.requesterKind === 'worker' && !record.agentId) ||
+    (['worker', 'coordinator'].includes(record.requesterKind) && !record.agentId) ||
+    (record.requesterKind === 'coordinator' &&
+      (record.agentSessionId !== null || !isCommandIntentApproval(record))) ||
     (record.requesterKind === 'person' && record.agentId)
   ) {
     return { requestId: record.requestId, reason: 'parties' };
@@ -1309,7 +1405,10 @@ export function validateCanonicalLoad(
   if (
     request.workspaceId !== record.workspaceId ||
     request.threadId !== record.threadId ||
-    responsibleUserIdForActor(raising.triggerActor) !== record.responsibleUserId ||
+    (record.requesterKind !== 'coordinator' &&
+      responsibleUserIdForActor(raising.triggerActor) !== record.responsibleUserId) ||
+    (record.requesterKind === 'coordinator' &&
+      (raising.agentId !== record.agentId || Boolean(raising.agentSessionId))) ||
     (request.type === 'approval-request' &&
       (record.kind !== 'approval' ||
         request.kind !== record.approvalKind ||
@@ -1354,6 +1453,11 @@ export function validateCanonicalLoad(
       return { requestId: record.requestId, reason: 'captured-arguments' };
     }
   }
+  if (
+    record.decidingActorContext &&
+    record.decidingActorContext.userId !== record.decidingActor?.id
+  )
+    return { requestId: record.requestId, reason: 'deciding-credential-actor' };
   const policyGrant =
     record.kind === 'approval' &&
     record.resolution === 'granted' &&
@@ -1365,7 +1469,8 @@ export function validateCanonicalLoad(
       !record.decidingActor ||
       (!policyGrant &&
         (record.decidingActor.kind !== 'user' ||
-          record.decidingActor.id !== record.responsibleUserId)))
+          !record.decidingActor.id ||
+          (record.decidingActor.id !== record.responsibleUserId && !record.decidingActorContext))))
   )
     return { requestId: record.requestId, reason: 'resolution-actor' };
   if (
@@ -1420,7 +1525,7 @@ export function validateCanonicalLoad(
     return { requestId: record.requestId, reason: 'unclaimed-resolution' };
   if (
     record.resolution === 'granted' &&
-    record.requesterKind !== 'person' &&
+    !isCommandIntentApproval(record) &&
     !policyGrant &&
     record.claim === 'unclaimed' &&
     record.disposition !== 'denied-not-executed'
@@ -1546,9 +1651,11 @@ export function validateCanonicalLoad(
     !policyGrant &&
     (record.requesterKind === 'worker'
       ? deliveryTurn.agentId !== record.agentId
-      : record.requesterKind === 'assistant'
-        ? deliveryTurn.agentId !== 'quick-chat' || Boolean(deliveryTurn.agentSessionId)
-        : Boolean(deliveryTurn.agentId || deliveryTurn.agentSessionId))
+      : record.requesterKind === 'coordinator'
+        ? deliveryTurn.agentId !== record.agentId || Boolean(deliveryTurn.agentSessionId)
+        : record.requesterKind === 'assistant'
+          ? deliveryTurn.agentId !== 'quick-chat' || Boolean(deliveryTurn.agentSessionId)
+          : Boolean(deliveryTurn.agentId || deliveryTurn.agentSessionId))
   ) {
     return { requestId: record.requestId, reason: 'delivery-executor' };
   }
@@ -1649,12 +1756,12 @@ export function validateCanonicalLoad(
     const expected =
       !policyGrant &&
       (role === 'invalidation'
-        ? record.requesterKind === 'person' &&
+        ? isCommandIntentApproval(record) &&
           record.resolution === 'granted' &&
           record.disposition === 'denied-not-executed'
         : role === 'ending'
           ? record.ending !== null
-          : record.requesterKind !== 'person' &&
+          : !isCommandIntentApproval(record) &&
             (role === 'disposition-status'
               ? record.disposition === 'denied-not-executed'
               : record.disposition !== null && record.disposition !== 'denied-not-executed'));
@@ -1734,6 +1841,7 @@ export function validateCanonicalLoad(
  * @returns Worker when the Turn names an AgentSession, otherwise null.
  */
 export function executorKindForTurn(turn: Turn): PendingExecutorKind | null {
+  if (turn.agentId === 'goal-coordinator' && !turn.agentSessionId) return 'coordinator';
   return turn.agentSessionId || (turn.agentId && turn.agentId !== 'quick-chat')
     ? 'worker'
     : turn.agentId === 'quick-chat'
@@ -1821,7 +1929,7 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
       `INSERT INTO pending_requests (
          request_id, workspace_id, thread_id, raising_turn_id, request_item_id, kind, requester_kind,
          agent_id, agent_session_id, responsible_user_id, state, resolution, deciding_actor_kind,
-         deciding_actor_id, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
+         deciding_actor_id, deciding_actor_context_json, decided_at, answer_map_json, ending, invalidating_event, ending_actor_kind,
          ending_actor_id, ended_at, server_id, catalog_revision, schema_snapshot_id, tool_name,
          canonical_arguments_json, arguments_digest, package_digest, policy_decision_id,
          authorization_context_json, governed_intent_json, questions_json, approval_kind, title,
@@ -1830,7 +1938,7 @@ function insertPendingRequest(sqlite: Database.Database, input: RaisePendingRequ
          created_at, updated_at
        ) VALUES (
          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-         NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', NULL, NULL, NULL, NULL,
+         NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', NULL, NULL, NULL, NULL,
          NULL, NULL, 'undelivered', NULL, NULL, ?, ?
        )`
     )
@@ -1873,7 +1981,8 @@ function sameRaiseIdentity(record: PendingRequestRecord, input: RaisePendingRequ
     record.requesterKind === input.requesterKind &&
     record.responsibleUserId === input.responsibleUserId &&
     record.agentId === (input.agentId ?? null) &&
-    record.argumentsDigest === (input.call?.argumentsDigest ?? input.questionDigest ?? null)
+    record.argumentsDigest === (input.call?.argumentsDigest ?? input.questionDigest ?? null) &&
+    canonicalJsonText(record.governedIntent) === canonicalJsonText(input.governedIntent ?? null)
   );
 }
 
@@ -1962,6 +2071,7 @@ function parsePendingRequestRow(row: PendingRequestRow): PendingRequestRecord {
     state,
     resolution,
     decidingActor: actorFrom(row.deciding_actor_kind, row.deciding_actor_id),
+    decidingActorContext: parseDecisionContext(row.deciding_actor_context_json),
     decidedAt: row.decided_at,
     answerMap: parseAnswerMap(row.answer_map_json),
     ending,
@@ -2081,4 +2191,39 @@ function canonicalJsonValue(value: unknown): unknown {
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, child]) => [key, canonicalJsonValue(child)])
   );
+}
+
+/** Validates retained non-secret credential identity before it can re-enter current authorization. */
+function parseDecisionContext(bytes: string | null): Actor | null {
+  const value = parseObject(bytes);
+  if (!value) return null;
+  if (
+    !['local', 'session', 'token'].includes(String(value.kind)) ||
+    typeof value.userId !== 'string' ||
+    !value.userId ||
+    (value.tokenScope !== undefined &&
+      !['server-admin', 'workspace', 'workspace-readonly'].includes(String(value.tokenScope))) ||
+    (value.tokenId !== undefined && typeof value.tokenId !== 'string') ||
+    (value.adminTokenId !== undefined && typeof value.adminTokenId !== 'string') ||
+    (value.tokenWorkspaceIds !== undefined &&
+      (!Array.isArray(value.tokenWorkspaceIds) ||
+        !value.tokenWorkspaceIds.every((id) => typeof id === 'string')))
+  )
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'Invalid deciding credential context.',
+      409
+    );
+  return {
+    kind: value.kind as Actor['kind'],
+    userId: value.userId,
+    ...(typeof value.tokenId === 'string' ? { tokenId: value.tokenId } : {}),
+    ...(typeof value.tokenScope === 'string'
+      ? { tokenScope: value.tokenScope as NonNullable<Actor['tokenScope']> }
+      : {}),
+    ...(Array.isArray(value.tokenWorkspaceIds)
+      ? { tokenWorkspaceIds: value.tokenWorkspaceIds as string[] }
+      : {}),
+    ...(typeof value.adminTokenId === 'string' ? { adminTokenId: value.adminTokenId } : {}),
+  };
 }

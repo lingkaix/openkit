@@ -1930,14 +1930,6 @@ describe('workspace export verifier', () => {
             'pending-request lifecycle stays in the workspace database and has no portable export family',
         },
         {
-          table: 'pending_user_turn_records',
-          reason: 'active Goal steering delivery proof is local to the source workspace',
-        },
-        {
-          table: 'steering_terminal_outcomes',
-          reason: 'terminal Goal steering command proof is local to the source workspace',
-        },
-        {
           table: 'workspace_filesystem_staging_roots',
           reason: 'host-local apply staging paths are not portable export history',
         },

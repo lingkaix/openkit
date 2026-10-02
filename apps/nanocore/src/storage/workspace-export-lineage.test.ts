@@ -2,10 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  AgentEnvironmentPackageSchema,
-  planSessionWorkspaceMaterialization,
-} from '@openkit/config-schema';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -31,7 +28,6 @@ import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { computeGoalPlanDigest, GoalPlanOutputSchema } from '../runtime/goal-plan.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
@@ -266,45 +262,6 @@ function createLineageExportInput(
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const goalPlan = GoalPlanOutputSchema.parse({
-    schemaVersion: 1,
-    goalSummary: 'Keep lineage portable.',
-    assumptions: [],
-    tasks: [
-      {
-        taskId: source.taskId,
-        title: 'Portable task',
-        objective: 'Verify lineage.',
-        acceptanceCriteria: ['Lineage is portable.'],
-        contextBudgetTokens: 1_000,
-        resources: [
-          {
-            kind: 'item',
-            reference: source.itemId,
-            reason: 'The source Item carries the task context.',
-          },
-          {
-            kind: 'artifact',
-            reference: source.artifactId,
-            reason: 'The source Artifact carries the task evidence.',
-          },
-        ],
-        expectedArtifacts: [{ kind: 'artifact', description: 'Portable task evidence.' }],
-        verificationChecks: [{ kind: 'manual', description: 'Review portable lineage.' }],
-        reviewPolicy: {
-          required: true,
-          reviewers: ['human'],
-          instructions: 'Review the portable Task evidence.',
-        },
-        dependsOnTaskIds: [],
-        escalationConditions: ['Escalate if portable lineage is incomplete.'],
-      },
-    ],
-    taskDispositions: [],
-    risks: [],
-    questions: [],
-    verificationApproach: 'Review every reminted reference.',
-  });
   return {
     exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-')), 'export'),
     exportId: 'wsexp_lineage',
@@ -548,8 +505,8 @@ function createLineageExportInput(
         workspaceId: source.workspaceId,
         threadId: source.threadId,
         turnId: missing === 'checkpoint-turn' ? 'tu_missing' : source.turnId,
-        goalId: source.goalId,
-        taskId: source.taskId,
+        goalId: null,
+        taskId: null,
         requestId: 'request_source',
         requestInputHash: 'sha256:request-source',
         stage: 'running_worker',
@@ -559,98 +516,6 @@ function createLineageExportInput(
         stopReason: null,
         diagnosticsSummary: null,
         replayInstruction: false,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ],
-    goalRecords: [
-      {
-        goalId: source.goalId,
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        status: 'running',
-        title: 'Portable goal',
-        objective: 'Keep lineage portable.',
-        createdByItemId: missing === 'goal-item' ? 'it_missing' : source.itemId,
-        currentIntentItemId: source.intentItemId,
-        currentAffectedTaskIds: [],
-        planItemId: source.planItemId,
-        pendingPlanItemId: null,
-        currentTaskId: source.taskId,
-        terminalStopReason: null,
-        workerStorageChoice: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ],
-    goalPlanRecords: [
-      {
-        ...goalPlan,
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        goalId: source.goalId,
-        planItemId: source.planItemId,
-        planDigest: computeGoalPlanDigest(goalPlan),
-        predecessorPlanItemId: null,
-        sourceIntentItemId: source.intentItemId,
-        sourceTaskEvidenceDigest: null,
-        createdByRequestId: 'goal-plan-source-1',
-        createdAt: timestamp,
-      },
-    ],
-    goalTasks: [
-      {
-        ...goalPlan.tasks[0],
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        goalId: source.goalId,
-        planItemId: source.planItemId,
-        status: 'reviewing',
-        latestGateContextItemId: null,
-        orderIndex: 0,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ],
-    goalReviewRecords: [
-      {
-        reviewId: 'review_source',
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        goalId: source.goalId,
-        taskId: source.taskId,
-        turnId: source.turnId,
-        itemIds: [source.itemId],
-        artifactIds: [source.artifactId],
-        verificationEvidence: [],
-        prompt: 'Review the portable Task evidence.',
-        createdByRequestId: 'goal-step-portable-1',
-        verdict: null,
-        reason: null,
-        revisionInstruction: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        resolvedAt: null,
-        resolutionRequestId: null,
-        resolvedByActorId: null,
-        resolutionSnapshot: null,
-      },
-    ],
-    goalVerificationRecords: [
-      {
-        verificationId: 'verification_source',
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        goalId: source.goalId,
-        taskId: source.taskId,
-        turnId: source.turnId,
-        commandId: null,
-        command: null,
-        status: 'passed',
-        summary: 'Portable.',
-        itemIds: [source.itemId],
-        artifactIds: [source.artifactId],
-        outputPointers: [],
         createdAt: timestamp,
         updatedAt: timestamp,
       },
@@ -2156,676 +2021,11 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it.each([
-    ['Goal', 'records/goal-records.jsonl', 'verifying'],
-    ['Goal Task', 'records/goal-tasks.jsonl', 'skipped'],
-    ['Goal Task', 'records/goal-tasks.jsonl', 'needs_revision'],
-  ])('rejects an imported %s with an unowned lifecycle status', (_label, path, status) => {
-    const verified = writeWorkspaceExportTree(createLineageExportInput());
-    const fileContents = new Map(verified.fileContents);
-    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
-
-    fileContents.set(path, JSON.stringify({ ...record, status }));
-
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents },
-        targetWorkspaceId,
-      })
-    ).toThrow();
-  });
-
-  it('rejects Goal Plan digest corruption and Task divergence', () => {
-    const verified = writeWorkspaceExportTree(createLineageExportInput());
-    const planPath = 'records/goal-plan-records.jsonl';
-    const planText = verified.fileContents.get(planPath);
-
-    expect(planText).toBeDefined();
-    if (!planText) {
-      return;
-    }
-
-    const planFiles = new Map(verified.fileContents);
-    const plan = JSON.parse(planText) as Record<string, unknown>;
-    planFiles.set(planPath, JSON.stringify({ ...plan, planDigest: 'sha256:corrupt' }));
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents: planFiles },
-        targetWorkspaceId,
-      })
-    ).toThrow('Goal Plan digest');
-
-    const taskFiles = new Map(verified.fileContents);
-    const taskPath = 'records/goal-tasks.jsonl';
-    const task = JSON.parse(taskFiles.get(taskPath) ?? '') as Record<string, unknown>;
-    taskFiles.set(
-      taskPath,
-      JSON.stringify({ ...task, objective: 'Divergent imported objective.' })
-    );
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents: taskFiles },
-        targetWorkspaceId,
-      })
-    ).toThrow('Goal Task does not match its immutable Plan');
-  });
-
-  it('rejects a Goal Plan whose Item projection has the wrong type or Thread', () => {
-    const wrongType = createLineageExportInput();
-    const wrongTypePlanItem = {
-      id: source.planItemId,
-      workspaceId: source.workspaceId,
-      threadId: source.threadId,
-      turnId: source.turnId,
-      type: 'assistant-message',
-      status: 'completed',
-      text: 'This is not a Plan projection.',
-      createdAt: timestamp,
-      completedAt: timestamp,
-    };
-    wrongType.itemRevisions = wrongType.itemRevisions.map((record) => {
-      const item = record as Record<string, unknown>;
-      return item.id === source.planItemId ? wrongTypePlanItem : item;
-    });
-    wrongType.turns = wrongType.turns.map((record) => {
-      const turn = record as Record<string, unknown>;
-      return {
-        ...turn,
-        items: (turn.items as Array<Record<string, unknown>>).map((item) =>
-          item.id === source.planItemId ? wrongTypePlanItem : item
-        ),
-      };
-    });
-    expect(() => importLineage(wrongType)).toThrow('Goal Plan has invalid lineage');
-
-    const wrongThread = createLineageExportInput();
-    const sourceTurn = wrongThread.turns[0] as Record<string, unknown>;
-    const sourceTurnItems = sourceTurn.items as Array<Record<string, unknown>>;
-    const sourcePlanItem = wrongThread.itemRevisions.find(
-      (record) => (record as Record<string, unknown>).id === source.planItemId
-    ) as Record<string, unknown>;
-    const movedPlanItem = { ...sourcePlanItem, threadId: 'th_other', turnId: 'tu_other' };
-    wrongThread.threads = [
-      ...wrongThread.threads,
-      {
-        ...(wrongThread.threads[0] as Record<string, unknown>),
-        id: 'th_other',
-        name: 'Other thread',
-      },
-    ];
-    wrongThread.turns = [
-      {
-        ...sourceTurn,
-        items: sourceTurnItems.filter((item) => item.id !== source.planItemId),
-      },
-      {
-        ...sourceTurn,
-        id: 'tu_other',
-        threadId: 'th_other',
-        items: [movedPlanItem],
-      },
-    ];
-    wrongThread.itemRevisions = wrongThread.itemRevisions.map((record) => {
-      const item = record as Record<string, unknown>;
-      return item.id === source.planItemId ? movedPlanItem : item;
-    });
-    expect(() => importLineage(wrongThread)).toThrow('Goal Plan has invalid lineage');
-  });
-
-  it('preserves a valid Plan-only Task before approval', () => {
-    const input = createLineageExportInput();
-    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
-      ...(record as Record<string, unknown>),
-      status: 'awaiting_plan_approval',
-      planItemId: null,
-      pendingPlanItemId: source.planItemId,
-      currentTaskId: null,
-    }));
-    input.goalTasks = [];
-    input.goalReviewRecords = [];
-    input.goalVerificationRecords = [];
-    input.workerCheckpoints = [];
-    input.runtimeEvidence = [];
-
-    const imported = importLineage(input);
-
-    expect(imported.goalTasks).toEqual([]);
-    expect(imported.goalPlanRecords).toHaveLength(1);
-    expect(imported.goalPlanRecords[0]?.tasks).toHaveLength(1);
-    expect(imported.goalPlanRecords[0]?.planDigest).toBe(
-      computeGoalPlanDigest(imported.goalPlanRecords[0]!)
-    );
-  });
-
-  it('retains an approved Plan and Task beside a pending successor without refreshing its source evidence fence', () => {
-    const input = createLineageExportInput();
-    const pendingPlanItemId = 'it_goal_plan_successor';
-    const pendingTaskId = 'task_successor';
-    const historicalDigest = `sha256:${'a'.repeat(64)}`;
-    const dispositionReason = 'Carry the unfinished review into the successor Task.';
-    const sourcePlanItem = input.itemRevisions.find(
-      (item) => (item as { id?: string }).id === source.planItemId
-    ) as Record<string, unknown>;
-    const pendingPlanItem = {
-      ...sourcePlanItem,
-      id: pendingPlanItemId,
-      steps: [{ id: pendingTaskId, title: 'Successor task', status: 'pending' }],
-    };
-    input.itemRevisions = [...input.itemRevisions, pendingPlanItem];
-    input.turns = input.turns.map((turn) => ({
-      ...(turn as Record<string, unknown>),
-      items: [...(turn as { items: unknown[] }).items, pendingPlanItem],
-    }));
-    input.goalRecords = (input.goalRecords ?? []).map((goal) => ({
-      ...(goal as Record<string, unknown>),
-      pendingPlanItemId,
-      currentAffectedTaskIds: [source.taskId],
-    }));
-    const sourcePlan = input.goalPlanRecords![0] as Record<string, unknown>;
-    const sourceTask = (sourcePlan.tasks as Record<string, unknown>[])[0]!;
-    const successorPayload = GoalPlanOutputSchema.parse({
-      schemaVersion: sourcePlan.schemaVersion,
-      goalSummary: sourcePlan.goalSummary,
-      assumptions: sourcePlan.assumptions,
-      tasks: [{ ...sourceTask, taskId: pendingTaskId, dependsOnTaskIds: [] }],
-      taskDispositions: [
-        {
-          taskId: source.taskId,
-          successorTaskId: pendingTaskId,
-          reason: dispositionReason,
-        },
-      ],
-      risks: sourcePlan.risks,
-      questions: sourcePlan.questions,
-      verificationApproach: sourcePlan.verificationApproach,
-    });
-    input.goalPlanRecords = [
-      sourcePlan,
-      {
-        ...sourcePlan,
-        ...successorPayload,
-        planItemId: pendingPlanItemId,
-        predecessorPlanItemId: source.planItemId,
-        sourceTaskEvidenceDigest: historicalDigest,
-        planDigest: computeGoalPlanDigest(successorPayload),
-      },
-    ];
-
-    const imported = importLineage(input);
-    const goal = imported.goalRecords[0]!;
-    const active = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId === null)!;
-    const pending = imported.goalPlanRecords.find((plan) => plan.predecessorPlanItemId !== null)!;
-    const approvedTask = imported.goalTasks[0]!;
-    const intentItem = imported.itemRevisions.find((item) => item.type === 'user-message')!;
-    expect(imported.goalPlanRecords).toHaveLength(2);
-    expect(imported.goalTasks).toHaveLength(1);
-    expect(active.taskDispositions).toEqual([]);
-    expect(goal.planItemId).toBe(active.planItemId);
-    expect(goal.pendingPlanItemId).toBe(pending.planItemId);
-    expect(goal.currentTaskId).toBe(approvedTask.taskId);
-    expect(goal.currentAffectedTaskIds).toEqual([approvedTask.taskId]);
-    expect(approvedTask.planItemId).toBe(active.planItemId);
-    expect(approvedTask.status).toBe('reviewing');
-    expect(pending.predecessorPlanItemId).toBe(active.planItemId);
-    expect(pending.sourceIntentItemId).toBe(intentItem.id);
-    expect(pending.tasks[0]!.taskId).not.toBe(pendingTaskId);
-    expect(pending.taskDispositions).toEqual([
-      {
-        taskId: approvedTask.taskId,
-        successorTaskId: pending.tasks[0]!.taskId,
-        reason: dispositionReason,
-      },
-    ]);
-    expect(pending.sourceTaskEvidenceDigest).toBe(historicalDigest);
-    expect(pending.planDigest).toBe(computeGoalPlanDigest(pending));
-
-    for (const [sourceTaskEvidenceDigest, expectedError] of [
-      [null, /Goal Plan source evidence does not match its approval history/],
-      ['sha256:invalid', /sha256:/],
-    ] as const) {
-      expect(() =>
-        importLineage({
-          ...input,
-          exportRoot: join(
-            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-successor-')),
-            'export'
-          ),
-          goalPlanRecords: [
-            sourcePlan,
-            { ...(input.goalPlanRecords![1] as Record<string, unknown>), sourceTaskEvidenceDigest },
-          ],
-        })
-      ).toThrow(expectedError);
-    }
-    for (const invalidDisposition of [
-      { taskId: 'task_foreign', successorTaskId: pendingTaskId, reason: dispositionReason },
-      { taskId: source.taskId, successorTaskId: 'task_foreign', reason: dispositionReason },
-    ]) {
-      const malformedPayload = GoalPlanOutputSchema.parse({
-        ...successorPayload,
-        taskDispositions: [invalidDisposition],
-      });
-      expect(() =>
-        importLineage({
-          ...input,
-          exportRoot: join(
-            mkdtempSync(join(tmpdir(), 'openkit-goal-invalid-disposition-')),
-            'export'
-          ),
-          goalPlanRecords: [
-            sourcePlan,
-            {
-              ...(input.goalPlanRecords![1] as Record<string, unknown>),
-              ...malformedPayload,
-              planDigest: computeGoalPlanDigest(malformedPayload),
-            },
-          ],
-        })
-      ).toThrow(/Goal Plan task disposition has invalid lineage/);
-    }
-  });
-
-  it('rejects approved Task rows while a Goal awaits Plan approval', () => {
-    const input = createLineageExportInput();
-    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
-      ...(record as Record<string, unknown>),
-      status: 'awaiting_plan_approval',
-      currentTaskId: null,
-    }));
-
-    expect(() => importLineage(input)).toThrow('Goal lifecycle has incoherent Task authority');
-  });
-
-  it.each([
-    'running',
-    'paused',
-    'reviewing',
-    'completed',
-    'blocked',
-    'aborted',
-    'failed',
-  ] as const)('rejects a %s Goal without its complete approved Task set', (status) => {
-    const input = createLineageExportInput();
-    input.goalRecords = (input.goalRecords ?? []).map((record) => ({
-      ...(record as Record<string, unknown>),
-      status,
-      currentTaskId: null,
-    }));
-    input.goalTasks = [];
-    input.goalReviewRecords = [];
-    input.goalVerificationRecords = [];
-    input.workerCheckpoints = [];
-
-    expect(() => importLineage(input)).toThrow('Goal lifecycle has incoherent Task authority');
-  });
-
-  it.each([
-    'ask_user',
-    'decompose',
-    'block',
-  ])('rejects an imported Goal Review with unsupported verdict %s', (verdict) => {
-    const verified = writeWorkspaceExportTree(createLineageExportInput());
-    const fileContents = new Map(verified.fileContents);
-    const path = 'records/goal-review-records.jsonl';
-    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
-
-    fileContents.set(path, JSON.stringify({ ...record, verdict }));
-
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents },
-        targetWorkspaceId,
-      })
-    ).toThrow();
-  });
-
-  it('rejects an imported Goal Review with a partial decision tuple', () => {
-    const verified = writeWorkspaceExportTree(createLineageExportInput());
-    const fileContents = new Map(verified.fileContents);
-    const path = 'records/goal-review-records.jsonl';
-    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
-
-    fileContents.set(path, JSON.stringify({ ...record, verdict: 'accept' }));
-
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents },
-        targetWorkspaceId,
-      })
-    ).toThrow();
-  });
-
-  it('rejects an imported Goal Review with an unsupported resolution outcome', () => {
-    const verified = writeWorkspaceExportTree(createLineageExportInput());
-    const fileContents = new Map(verified.fileContents);
-    const path = 'records/goal-review-records.jsonl';
-    const record = JSON.parse(fileContents.get(path) ?? '') as Record<string, unknown>;
-
-    fileContents.set(
-      path,
-      JSON.stringify({
-        ...record,
-        verdict: 'abort',
-        reason: 'Abort the Goal.',
-        resolvedAt: timestamp,
-        resolutionRequestId: 'goal-review-resolution-1',
-        resolvedByActorId: 'user_source',
-        resolutionSnapshot: {
-          outcome: 'blocked',
-          task: { taskId: source.taskId, status: 'failed' },
-          goal: {
-            goalId: source.goalId,
-            status: 'aborted',
-            currentTaskId: null,
-            terminalStopReason: 'aborted',
-          },
-          nextReadyTaskId: null,
-        },
-      })
-    );
-
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents },
-        targetWorkspaceId,
-      })
-    ).toThrow();
-  });
-
-  it('rewrites every canonical reference, including both AEP layers', () => {
-    const input = createLineageExportInput();
-    input.workspaceReconciliationRecords = [
-      {
-        id: 'wrr_source',
-        workspaceId: source.workspaceId,
-        triggerReason: 'restart',
-        affectedRecordIds: ['wmr_source'],
-        backendHandleSummary: {
-          backendKind: 'openshell',
-          handleId: 'bwh_source',
-          workerSessionId: 'worker_source',
-          cleanupStatus: 'pending',
-        },
-        backendReachability: { status: 'unknown', checkedAt: timestamp, detail: null },
-        collectedOutputManifestIds: ['wom_source'],
-        evidenceBundleIds: ['evb_source'],
-        stateBefore: 'ready',
-        stateAfter: 'requires-human',
-        quarantineRefs: [],
-        requiredHumanDecision: 'inspect_recovery',
-        retentionDecision: 'teardown-backend',
-        startedAt: timestamp,
-        finishedAt: null,
-      },
-    ];
-    const sourceSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
-    const imported = importLineage(input);
-    const thread = imported.threads[0]!;
-    const turn = imported.turns[0]!;
-    const item = imported.itemRevisions[0]!;
-    const planItem = imported.itemRevisions.find((candidate) => candidate.type === 'plan');
-    const approvalItem = imported.itemRevisions.find(
-      (candidate) => candidate.type === 'approval-request'
-    );
-    const artifactReferenceItem = imported.itemRevisions.find(
-      (candidate) => candidate.type === 'artifact-reference'
-    );
-    const artifact = imported.artifacts[0]!;
-    const session = imported.agentSessions[0]!;
-    const aep = imported.agentEnvironmentPackageSnapshots[0]!;
-    const goal = imported.goalRecords[0]!;
-    const plan = imported.goalPlanRecords[0]!;
-    const task = imported.goalTasks[0]!;
-    const grant = imported.vaultGrants[0]!;
-
-    if (
-      approvalItem?.type !== 'approval-request' ||
-      artifactReferenceItem?.type !== 'artifact-reference' ||
-      planItem?.type !== 'plan'
-    ) {
-      throw new Error('Expected imported Plan, approval request, and artifact-reference items.');
-    }
-
-    expect.soft(artifactReferenceItem).toMatchObject({
-      artifactId: artifact.id,
-      artifactVersion: artifact.version,
-    });
-    expect.soft(approvalItem.causationId).toBe(item.id);
-    expect.soft(artifactReferenceItem.id).toBe(artifactReferenceItemId(artifact.id, turn.id));
-    expect.soft(artifact.origin).toMatchObject({
-      kind: 'turn-output',
-      threadId: thread.id,
-      turnId: turn.id,
-    });
-    expect.soft(session.environmentPackageSnapshotId).toBe(aep.snapshotId);
-    expect.soft(session).toMatchObject({
-      sandboxSummary: null,
-      configVersion: null,
-      policySnapshotId: null,
-      sessionCompatibilityKey: null,
-      stale: true,
-      status: 'closed',
-      workspaceRoots: [],
-    });
-    expect.soft(JSON.stringify(session)).not.toContain('/private/source/workspace');
-    expect.soft(aep.snapshotId).not.toBe(sourceSnapshotId);
-    const importedPackage = AgentEnvironmentPackageSchema.parse(aep.snapshot);
-    expect.soft(importedPackage.extensions.openkit).toMatchObject({
-      sessionWorkspace: planSessionWorkspaceMaterialization({
-        environmentPackage: importedPackage,
-      }),
-    });
-    expect
-      .soft(JSON.stringify(importedPackage))
-      .not.toContain(`/openkit/sessions/${source.sessionId}/`);
-    expect.soft(aep).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      agentSessionId: session.id,
-      snapshot: {
-        snapshotId: aep.snapshotId,
-        packageId: aep.packageId,
-        scope: {
-          workspaceId: targetWorkspaceId,
-          threadId: thread.id,
-          turnId: turn.id,
-          agentSessionId: session.id,
-          itemId: item.id,
-        },
-      },
-    });
-    expect.soft(imported.resolvedAgentSetups[0]!.turnId).toBe(turn.id);
-    expect.soft(imported.workerCheckpoints[0]).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      workerSessionId: 'worker_source',
-      requestId: 'request_source',
-      requestInputHash: 'sha256:request-source',
-    });
-    expect.soft(imported.goalRecords[0]).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      createdByItemId: item.id,
-      planItemId: planItem.id,
-    });
-    expect.soft(plan).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      goalId: goal.goalId,
-      planItemId: planItem.id,
-      createdByRequestId: 'goal-plan-source-1',
-      tasks: [{ taskId: task.taskId }],
-    });
-    expect
-      .soft(planItem.steps.map((step) => step.id))
-      .toEqual(plan.tasks.map((entry) => entry.taskId));
-    expect.soft(plan.planDigest).toBe(computeGoalPlanDigest(plan));
-    expect.soft(plan.tasks[0]?.resources).toEqual([
-      {
-        kind: 'item',
-        reference: item.id,
-        reason: 'The source Item carries the task context.',
-      },
-      {
-        kind: 'artifact',
-        reference: artifact.id,
-        reason: 'The source Artifact carries the task evidence.',
-      },
-    ]);
-    expect.soft(task).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      goalId: goal.goalId,
-      planItemId: planItem.id,
-      taskId: plan.tasks[0]?.taskId,
-      resources: plan.tasks[0]?.resources,
-    });
-    expect.soft(imported.goalReviewRecords[0]).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      itemIds: [item.id],
-      artifactIds: [artifact.id],
-      prompt: 'Review the portable Task evidence.',
-      createdByRequestId: 'goal-step-portable-1',
-      verdict: null,
-      reason: null,
-      revisionInstruction: null,
-      resolvedAt: null,
-      resolutionRequestId: null,
-      resolvedByActorId: null,
-      resolutionSnapshot: null,
-    });
-    expect.soft(imported.goalVerificationRecords[0]).toMatchObject({
-      workspaceId: targetWorkspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      itemIds: [item.id],
-      artifactIds: [artifact.id],
-    });
-    expect.soft(imported.workerOutputManifests[0]!.artifactIds).toEqual([artifact.id]);
-    expect
-      .soft(imported.workerOutputManifests[0]!.evidenceRefs)
-      .toEqual([{ kind: 'worker', ref: turn.id }]);
-    expect.soft(imported.workspaceChangeSets[0]).toMatchObject({
-      artifactIds: [artifact.id],
-      evidenceRefs: [{ kind: 'worker', ref: turn.id }],
-      workspaceId: targetWorkspaceId,
-    });
-    expect.soft(grant).toMatchObject({
-      targetAgentSessionId: session.id,
-      approvalId: approvalItem.approvalRequestId,
-    });
-    expect.soft(imported.capabilityCalls[0]).toMatchObject({
-      threadId: thread.id,
-      turnId: turn.id,
-      itemId: item.id,
-      agentSessionId: session.id,
-    });
-    expect.soft(imported.usageRecords[0]).toMatchObject({
-      threadId: thread.id,
-      turnId: turn.id,
-      itemId: item.id,
-      agentSessionId: session.id,
-    });
-    expect.soft(imported.evidenceBundles[0]).toMatchObject({
-      threadId: thread.id,
-      turnId: turn.id,
-      goalId: goal.goalId,
-      agentSessionId: session.id,
-      rawEvidenceRefs: [
-        { kind: 'thread', ref: thread.id },
-        { kind: 'turn', ref: turn.id },
-        { kind: 'goal', ref: goal.goalId },
-        { kind: 'artifact', ref: artifact.id },
-      ],
-      redactedEvidenceRefs: [{ kind: 'worker', ref: turn.id }],
-    });
-    expect
-      .soft(imported.workspaceReconciliationRecords[0]?.evidenceBundleIds)
-      .toEqual([imported.evidenceBundles[0]?.id]);
-    expect.soft(imported.runtimeEvidence[0]).toMatchObject({
-      threadId: thread.id,
-      turnId: turn.id,
-      goalId: goal.goalId,
-      agentSessionId: session.id,
-    });
-    expect.soft(imported.gitPushRecords[0]!.approvalRowId).toBe(approvalItem.approvalRequestId);
-    expect.soft(imported.permissionDecisions[0]!.approvalId).toBe(approvalItem.approvalRequestId);
-    expect.soft(imported.workspaceRepositories[0]!.git.vaultGrantRef).toBe(grant.grantId);
-    expect.soft(imported.dataSourceCatalog?.sources[0]?.vaultGrantRef).toBe(grant.grantId);
-
-    const rewrittenReferences = JSON.stringify({
-      agentEnvironmentPackageSnapshots: imported.agentEnvironmentPackageSnapshots,
-      capabilityCalls: imported.capabilityCalls,
-      evidenceBundles: imported.evidenceBundles,
-      gitPushRecords: imported.gitPushRecords,
-      permissionDecisions: imported.permissionDecisions,
-      runtimeEvidence: imported.runtimeEvidence,
-      usageRecords: imported.usageRecords,
-      vaultGrants: imported.vaultGrants,
-      workerOutputManifests: imported.workerOutputManifests,
-      workspaceChangeSets: imported.workspaceChangeSets,
-      workspaceReconciliationRecords: imported.workspaceReconciliationRecords,
-      workspaceRepositories: imported.workspaceRepositories,
-    });
-    for (const sourceId of [
-      source.approvalId,
-      source.artifactId,
-      source.goalId,
-      source.grantId,
-      source.itemId,
-      source.sessionId,
-      source.threadId,
-      source.turnId,
-    ]) {
-      expect.soft(rewrittenReferences).not.toContain(sourceId);
-    }
-  });
-
-  it('remints typed Audit resource owners', () => {
-    const input = createLineageExportInput();
-    input.auditEvents = [
-      ['goal', `goal:${source.goalId}`],
-      ['goal-task', `goal-task:${source.taskId}`],
-      [
-        'worker-checkpoint',
-        `worker-checkpoint:${source.workspaceId}:${source.threadId}:${source.turnId}`,
-      ],
-      ['vault-reference', 'vault:vault_source'],
-    ].map(([suffix, resource]) => ({
-      id: `audit_${suffix}_source`,
-      workspaceId: source.workspaceId,
-      category: 'system',
-      action: `portable.${suffix}`,
-      resource,
-      outcome: 'succeeded',
-      severity: 'info',
-      summary: `Portable ${suffix} audit.`,
-      occurredAt: timestamp,
-    }));
-
-    const imported = importLineage(input);
-
-    expect(imported.auditEvents.map((event) => event.resource)).toEqual(
-      expect.arrayContaining([
-        `goal:${imported.goalRecords[0]!.goalId}`,
-        `goal-task:${imported.goalTasks[0]!.taskId}`,
-        `worker-checkpoint:${imported.workerCheckpoints[0]!.checkpointId}`,
-        `vault:${imported.vaultReferences[0]!.referenceId}`,
-      ])
-    );
-  });
-
-  it.each([
     ['aep-item', 'it_missing'],
     ['aep-session', /lineage|as_missing/i],
     ['capability-thread', 'th_missing'],
     ['checkpoint-turn', 'tu_missing'],
-    ['evidence-goal', 'goal_missing'],
     ['git-approval', 'apr_missing'],
-    ['goal-item', 'it_missing'],
     ['permission-approval', 'apr_missing'],
     ['repository-grant', 'grant_missing'],
     ['resolved-turn', 'tu_missing'],
@@ -3322,4 +2522,130 @@ describe('slice 1d portable call fields', () => {
       db.sqlite.close();
     }
   });
+});
+
+it('carries current Goal records through portability without changing approved bytes or restoring grants', () => {
+  const input = createLineageExportInput();
+  const goalThread = 'th_goal_portable';
+  const commitment = {
+    intentBasis: { revision: 0, intent: 'Review the schema' },
+    cards: [{ cardId: 'gc_portable', revision: 0, description: 'Review', priority: 0 }],
+    permittedAdjustments: 'Review only',
+    completionEvidence: ['Review evidence'],
+    boundaries: 'No publication',
+  };
+  const bytes = JSON.stringify(commitment);
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  input.threads = [
+    ...input.threads,
+    { ...(input.threads[0] as Record<string, unknown>), id: goalThread, name: 'Goal Coordinator' },
+  ];
+  input.goalState = {
+    goals: [
+      {
+        goalId: 'g_portable',
+        workspaceId: source.workspaceId,
+        threadId: goalThread,
+        responsibleUserId: 'user_source',
+        responsibleActorContext: { kind: 'session', userId: 'user_source' },
+        intent: 'Review current schema',
+        intentRevision: 1,
+        intentHistory: [
+          { revision: 0, intent: 'Review the schema', actorId: 'user_source', at: timestamp },
+          { revision: 1, intent: 'Review current schema', actorId: 'user_source', at: timestamp },
+        ],
+        activePlanVersionId: 'gp_portable',
+        proposedPlanVersionId: null,
+        disposition: null,
+        changeRevision: 5,
+        consideredRevision: 5,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ],
+    cards: [
+      {
+        cardId: 'gc_portable',
+        goalId: 'g_portable',
+        description: 'Review current schema',
+        priority: 0,
+        revision: 1,
+        cancelled: false,
+        cancellationReason: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ],
+    versions: [
+      {
+        planVersionId: 'gp_portable',
+        goalId: 'g_portable',
+        sequence: 1,
+        bytes,
+        digest,
+        commitment,
+        pendingRequestId: 'ap_source_grant',
+        createdAt: timestamp,
+      },
+    ],
+    tasks: [
+      {
+        goalId: 'g_portable',
+        cardId: 'gc_portable',
+        threadId: source.threadId,
+        planVersionId: 'gp_portable',
+        cardRevision: 0,
+        admittedAt: timestamp,
+      },
+    ],
+    terminalFacts: [],
+  };
+  const imported = importLineage(input);
+  expect(imported.goalState.versions[0]!.bytes).toBe(bytes);
+  expect(imported.goalState.versions[0]!.digest).toBe(digest);
+  expect(imported.goalState.goals[0]).toMatchObject({
+    workspaceId: targetWorkspaceId,
+    intentRevision: 1,
+    activePlanVersionId: 'gp_portable',
+    changeRevision: 6,
+    consideredRevision: 5,
+  });
+  expect(imported.goalState.goals[0]!.threadId).toBe(imported.threadIds.get(goalThread));
+  expect(imported.goalState.tasks[0]!.threadId).toBe(imported.threadIds.get(source.threadId));
+  expect(imported.goalState.cards[0]!.revision).toBe(1);
+  expect('pendingRequests' in imported.goalState).toBe(false);
+  // Lost ordinary history remains missing; its committed result must still be portable.
+  const absentFact = {
+    id: 'tu_missing_task',
+    workspaceId: source.workspaceId,
+    threadId: 'th_missing_task',
+    status: 'failed',
+    error: { code: 'worker_failed', message: 'Retained failure' },
+    completedAt: timestamp,
+    durationMs: 0,
+  };
+  input.goalState = {
+    ...(input.goalState as Record<string, unknown>),
+    terminalFacts: [absentFact],
+  };
+  const absentHistory = importLineage({
+    ...input,
+    exportRoot: join(mkdtempSync(join(tmpdir(), 'goal-absent-task-')), 'export'),
+  });
+  expect(absentHistory.goalState.terminalFacts[0]).toEqual({
+    ...absentFact,
+    workspaceId: targetWorkspaceId,
+  });
+  expect(absentHistory.threadIds.has(absentFact.threadId)).toBe(false);
+  expect(absentHistory.turnIds.has(absentFact.id)).toBe(false);
+  input.goalState = {
+    ...(input.goalState as Record<string, unknown>),
+    terminalFacts: [{ ...absentFact, workspaceId: 'ws_foreign' }],
+  };
+  expect(() =>
+    importLineage({
+      ...input,
+      exportRoot: join(mkdtempSync(join(tmpdir(), 'goal-foreign-task-')), 'export'),
+    })
+  ).toThrow('Task terminal fact');
 });

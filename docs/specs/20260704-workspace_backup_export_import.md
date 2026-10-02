@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-10-02
+updated: 2026-10-03
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V2
@@ -11,7 +11,7 @@ Workspace export format: V2
 
 Workspace export is for use outside OpenKit, including analysis, evaluation, audit, and ingestion into external analytical software. Lossless re-import into an OpenKit Workspace is not an export acceptance requirement. Workspace and whole-server backup / restore are a separate mechanism whose detailed design is deferred. These scope decisions override contrary round-trip requirements below; existing import and recovery descriptions remain the historical implementation baseline, not a mandate to extend export into backup. This clarification does not authorize deleting existing import behavior or weakening its regression tests.
 
-Goal-owned tables and the two Goal steering tables leave both the portable inventory and the excluded inventory in the same change as the deletion. Filesystem backup to S3-compatible storage or cloud drives and possible later Litestream use are candidate directions only; no backend, snapshot protocol, or restore guarantee is selected here. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). The export-versus-backup separation in that decision stays.
+The predecessor Goal tables and the two Goal steering tables leave both the portable inventory and the excluded inventory with the one-way Goal removal. The current records of [Goal](20261002-goal.md), its cards, its immutable Plan versions with their bytes and digests, its Goal Task links and the Task terminal facts that wake it are portable work data; import restores no approval authority, and a Goal Task link or Task terminal fact whose Task is missing from the archive stays unresolved evidence, not dangling required lineage. Filesystem backup to S3-compatible storage or cloud drives and possible later Litestream use are candidate directions only; no backend, snapshot protocol, or restore guarantee is selected here. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). The export-versus-backup separation in that decision stays.
 
 ## Execution-Host Volume Coverage
 

@@ -3,13 +3,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { goalChildWorkerStorageChoice } from '../goal-routes.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { workerStorageWorkSlotRef } from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
-  admitWorkerStorageContributor,
   authorizeAttachedWorkerStorageReplacement,
   createWorkerStorageBinding,
   getWorkerStorageBinding,
@@ -149,51 +147,6 @@ describe('Worker storage bindings', () => {
           sandboxBindingRef: 'sandbox_1',
         })
       ).toThrow('work slot is unavailable');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('does not refresh a Goal baseline across another contributor in the same attachment generation', () => {
-    const coreDb = createCoreDb();
-    try {
-      const binding = createBinding(coreDb);
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
-        ...selection(binding),
-        goalId: 'goal_1',
-        taskId: 'task_1',
-        agentSessionId: 'session_1',
-        runtimeTargetId: 'target_1',
-      });
-      const attached = activateWorkerStorageAttachment(coreDb, {
-        attachmentGeneration: reserved.attachmentGeneration,
-        expectedRevision: reserved.revision,
-        sandboxBindingRef: 'sandbox_1',
-        storageRef: binding.storageRef,
-        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
-      });
-      const goal = {
-        goalId: 'goal_1',
-        workspaceId: 'ws_1',
-        threadId: 'thread_1',
-        workerStorageChoice: {
-          kind: 'selected' as const,
-          expectedRevision: binding.revision,
-          purpose: 'work' as const,
-          storageRef: binding.storageRef,
-        },
-      };
-      expect(goalChildWorkerStorageChoice(coreDb, goal, { taskId: 'task_2' })).toMatchObject({
-        expectedRevision: attached.revision,
-      });
-      admitWorkerStorageContributor(coreDb, {
-        ...selection(attached),
-        threadId: 'thread_2',
-        goalId: 'goal_2',
-      });
-      expect(goalChildWorkerStorageChoice(coreDb, goal, { taskId: 'task_2' })).toMatchObject({
-        expectedRevision: binding.revision,
-      });
     } finally {
       coreDb.sqlite.close();
     }

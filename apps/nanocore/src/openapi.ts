@@ -10,15 +10,11 @@ import {
   AppDiagnosticsResponseSchema,
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
-  ApproveThreadGoalPlanRequestSchema,
-  ApproveThreadGoalPlanResponseSchema,
   AppSearchResponseSchema,
   AppUpdateStatusResponseSchema,
   AutomationRecordSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
-  CancelGoalSteeringRequestSchema,
-  CancelGoalSteeringResponseSchema,
   CancelProviderSubscriptionAccountLoginRequestSchema,
   CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
@@ -28,8 +24,6 @@ import {
   ConsumeOpenKitBootstrapTokenResponseSchema,
   ConversationNavigationResponseSchema,
   ConversationTargetCatalogSchema,
-  ConvertGoalSteeringToFollowUpRequestSchema,
-  ConvertGoalSteeringToFollowUpResponseSchema,
   CreateAutomationRequestSchema,
   CreateLightAppRequestSchema,
   CreateLightAppResponseSchema,
@@ -38,8 +32,6 @@ import {
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
-  CreateThreadGoalPlanRequestSchema,
-  CreateThreadGoalPlanResponseSchema,
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceMaterialRequestSchema,
   CreateWorkspaceMaterialResponseSchema,
@@ -129,8 +121,6 @@ import {
   NanoHostRuntimeTargetStatusResponseSchema,
   operationHttpPath,
   operationModelInput,
-  PauseThreadGoalRequestSchema,
-  PauseThreadGoalResponseSchema,
   PRODUCT_OPERATION_DEFINITIONS,
   PrepareAppUpdateRequestSchema,
   PrepareAppUpdateResponseSchema,
@@ -157,17 +147,11 @@ import {
   RequestGitPushApprovalResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
-  ResumeThreadGoalRequestSchema,
-  ResumeThreadGoalResponseSchema,
   RetireLightAppRequestSchema,
   RetireLightAppResponseSchema,
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
-  ReviseThreadGoalIntentRequestSchema,
-  ReviseThreadGoalIntentResponseSchema,
-  ReviseThreadGoalPlanRequestSchema,
-  ReviseThreadGoalPlanResponseSchema,
   RevokeNanoHostTransportTokenResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
@@ -176,8 +160,6 @@ import {
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
-  RunThreadGoalStepRequestSchema,
-  RunThreadGoalStepResponseSchema,
   RuntimeConfigFileDeleteRequestSchema,
   RuntimeConfigFileListResponseSchema,
   RuntimeConfigFileReadResponseSchema,
@@ -206,27 +188,19 @@ import {
   StartProviderSubscriptionAccountLoginRequestSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
-  StartThreadGoalRequestSchema,
-  StartThreadGoalResponseSchema,
   StorageLayoutReportResponseSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
   SubmitConversationRequestSchema,
   SubmitConversationResponseSchema,
   SubmitGenerativePresentationActionRequestSchema,
-  SubmitGoalReviewDecisionRequestSchema,
-  SubmitGoalReviewDecisionResponseSchema,
   SubmitSkillCandidateRequestSchema,
-  SubmitThreadGoalSteeringRequestSchema,
-  SubmitThreadGoalSteeringResponseSchema,
   SubmitTurnFeedbackRequestSchema,
   SubmitWorkspaceRecoveryDecisionRequestSchema,
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   SubscriptionProviderIdSchema,
-  ThreadGoalPlanReadResponseSchema,
-  ThreadGoalSummaryResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
   TurnFeedbackResponseSchema,
   UnbindThreadMaterialRequestSchema,
@@ -391,12 +365,6 @@ const REVISION_ID_PARAMETER = {
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
-const PENDING_TURN_ID_PARAMETER = {
-  name: 'pendingTurnId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
 const SUBSCRIPTION_PROVIDER_ID_PARAMETER = {
   name: 'subscriptionProviderId',
   in: 'path',
@@ -529,9 +497,7 @@ interface RuntimeAppApiRouteDefinition {
 let appApiRouteDefinitions: Map<string, RuntimeAppApiRouteDefinition> | null = null;
 
 /** App route operations intentionally excluded from the public OpenAPI projection. */
-export const APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS = [
-  'POST /api/app/workspaces/{workspaceId}/threads/{threadId}/goal/test/supervise/step',
-] as const;
+export const APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS = [] as const;
 
 /**
  * Registers one Hono handler from the route definition owned by its OpenAPI operation.
@@ -2498,377 +2464,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal': {
-        get: {
-          operationId: 'getThreadGoalSummary',
-          tags: ['modes'],
-          summary: 'Read one thread Goal Mode summary.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Thread Goal Mode summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ThreadGoalSummaryResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'startThreadGoal',
-          tags: ['modes'],
-          summary: 'Start Goal Mode for one thread.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/StartThreadGoalRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Started Goal Mode objective.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/StartThreadGoalResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering': {
-        post: {
-          operationId: 'submitThreadGoalSteering',
-          tags: ['modes'],
-          summary: 'Submit active steering to Goal Mode.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitThreadGoalSteeringRequest' },
-              },
-            },
-          },
-          responses: {
-            '202': {
-              description: 'Queued Goal Mode steering.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SubmitThreadGoalSteeringResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/follow-up':
-        {
-          post: appJsonOperation({
-            operationId: 'convertGoalSteeringToFollowUp',
-            tag: 'modes',
-            summary: 'Convert terminal Goal steering into Thread follow-up history.',
-            responseStatus: '200',
-            responseSchema: 'ConvertGoalSteeringToFollowUpResponse',
-            requestSchema: 'ConvertGoalSteeringToFollowUpRequest',
-            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, PENDING_TURN_ID_PARAMETER],
-          }),
-        },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/steering/{pendingTurnId}/cancel': {
-        post: appJsonOperation({
-          operationId: 'cancelGoalSteering',
-          tag: 'modes',
-          summary: 'Cancel terminal Goal steering.',
-          responseStatus: '200',
-          responseSchema: 'CancelGoalSteeringResponse',
-          requestSchema: 'CancelGoalSteeringRequest',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, PENDING_TURN_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan': {
-        get: appJsonOperation({
-          operationId: 'getThreadGoalPlan',
-          tag: 'modes',
-          summary: 'Read the current durable Goal plan without mutation.',
-          responseStatus: '200',
-          responseSchema: 'ThreadGoalPlanReadResponse',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-        }),
-        post: {
-          operationId: 'createThreadGoalPlan',
-          tags: ['modes'],
-          summary: 'Draft one Goal Mode plan.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateThreadGoalPlanRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Drafted Goal Mode plan.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CreateThreadGoalPlanResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan/approve': {
-        post: {
-          operationId: 'approveThreadGoalPlan',
-          tags: ['modes'],
-          summary: 'Approve one Goal Mode plan.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ApproveThreadGoalPlanRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Approved Goal Mode plan.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApproveThreadGoalPlanResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/plan/revise': {
-        post: {
-          operationId: 'reviseThreadGoalPlan',
-          tags: ['modes'],
-          summary: 'Request revision for one Goal Mode plan.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ReviseThreadGoalPlanRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Recorded Goal Mode plan revision request.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ReviseThreadGoalPlanResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/intent/revise': {
-        post: {
-          operationId: 'reviseThreadGoalIntent',
-          tags: ['modes'],
-          summary: 'Revise the current intent of one Goal.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ReviseThreadGoalIntentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Recorded Goal intent revision.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ReviseThreadGoalIntentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/pause': {
-        post: {
-          operationId: 'pauseThreadGoal',
-          tags: ['modes'],
-          summary: 'Pause one active Goal Mode workflow.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/PauseThreadGoalRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Paused Goal Mode workflow.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/PauseThreadGoalResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/resume': {
-        post: {
-          operationId: 'resumeThreadGoal',
-          tags: ['modes'],
-          summary: 'Resume one paused Goal Mode workflow.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ResumeThreadGoalRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Resumed Goal Mode workflow.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ResumeThreadGoalResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goal/step': {
-        post: {
-          operationId: 'runThreadGoalStep',
-          tags: ['modes'],
-          summary: 'Run one bounded Goal Mode worker step.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RunThreadGoalStepRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Goal Mode worker step result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RunThreadGoalStepResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/worker-environments': {
         get: {
           operationId: 'listWorkerEnvironments',
@@ -3665,57 +3260,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/goals/{goalId}/reviews/{reviewId}/decision':
-        {
-          post: {
-            operationId: 'submitGoalReviewDecision',
-            tags: ['reviews'],
-            summary: 'Resolve one Goal Review attention row.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              THREAD_ID_PARAMETER,
-              {
-                name: 'goalId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-              {
-                name: 'reviewId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            requestBody: {
-              required: true,
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SubmitGoalReviewDecisionRequest' },
-                },
-              },
-            },
-            responses: {
-              '200': {
-                description: 'Resolved Goal Review decision.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/SubmitGoalReviewDecisionResponse' },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
       '/api/app/workspaces/{workspaceId}/workspace-sync/reviews': {
         get: {
           operationId: 'listWorkspaceSyncReviews',
@@ -5675,8 +5219,6 @@ export function createAppOpenApiDocument() {
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
-        ApproveThreadGoalPlanRequest: toJsonSchema(ApproveThreadGoalPlanRequestSchema),
-        ApproveThreadGoalPlanResponse: toJsonSchema(ApproveThreadGoalPlanResponseSchema),
         AutomationRecord: toJsonSchema(AutomationRecordSchema),
         CancelProviderSubscriptionAccountLoginRequest: toJsonSchema(
           CancelProviderSubscriptionAccountLoginRequestSchema
@@ -5706,9 +5248,6 @@ export function createAppOpenApiDocument() {
         CreateProviderSubscriptionAccountRequest: toJsonSchema(
           CreateProviderSubscriptionAccountRequestSchema
         ),
-        CreateThreadGoalPlanRequest: toJsonSchema(CreateThreadGoalPlanRequestSchema),
-        CreateThreadGoalPlanResponse: toJsonSchema(CreateThreadGoalPlanResponseSchema),
-        ThreadGoalPlanReadResponse: toJsonSchema(ThreadGoalPlanReadResponseSchema),
         DataRootBackupCreateResponse: toJsonSchema(DataRootBackupCreateResponseSchema),
         DataRootBackupVerifyRequest: toJsonSchema(DataRootBackupVerifyRequestSchema),
         DataRootBackupVerifyResponse: toJsonSchema(DataRootBackupVerifyResponseSchema),
@@ -5817,8 +5356,6 @@ export function createAppOpenApiDocument() {
         PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
         RequestGitPushApprovalRequest: toJsonSchema(RequestGitPushApprovalRequestSchema),
         RequestGitPushApprovalResponse: toJsonSchema(RequestGitPushApprovalResponseSchema),
-        PauseThreadGoalRequest: toJsonSchema(PauseThreadGoalRequestSchema),
-        PauseThreadGoalResponse: toJsonSchema(PauseThreadGoalResponseSchema),
         PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
         PrepareAppUpdateResponse: toJsonSchema(PrepareAppUpdateResponseSchema),
         PrepareWorkerEnvironmentRequest: toJsonSchema(PrepareWorkerEnvironmentRequestSchema),
@@ -5830,12 +5367,6 @@ export function createAppOpenApiDocument() {
         ProviderSubscriptionAutoTopup: toJsonSchema(ProviderSubscriptionAutoTopupSchema),
         ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
         ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
-        ReviseThreadGoalIntentRequest: toJsonSchema(ReviseThreadGoalIntentRequestSchema),
-        ReviseThreadGoalIntentResponse: toJsonSchema(ReviseThreadGoalIntentResponseSchema),
-        ReviseThreadGoalPlanRequest: toJsonSchema(ReviseThreadGoalPlanRequestSchema),
-        ReviseThreadGoalPlanResponse: toJsonSchema(ReviseThreadGoalPlanResponseSchema),
-        ResumeThreadGoalRequest: toJsonSchema(ResumeThreadGoalRequestSchema),
-        ResumeThreadGoalResponse: toJsonSchema(ResumeThreadGoalResponseSchema),
         RevokeNanoHostTransportTokenResponse: toJsonSchema(
           RevokeNanoHostTransportTokenResponseSchema
         ),
@@ -5862,8 +5393,6 @@ export function createAppOpenApiDocument() {
         RuntimeConfigSchemaCatalogResponse: toJsonSchema(RuntimeConfigSchemaCatalogResponseSchema),
         RuntimeConfigValidationRequest: toJsonSchema(RuntimeConfigValidationRequestSchema),
         RuntimeConfigValidationResponse: toJsonSchema(RuntimeConfigValidationResponseSchema),
-        RunThreadGoalStepRequest: toJsonSchema(RunThreadGoalStepRequestSchema),
-        RunThreadGoalStepResponse: toJsonSchema(RunThreadGoalStepResponseSchema),
         SetWorkspaceRepositoryRequest: toJsonSchema(SetWorkspaceRepositoryRequestSchema),
         SetWorkspaceRepositoryResponse: toJsonSchema(SetWorkspaceRepositoryResponseSchema),
         SelectWorkerEnvironmentRequest: toJsonSchema(SelectWorkerEnvironmentRequestSchema),
@@ -5905,26 +5434,11 @@ export function createAppOpenApiDocument() {
         ),
         StartTaskModeRequest: toJsonSchema(StartTaskModeRequestSchema),
         StartTaskModeResponse: toJsonSchema(StartTaskModeResponseSchema),
-        StartThreadGoalRequest: toJsonSchema(StartThreadGoalRequestSchema),
-        StartThreadGoalResponse: toJsonSchema(StartThreadGoalResponseSchema),
         SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
         StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
-        CancelGoalSteeringRequest: toJsonSchema(CancelGoalSteeringRequestSchema),
-        CancelGoalSteeringResponse: toJsonSchema(CancelGoalSteeringResponseSchema),
-        ConvertGoalSteeringToFollowUpRequest: toJsonSchema(
-          ConvertGoalSteeringToFollowUpRequestSchema
-        ),
-        ConvertGoalSteeringToFollowUpResponse: toJsonSchema(
-          ConvertGoalSteeringToFollowUpResponseSchema
-        ),
-        SubmitGoalReviewDecisionRequest: toJsonSchema(SubmitGoalReviewDecisionRequestSchema),
-        SubmitGoalReviewDecisionResponse: toJsonSchema(SubmitGoalReviewDecisionResponseSchema),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
-        SubmitThreadGoalSteeringRequest: toJsonSchema(SubmitThreadGoalSteeringRequestSchema),
-        SubmitThreadGoalSteeringResponse: toJsonSchema(SubmitThreadGoalSteeringResponseSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
-        ThreadGoalSummaryResponse: toJsonSchema(ThreadGoalSummaryResponseSchema),
         TurnId: toJsonSchema(TurnIdSchema),
         TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
         UpdateAutomationRequest: toJsonSchema(UpdateAutomationRequestSchema),

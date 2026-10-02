@@ -13,7 +13,6 @@ import {
   listExportableAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
-import { getGoalRecord, listGoalTasks } from './goal-store.js';
 import { getWorkerBackendSession, listWorkerBackendSessions } from './worker-backend-sessions.js';
 import {
   clearWorkerCheckpoint,
@@ -614,25 +613,7 @@ export function resolveInterruptedWorkerRetryDecision(
     return { status: 'recovery-required', checkpoint };
   }
 
-  if (checkpoint.goalId === null && checkpoint.taskId === null) {
-    return { status: 'eligible', checkpoint };
-  }
-  if (checkpoint.goalId === null || checkpoint.taskId === null) {
-    return { status: 'inspect-only', checkpoint };
-  }
-
-  const goal = getGoalRecord(workspaceDb, input.workspaceId, input.threadId, checkpoint.goalId);
-  const task = goal
-    ? listGoalTasks(workspaceDb, {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        goalId: checkpoint.goalId,
-      }).find((candidate) => candidate.taskId === checkpoint.taskId)
-    : null;
-
-  return goal?.status === 'running' &&
-    goal.currentTaskId === checkpoint.taskId &&
-    task?.status === 'running'
+  return checkpoint.goalId === null && checkpoint.taskId === null
     ? { status: 'eligible', checkpoint }
     : { status: 'inspect-only', checkpoint };
 }

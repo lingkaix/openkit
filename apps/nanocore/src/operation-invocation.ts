@@ -1,4 +1,5 @@
 import {
+  type GOAL_OPERATION_DEFINITIONS,
   type KernelOperationId,
   type KernelOperationInput,
   type KernelOperationOutput,
@@ -39,6 +40,11 @@ import {
   KnowledgeOperationError,
 } from './knowledge-operations.js';
 import type { FsStore } from './lib/store.js';
+import {
+  executeGoalOperation,
+  type GoalOperationId,
+  type GoalOwnerServices,
+} from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from './runtime/nanohost-runtime-target.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
@@ -52,6 +58,15 @@ import { readAuthorizedWorkspaces } from './workspace-sharing-routes.js';
 export type OperationInvocationContext =
   | { readonly kind: 'public'; readonly actor: Actor }
   | { readonly kind: 'task'; readonly actor: Actor; readonly traceId: string }
+  | {
+      readonly kind: 'coordinator';
+      readonly actor: Actor;
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly goalId: string;
+      readonly turnId: string;
+      readonly requestId: string;
+    }
   | {
       readonly kind: 'worker';
       readonly actor: ActorRef;
@@ -70,6 +85,7 @@ export type KernelOperationImplementations = {
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  readonly goalServices?: GoalOwnerServices;
   readonly runtimeConfigManager?: RuntimeConfigManager;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
   readonly store?: FsStore;
@@ -217,6 +233,51 @@ function publicActor(context: OperationInvocationContext): Actor {
   return context.actor;
 }
 
+/** Exact ten-key join to the sole Goal domain owner. */
+function createGoalOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): FamilyImplementations<typeof GOAL_OPERATION_DEFINITIONS> {
+  const execute = async <K extends GoalOperationId>(
+    id: K,
+    input: OperationInput<K>,
+    context: OperationInvocationContext
+  ): Promise<import('@openkit/app-api-schemas').GoalView> => {
+    const db = dependencies.repositoryWorkspaceDb!(input.workspaceId);
+    try {
+      return await executeGoalOperation(
+        id,
+        input,
+        {
+          actor: publicActor(context),
+          ...(context.kind === 'coordinator' ? { coordinatorTurnId: context.turnId } : {}),
+        },
+        dependencies.store!,
+        db,
+        {
+          ...dependencies.goalServices,
+          ...(dependencies.coreDb ? { coreDb: dependencies.coreDb } : {}),
+          inflightCommands: dependencies.inflightCommands!,
+        }
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  };
+  return {
+    'goal.create': (input, _actor, context) => execute('goal.create', input, context),
+    'goal.intent.revise': (input, _actor, context) => execute('goal.intent.revise', input, context),
+    'goal.card.create': (input, _actor, context) => execute('goal.card.create', input, context),
+    'goal.card.edit': (input, _actor, context) => execute('goal.card.edit', input, context),
+    'goal.card.cancel': (input, _actor, context) => execute('goal.card.cancel', input, context),
+    'goal.plan.propose': (input, _actor, context) => execute('goal.plan.propose', input, context),
+    'goal.plan.approve': (input, _actor, context) => execute('goal.plan.approve', input, context),
+    'goal.cancel': (input, _actor, context) => execute('goal.cancel', input, context),
+    'goal.completion.accept': (input, _actor, context) =>
+      execute('goal.completion.accept', input, context),
+    'goal.read': (input, _actor, context) => execute('goal.read', input, context),
+  };
+}
+
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 function createOperationImplementations(
   dependencies: OperationInvocationDependencies
@@ -228,6 +289,7 @@ function createOperationImplementations(
     ...createTurnOperationImplementations(dependencies),
     ...createKnowledgeOperationImplementations(dependencies),
     ...createArtifactOperationImplementations(dependencies),
+    ...createGoalOperationImplementations(dependencies),
     'nanohost.runtime-target': () => {
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb: dependencies.coreDb,
@@ -277,15 +339,17 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       throw new OperationInvocationError('invalid_request', 'Invalid operation input.', 400);
     const coreDb = dependencies.coreDb;
     const credential =
-      context.kind === 'worker'
-        ? 'worker-package'
-        : context.actor.kind === 'local'
-          ? 'local-user'
-          : context.actor.kind === 'session'
-            ? 'user-session'
-            : context.actor.tokenScope === 'server-admin'
-              ? 'deployment-administrator'
-              : 'user-bearer';
+      context.kind === 'coordinator'
+        ? 'coordinator'
+        : context.kind === 'worker'
+          ? 'worker-package'
+          : context.actor.kind === 'local'
+            ? 'local-user'
+            : context.actor.kind === 'session'
+              ? 'user-session'
+              : context.actor.tokenScope === 'server-admin'
+                ? 'deployment-administrator'
+                : 'user-bearer';
     if (!(definition.credentials as readonly string[]).includes(credential)) throw denied();
     const actor =
       context.kind === 'worker'
@@ -353,7 +417,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       ) {
         const userId = responsibleUserIdForActor(actor);
         const administratorEligible =
-          context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb, context.actor);
+          context.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, context.actor);
         if (
           !isThreadIdVisible(
             dependencies.store,
@@ -450,6 +514,28 @@ function bindOperationInput(
         'Caller cannot supply trusted invocation identity.',
         403
       );
+  }
+  if (context.kind === 'coordinator') {
+    const bound = {
+      workspaceId: context.workspaceId,
+      threadId: context.threadId,
+      goalId: context.goalId,
+      requestId: context.requestId,
+    };
+    for (const key of Object.keys(bound) as (keyof typeof bound)[])
+      if (Object.hasOwn(input, key) && input[key] !== bound[key])
+        throw new OperationInvocationError(
+          'bound_input_conflict',
+          'Input conflicts with the Coordinator owner.',
+          403
+        );
+    return {
+      ...input,
+      workspaceId: bound.workspaceId,
+      threadId: bound.threadId,
+      goalId: bound.goalId,
+      ...(mutating ? { requestId: bound.requestId } : {}),
+    };
   }
   if (context.kind !== 'worker') return input;
   for (const key of ['threadId', 'turnId']) {

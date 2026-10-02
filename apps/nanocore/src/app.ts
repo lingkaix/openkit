@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   AppDiagnosticsResponseSchema,
@@ -59,6 +59,7 @@ import {
   type NanoHostTransportSessionAuthority,
 } from './auth/nanohost-transport-session.js';
 import {
+  authorizeWorkspace,
   isWorkspaceOperationAuthorized,
   registerOperationAccessGuards,
   requireCurrentDeploymentAdmin,
@@ -87,7 +88,6 @@ import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js'
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
-import { registerGoalRoutes, waitForWorkerTurnTerminalState } from './goal-routes.js';
 import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { registerKernelRoutes } from './kernel-routes.js';
@@ -122,7 +122,6 @@ import {
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
 import { registerRepositoryRoutes } from './repository-routes.js';
-import { registerReviewDecisionRoutes } from './review-decision-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
 import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
 import {
@@ -130,6 +129,14 @@ import {
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
+import { createGoalCoordinator } from './runtime/goal-coordinator.js';
+import {
+  advanceGoalForThread,
+  checkGoalCommandIntent,
+  type GoalOwnerServices,
+  goalActor,
+  readGoalView,
+} from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
 import {
@@ -142,6 +149,8 @@ import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { cancelOwnedDeferredAdmission, startProductTurn } from './runtime/product-turn-start.js';
 import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
+import { createCoordinatorTaskTool } from './runtime/task-admission.js';
+import { waitForWorkerTurnTerminalState } from './runtime/task-turn-wait.js';
 import {
   type ConfiguredWorkerLifecycleRuntime,
   createConfiguredTurnExecutor,
@@ -1656,6 +1665,75 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigFiles: runtimeConfigFileService,
   });
 
+  const goalServices = (): GoalOwnerServices => ({
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    inflightCommands,
+    wake: (workspaceId, goalId) => goalCoordinator.wake(workspaceId, goalId),
+    interrupt: (turn) => {
+      void interruptProductTurn({
+        store: sharedStore,
+        inflightCommands,
+        coreDb: options.coreDb,
+        turnExecutor,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        requestId: randomUUID(),
+      }).catch((error) =>
+        console.warn(
+          'Linked Task interrupt requires inspection:',
+          error instanceof Error ? error.message : 'unknown'
+        )
+      );
+    },
+  });
+  const goalCoordinator = createGoalCoordinator({
+    workspaceMutationAdmission,
+    store: sharedStore,
+    coreDb: options.coreDb,
+    openWorkspace: repositoryWorkspaceDb,
+    runtimeConfig,
+    llmGatewayDispatcher,
+    resolveGatewayProvider,
+    providerCredentialConfigured,
+    ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+    services: goalServices,
+    taskTool: (goalId, coordinatorTurnId) =>
+      createCoordinatorTaskTool({
+        store: sharedStore,
+        coreDb: options.coreDb,
+        openWorkspace: repositoryWorkspaceDb,
+        inflightCommands,
+        startWorker: startModeWorkerTurn,
+        workspaceMutationAdmission,
+        goalId,
+        coordinatorTurnId,
+      }),
+  });
+  const goalRequesterAuthority = (
+    record: import('./runtime/pending-requests.js').PendingRequestRecord
+  ): boolean | undefined => {
+    if (record.requesterKind !== 'coordinator') return undefined;
+    const db = repositoryWorkspaceDb(record.workspaceId);
+    try {
+      const goal = readGoalView(sharedStore, db, String(record.governedIntent?.goalId)).goal;
+      return Boolean(
+        goal &&
+          options.coreDb &&
+          authorizeWorkspace(options.coreDb, goalActor(goal), goal.workspaceId, {
+            policyOperation: 'workspace.write',
+            mutating: true,
+          })
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  };
+  const goalRequestCommitted = (
+    sqlite: import('better-sqlite3').Database,
+    record: import('./runtime/pending-requests.js').PendingRequestRecord
+  ): void => advanceGoalForThread(sqlite, record.threadId);
+
   const chatService = registerQuickAndChatModeRoutes({
     app,
     providerCredentialConfigured,
@@ -1671,6 +1749,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfig,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
+    goalServices,
   });
 
   const interruptInternalChatTurn = chatService.interrupt;
@@ -1700,6 +1779,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigManager,
     repositoryWorkspaceDb,
     requestStore,
+    goalServices: goalServices(),
   });
 
   registerKernelRoutes({
@@ -1793,15 +1873,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
-  });
-
-  registerGoalRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    mode,
-    repositoryWorkspaceDb,
-    requestStore,
+    goalServices,
   });
 
   registerWorkerRecoveryRoutes({
@@ -1921,6 +1993,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
       workerDelivery: pendingWorkerDelivery,
       assistantDelivery: pendingAssistantDelivery,
+      coordinatorDelivery: goalCoordinator,
+      ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
+      requesterAuthority: goalRequesterAuthority,
+      checkCommandIntent: checkGoalCommandIntent,
+      requestCommitted: goalRequestCommitted,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       openWorkspace(workspaceId) {
         if (options.coreDb) return repositoryWorkspaceDb(workspaceId);
@@ -1935,6 +2012,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     workerDelivery: pendingWorkerDelivery,
     assistantDelivery: pendingAssistantDelivery,
+    coordinatorDelivery: goalCoordinator,
+    ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
+    requesterAuthority: goalRequesterAuthority,
+    checkCommandIntent: checkGoalCommandIntent,
+    requestCommitted: goalRequestCommitted,
     agentAuthority: (record) =>
       runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
     coreDb: options.coreDb,
@@ -2025,20 +2107,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
   });
 
-  registerReviewDecisionRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
-
   registerTurnEventRoutes({
     app,
     requestStore,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
   });
 
+  if (options.coreDb && sharedStore.getDataRoot()) goalCoordinator.boot();
   return app;
 }
 

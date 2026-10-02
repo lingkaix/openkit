@@ -1,6 +1,10 @@
 import { type Item, isSealedTurnTerminal } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  authorizeWorkspace,
+  currentWorkspaceAuthority,
+  isCurrentDeploymentAdministrator,
+} from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
@@ -16,9 +20,10 @@ import {
   executorKindForTurn,
   finishPendingExecution,
   freezeReadyOutcomes,
-  grantPersonPendingRequest,
+  grantCommandIntentRequest,
   invalidatePendingRequest,
   isBlockingPendingRequest,
+  isCommandIntentApproval,
   isFinalOutcome,
   isReadyOutcome,
   listThreadPendingRequests,
@@ -38,6 +43,7 @@ import {
   validateCanonicalLoad,
   withdrawPendingRequest,
 } from './pending-requests.js';
+import { recordTaskTerminalFact } from './task-terminal-fact.js';
 
 /** Opens the Workspace database that owns pending-request rows. */
 export interface PendingRequestDatabase {
@@ -62,10 +68,27 @@ export interface PendingAdmissionDependencies extends PendingRequestDatabase {
   coreDb?: CoreDb;
   /** Current configured Agent authority, independent of historical Turns. */
   agentAuthority?: (record: PendingRequestRecord) => boolean;
+  /** Owning command source may recheck its requester without an AgentSession. */
+  requesterAuthority?: (record: PendingRequestRecord) => boolean | undefined;
+  /** Effect owner synchronously checks a captured command before a human grant is recorded. */
+  checkCommandIntent?: (
+    sqlite: import('better-sqlite3').Database,
+    record: PendingRequestRecord,
+    actor: Actor
+  ) => void;
+  /** Same-commit source bookkeeping for a captured command decision. */
+  requestCommitted?: (
+    sqlite: import('better-sqlite3').Database,
+    record: PendingRequestRecord
+  ) => void;
   /** Worker submission. Absent at boot, where the Turn waits pending. */
   workerDelivery?: PendingWorkerDelivery;
   /** Chat Mode service acceptance; proof belongs to that service. */
   assistantDelivery?: PendingWorkerDelivery;
+  /** Goal owner accepts Coordinator outcome input without scheduler capacity. */
+  coordinatorDelivery?: PendingWorkerDelivery;
+  /** Goal owner considers marker admission after the ordinary terminal barrier. */
+  goalTerminal?: (turn: ReturnType<FsStore['getTurnById']>) => void;
 }
 
 const refusedOutcomeTurns = new Set<string>();
@@ -82,6 +105,14 @@ export function installPendingRequestAdmission(
   dependencies: PendingAdmissionDependencies
 ): void {
   store.setTurnAdmissionHooks({
+    onTerminalFact: (turn) => {
+      const db = dependencies.openWorkspace(turn.workspaceId);
+      try {
+        recordTaskTerminalFact(db, turn);
+      } finally {
+        db.sqlite.close();
+      }
+    },
     onAdmitted(turn) {
       const executor = store.getTurnExecutor(turn.id) ?? executorKindForTurn(turn);
       if (!executor) return;
@@ -104,6 +135,7 @@ export function installPendingRequestAdmission(
       if (refusedOutcomeTurns.has(turn.id)) return;
       if (store.getThread(turn.workspaceId, turn.threadId).status === 'archived') return;
       admitNextOutcome(store, dependencies, turn.workspaceId, turn.threadId);
+      dependencies.goalTerminal?.(turn);
     },
   });
   if (dependencies.workerDelivery) {
@@ -307,7 +339,8 @@ export function answerRecordedUserInput(
     current.requestId,
     { kind: 'user', id: actorId },
     input.answers,
-    new Date().toISOString()
+    new Date().toISOString(),
+    requestActor ?? { kind: 'local', userId: actorId }
   );
   if (!answered) {
     const latest = readPendingRequest(sqlite, current.requestId);
@@ -322,6 +355,62 @@ export function answerRecordedUserInput(
   }
   admitIfIdle(store, dependencies, input.workspaceId, input.threadId);
   return answered;
+}
+
+/** Resolves a captured command through the shared disclosure and current resolver authority. */
+export function resolveCommandIntentApproval(input: {
+  readonly store: FsStore;
+  readonly sqlite: import('better-sqlite3').Database;
+  readonly record: PendingRequestRecord;
+  readonly decision: 'granted' | 'denied';
+  readonly actor: Actor;
+  readonly coreDb: CoreDb | undefined;
+  readonly checkCommandIntent?: PendingAdmissionDependencies['checkCommandIntent'];
+}): PendingRequestRecord {
+  const current = requireUsableRecord(
+    input.store,
+    input.sqlite,
+    input.record.requestId,
+    input.record.workspaceId,
+    input.record.threadId
+  );
+  if (!isCommandIntentApproval(current))
+    throw new PendingRequestCommandError('invalid_request', 'Not a command-intent approval.', 400);
+  assertResponsibleActor(input.store, current, input.actor.userId, input.coreDb, input.actor);
+  if (current.state !== 'pending')
+    throw new PendingRequestCommandError(
+      'request_not_pending',
+      'The request is no longer pending.',
+      409
+    );
+  if (
+    projectApprovalEffect({
+      record: current,
+      store: input.store,
+      coreDb: input.coreDb,
+      actor: input.actor,
+    }).status !== 'available'
+  )
+    throw new PendingRequestCommandError(
+      'approval_preview_unavailable',
+      'Exact effect unavailable; approval disabled',
+      409
+    );
+  if (input.decision === 'granted') input.checkCommandIntent?.(input.sqlite, current, input.actor);
+  const actor = { kind: 'user' as const, id: input.actor.userId };
+  const now = new Date().toISOString();
+  const record =
+    input.decision === 'granted'
+      ? grantCommandIntentRequest(input.sqlite, current.requestId, actor, now, input.actor)
+      : denyPendingRequest(input.sqlite, current.requestId, actor, now, input.actor);
+  if (!record)
+    throw new PendingRequestCommandError(
+      'request_not_pending',
+      'The request is no longer pending.',
+      409
+    );
+  syncApproval(input.store, record);
+  return record;
 }
 
 /**
@@ -404,8 +493,33 @@ export async function respondRecordedApproval(input: {
   }
   const actor: PendingRequestActor = { kind: 'user', id: input.actorId };
   const now = new Date().toISOString();
+  if (isCommandIntentApproval(current)) {
+    const record = input.sqlite.transaction(() => {
+      const resolved = resolveCommandIntentApproval({
+        store: input.store,
+        sqlite: input.sqlite,
+        record: current,
+        decision: input.decision,
+        actor: input.requestActor ?? { kind: 'local', userId: input.actorId },
+        coreDb: input.coreDb,
+        ...(input.dependencies.checkCommandIntent
+          ? { checkCommandIntent: input.dependencies.checkCommandIntent }
+          : {}),
+      });
+      input.dependencies.requestCommitted?.(input.sqlite, resolved);
+      return resolved;
+    })();
+    admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
+    return record;
+  }
   if (input.decision === 'denied') {
-    const denied = denyPendingRequest(input.sqlite, current.requestId, actor, now);
+    const denied = denyPendingRequest(
+      input.sqlite,
+      current.requestId,
+      actor,
+      now,
+      input.requestActor ?? { kind: 'local', userId: input.actorId }
+    );
     if (!denied) {
       throw new PendingRequestCommandError(
         'request_not_pending',
@@ -433,20 +547,6 @@ export async function respondRecordedApproval(input: {
       );
     }
   };
-  if (current.requesterKind === 'person' || current.serverId === null) {
-    assertDisclosure();
-    const granted = grantPersonPendingRequest(input.sqlite, current.requestId, actor, now);
-    if (!granted) {
-      throw new PendingRequestCommandError(
-        'request_not_pending',
-        'The request is no longer pending.',
-        409
-      );
-    }
-    syncApproval(input.store, granted);
-    admitIfIdle(input.store, input.dependencies, input.workspaceId, input.threadId);
-    return granted;
-  }
   // Refuse unavailable presentation before preparation can resolve credentials or contact an upstream.
   assertDisclosure();
   await input.prepare?.();
@@ -485,7 +585,8 @@ export async function respondRecordedApproval(input: {
       if (!facts.credentialsValid) return { outcome: 'refuse', reason: 'credential-changed' };
       input.admitExecution?.();
       return { outcome: 'claim' };
-    }
+    },
+    input.requestActor ?? { kind: 'local', userId: input.actorId }
   );
   let record = step.record;
   if (step.applied === 'claimed') {
@@ -678,7 +779,10 @@ function closeoutUnavailableRequests(
   let closed = false;
   withWorkspace(dependencies, workspaceId, (sqlite) => {
     const loss = (record: PendingRequestRecord): string | null =>
-      !authorityAllows(dependencies.coreDb, store, record, undefined)
+      !(
+        dependencies.requesterAuthority?.(record) ??
+        authorityAllows(dependencies.coreDb, store, record, undefined)
+      )
         ? 'membership-revoked'
         : record.requesterKind === 'worker' &&
             dependencies.agentAuthority &&
@@ -748,7 +852,8 @@ function admitNextOutcome(
     const worker = ready.find((record) => record.requesterKind === 'worker');
     const assistant = ready.find((record) => record.requesterKind === 'assistant');
     const person = ready.find((record) => record.requesterKind === 'person');
-    const first = worker ?? assistant ?? person;
+    const coordinator = ready.find((record) => record.requesterKind === 'coordinator');
+    const first = worker ?? assistant ?? coordinator ?? person;
     if (!first) return;
     selected = {
       executor: first.requesterKind,
@@ -784,9 +889,11 @@ function admitNextOutcome(
       agentId:
         choice.executor === 'worker'
           ? choice.agentId
-          : choice.executor === 'assistant'
-            ? 'quick-chat'
-            : null,
+          : choice.executor === 'coordinator'
+            ? choice.agentId
+            : choice.executor === 'assistant'
+              ? 'quick-chat'
+              : null,
       triggerSource: {
         kind: triggerKind,
         summary: choice.approval
@@ -795,7 +902,11 @@ function admitNextOutcome(
       },
     }
   );
-  if (choice.executor === 'worker' || choice.executor === 'assistant') {
+  if (
+    choice.executor === 'worker' ||
+    choice.executor === 'assistant' ||
+    choice.executor === 'coordinator'
+  ) {
     void deliverWorkerOutcome(store, dependencies, turn.id);
     return;
   }
@@ -815,7 +926,11 @@ async function deliverWorkerOutcome(
   try {
     const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
     const delivery =
-      executor === 'assistant' ? dependencies.assistantDelivery : dependencies.workerDelivery;
+      executor === 'coordinator'
+        ? dependencies.coordinatorDelivery
+        : executor === 'assistant'
+          ? dependencies.assistantDelivery
+          : dependencies.workerDelivery;
     if (!delivery) return;
     await delivery.startTurn(store, turnId);
     // The worker execution owner records delivery at native acceptance, before completion.
@@ -909,7 +1024,7 @@ function publishOutcomeItems(
         admission
       );
     }
-    if (record.requesterKind !== 'person' && record.disposition === 'denied-not-executed') {
+    if (!isCommandIntentApproval(record) && record.disposition === 'denied-not-executed') {
       writeItem(
         store,
         {
@@ -924,7 +1039,7 @@ function publishOutcomeItems(
         admission
       );
     } else if (
-      record.requesterKind !== 'person' &&
+      !isCommandIntentApproval(record) &&
       record.disposition &&
       record.serverId &&
       record.toolName
@@ -1063,14 +1178,20 @@ function assertResponsibleActor(
   coreDb: CoreDb | undefined,
   requestActor: Actor | undefined
 ): void {
-  if (actorId !== record.responsibleUserId) {
+  const administrator = Boolean(
+    coreDb &&
+      requestActor &&
+      requestActor.userId === actorId &&
+      isCurrentDeploymentAdministrator(coreDb, requestActor)
+  );
+  if (actorId !== record.responsibleUserId && !administrator) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',
       'Workspace access denied.',
       403
     );
   }
-  if (coreDb && !authorityAllows(coreDb, store, record, requestActor)) {
+  if (coreDb && !administrator && !authorityAllows(coreDb, store, record, requestActor)) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',
       'Workspace access denied.',
@@ -1086,14 +1207,20 @@ function authorityAllows(
   requestActor: Actor | undefined
 ): boolean {
   if (!coreDb) return true;
+  if (requestActor)
+    return (
+      authorizeWorkspace(coreDb, requestActor, record.workspaceId, {
+        policyOperation: 'approval.respond',
+        mutating: true,
+      }) !== null
+    );
   return (
     currentWorkspaceAuthority(
       coreDb,
       record.workspaceId,
       { kind: 'user', id: record.responsibleUserId },
       'approval.respond',
-      true,
-      requestActor
+      true
     ) !== null
   );
 }
@@ -1174,7 +1301,7 @@ function archiveSelects(record: PendingRequestRecord): boolean {
   if (record.delivery === 'frozen') return true;
   if (record.delivery === 'undelivered' && isFinalOutcome(record)) return true;
   return (
-    record.requesterKind === 'person' &&
+    isCommandIntentApproval(record) &&
     record.resolution === 'granted' &&
     record.claim === 'unclaimed' &&
     (record.disposition === null ||
@@ -1185,7 +1312,7 @@ function archiveSelects(record: PendingRequestRecord): boolean {
 /** Identifies a person's separate invalidation fact still waiting for its own publication. */
 function needsInvalidationPublication(record: PendingRequestRecord): boolean {
   return (
-    record.requesterKind === 'person' &&
+    isCommandIntentApproval(record) &&
     record.resolution === 'granted' &&
     record.claim === 'unclaimed' &&
     record.invalidationTurnId === null &&

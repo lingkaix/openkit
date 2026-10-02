@@ -83,20 +83,18 @@ describe('scoped storage databases', () => {
         'evidence_bundles',
         'generative_presentations',
         'git_push_records',
-        'goal_plan_records',
-        'goal_records',
-        'goal_review_records',
-        'goal_tasks',
-        'goal_verification_records',
+        'goal_card_tasks',
+        'goal_cards',
+        'goal_plan_versions',
+        'goals',
         'idempotency_requests',
         'mcp_tool_schema_snapshots',
         'pending_requests',
-        'pending_user_turn_records',
         'permission_decisions',
         'resolved_agent_setups',
         'runtime_evidence',
         'staged_workspace_reviews',
-        'steering_terminal_outcomes',
+        'task_turn_terminal_facts',
         'thread_material_bindings',
         'usage_records',
         'vault_use_records',
@@ -273,49 +271,21 @@ describe('scoped storage databases', () => {
     }
   });
 
-  it('stores only the two bounded Goal steering authority families', () => {
-    const dataRoot = createDataRoot();
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_1');
-
+  it('stores current Goal shapes and no retired steering authority', () => {
+    const workspaceDb = openWorkspaceDb(createDataRoot(), 'ws_1');
     try {
       applyScopedMigrations(workspaceDb);
-
-      expect(tableColumns(workspaceDb.sqlite, 'pending_user_turn_records')).toEqual([
-        'workspace_id',
-        'thread_id',
-        'pending_turn_id',
+      expect(tableColumns(workspaceDb.sqlite, 'pending_user_turn_records')).toEqual([]);
+      expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([]);
+      expect(tableColumns(workspaceDb.sqlite, 'goals')).toEqual([
         'goal_id',
-        'active_turn_id',
-        'request_id',
-        'content_item_id',
-        'input_kind',
-        'material_id',
-        'revision_id',
-        'content_digest',
-        'queue_mode',
-        'received_at',
-        'terminal_claim_kind',
-        'terminal_claim_id',
-        'terminal_claimed_at',
+        'thread_id',
+        'payload_json',
       ]);
-      expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([
-        'workspace_id',
-        'thread_id',
-        'pending_turn_id',
-        'outcome_id',
-        'state',
-        'send_request_id',
-        'terminal_request_id',
-        'content_item_id',
+      expect(tableColumns(workspaceDb.sqlite, 'goal_cards')).toEqual([
+        'card_id',
         'goal_id',
-        'active_turn_id',
-        'input_kind',
-        'material_id',
-        'revision_id',
-        'content_digest',
-        'follow_up_turn_id',
-        'follow_up_item_id',
-        'accepted_at',
+        'payload_json',
       ]);
     } finally {
       workspaceDb.sqlite.close();

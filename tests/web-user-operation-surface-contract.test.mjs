@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { GOAL_OPERATION_DEFINITIONS, KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 247;
+const EXPECTED_CATALOG_SIZE = 243;
 const EXPECTED_SERVER_SIZE = 55;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 190;
+const EXPECTED_INCLUDED_SIZE = 186;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -160,22 +160,15 @@ const WEB_OPERATION_GROUPS = {
     unbindThreadMaterial: { disposition: 'live', surface: 'Material' },
   },
   Modes: {
-    approveThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
-    cancelGoalSteering: { disposition: 'live', surface: 'Material' },
-    convertGoalSteeringToFollowUp: { disposition: 'live', surface: 'Material' },
-    createThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
-    getThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
-    getThreadGoalSummary: { disposition: 'live', surface: 'Goal' },
-    pauseThreadGoal: { disposition: 'live', surface: 'Goal' },
-    resumeThreadGoal: { disposition: 'live', surface: 'Goal' },
-    reviseThreadGoalIntent: { disposition: 'live', surface: 'Goal' },
-    reviseThreadGoalPlan: { disposition: 'live', surface: 'Goal' },
-    runThreadGoalStep: { disposition: 'live', surface: 'Goal' },
+    ...Object.fromEntries(
+      Object.keys(GOAL_OPERATION_DEFINITIONS).map((id) => [
+        id,
+        { disposition: 'workflow', surface: 'Goal' },
+      ])
+    ),
     selectWorkerEnvironment: { disposition: 'live', surface: 'Chat' },
     submitConversation: { disposition: 'live', surface: 'Chat' },
     startTaskMode: { disposition: 'live', surface: 'Task' },
-    startThreadGoal: { disposition: 'live', surface: 'Goal' },
-    submitThreadGoalSteering: { disposition: 'live', surface: 'Goal' },
   },
   Repositories: {
     executeGitPush: { disposition: 'live', surface: 'Repositories' },
@@ -190,7 +183,6 @@ const WEB_OPERATION_GROUPS = {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
     'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
-    submitGoalReviewDecision: { disposition: 'live', surface: 'Goal' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
   Portability: {

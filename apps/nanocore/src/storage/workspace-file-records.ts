@@ -2071,37 +2071,6 @@ function classifyThreadVisibilityCutover(
     );
   }
   if (firstTurn.agentId) return { visibility: 'workspace' };
-  const databasePath = join(workspaceRoot, 'db', 'workspace.sqlite');
-  if (firstTurn && existsSync(databasePath)) {
-    const database = new Database(databasePath, { readonly: true, fileMustExist: true });
-    try {
-      if (
-        database
-          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_records'")
-          .get()
-      ) {
-        const goalObjectives = database
-          .prepare(
-            'SELECT created_by_item_id AS itemId FROM goal_records WHERE workspace_id = ? AND thread_id = ?'
-          )
-          .all(basename(workspaceRoot), threadId) as Array<{ itemId: string | null }>;
-        const items = loadItemRevisions(
-          join(turnsRoot, firstTurn.id, 'items.jsonl'),
-          basename(workspaceRoot),
-          threadId,
-          firstTurn.id
-        ).current;
-        if (
-          goalObjectives.some((goal) =>
-            items.some((item) => item.id === goal.itemId && item.type === 'user-message')
-          )
-        )
-          return { visibility: 'workspace' };
-      }
-    } finally {
-      database.close();
-    }
-  }
   throw new Error(
     'Thread visibility cutover requires explicit classification of ambiguous project history.'
   );

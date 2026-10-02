@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-
-import { waitForWorkerTurnTerminalState } from './goal-routes.js';
-import type { FsStore } from './lib/store.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import type { FsStore } from '../lib/store.js';
+import { createDemoStore } from '../test-support/demo-store.js';
+import { waitForWorkerTurnTerminalState } from './task-turn-wait.js';
 
 const SENTINEL = Symbol('still-waiting');
 

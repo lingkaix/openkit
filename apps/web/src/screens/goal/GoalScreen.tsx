@@ -1,305 +1,332 @@
-import { createRequestId } from '@openkit/core-client';
-import { useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import type { GoalCard, GoalRecord } from '@openkit/app-api-schemas';
+import { ApiCallError } from '@openkit/core-client';
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
-import {
-  Button,
-  EmptyState,
-  ErrorBanner,
-  PhaseStepper,
-  Skeleton,
-  StatusChip,
-  Tabs,
-} from '../../primitives';
-import { BoardLens } from './BoardLens';
-import { CompletedView } from './CompletedView';
-import {
-  useCurrentWorkspaceId,
-  useGoalPlan,
-  useGoalSummary,
-  usePauseThreadGoal,
-  useResumeThreadGoal,
-  useRunThreadGoalStep,
-  useStartThreadGoal,
-  useSteerGoal,
-} from './data';
-import { PlanLens } from './PlanLens';
-import { type GoalLens, mapGoalPhase, resolveLens } from './phase';
-import { ThreadLens } from './ThreadLens';
+import { Button, ErrorBanner, Skeleton, StatusChip, TextField } from '../../primitives';
+import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
-const LENS_TABS: { id: GoalLens; label: string }[] = [
-  { id: 'thread', label: 'Thread' },
-  { id: 'plan', label: 'Plan' },
-  { id: 'board', label: 'Board' },
-];
-
-/**
- * Goal screen shell (WP-5) — boards 05 / 05b / 05c / 06 / 21.
- *
- * One dataset, three lenses (Thread / Plan / Board) switched via `?lens=`, with
- * one durable-state phase strip and a steering-only input (disabled when
- * disconnected). Completed goals show the board-21 closeout on the plan lens.
- */
+/** Current card editing is separate from immutable Plan bytes and admitted Task input. */
+function CardEditor({
+  card,
+  goal,
+  command,
+  disabled,
+}: {
+  card: GoalCard;
+  goal: GoalRecord;
+  command: ReturnType<typeof useGoalCommand>;
+  disabled: boolean;
+}) {
+  const [description, setDescription] = useState(card.description);
+  const [priority, setPriority] = useState(String(card.priority));
+  const [reason, setReason] = useState('');
+  const scope = { workspaceId: goal.workspaceId, threadId: goal.threadId, goalId: goal.goalId };
+  return (
+    <li className="rounded-ok border border-border bg-card p-4 space-y-3">
+      <TextField
+        label={`Card description ${card.cardId}`}
+        value={description}
+        onChange={setDescription}
+        isDisabled={disabled || card.cancelled}
+      />
+      <TextField
+        label={`Card priority ${card.cardId}`}
+        value={priority}
+        onChange={setPriority}
+        isDisabled={disabled || card.cancelled}
+      />
+      <p>
+        Revision {card.revision} · {card.cancelled ? 'Cancelled' : 'Work intent'}
+      </p>
+      {card.cancelled ? (
+        <p>{card.cancellationReason}</p>
+      ) : (
+        <>
+          <Button
+            isDisabled={disabled || !description.trim() || !Number.isSafeInteger(Number(priority))}
+            onPress={() =>
+              command.mutate({
+                operation: 'goal.card.edit',
+                input: {
+                  ...scope,
+                  cardId: card.cardId,
+                  expectedRevision: card.revision,
+                  description,
+                  priority: Number(priority),
+                },
+              })
+            }
+          >
+            Save card {card.cardId}
+          </Button>
+          <TextField
+            label={`Cancellation reason ${card.cardId}`}
+            value={reason}
+            onChange={setReason}
+            isDisabled={disabled}
+          />
+          <Button
+            variant="negative-outline"
+            isDisabled={disabled || !reason.trim()}
+            onPress={() =>
+              command.mutate({
+                operation: 'goal.card.cancel',
+                input: { ...scope, cardId: card.cardId, expectedRevision: card.revision, reason },
+              })
+            }
+          >
+            Cancel card {card.cardId}
+          </Button>
+        </>
+      )}
+    </li>
+  );
+}
+/** One Goal journey projects current intent, proposed versus active bytes, shared decisions and ordinary Tasks. */
 export function GoalScreen() {
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [objective, setObjective] = useState('');
-  const startIntent = useRef<{ objective: string; requestId: string } | null>(null);
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
-  const summary = useGoalSummary(workspaceId, threadId);
-  const plan = useGoalPlan(workspaceId, threadId, summary.data?.goal?.goalId ?? '');
-  const { failed: disconnected } = useConnection();
-  const start = useStartThreadGoal(workspaceId ?? '', threadId);
-  const pause = usePauseThreadGoal(workspaceId ?? '', threadId);
-  const resume = useResumeThreadGoal(workspaceId ?? '', threadId);
-  const step = useRunThreadGoalStep(workspaceId ?? '', threadId);
-  const steer = useSteerGoal(workspaceId ?? '', threadId);
-  const [steerDraft, setSteerDraft] = useState('');
-  const lifecyclePending = pause.isPending || resume.isPending || step.isPending;
-
-  /** Submit one trimmed objective with a stable request id across unchanged retries. */
-  function submitStart() {
-    const trimmed = objective.trim();
-    if (!trimmed || disconnected || start.isPending) return;
-    const intent =
-      startIntent.current?.objective === trimmed
-        ? startIntent.current
-        : { objective: trimmed, requestId: createRequestId() };
-    startIntent.current = intent;
-    start.mutate(intent);
-  }
-
-  /** Send the current steer draft unchanged; trim only decides whether send is enabled. */
-  function submitSteer() {
-    if (!steerDraft.trim() || disconnected || steer.isPending) return;
-    void steer.mutateAsync(steerDraft).then(
-      () => setSteerDraft(''),
-      () => undefined
-    );
-  }
-
-  if (summary.isLoading || !workspaceId) {
+  const navigate = useNavigate();
+  const view = useGoalView(workspaceId, threadId);
+  const command = useGoalCommand(workspaceId ?? '', threadId);
+  const connection = useConnection();
+  const [intent, setIntent] = useState('');
+  const [description, setDescription] = useState('');
+  const [reason, setReason] = useState('');
+  const disabled = connection.checking || connection.failed || command.isPending;
+  if (!workspaceId || view.isLoading)
     return (
-      <div className="mx-auto w-full max-w-[760px] px-6 py-8" aria-busy="true">
-        <Skeleton lines={2} />
-        <div className="mt-6">
-          <Skeleton lines={5} />
-        </div>
+      <div aria-busy="true">
+        <Skeleton lines={5} />
       </div>
     );
-  }
-
-  if (summary.isError) {
+  if (view.isError)
+    return <ErrorBanner message="Couldn't load this Goal." onRetry={() => void view.refetch()} />;
+  const data = view.data!;
+  const goal = data.goal;
+  const error = command.error ? (
+    <ErrorBanner
+      message={
+        command.error instanceof ApiCallError
+          ? `Goal command rejected: ${command.error.code ?? command.error.status}.`
+          : "Couldn't update this Goal."
+      }
+      onRetry={
+        disabled || !command.variables ? undefined : () => command.mutate(command.variables!)
+      }
+    />
+  ) : null;
+  if (!goal)
     return (
-      <div className="mx-auto w-full max-w-[760px] px-6 py-8">
-        <ErrorBanner message="Couldn't load this goal." onRetry={() => void summary.refetch()} />
-      </div>
-    );
-  }
-
-  const goal = summary.data?.goal;
-  if (!goal) {
-    return (
-      <div className="mx-auto w-full max-w-[760px] px-6 py-8">
-        <EmptyState
-          icon="folder"
-          title="No goal on this thread"
-          hint="Start Goal Mode from Chat when you have a multi-step objective."
-          action={
-            <div className="flex w-full max-w-sm flex-col gap-3">
-              <label htmlFor="goal-objective" className="sr-only">
-                Goal objective
-              </label>
-              <textarea
-                id="goal-objective"
-                value={objective}
-                onChange={(event) => setObjective(event.target.value)}
-                placeholder="Describe the objective"
-                rows={3}
-                className="w-full resize-y rounded-ok border border-border bg-card p-3 text-sm text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
-                disabled={disconnected || start.isPending}
-              />
-              {start.isError ? (
-                <ErrorBanner
-                  message="Couldn't start Goal Mode."
-                  onRetry={disconnected || start.isPending ? undefined : submitStart}
-                />
-              ) : null}
-              <Button
-                onPress={submitStart}
-                isDisabled={disconnected || start.isPending || !objective.trim()}
-              >
-                Start Goal
-              </Button>
-            </div>
+      <main className="mx-auto max-w-3xl space-y-4 px-6 py-8">
+        <h1>Create Goal</h1>
+        <TextField label="Goal intent" value={intent} onChange={setIntent} isDisabled={disabled} />
+        {error}
+        <Button
+          isDisabled={disabled || !intent.trim()}
+          onPress={() =>
+            command.mutate(
+              {
+                operation: 'goal.create',
+                input: { workspaceId, intent, originThreadId: threadId },
+              },
+              {
+                onSuccess: (result) => {
+                  if (result.goal) void navigate(`/goals/${workspaceId}/${result.goal.threadId}`);
+                },
+              }
+            )
           }
-        />
-      </div>
+        >
+          Create Goal
+        </Button>
+      </main>
     );
-  }
-
-  const atSafeBoundary = goal.currentTask === null && goal.taskCounts.running === 0;
-  const canPause = goal.status === 'running' && atSafeBoundary;
-  const canResume = goal.status === 'paused' && atSafeBoundary;
-  const canStep = canPause && plan.isSuccess && !plan.isFetching && plan.data.canRunStep;
-  const phaseView = mapGoalPhase(goal.status);
-  const lens = resolveLens(searchParams.get('lens'), phaseView.defaultLens);
-  function setLens(next: GoalLens) {
-    setSearchParams(
-      (prev) => {
-        const params = new URLSearchParams(prev);
-        params.set('lens', next);
-        return params;
-      },
-      { replace: true }
-    );
-  }
-
-  const lensItems = LENS_TABS.map((tab) => ({
-    ...tab,
-    content: (
-      <div className="mx-auto w-full max-w-[960px] px-6 py-6">
-        {tab.id === 'plan' ? (
-          goal.status === 'completed' ? (
-            <CompletedView goal={goal} />
-          ) : (
-            <PlanLens
-              workspaceId={workspaceId}
-              threadId={threadId}
-              goal={goal}
-              readOnly={disconnected}
-            />
-          )
-        ) : tab.id === 'board' ? (
-          <BoardLens
-            workspaceId={workspaceId}
-            threadId={threadId}
-            goal={goal}
-            onOpenThread={() => setLens('thread')}
-          />
-        ) : (
-          <ThreadLens
-            workspaceId={workspaceId}
-            threadId={threadId}
-            goal={goal}
-            readOnly={disconnected}
-          />
-        )}
-      </div>
-    ),
-  }));
-
+  const scope = { workspaceId, threadId: goal.threadId, goalId: goal.goalId };
+  const closed = Boolean(goal.disposition);
+  const writesDisabled = disabled || closed;
   return (
-    <div className="flex h-full flex-col">
-      {plan.isError && lens !== 'plan' ? (
-        <div className="px-6 pt-3">
-          <ErrorBanner
-            message="Couldn't load Goal planning status."
-            onRetry={() => void plan.refetch()}
-          />
-        </div>
-      ) : null}
-      {pause.isError || resume.isError || step.isError ? (
-        <div className="px-6 pt-3">
-          <ErrorBanner message="Couldn't update Goal Mode. Try again." />
-        </div>
-      ) : null}
-      <Tabs
-        className="flex-1"
-        selectedKey={lens}
-        onSelectionChange={(key) => setLens(resolveLens(String(key), lens))}
-        items={lensItems}
-        leading={
-          <>
-            <PhaseStepper current={phaseView.phase} gate={phaseView.gate} />
-            {goal.pendingHumanAttention.required ? (
-              <StatusChip tone="notice" dot>
-                Needs you
-              </StatusChip>
+    <main className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+      <header>
+        <h1>{goal.intent}</h1>
+        <StatusChip tone="neutral">{goal.disposition?.kind ?? 'Open'}</StatusChip>
+        <p>Worker results remain evidence until a person accepts completion.</p>
+      </header>
+      {error}
+      <section aria-label="Current intent" className="space-y-3">
+        <h2>Current intent</h2>
+        <p>
+          {goal.intent} · Revision {goal.intentRevision}
+        </p>
+        <TextField
+          label="Revised intent"
+          value={intent}
+          onChange={setIntent}
+          isDisabled={writesDisabled}
+        />
+        <Button
+          isDisabled={writesDisabled || !intent.trim()}
+          onPress={() =>
+            command.mutate({
+              operation: 'goal.intent.revise',
+              input: { ...scope, expectedRevision: goal.intentRevision, intent },
+            })
+          }
+        >
+          Save intent
+        </Button>
+      </section>
+      <section className="space-y-3">
+        <h2>Cards</h2>
+        <ul className="space-y-3">
+          {data.cards.map((card) => (
+            <CardEditor
+              key={`${card.cardId}:${card.revision}`}
+              card={card}
+              goal={goal}
+              command={command}
+              disabled={writesDisabled}
+            />
+          ))}
+        </ul>
+        <TextField
+          label="New card description"
+          value={description}
+          onChange={setDescription}
+          isDisabled={writesDisabled}
+        />
+        <Button
+          isDisabled={writesDisabled || !description.trim()}
+          onPress={() =>
+            command.mutate(
+              { operation: 'goal.card.create', input: { ...scope, description, priority: 0 } },
+              { onSuccess: () => setDescription('') }
+            )
+          }
+        >
+          Add card
+        </Button>
+      </section>
+      {(['activePlanVersionId', 'proposedPlanVersionId'] as const).map((pointer) => {
+        const version = data.versions.find((version) => version.planVersionId === goal[pointer]);
+        return (
+          <section key={pointer}>
+            <h2>{pointer === 'activePlanVersionId' ? 'Active Plan' : 'Proposed Plan'}</h2>
+            {version ? (
+              <>
+                <p>
+                  Version {version.sequence} · {version.digest}
+                </p>
+                <pre className="whitespace-pre-wrap break-words rounded-ok bg-sunken p-4">
+                  {version.bytes}
+                </pre>
+              </>
             ) : (
-              <StatusChip tone="informative">{goal.status}</StatusChip>
+              <p>None</p>
             )}
-            {canPause ? (
+          </section>
+        );
+      })}
+      <section className="space-y-3">
+        <h2>Decisions</h2>
+        {data.requests.map((request) => (
+          <article
+            key={request.requestId}
+            className="space-y-2 rounded-ok border border-border p-4"
+          >
+            <h3>
+              {request.operation === 'goal.plan.approve'
+                ? 'Plan approval'
+                : 'Completion acceptance'}
+            </h3>
+            <p>
+              {request.state} · {request.resolution ?? 'Awaiting response'}
+              {request.reason ? ` · ${request.reason}` : ''}
+            </p>
+            <pre className="whitespace-pre-wrap break-words">
+              {JSON.stringify(request.exactIntent, null, 2)}
+            </pre>
+            {request.state === 'pending' && (
               <>
                 <Button
-                  size="sm"
-                  variant="outline"
-                  onPress={() => pause.mutate()}
-                  isDisabled={disconnected || lifecyclePending}
+                  isDisabled={writesDisabled}
+                  onPress={() =>
+                    command.mutate({
+                      operation:
+                        request.operation === 'goal.plan.approve'
+                          ? 'goal.plan.approve'
+                          : 'goal.completion.accept',
+                      input: { ...scope, pendingRequestId: request.requestId, decision: 'granted' },
+                    })
+                  }
                 >
-                  Pause Goal
+                  {request.operation === 'goal.plan.approve' ? 'Approve Plan' : 'Accept completion'}
                 </Button>
-                {canStep ? (
-                  <Button
-                    size="sm"
-                    onPress={() => step.mutate()}
-                    isDisabled={disconnected || lifecyclePending}
-                  >
-                    One bounded step
-                  </Button>
-                ) : null}
+                <Button
+                  variant="outline"
+                  isDisabled={writesDisabled}
+                  onPress={() =>
+                    command.mutate({
+                      operation:
+                        request.operation === 'goal.plan.approve'
+                          ? 'goal.plan.approve'
+                          : 'goal.completion.accept',
+                      input: { ...scope, pendingRequestId: request.requestId, decision: 'denied' },
+                    })
+                  }
+                >
+                  Decline
+                </Button>
               </>
-            ) : canResume ? (
-              <Button
-                size="sm"
-                onPress={() => resume.mutate()}
-                isDisabled={disconnected || lifecyclePending}
-              >
-                Resume Goal
-              </Button>
-            ) : null}
-          </>
-        }
-        aria-label="Goal lens"
-      />
-
-      <div className="border-t border-separator px-6 py-3">
-        <div className="mx-auto w-full max-w-[760px]">
-          {steer.isError ? (
-            <p className="mb-2 text-xs font-medium text-negative-fg">
-              Couldn't send that steer. Try again.
-            </p>
-          ) : null}
-          <form
-            className="flex items-end gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submitSteer();
-            }}
+            )}
+          </article>
+        ))}
+      </section>
+      <section>
+        <h2>Linked Tasks</h2>
+        {data.tasks.length === 0 ? (
+          <p>No Tasks admitted.</p>
+        ) : (
+          <ul>
+            {data.tasks.map((task) => (
+              <li key={task.threadId}>
+                <Link to={`/tasks/${workspaceId}/${task.threadId}`}>{task.threadId}</Link> · Card
+                revision {task.cardRevision} · Plan {task.planVersionId}
+                <p>
+                  {task.missing
+                    ? 'Missing Task: unresolved'
+                    : task.turns.map((turn) => `${turn.turnId}: ${turn.status}`).join(', ') ||
+                      'No Turn recorded'}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {!closed && (
+        <section className="space-y-3">
+          <h2>Cancel Goal</h2>
+          <TextField
+            label="Goal cancellation reason"
+            value={reason}
+            onChange={setReason}
+            isDisabled={disabled}
+          />
+          <Button
+            variant="negative-outline"
+            isDisabled={disabled || !reason.trim()}
+            onPress={() =>
+              command.mutate({
+                operation: 'goal.cancel',
+                input: { ...scope, expectedRevision: goal.changeRevision, reason },
+              })
+            }
           >
-            <label htmlFor="goal-steer" className="sr-only">
-              Message
-            </label>
-            <textarea
-              id="goal-steer"
-              value={steerDraft}
-              onChange={(event) => setSteerDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
-                  return;
-                }
-                event.preventDefault();
-                submitSteer();
-              }}
-              placeholder={
-                disconnected
-                  ? "Couldn't reach the local runtime."
-                  : 'Steer the goal — a nudge lands in the Thread lens'
-              }
-              rows={3}
-              disabled={disconnected || steer.isPending}
-              className="min-w-0 flex-1 resize-y rounded-ok border border-border bg-card p-3 text-sm text-fg outline-none placeholder:text-fg-muted focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              isDisabled={disconnected || steer.isPending || !steerDraft.trim()}
-            >
-              Steer
-            </Button>
-          </form>
-        </div>
-      </div>
-    </div>
+            Cancel Goal
+          </Button>
+        </section>
+      )}
+    </main>
   );
 }

@@ -1,7 +1,6 @@
 import { ApiCallError } from '@openkit/core-client';
 import { useConnection } from '../../app/core-client';
 import { Button, Card, ErrorBanner, Eyebrow, Skeleton } from '../../primitives';
-import { DeliveryControls } from './DeliveryControls';
 import {
   useBindThreadMaterial,
   useExcludeThreadMaterial,
@@ -219,15 +218,6 @@ export function ThreadMaterialPanel({
               </>
             )}
           </div>
-
-          {material ? (
-            <DeliveryControls
-              workspaceId={workspaceId}
-              threadId={threadId}
-              material={material}
-              disconnected={disconnected}
-            />
-          ) : null}
         </div>
       </Card>
     </section>

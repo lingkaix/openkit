@@ -13,10 +13,6 @@ import {
   ApplyAdministrationConfigurationRequestSchema,
   type ApplyAdministrationConfigurationResponse,
   ApplyAdministrationConfigurationResponseSchema,
-  type ApproveThreadGoalPlanRequest,
-  ApproveThreadGoalPlanRequestSchema,
-  type ApproveThreadGoalPlanResponse,
-  ApproveThreadGoalPlanResponseSchema,
   type AppSearchResponse,
   AppSearchResponseSchema,
   type AppUpdateStatusResponse,
@@ -27,10 +23,6 @@ import {
   BindThreadMaterialRequestSchema,
   type BindThreadMaterialResponse,
   BindThreadMaterialResponseSchema,
-  type CancelGoalSteeringRequest,
-  CancelGoalSteeringRequestSchema,
-  type CancelGoalSteeringResponse,
-  CancelGoalSteeringResponseSchema,
   type CancelSchedulerAdmissionResponse,
   CancelSchedulerAdmissionResponseSchema,
   type CapabilityUsageResponse,
@@ -45,10 +37,6 @@ import {
   ConversationNavigationResponseSchema,
   type ConversationTargetCatalog,
   ConversationTargetCatalogSchema,
-  type ConvertGoalSteeringToFollowUpRequest,
-  ConvertGoalSteeringToFollowUpRequestSchema,
-  type ConvertGoalSteeringToFollowUpResponse,
-  ConvertGoalSteeringToFollowUpResponseSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
   type CreateLightAppRequest,
@@ -59,10 +47,6 @@ import {
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
   CreateOpenKitAccessTokenResponseSchema,
-  type CreateThreadGoalPlanRequest,
-  CreateThreadGoalPlanRequestSchema,
-  type CreateThreadGoalPlanResponse,
-  CreateThreadGoalPlanResponseSchema,
   type CreateWorkspaceInvitationRequest,
   CreateWorkspaceInvitationRequestSchema,
   type CreateWorkspaceMaterialRequest,
@@ -208,10 +192,6 @@ import {
   ListWorkspaceVaultUseRecordsResponseSchema,
   type NanoHostRuntimeTargetStatusResponse,
   NanoHostRuntimeTargetStatusResponseSchema,
-  type PauseThreadGoalRequest,
-  PauseThreadGoalRequestSchema,
-  type PauseThreadGoalResponse,
-  PauseThreadGoalResponseSchema,
   type PrepareAppUpdateRequest,
   PrepareAppUpdateRequestSchema,
   type PrepareAppUpdateResponse,
@@ -251,10 +231,6 @@ import {
   RestoreThreadMaterialRequestSchema,
   type RestoreThreadMaterialResponse,
   RestoreThreadMaterialResponseSchema,
-  type ResumeThreadGoalRequest,
-  ResumeThreadGoalRequestSchema,
-  type ResumeThreadGoalResponse,
-  ResumeThreadGoalResponseSchema,
   type RetireLightAppRequest,
   RetireLightAppRequestSchema,
   type RetireLightAppResponse,
@@ -267,14 +243,6 @@ import {
   type RetrySchedulerAdmissionResponse,
   RetrySchedulerAdmissionResponseSchema,
   type ReverseKnowledgeProposalRequest,
-  type ReviseThreadGoalIntentRequest,
-  ReviseThreadGoalIntentRequestSchema,
-  type ReviseThreadGoalIntentResponse,
-  ReviseThreadGoalIntentResponseSchema,
-  type ReviseThreadGoalPlanRequest,
-  ReviseThreadGoalPlanRequestSchema,
-  type ReviseThreadGoalPlanResponse,
-  ReviseThreadGoalPlanResponseSchema,
   type RevokeNanoHostTransportTokenResponse,
   RevokeNanoHostTransportTokenResponseSchema,
   type RevokeOpenKitAccessTokenResponse,
@@ -291,10 +259,6 @@ import {
   RotateOpenKitAccessTokenResponseSchema,
   type RotateWorkspaceVaultSecretRequest,
   RotateWorkspaceVaultSecretRequestSchema,
-  type RunThreadGoalStepRequest,
-  RunThreadGoalStepRequestSchema,
-  type RunThreadGoalStepResponse,
-  RunThreadGoalStepResponseSchema,
   type SaveWorkspaceMaterialRevisionRequest,
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
@@ -319,10 +283,6 @@ import {
   StartTaskModeRequestSchema,
   type StartTaskModeResponse,
   StartTaskModeResponseSchema,
-  type StartThreadGoalRequest,
-  StartThreadGoalRequestSchema,
-  type StartThreadGoalResponse,
-  StartThreadGoalResponseSchema,
   type StorageLayoutReportResponse,
   StorageLayoutReportResponseSchema,
   type SubmitAdministrationConversationRequest,
@@ -335,15 +295,7 @@ import {
   SubmitConversationResponseSchema,
   type SubmitGenerativePresentationActionRequest,
   SubmitGenerativePresentationActionRequestSchema,
-  type SubmitGoalReviewDecisionRequest,
-  SubmitGoalReviewDecisionRequestSchema,
-  type SubmitGoalReviewDecisionResponse,
-  SubmitGoalReviewDecisionResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
-  type SubmitThreadGoalSteeringRequest,
-  SubmitThreadGoalSteeringRequestSchema,
-  type SubmitThreadGoalSteeringResponse,
-  SubmitThreadGoalSteeringResponseSchema,
   type SubmitTurnFeedbackRequest,
   SubmitTurnFeedbackRequestSchema,
   type SubmitWorkspaceRecoveryDecisionRequest,
@@ -354,10 +306,6 @@ import {
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   type SubmitWorkspaceSyncReviewDecisionResponse,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
-  type ThreadGoalPlanReadResponse,
-  ThreadGoalPlanReadResponseSchema,
-  type ThreadGoalSummaryResponse,
-  ThreadGoalSummaryResponseSchema,
   type TransferWorkspaceOwnershipRequest,
   TransferWorkspaceOwnershipRequestSchema,
   type TurnFeedbackResponse,
@@ -430,14 +378,6 @@ import { ApiCallError } from './errors.js';
 import { createRequestId, type OptionalRequestId, withRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
-/** Goal Mode steering input with optional caller-provided request id. */
-export type SubmitThreadGoalSteeringInput = OptionalRequestId<SubmitThreadGoalSteeringRequest>;
-/** Goal steering follow-up conversion input with optional caller-provided request id. */
-export type ConvertGoalSteeringToFollowUpInput =
-  OptionalRequestId<ConvertGoalSteeringToFollowUpRequest>;
-/** Goal steering cancellation input with optional caller-provided request id. */
-export type CancelGoalSteeringInput = OptionalRequestId<CancelGoalSteeringRequest>;
-
 /** Workspace invitation creation input with an optional caller-provided request id. */
 export type CreateWorkspaceInvitationInput = OptionalRequestId<CreateWorkspaceInvitationRequest>;
 /** Workspace invitation acceptance input with an optional caller-provided request id. */
@@ -463,13 +403,6 @@ export type DisableUserInput = OptionalRequestId<DisableUserRequest>;
 export type DeleteWorkspaceInput = OptionalRequestId<DeleteWorkspaceRequest>;
 /** Deleted-Workspace recovery input with an optional caller-provided request id. */
 export type RecoverDeletedWorkspaceInput = OptionalRequestId<RecoverDeletedWorkspaceRequest>;
-
-/** Goal Mode real worker step input with optional caller-provided request id. */
-export type RunThreadGoalStepInput = OptionalRequestId<RunThreadGoalStepRequest>;
-/** Goal Mode pause input with optional caller-provided request id. */
-export type PauseThreadGoalInput = OptionalRequestId<PauseThreadGoalRequest>;
-/** Goal Mode resume input with optional caller-provided request id. */
-export type ResumeThreadGoalInput = OptionalRequestId<ResumeThreadGoalRequest>;
 /** Interrupted-worker retry input with optional caller-provided request id. */
 export type RetryInterruptedWorkerCheckpointInput =
   OptionalRequestId<RetryInterruptedWorkerCheckpointRequest>;
@@ -477,8 +410,6 @@ export type RetryInterruptedWorkerCheckpointInput =
 export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
 /** Structured conversation input with optional caller-provided request id. */
 export type SubmitConversationInput = OptionalRequestId<SubmitConversationRequest>;
-/** Goal Mode start input with optional caller-provided request id. */
-export type StartThreadGoalInput = OptionalRequestId<StartThreadGoalRequest>;
 /** Workspace Material create input with optional caller-provided request id. */
 export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
 /** Workspace Material revision save input with optional caller-provided request id. */
@@ -514,11 +445,6 @@ export type RecordKnowledgeConflictInput = RecordKnowledgeConflictRequest;
 export type ResolveKnowledgeConflictInput = ResolveKnowledgeConflictRequest;
 /** Deterministic Knowledge Store retrieval request input. */
 export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
-/** Goal Review decision input with optional caller-provided request id. */
-export type SubmitGoalReviewDecisionInput = Omit<SubmitGoalReviewDecisionRequest, 'requestId'> & {
-  /** Optional caller-provided request id; the client generates one when omitted. */
-  requestId?: SubmitGoalReviewDecisionRequest['requestId'];
-};
 /** Knowledge proposal decision input with its required caller-provided request id. */
 export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisionRequest;
 /** Bounded Knowledge proposal reversal input. */
@@ -837,58 +763,6 @@ export interface AppApiClient {
   listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
-  /** Reads one thread Goal Mode summary read model. */
-  getThreadGoalSummary(workspaceId: string, threadId: string): Promise<ThreadGoalSummaryResponse>;
-  /** Reads active and pending Plans plus the exact next planning action. */
-  getThreadGoalPlan(workspaceId: string, threadId: string): Promise<ThreadGoalPlanReadResponse>;
-  /** Starts Goal Mode for one thread. */
-  startThreadGoal(
-    workspaceId: string,
-    threadId: string,
-    input: StartThreadGoalInput
-  ): Promise<StartThreadGoalResponse>;
-  /** Drafts an initial or requested successor Goal Plan. */
-  createThreadGoalPlan(
-    workspaceId: string,
-    threadId: string,
-    input: CreateThreadGoalPlanRequest
-  ): Promise<CreateThreadGoalPlanResponse>;
-  /** Approves one Goal Mode plan and persists its ready tasks. */
-  approveThreadGoalPlan(
-    workspaceId: string,
-    threadId: string,
-    input: ApproveThreadGoalPlanRequest
-  ): Promise<ApproveThreadGoalPlanResponse>;
-  /** Records one Plan revision instruction without changing the approved Plan. */
-  reviseThreadGoalPlan(
-    workspaceId: string,
-    threadId: string,
-    input: ReviseThreadGoalPlanRequest
-  ): Promise<ReviseThreadGoalPlanResponse>;
-  /** Records one same-Goal intent revision and conservatively holds affected work. */
-  reviseThreadGoalIntent(
-    workspaceId: string,
-    threadId: string,
-    input: ReviseThreadGoalIntentRequest
-  ): Promise<ReviseThreadGoalIntentResponse>;
-  /** Pauses the active Goal Mode workflow for one thread. */
-  pauseThreadGoal(
-    workspaceId: string,
-    threadId: string,
-    input?: PauseThreadGoalInput
-  ): Promise<PauseThreadGoalResponse>;
-  /** Resumes a paused Goal Mode workflow for one thread. */
-  resumeThreadGoal(
-    workspaceId: string,
-    threadId: string,
-    input?: ResumeThreadGoalInput
-  ): Promise<ResumeThreadGoalResponse>;
-  /** Runs one real bounded Goal Mode worker step. */
-  runThreadGoalStep(
-    workspaceId: string,
-    threadId: string,
-    input?: RunThreadGoalStepInput
-  ): Promise<RunThreadGoalStepResponse>;
   /** Starts one bounded Task Mode worker delegation. */
   startTaskMode(
     workspaceId: string,
@@ -906,34 +780,6 @@ export interface AppApiClient {
     threadId: string,
     input: SubmitConversationInput
   ): Promise<SubmitConversationResponse>;
-  /** Submits user steering to the active Goal Mode queue. */
-  submitThreadGoalSteering(
-    workspaceId: string,
-    threadId: string,
-    input: SubmitThreadGoalSteeringInput
-  ): Promise<SubmitThreadGoalSteeringResponse>;
-  /** Converts one terminal Goal steering input into completed Thread follow-up history. */
-  convertGoalSteeringToFollowUp(
-    workspaceId: string,
-    threadId: string,
-    pendingTurnId: string,
-    input: ConvertGoalSteeringToFollowUpInput
-  ): Promise<ConvertGoalSteeringToFollowUpResponse>;
-  /** Cancels one terminal Goal steering input. */
-  cancelGoalSteering(
-    workspaceId: string,
-    threadId: string,
-    pendingTurnId: string,
-    input: CancelGoalSteeringInput
-  ): Promise<CancelGoalSteeringResponse>;
-  /** Resolves one app-local Goal Review attention row. */
-  submitGoalReviewDecision(
-    workspaceId: string,
-    threadId: string,
-    goalId: string,
-    reviewId: string,
-    input: SubmitGoalReviewDecisionInput
-  ): Promise<SubmitGoalReviewDecisionResponse>;
   /** Lists workspace synchronization reviews for one workspace. */
   listWorkspaceSyncReviews(workspaceId: string): Promise<ListWorkspaceSyncReviewsResponse>;
   /** Reads one workspace synchronization review by id. */
@@ -1557,76 +1403,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/dashboard`,
         WorkspaceDashboardResponseSchema
       ),
-    getThreadGoalSummary: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`,
-        ThreadGoalSummaryResponseSchema
-      ),
-    getThreadGoalPlan: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan`,
-        ThreadGoalPlanReadResponseSchema
-      ),
-    startThreadGoal: (workspaceId, threadId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal`,
-        StartThreadGoalRequestSchema.parse(request),
-        StartThreadGoalResponseSchema
-      );
-    },
-    createThreadGoalPlan: (workspaceId, threadId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan`,
-        CreateThreadGoalPlanRequestSchema.parse(input),
-        CreateThreadGoalPlanResponseSchema
-      ),
-    approveThreadGoalPlan: (workspaceId, threadId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan/approve`,
-        ApproveThreadGoalPlanRequestSchema.parse(input),
-        ApproveThreadGoalPlanResponseSchema
-      ),
-    reviseThreadGoalPlan: (workspaceId, threadId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/plan/revise`,
-        ReviseThreadGoalPlanRequestSchema.parse(input),
-        ReviseThreadGoalPlanResponseSchema
-      ),
-    reviseThreadGoalIntent: (workspaceId, threadId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/intent/revise`,
-        ReviseThreadGoalIntentRequestSchema.parse(input),
-        ReviseThreadGoalIntentResponseSchema
-      ),
-    pauseThreadGoal: (workspaceId, threadId, input = {}) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/pause`,
-        PauseThreadGoalRequestSchema.parse(request),
-        PauseThreadGoalResponseSchema
-      );
-    },
-    resumeThreadGoal: (workspaceId, threadId, input = {}) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/resume`,
-        ResumeThreadGoalRequestSchema.parse(request),
-        ResumeThreadGoalResponseSchema
-      );
-    },
-    runThreadGoalStep: (workspaceId, threadId, input = {}) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/step`,
-        RunThreadGoalStepRequestSchema.parse(request),
-        RunThreadGoalStepResponseSchema
-      );
-    },
     startTaskMode: (workspaceId, threadId, input) => {
       const request = withRequestId(input);
 
@@ -1650,42 +1426,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/conversation-targets${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`,
         ConversationTargetCatalogSchema
       ),
-    submitThreadGoalSteering: (workspaceId, threadId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering`,
-        SubmitThreadGoalSteeringRequestSchema.parse(request),
-        SubmitThreadGoalSteeringResponseSchema
-      );
-    },
-    convertGoalSteeringToFollowUp: (workspaceId, threadId, pendingTurnId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering/${pendingTurnId}/follow-up`,
-        ConvertGoalSteeringToFollowUpRequestSchema.parse(request),
-        ConvertGoalSteeringToFollowUpResponseSchema
-      );
-    },
-    cancelGoalSteering: (workspaceId, threadId, pendingTurnId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goal/steering/${pendingTurnId}/cancel`,
-        CancelGoalSteeringRequestSchema.parse(request),
-        CancelGoalSteeringResponseSchema
-      );
-    },
-    submitGoalReviewDecision: (workspaceId, threadId, goalId, reviewId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/goals/${goalId}/reviews/${reviewId}/decision`,
-        SubmitGoalReviewDecisionRequestSchema.parse(request),
-        SubmitGoalReviewDecisionResponseSchema
-      );
-    },
     listWorkspaceSyncReviews: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/reviews`,

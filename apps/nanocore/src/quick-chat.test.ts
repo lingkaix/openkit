@@ -1727,19 +1727,12 @@ describe('quick chat app API', () => {
         }
       );
 
-      expect(goalRes.status).toBe(409);
-      await expect(goalRes.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
-      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
-        turnsBefore
+      expect(goalRes.status).toBe(202);
+      const accepted = await goalRes.json();
+      expect(accepted).toMatchObject({ outcome: 'goal-handoff', handoff: { targetMode: 'goal' } });
+      expect(store.listThreadTurns('ws_demo', 'th_demo').length).toBeGreaterThan(
+        turnsBefore.length
       );
-      expect(
-        store.getCommandRequest('conversation.submit', request.requestId, {
-          actorId: 'user_local',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        })
-      ).toBeNull();
-
       const replayRes = await app.request(
         '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
         {
@@ -1749,17 +1742,89 @@ describe('quick chat app API', () => {
         }
       );
 
-      expect(replayRes.status).toBe(409);
-      await expect(replayRes.json()).resolves.toMatchObject({ code: 'goal_mode_unavailable' });
-      expect(store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id)).toEqual(
-        turnsBefore
-      );
-      expect(store.listCommandRequests().map((record) => record.command)).toEqual([]);
+      expect(replayRes.status).toBe(202);
+      expect(await replayRes.json()).toEqual(accepted);
+      expect(
+        store.listCommandRequests().filter((record) => record.command === 'goal.create')
+      ).toHaveLength(1);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
+  it.each([
+    'private-thread',
+    'private-artifact',
+  ] as const)('refuses automatic Assistant-to-Goal publication of %s without disclosure admission', async (source) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'goal-private-handoff-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const store = createDemoStore({ dataRoot });
+      const thread = store.createThread('ws_demo', 'Private assistant', undefined, 'conversation', {
+        visibility: 'private',
+        privateOwnerUserId: 'user_local',
+      });
+      const artifactId = 'artifact_private_goal';
+      if (source === 'private-artifact') {
+        const turn = store.createTurn('ws_demo', thread.id, 'Private output', {
+          kind: 'user',
+          id: 'user_local',
+        });
+        const body = 'PRIVATE-GOAL-MARKER';
+        const at = new Date().toISOString();
+        const requestId = '20000000-0000-4000-8000-000000000001';
+        store.createArtifact({
+          id: artifactId,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          turnId: turn.id,
+          kind: 'report',
+          title: 'Private plan',
+          status: 'ready',
+          summary: 'Private',
+          version: 1,
+          content: { format: 'markdown', body },
+          contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+          lastMutationRequestId: requestId,
+          origin: { kind: 'turn-output', threadId: thread.id, turnId: turn.id, requestId },
+          createdAt: at,
+          updatedAt: at,
+        });
+        store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+      }
+      const app = createApp({
+        ...createQuickChatProviderOptions(),
+        agentManifests: [createTestAgentSetup().manifest],
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+      });
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      const response = await app.request(
+        `/api/app/workspaces/ws_demo/threads/${source === 'private-thread' ? thread.id : 'th_demo'}/conversation-turns`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...conversationRequest(
+              'Plan a multi-step release goal for NanoCore. PRIVATE-GOAL-MARKER',
+              'req_private_goal'
+            ),
+            artifactRefs: source === 'private-artifact' ? [{ artifactId, artifactVersion: 1 }] : [],
+          }),
+        }
+      );
+      expect(await response.json()).toMatchObject({ outcome: 'refused', handoff: null });
+      expect(
+        store.listCommandRequests().filter((record) => record.command === 'goal.create')
+      ).toEqual([]);
+      expect(store.listThreads('ws_demo').some((t) => t.id.startsWith('th_goal_'))).toBe(false);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
   it('logs a redacted unexpected Quick Chat error at the existing console sink', async () => {
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
     const app = createApp({

@@ -4,11 +4,7 @@ Thread dashboard reads validate the authenticated viewer id and bounded particip
 
 The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and Skill consumers; the client does not infer summaries from message JSON.
 
-`client.app.getThreadGoalPlan` reads separate active and pending durable Goal Plans, the next planning action and answered-question lineage, whether a pending candidate is currently approvable, and whether an unheld ready Task may run without generating or approving one. The Plan payload includes exact remaining-work dispositions for a successor. `client.app.reviseThreadGoalIntent`, `reviseThreadGoalPlan`, and `createThreadGoalPlan` currently return `409 goal_mode_unavailable` under the accepted Goal availability boundary. Reconnecting clients use the read action rather than inferring a fresh draft from a missing Plan Item.
-
-The Plan read also carries the pending Item's proposal summary and the selectable unfinished active Tasks for named intent scope. An omitted `affectedTaskIds` value and an explicit empty array remain distinct command inputs.
-
-During the communication redesign, new Goal entry and the specified planning and execution mutations return `409 goal_mode_unavailable`. Existing Goal reads, pause, resume, plan approval, and terminal steering remain available.
+`client.operations` exposes the ten Goal definitions with strict input and output codecs and automatic missing request-id insertion. `goal.read` returns current intent and cards, exact proposed and active Plan versions, shared request state and claim, linked ordinary Tasks and disposition. Human decision operations resolve exact Pending Requests; grant consumption belongs to the Goal owner and does not launch work. Retired Goal SDK methods and routes have no aliases.
 
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
 
@@ -30,7 +26,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 [`src/events.ts`](src/events.ts) shares event URL construction between Fetch and EventSource while each transport retains its own streaming, cursor, and reconnect lifecycle.
 
-[`src/operations.ts`](src/operations.ts) derives `client.operations[id](input)` from the shared product operation tables, including request-id insertion, canonical JSON POST placement and output validation. Migrated Workspace, Thread and Turn operations have no `client.core` or `client.app` method or old route alias. `workspace.list({})` returns authorized summaries; select `entry.workspace` when a consumer needs a Workspace record. Thread creation accepts one object containing `workspaceId`, `name`, optional `visibility`, and optional `requestId`. Turn events retain their SSE transport. The mapped client type preserves each operation's input and result rather than a family-wide union. Run `pnpm --filter @openkit/core-client exec vitest run src/operations.test.ts` for this transport boundary; package typecheck also compiles the negative join probes.
+[`src/operations.ts`](src/operations.ts) derives `client.operations[id](input)` from the shared product operation tables, including request-id insertion, canonical JSON POST placement and output validation. Migrated Workspace, Thread, Turn and Goal operations have no `client.core` or `client.app` method or old route alias. `workspace.list({})` returns authorized summaries; select `entry.workspace` when a consumer needs a Workspace record. Thread creation accepts one object containing `workspaceId`, `name`, optional `visibility`, and optional `requestId`. Turn events retain their SSE transport. The mapped client type preserves each operation's input and result rather than a family-wide union. Run `pnpm --filter @openkit/core-client exec vitest run src/operations.test.ts` for this transport boundary; package typecheck also compiles the negative join probes.
 
 ## Client Shape
 

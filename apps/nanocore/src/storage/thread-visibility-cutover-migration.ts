@@ -421,34 +421,6 @@ function classifyThreadVisibilityCutover(
     );
   }
   if (firstTurn.agentId) return { visibility: 'workspace' };
-  const databasePath = join(workspaceRoot, 'db', 'workspace.sqlite');
-  if (firstTurn && existsSync(databasePath)) {
-    const database = new Database(databasePath, { readonly: true, fileMustExist: true });
-    try {
-      if (
-        database
-          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_records'")
-          .get()
-      ) {
-        const goalObjectives = database
-          .prepare(
-            'SELECT created_by_item_id AS itemId FROM goal_records WHERE workspace_id = ? AND thread_id = ?'
-          )
-          .all(basename(workspaceRoot), threadId) as Array<{ itemId: string | null }>;
-        const itemsPath = join(turnsRoot, firstTurn.id, 'items.jsonl');
-        const items = loadCurrentItems(itemsPath);
-        if (
-          goalObjectives.some((goal) =>
-            items.some((item) => item.id === goal.itemId && item.type === 'user-message')
-          )
-        ) {
-          return { visibility: 'workspace' };
-        }
-      }
-    } finally {
-      database.close();
-    }
-  }
   throw new Error(
     'Thread visibility cutover requires explicit classification of ambiguous project history.'
   );
@@ -476,19 +448,6 @@ function projectCanonicalThreadRecord(
         ? preserved.extensions
         : {},
   };
-}
-
-function loadCurrentItems(path: string): Array<{ id: string; type: string }> {
-  if (!existsSync(path)) return [];
-  const current = new Map<string, { id: string; type: string }>();
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    const item = JSON.parse(line) as { id?: string; type?: string };
-    if (typeof item.id === 'string' && typeof item.type === 'string') {
-      current.set(item.id, { id: item.id, type: item.type });
-    }
-  }
-  return [...current.values()];
 }
 
 function listDirectoryNames(path: string): string[] {

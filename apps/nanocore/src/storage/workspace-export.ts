@@ -60,6 +60,11 @@ export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
 
 /** Workspace SQLite tables whose portable row families are covered by workspace export/import. */
 export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
+  'goals',
+  'goal_cards',
+  'goal_plan_versions',
+  'goal_card_tasks',
+  'task_turn_terminal_facts',
   'artifact_reviews',
   'audit_events',
   'backend_workspace_handles',
@@ -67,11 +72,6 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'evidence_bundles',
   'generative_presentations',
   'git_push_records',
-  'goal_plan_records',
-  'goal_records',
-  'goal_review_records',
-  'goal_tasks',
-  'goal_verification_records',
   'mcp_tool_schema_snapshots',
   'permission_decisions',
   'resolved_agent_setups',
@@ -104,14 +104,6 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
     table: 'pending_requests',
     reason:
       'pending-request lifecycle stays in the workspace database and has no portable export family',
-  },
-  {
-    table: 'pending_user_turn_records',
-    reason: 'active Goal steering delivery proof is local to the source workspace',
-  },
-  {
-    table: 'steering_terminal_outcomes',
-    reason: 'terminal Goal steering command proof is local to the source workspace',
   },
   {
     table: 'workspace_filesystem_staging_roots',
@@ -253,18 +245,10 @@ export interface WriteWorkspaceExportTreeInput {
   workspaceQuarantineRecords?: readonly unknown[];
   /** Workspace-scoped permission decision rows to export as line-oriented records. */
   permissionDecisions?: readonly unknown[];
+  /** Current Goal and Task-terminal records, separate from local Pending Request authority. */
+  goalState?: unknown;
   /** Worker checkpoint rows to export as line-oriented records. */
   workerCheckpoints?: readonly unknown[];
-  /** Goal Mode goal records to export as line-oriented records. */
-  goalRecords?: readonly unknown[];
-  /** Immutable Goal Plan records to export as line-oriented records. */
-  goalPlanRecords?: readonly unknown[];
-  /** Goal Mode task records to export as line-oriented records. */
-  goalTasks?: readonly unknown[];
-  /** Goal Mode review records to export as line-oriented records. */
-  goalReviewRecords?: readonly unknown[];
-  /** Goal Mode verification records to export as line-oriented records. */
-  goalVerificationRecords?: readonly unknown[];
   /** MCP tool schema snapshots to export as line-oriented records. */
   mcpToolSchemaSnapshots?: readonly unknown[];
   /** Portable Light App identity rows. */
@@ -662,26 +646,9 @@ export function writeWorkspaceExportTree(
     if (input.permissionDecisions?.length) {
       writeJsonl(join(recordsRoot, 'permission-decisions.jsonl'), input.permissionDecisions);
     }
+    if (input.goalState) writeJson(join(recordsRoot, 'goal-state.json'), input.goalState);
     if (input.workerCheckpoints?.length) {
       writeJsonl(join(recordsRoot, 'worker-turn-checkpoints.jsonl'), input.workerCheckpoints);
-    }
-    if (input.goalRecords?.length) {
-      writeJsonl(join(recordsRoot, 'goal-records.jsonl'), input.goalRecords);
-    }
-    if (input.goalPlanRecords?.length) {
-      writeJsonl(join(recordsRoot, 'goal-plan-records.jsonl'), input.goalPlanRecords);
-    }
-    if (input.goalTasks?.length) {
-      writeJsonl(join(recordsRoot, 'goal-tasks.jsonl'), input.goalTasks);
-    }
-    if (input.goalReviewRecords?.length) {
-      writeJsonl(join(recordsRoot, 'goal-review-records.jsonl'), input.goalReviewRecords);
-    }
-    if (input.goalVerificationRecords?.length) {
-      writeJsonl(
-        join(recordsRoot, 'goal-verification-records.jsonl'),
-        input.goalVerificationRecords
-      );
     }
     if (input.mcpToolSchemaSnapshots?.length) {
       writeJsonl(

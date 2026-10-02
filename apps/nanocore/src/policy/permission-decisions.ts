@@ -477,24 +477,6 @@ export interface RecordGatewayPolicyDecisionInput {
   now?: Date;
 }
 
-/** Input for recording one Goal Mode worker launch decision. */
-export interface RecordGoalWorkerLaunchDecisionInput {
-  /** Workspace-scope database handle. */
-  workspaceDb: WorkspaceDb;
-  /** Workspace that owns the worker launch. */
-  workspaceId: string;
-  /** Thread that owns the worker launch. */
-  threadId: string;
-  /** Goal that owns the worker launch. */
-  goalId: string;
-  /** Goal task being launched. */
-  taskId: string;
-  /** Enforcement point producing this row. */
-  enforcementPoint: string;
-  /** Creation time. */
-  now?: Date;
-}
-
 /** Input for recording one worker-turn launch decision. */
 export interface RecordWorkerTurnLaunchDecisionInput {
   /** Workspace-scope database handle. */
@@ -948,36 +930,6 @@ export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionIn
     result: input.result,
     reasonCode: input.reasonCode,
     enforcementPoint: 'llm.gateway.policy',
-    ...(input.now ? { now: input.now } : {}),
-  });
-}
-
-/**
- * Records an allowed Goal Mode worker launch decision.
- *
- * @param input Worker launch decision input.
- */
-export function recordGoalWorkerLaunchDecision(input: RecordGoalWorkerLaunchDecisionInput): void {
-  recordProductPermissionDecision({
-    workspaceDb: input.workspaceDb,
-    decisionId: `pd_${randomUUID()}`,
-    ownerScope: 'workspace',
-    workspaceId: input.workspaceId,
-    policyEngineVersion: 'nanocore-goal-worker-policy:v1',
-    policySnapshotId: 'goal_worker_launch_policy',
-    subjectSummary: { kind: 'nanocore', id: 'goal-coordinator' },
-    action: 'runtime.launch',
-    resourceSummary: {
-      kind: 'goal-task-worker',
-      goalId: input.goalId,
-      taskId: input.taskId,
-      threadId: input.threadId,
-      workspaceId: input.workspaceId,
-    },
-    contextSummary: { mode: 'goal' },
-    result: 'allow',
-    reasonCode: 'goal_worker_start_allowed',
-    enforcementPoint: input.enforcementPoint,
     ...(input.now ? { now: input.now } : {}),
   });
 }

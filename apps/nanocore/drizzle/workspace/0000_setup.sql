@@ -165,117 +165,6 @@ CREATE TABLE `git_push_records` (
 
 --> statement-breakpoint
 
-CREATE TABLE `goal_plan_records` (
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`plan_item_id` text NOT NULL,
-	`predecessor_plan_item_id` text,
-	`source_intent_item_id` text NOT NULL,
-	`source_task_evidence_digest` text,
-	`plan_digest` text NOT NULL,
-	`plan_json` text NOT NULL,
-	`created_by_request_id` text NOT NULL,
-	`created_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`plan_item_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `goal_records` (
-	`goal_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`status` text NOT NULL,
-	`title` text NOT NULL,
-	`objective` text NOT NULL,
-	`created_by_item_id` text,
-	`current_intent_item_id` text NOT NULL,
-	`current_affected_task_ids_json` text NOT NULL,
-	`plan_item_id` text,
-	`pending_plan_item_id` text,
-	`current_task_id` text,
-	`terminal_stop_reason` text,
-	`worker_storage_choice_json` text,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `goal_review_records` (
-	`review_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`task_id` text NOT NULL,
-	`turn_id` text NOT NULL,
-	`item_ids_json` text NOT NULL,
-	`artifact_ids_json` text NOT NULL,
-	`verification_evidence_json` text NOT NULL,
-	`prompt` text NOT NULL,
-	`created_by_request_id` text NOT NULL,
-	`verdict` text,
-	`reason` text,
-	`revision_instruction` text,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	`resolved_at` text,
-	`resolution_request_id` text,
-	`resolved_by_actor_id` text, `resolution_snapshot_json` text,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`,`review_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `goal_tasks` (
-	`task_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`plan_item_id` text NOT NULL,
-	`status` text NOT NULL,
-	`latest_gate_context_item_id` text,
-	`title` text NOT NULL,
-	`objective` text NOT NULL,
-	`order_index` integer NOT NULL,
-	`depends_on_task_ids_json` text NOT NULL,
-	`acceptance_criteria_json` text NOT NULL,
-	`context_budget_tokens` integer NOT NULL,
-	`resources_json` text NOT NULL,
-	`expected_artifacts_json` text NOT NULL,
-	`verification_checks_json` text NOT NULL,
-	`review_policy_json` text NOT NULL,
-	`escalation_conditions_json` text NOT NULL,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`,`task_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `goal_verification_records` (
-	`verification_id` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`task_id` text,
-	`turn_id` text,
-	`command_id` text,
-	`command` text,
-	`status` text NOT NULL,
-	`summary` text NOT NULL,
-	`item_ids_json` text NOT NULL,
-	`artifact_ids_json` text NOT NULL,
-	`output_pointers_json` text NOT NULL,
-	`created_at` text NOT NULL,
-	`updated_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`goal_id`,`verification_id`)
-);
-
---> statement-breakpoint
-
 CREATE TABLE `idempotency_requests` (
   `request_key` text PRIMARY KEY NOT NULL,
   `command_name` text NOT NULL,
@@ -301,33 +190,6 @@ CREATE TABLE `mcp_tool_schema_snapshots` (
 	`tools_json` text NOT NULL,
 	`source` text NOT NULL,
 	`captured_at` text NOT NULL
-);
-
---> statement-breakpoint
-
-CREATE TABLE `pending_user_turn_records` (
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`pending_turn_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`active_turn_id` text NOT NULL,
-	`request_id` text NOT NULL,
-	`content_item_id` text NOT NULL,
-	`input_kind` text NOT NULL,
-	`material_id` text,
-	`revision_id` text,
-	`content_digest` text,
-	`queue_mode` text NOT NULL,
-	`received_at` text NOT NULL,
-	`terminal_claim_kind` text,
-	`terminal_claim_id` text,
-	`terminal_claimed_at` text,
-	PRIMARY KEY(`workspace_id`,`thread_id`),
-	CONSTRAINT `pending_user_turn_records_input_kind_check` CHECK (`input_kind` IN ('message', 'material')),
-	CONSTRAINT `pending_user_turn_records_input_tuple_check` CHECK ((`input_kind` = 'message' AND `material_id` IS NULL AND `revision_id` IS NULL AND `content_digest` IS NULL) OR (`input_kind` = 'material' AND `material_id` IS NOT NULL AND `revision_id` IS NOT NULL AND `content_digest` IS NOT NULL)),
-	CONSTRAINT `pending_user_turn_records_digest_check` CHECK (`content_digest` IS NULL OR (length(`content_digest`) = 71 AND substr(`content_digest`, 1, 7) = 'sha256:' AND substr(`content_digest`, 8) NOT GLOB '*[^0-9a-f]*')),
-	CONSTRAINT `pending_user_turn_records_queue_mode_check` CHECK (`queue_mode` = 'safe_point_steering'),
-	CONSTRAINT `pending_user_turn_records_claim_check` CHECK ((`terminal_claim_kind` IS NULL AND `terminal_claim_id` IS NULL AND `terminal_claimed_at` IS NULL) OR (`terminal_claim_kind` IS NOT NULL AND `terminal_claim_kind` IN ('applied', 'follow-up', 'cancelled') AND `terminal_claim_id` IS NOT NULL AND `terminal_claimed_at` IS NOT NULL))
 );
 
 --> statement-breakpoint
@@ -422,34 +284,6 @@ CREATE TABLE `staged_workspace_reviews` (
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	PRIMARY KEY(`workspace_id`,`review_id`)
-);
-
---> statement-breakpoint
-
-CREATE TABLE `steering_terminal_outcomes` (
-	`workspace_id` text NOT NULL,
-	`thread_id` text NOT NULL,
-	`pending_turn_id` text NOT NULL,
-	`outcome_id` text NOT NULL,
-	`state` text NOT NULL,
-	`send_request_id` text NOT NULL,
-	`terminal_request_id` text NOT NULL,
-	`content_item_id` text NOT NULL,
-	`goal_id` text NOT NULL,
-	`active_turn_id` text NOT NULL,
-	`input_kind` text NOT NULL,
-	`material_id` text,
-	`revision_id` text,
-	`content_digest` text,
-	`follow_up_turn_id` text,
-	`follow_up_item_id` text,
-	`accepted_at` text NOT NULL,
-	PRIMARY KEY(`workspace_id`,`thread_id`,`pending_turn_id`),
-	CONSTRAINT `steering_terminal_outcomes_state_check` CHECK (`state` IN ('follow-up', 'cancelled')),
-	CONSTRAINT `steering_terminal_outcomes_input_kind_check` CHECK (`input_kind` IN ('message', 'material')),
-	CONSTRAINT `steering_terminal_outcomes_input_tuple_check` CHECK ((`input_kind` = 'message' AND `material_id` IS NULL AND `revision_id` IS NULL AND `content_digest` IS NULL) OR (`input_kind` = 'material' AND `material_id` IS NOT NULL AND `revision_id` IS NOT NULL AND `content_digest` IS NOT NULL)),
-	CONSTRAINT `steering_terminal_outcomes_digest_check` CHECK (`content_digest` IS NULL OR (length(`content_digest`) = 71 AND substr(`content_digest`, 1, 7) = 'sha256:' AND substr(`content_digest`, 8) NOT GLOB '*[^0-9a-f]*')),
-	CONSTRAINT `steering_terminal_outcomes_follow_up_check` CHECK ((`state` = 'follow-up' AND `follow_up_turn_id` IS NOT NULL AND `follow_up_item_id` IS NOT NULL) OR (`state` = 'cancelled' AND `follow_up_turn_id` IS NULL AND `follow_up_item_id` IS NULL))
 );
 
 --> statement-breakpoint
@@ -783,30 +617,6 @@ CREATE INDEX `git_push_records_repository_idx` ON `git_push_records` (`workspace
 
 --> statement-breakpoint
 
-CREATE INDEX `goal_plan_records_goal_idx` ON `goal_plan_records` (`workspace_id`,`thread_id`,`goal_id`,`created_at`,`plan_item_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `goal_records_thread_idx` ON `goal_records` (`workspace_id`,`thread_id`,`updated_at`,`goal_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `goal_review_records_task_idx` ON `goal_review_records` (`workspace_id`,`thread_id`,`goal_id`,`task_id`,`created_at`,`review_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `goal_tasks_goal_order_idx` ON `goal_tasks` (`workspace_id`,`thread_id`,`goal_id`,`order_index`,`task_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `goal_verification_records_goal_idx` ON `goal_verification_records` (`workspace_id`,`thread_id`,`goal_id`,`created_at`,`verification_id`);
-
---> statement-breakpoint
-
-CREATE INDEX `goal_verification_records_task_idx` ON `goal_verification_records` (`workspace_id`,`thread_id`,`goal_id`,`task_id`,`created_at`,`verification_id`);
-
---> statement-breakpoint
-
 CREATE INDEX idx_workspace_quarantine_records_workspace_resolution_created
   ON workspace_quarantine_records (workspace_id, resolution, created_at, quarantine_record_id);
 
@@ -817,10 +627,6 @@ CREATE UNIQUE INDEX `mcp_tool_schema_snapshots_digest_idx` ON `mcp_tool_schema_s
 --> statement-breakpoint
 
 CREATE INDEX `mcp_tool_schema_snapshots_workspace_idx` ON `mcp_tool_schema_snapshots` (`workspace_id`,`catalog_entry_id`,`captured_at`);
-
---> statement-breakpoint
-
-CREATE UNIQUE INDEX `pending_user_turn_records_identity_idx` ON `pending_user_turn_records` (`workspace_id`,`pending_turn_id`);
 
 --> statement-breakpoint
 
@@ -865,14 +671,6 @@ CREATE INDEX `runtime_evidence_workspace_idx` ON `runtime_evidence` (`workspace_
 --> statement-breakpoint
 
 CREATE INDEX `staged_workspace_reviews_change_set_idx` ON `staged_workspace_reviews` (`workspace_id`,`change_set_id`,`updated_at`,`review_id`);
-
---> statement-breakpoint
-
-CREATE UNIQUE INDEX `steering_terminal_outcomes_identity_idx` ON `steering_terminal_outcomes` (`workspace_id`,`outcome_id`);
-
---> statement-breakpoint
-
-CREATE UNIQUE INDEX `steering_terminal_outcomes_terminal_request_idx` ON `steering_terminal_outcomes` (`workspace_id`,`thread_id`,`terminal_request_id`);
 
 --> statement-breakpoint
 
@@ -1019,6 +817,7 @@ CREATE TABLE `pending_requests` (
   `resolution` text,
   `deciding_actor_kind` text,
   `deciding_actor_id` text,
+	`deciding_actor_context_json` text,
   `decided_at` text,
   `answer_map_json` text,
   `ending` text,
@@ -1053,7 +852,7 @@ CREATE TABLE `pending_requests` (
   `created_at` text NOT NULL,
   `updated_at` text NOT NULL,
   CONSTRAINT `pending_requests_kind_check` CHECK (`kind` IN ('approval', 'user-input')),
-  CONSTRAINT `pending_requests_requester_kind_check` CHECK (`requester_kind` IN ('worker', 'assistant', 'person')),
+  CONSTRAINT `pending_requests_requester_kind_check` CHECK (`requester_kind` IN ('worker', 'assistant', 'coordinator', 'person')),
   CONSTRAINT `pending_requests_state_check` CHECK (`state` IN ('pending', 'resolved', 'ended')),
   CONSTRAINT `pending_requests_resolution_check` CHECK (`resolution` IS NULL OR `resolution` IN ('granted', 'denied', 'answered')),
   CONSTRAINT `pending_requests_deciding_actor_kind_check` CHECK (`deciding_actor_kind` IS NULL OR `deciding_actor_kind` IN ('user', 'system')),
@@ -1088,3 +887,21 @@ CREATE TABLE workspace_snapshot_collections (
 
 --> statement-breakpoint
 CREATE UNIQUE INDEX workspace_snapshot_collection_review_idx ON workspace_snapshot_collections(workspace_id, change_set_id) WHERE change_set_id IS NOT NULL;
+
+--> statement-breakpoint
+
+CREATE TABLE IF NOT EXISTS goals (goal_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS goal_cards (card_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, payload_json TEXT NOT NULL);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS goal_cards_goal ON goal_cards(goal_id);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS goal_plan_versions (plan_version_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, payload_json TEXT NOT NULL);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS goal_versions_goal ON goal_plan_versions(goal_id);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS goal_card_tasks (thread_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, card_id TEXT NOT NULL, payload_json TEXT NOT NULL);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS goal_tasks_goal ON goal_card_tasks(goal_id);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS task_turn_terminal_facts (turn_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, payload_json TEXT NOT NULL);

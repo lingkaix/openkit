@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
 import {
-  GoalPlanExpectedArtifactSchema,
-  GoalPlanReviewPolicySchema,
-  GoalPlanTaskResourceSchema,
-  GoalPlanVerificationCheckSchema,
-} from '../runtime/goal-plan.js';
+  TaskExpectedArtifactSchema,
+  TaskResourceSchema,
+  TaskReviewPolicySchema,
+  TaskVerificationCheckSchema,
+} from './task-shapes.js';
 
 /** Stable attribution id for deterministic worker coordination decisions. */
 export const WORKER_COORDINATOR_AGENT_ID = 'worker-coordinator';
@@ -84,11 +84,11 @@ export const StructuredWorkerDelegationRequestSchema = z
     objective: z.string().min(1).max(2_000),
     acceptanceCriteria: z.array(z.string().min(1).max(1_000)).min(1).max(20),
     contextRefs: z.array(ContextRefSchema).min(1).max(50),
-    resources: z.array(GoalPlanTaskResourceSchema).max(50),
-    expectedArtifacts: z.array(GoalPlanExpectedArtifactSchema).max(20),
+    resources: z.array(TaskResourceSchema).max(50),
+    expectedArtifacts: z.array(TaskExpectedArtifactSchema).max(20),
     constraints: StructuredWorkerDelegationConstraintsSchema,
-    verification: z.array(GoalPlanVerificationCheckSchema).min(1).max(20),
-    reviewPolicy: GoalPlanReviewPolicySchema,
+    verification: z.array(TaskVerificationCheckSchema).min(1).max(20),
+    reviewPolicy: TaskReviewPolicySchema,
     escalationConditions: z.array(z.string().min(1).max(1_000)).max(20),
     reviewContext: StructuredWorkerDelegationReviewContextSchema.nullable(),
   })
@@ -112,15 +112,15 @@ export interface StructuredWorkerDelegationRequestInput {
   /** Source context references selected for the worker. */
   readonly contextRefs: readonly DelegationContextRef[];
   /** Exact semantic resources selected for the worker task. */
-  readonly resources: readonly z.input<typeof GoalPlanTaskResourceSchema>[];
+  readonly resources: readonly z.input<typeof TaskResourceSchema>[];
   /** Expected artifacts or file changes from the worker task. */
-  readonly expectedArtifacts: readonly z.input<typeof GoalPlanExpectedArtifactSchema>[];
+  readonly expectedArtifacts: readonly z.input<typeof TaskExpectedArtifactSchema>[];
   /** Execution constraints for the bounded worker task. */
   readonly constraints: z.input<typeof StructuredWorkerDelegationConstraintsSchema>;
   /** Verification commands or checks expected after worker execution. */
-  readonly verification: readonly z.input<typeof GoalPlanVerificationCheckSchema>[];
+  readonly verification: readonly z.input<typeof TaskVerificationCheckSchema>[];
   /** Review policy for the worker output. */
-  readonly reviewPolicy: z.input<typeof GoalPlanReviewPolicySchema>;
+  readonly reviewPolicy: z.input<typeof TaskReviewPolicySchema>;
   /** Conditions that require the worker to escalate instead of inventing scope. */
   readonly escalationConditions: readonly string[];
   /** Resolved Goal Review context for a continuation, or null for an initial attempt. */

@@ -14,7 +14,6 @@ import { AgentSessionSchema, RequestIdSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
-import { createPendingUserTurnRecord } from '../goal-steering-authority.js';
 import { openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -1096,58 +1095,6 @@ describe('FsStore persistence', () => {
     expect(restarted.listCommandRequests().map((record) => record.inputHash)).toEqual([
       'sha256:live',
     ]);
-  });
-
-  it('retains an expired steering send receipt only while its exact pending owner exists', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-    applyScopedMigrations(workspaceDb);
-    const requestId = '0190f4c8-0000-7000-8000-000000000506';
-    const scope = { workspaceId: 'ws_demo', threadId: 'th_demo' };
-
-    try {
-      const pending = createPendingUserTurnRecord(workspaceDb, {
-        workspaceId: scope.workspaceId,
-        threadId: scope.threadId,
-        goalId: 'go_receipt_retention',
-        activeTurnId: 'tu_receipt_retention',
-        requestId,
-        input: { kind: 'message' },
-        receivedAt: '2000-01-01T00:00:00.000Z',
-      });
-      store.recordCommandRequest(
-        {
-          command: 'goal.steering.send',
-          requestId,
-          scope,
-          inputHash: 'sha256:pending-steering',
-          response: { kind: 'pending_user_turn', id: pending.pendingTurnId },
-          createdAt: '2000-01-01T00:00:00.000Z',
-          expiresAt: '2000-01-08T00:00:00.000Z',
-        },
-        workspaceDb
-      );
-
-      expect(
-        store.getCommandRequest('goal.steering.send', requestId, scope, workspaceDb)
-      ).toMatchObject({
-        response: { kind: 'pending_user_turn', id: pending.pendingTurnId },
-      });
-
-      workspaceDb.sqlite
-        .prepare(
-          'DELETE FROM pending_user_turn_records WHERE workspace_id = ? AND thread_id = ? AND pending_turn_id = ?'
-        )
-        .run(scope.workspaceId, scope.threadId, pending.pendingTurnId);
-
-      expect(
-        store.getCommandRequest('goal.steering.send', requestId, scope, workspaceDb)
-      ).toBeNull();
-    } finally {
-      workspaceDb.sqlite.close();
-    }
   });
 
   it('rejects extra receipt metadata outside conversation.submit', () => {

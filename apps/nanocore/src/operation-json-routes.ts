@@ -11,6 +11,7 @@ import {
   type OperationInvocationDependencies,
   OperationInvocationError,
 } from './operation-invocation.js';
+import { GoalCommandError } from './runtime/goal-owner.js';
 
 /** Projects every implemented JSON product definition onto native invocation, with trusted actor and header identity. */
 export function registerOperationJsonRoutes(
@@ -55,6 +56,8 @@ export function registerOperationJsonRoutes(
       } catch (error) {
         if (error instanceof HTTPException) return error.getResponse();
         if (error instanceof OperationInvocationError)
+          return asApiError(error.message, error.code, error.status);
+        if (error instanceof GoalCommandError)
           return asApiError(error.message, error.code, error.status);
         if (id.startsWith('kernel.')) return asKernelApiError(error);
         return asCommandError(error, definition.mutating ? 'thread_create_failed' : 'not_found');

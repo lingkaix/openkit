@@ -65,22 +65,6 @@ import {
   listExportableGitPushRecords,
 } from '../runtime/git-push-records.js';
 import {
-  importGoalReviewRecords,
-  listExportableGoalReviewRecords,
-} from '../runtime/goal-review-records.js';
-import {
-  importGoalPlanRecords,
-  importGoalRecords,
-  importGoalTasks,
-  listExportableGoalPlanRecords,
-  listExportableGoalRecords,
-  listExportableGoalTasks,
-} from '../runtime/goal-store.js';
-import {
-  importGoalVerificationRecords,
-  listExportableGoalVerificationRecords,
-} from '../runtime/goal-verification-records.js';
-import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
@@ -484,17 +468,13 @@ function collectWorkspaceExportRows(
       capabilityCalls: [],
       evidenceBundles: [],
       gitPushRecords: [],
-      goalPlanRecords: [],
-      goalRecords: [],
-      goalReviewRecords: [],
-      goalTasks: [],
-      goalVerificationRecords: [],
       mcpToolSchemaSnapshots: [],
       permissionDecisions: [],
       resolvedAgentSetups: [],
       runtimeEvidence: [],
       usageRecords: [],
       vaultUseRecords: [],
+      goalState: { goals: [], cards: [], versions: [], tasks: [], terminalFacts: [] },
       workerCheckpoints: [],
       workspaceApplyPlans: [],
       workspaceApplyResults: [],
@@ -530,17 +510,19 @@ function collectWorkspaceExportRows(
         capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
         evidenceBundles: listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId),
         gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
-        goalRecords: listExportableGoalRecords(workspaceDb, workspaceId),
-        goalPlanRecords: listExportableGoalPlanRecords(workspaceDb, workspaceId),
-        goalReviewRecords: listExportableGoalReviewRecords(workspaceDb, workspaceId),
-        goalTasks: listExportableGoalTasks(workspaceDb, workspaceId),
-        goalVerificationRecords: listExportableGoalVerificationRecords(workspaceDb, workspaceId),
         mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId),
         permissionDecisions: listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId),
         resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
         runtimeEvidence: listWorkspaceRuntimeEvidence(workspaceDb, workspaceId),
         usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId),
         vaultUseRecords: listExportableWorkspaceVaultUseRecords(workspaceDb, workspaceId),
+        goalState: {
+          goals: readGoalPayloads(workspaceDb, 'goals'),
+          cards: readGoalPayloads(workspaceDb, 'goal_cards'),
+          versions: readGoalPayloads(workspaceDb, 'goal_plan_versions'),
+          tasks: readGoalPayloads(workspaceDb, 'goal_card_tasks'),
+          terminalFacts: readGoalPayloads(workspaceDb, 'task_turn_terminal_facts'),
+        },
         workerCheckpoints: listExportableWorkerCheckpoints(workspaceDb, workspaceId),
         workspaceApplyPlans: listExportableWorkspaceApplyPlans(workspaceDb, workspaceId),
         workspaceApplyResults: listExportableWorkspaceApplyResults(workspaceDb, workspaceId),
@@ -656,12 +638,33 @@ function importWorkspaceDatabaseRows({
     importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
     importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
     workspaceDb.sqlite.transaction(() => {
-      importGoalRecords(workspaceDb, snapshot.goalRecords);
-      importGoalPlanRecords(workspaceDb, snapshot.goalPlanRecords);
-      importGoalTasks(workspaceDb, snapshot.goalTasks);
+      for (const goal of snapshot.goalState.goals)
+        workspaceDb.sqlite.prepare('INSERT INTO goals VALUES (?,?,?)').run(
+          goal.goalId,
+          goal.threadId,
+          JSON.stringify({
+            ...goal,
+            responsibleUserId: authorityUserId,
+            responsibleActorContext: { kind: 'session', userId: authorityUserId },
+          })
+        );
+      for (const card of snapshot.goalState.cards)
+        workspaceDb.sqlite
+          .prepare('INSERT INTO goal_cards VALUES (?,?,?)')
+          .run(card.cardId, card.goalId, JSON.stringify(card));
+      for (const version of snapshot.goalState.versions)
+        workspaceDb.sqlite
+          .prepare('INSERT INTO goal_plan_versions VALUES (?,?,?)')
+          .run(version.planVersionId, version.goalId, JSON.stringify(version));
+      for (const link of snapshot.goalState.tasks)
+        workspaceDb.sqlite
+          .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')
+          .run(link.threadId, link.goalId, link.cardId, JSON.stringify(link));
+      for (const fact of snapshot.goalState.terminalFacts)
+        workspaceDb.sqlite
+          .prepare('INSERT INTO task_turn_terminal_facts VALUES (?,?,?)')
+          .run(fact.id, fact.threadId, JSON.stringify(fact));
     })();
-    importGoalReviewRecords(workspaceDb, snapshot.goalReviewRecords);
-    importGoalVerificationRecords(workspaceDb, snapshot.goalVerificationRecords);
     importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
     importGenerativePresentations({
       workspaceDb,
@@ -1105,11 +1108,6 @@ export function createVerifiedWorkspaceExport({
     capabilityCalls: workspaceRowFamilies.capabilityCalls,
     evidenceBundles: workspaceRowFamilies.evidenceBundles,
     gitPushRecords: workspaceRowFamilies.gitPushRecords,
-    goalRecords: workspaceRowFamilies.goalRecords,
-    goalPlanRecords: workspaceRowFamilies.goalPlanRecords,
-    goalReviewRecords: workspaceRowFamilies.goalReviewRecords,
-    goalTasks: workspaceRowFamilies.goalTasks,
-    goalVerificationRecords: workspaceRowFamilies.goalVerificationRecords,
     vaultInjectionPlans: workspaceVaultInjectionPlans,
     vaultInjectionReceipts: coreDb
       ? listExportableVaultInjectionReceipts(
@@ -1128,6 +1126,7 @@ export function createVerifiedWorkspaceExport({
     stagedWorkspaceReviews: workspaceRowFamilies.workspaceSyncRecords.stagedReviews,
     usageRecords: workspaceRowFamilies.usageRecords,
     vaultUseRecords: workspaceRowFamilies.vaultUseRecords,
+    goalState: workspaceRowFamilies.goalState,
     workerCheckpoints: workspaceRowFamilies.workerCheckpoints,
     workspaceApplyPlans: workspaceRowFamilies.workspaceApplyPlans,
     workspaceApplyResults: workspaceRowFamilies.workspaceApplyResults,
@@ -1501,4 +1500,11 @@ export function registerWorkspaceTransferRoutes({
       );
     }
   });
+}
+
+/** Captures current Goal-family bytes on the export transaction, without interpreting retired data. */
+function readGoalPayloads(db: WorkspaceDb, table: string): unknown[] {
+  return (
+    db.sqlite.prepare(`SELECT payload_json FROM ${table}`).all() as { payload_json: string }[]
+  ).map((row) => JSON.parse(row.payload_json) as unknown);
 }

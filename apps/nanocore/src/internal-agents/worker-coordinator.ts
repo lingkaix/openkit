@@ -1,12 +1,9 @@
-import { createDeterministicGoalPlanFallback, type GoalPlanOutput } from '../runtime/goal-plan.js';
-import type { StopAfterTurnDecision } from '../runtime/stop-after-turn.js';
 import {
   createStructuredWorkerDelegationRequest,
   createWorkerDelegationDraft,
   type DelegationContextRef,
   type StructuredWorkerDelegationRequest,
   type StructuredWorkerDelegationRequestInput,
-  WORKER_COORDINATOR_AGENT_ID,
   type WorkerDelegationDraft,
 } from './delegation.js';
 
@@ -90,8 +87,6 @@ export interface WorkerCoordinatorFailureContext {
 export interface WorkerCoordinatorInput {
   /** User prompt to route. */
   readonly prompt: string;
-  /** Routing origin used to avoid reclassifying approved Goal Mode steps as new user goals. */
-  readonly routingContext?: 'user_prompt' | 'goal_step';
   /** Available worker readiness summaries. */
   readonly readiness: readonly WorkerCoordinatorCandidate[];
   /** Thread state summary. */
@@ -130,102 +125,6 @@ export interface WorkerCoordinatorDecision {
 }
 
 /**
- * Input used when Workflow Coordinator owns a Goal Mode plan draft.
- */
-export interface WorkerCoordinatorGoalPlanDraftInput {
-  /** Workspace that owns the goal. */
-  readonly workspaceId: string;
-  /** Thread that owns the goal. */
-  readonly threadId: string;
-  /** Goal id being planned. */
-  readonly goalId: string;
-  /** Goal title being planned. */
-  readonly title: string;
-  /** Goal objective being planned. */
-  readonly objective: string;
-}
-
-/**
- * Product-facing Workflow Coordinator summary for one Goal Mode plan draft.
- */
-export interface WorkerCoordinatorGoalPlanDraftSummary {
-  /** Product mode planned by the Coordinator. */
-  readonly mode: 'goal';
-  /** Internal agent that owns the planning decision. */
-  readonly sourceAgentId: typeof WORKER_COORDINATOR_AGENT_ID;
-  /** Rule-based confidence for this V1 plan draft. */
-  readonly confidence: number;
-  /** User-safe rationale for the generated plan draft. */
-  readonly rationale: string;
-  /** Source refs used to frame the plan draft. */
-  readonly contextRefs: readonly DelegationContextRef[];
-  /** Human approvals required before worker execution. */
-  readonly requiredApprovals: readonly string[];
-  /** Complete bounded Plan proposed for immutable review. */
-  readonly plan: GoalPlanOutput;
-}
-
-/**
- * Input used when Workflow Coordinator records a Goal Mode stop decision.
- */
-export interface WorkerCoordinatorGoalStopDecisionInput {
-  /** Workspace that owns the goal. */
-  readonly workspaceId: string;
-  /** Thread that owns the goal. */
-  readonly threadId: string;
-  /** Request id that triggered the stop decision. */
-  readonly requestId: string;
-  /** Goal id being advanced. */
-  readonly goalId: string;
-  /** Goal task id that produced the worker turn. */
-  readonly taskId: string;
-  /** Worker turn id that produced evidence. */
-  readonly turnId: string;
-  /** Lower-level worker-loop stop decision. */
-  readonly stopDecision: StopAfterTurnDecision;
-  /** Whether another Goal Task remains incomplete after accepting the addressed Task. */
-  readonly hasOtherIncompleteTasksAfterAddressedTaskCompletion: boolean;
-  /** Evidence produced by the worker turn. */
-  readonly evidence: {
-    /** Worker turn item ids used as evidence. */
-    readonly itemIds: readonly string[];
-    /** Worker turn artifact ids used as evidence. */
-    readonly artifactIds: readonly string[];
-  };
-}
-
-/**
- * Product-facing Workflow Coordinator stop decision for one Goal Mode step.
- */
-export interface WorkerCoordinatorGoalStopDecision {
-  /** Stable schema version for Coordinator stop-decision summaries. */
-  readonly schemaVersion: 1;
-  /** Product mode advanced by the Coordinator. */
-  readonly mode: 'goal';
-  /** Internal agent that owns the stop decision. */
-  readonly sourceAgentId: typeof WORKER_COORDINATOR_AGENT_ID;
-  /** Request id that triggered the stop decision. */
-  readonly requestId: string;
-  /** Higher-level Goal Mode outcome selected by the Coordinator. */
-  readonly outcome: StopAfterTurnDecision['outcome'];
-  /** True when Goal Mode must pause or terminate before another step. */
-  readonly shouldStop: boolean;
-  /** Worker stop reason that produced the decision. */
-  readonly stopReason: StopAfterTurnDecision['stopReason'];
-  /** User-safe explanation for the selected stop decision. */
-  readonly rationale: string;
-  /** Source refs used to scope the stop decision. */
-  readonly contextRefs: readonly DelegationContextRef[];
-  /** Evidence refs that justify the stop decision. */
-  readonly evidence: {
-    /** Worker turn item ids used as evidence. */
-    readonly itemIds: readonly string[];
-    /** Worker turn artifact ids used as evidence. */
-    readonly artifactIds: readonly string[];
-  };
-}
-
-/**
  * Creates a deterministic worker routing decision from bounded Core read models.
  *
  * @param input Worker coordinator input read model.
@@ -236,12 +135,11 @@ export function createWorkerCoordinatorDecision(
 ): WorkerCoordinatorDecision {
   const prompt = input.prompt;
   const normalizedPrompt = prompt.trim().toLowerCase();
-  const approvedGoalStep = input.routingContext === 'goal_step';
 
   if (isUnsupportedPrompt(normalizedPrompt)) {
     return unsupportedDecision('The request asks for sensitive external side effects.');
   }
-  if (!approvedGoalStep && isClarifyPrompt(normalizedPrompt)) {
+  if (isClarifyPrompt(normalizedPrompt)) {
     return {
       decision: 'clarify',
       confidence: 0.72,
@@ -252,7 +150,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isGoalPrompt(normalizedPrompt)) {
+  if (isGoalPrompt(normalizedPrompt)) {
     return {
       decision: 'goal',
       confidence: 0.8,
@@ -263,7 +161,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isReviewPrompt(normalizedPrompt)) {
+  if (isReviewPrompt(normalizedPrompt)) {
     return {
       decision: 'review',
       confidence: 0.76,
@@ -274,7 +172,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isRefinementPrompt(normalizedPrompt)) {
+  if (isRefinementPrompt(normalizedPrompt)) {
     return {
       decision: 'refinement',
       confidence: 0.72,
@@ -285,7 +183,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isRetryPrompt(normalizedPrompt)) {
+  if (isRetryPrompt(normalizedPrompt)) {
     return {
       decision: 'retry',
       confidence: 0.72,
@@ -296,7 +194,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isHandoffPrompt(normalizedPrompt)) {
+  if (isHandoffPrompt(normalizedPrompt)) {
     return {
       decision: 'handoff',
       confidence: 0.72,
@@ -307,7 +205,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && isQuickChatPrompt(normalizedPrompt)) {
+  if (isQuickChatPrompt(normalizedPrompt)) {
     return {
       decision: 'quick_chat',
       confidence: 0.82,
@@ -318,7 +216,7 @@ export function createWorkerCoordinatorDecision(
       workerRequest: null,
     };
   }
-  if (!approvedGoalStep && !requiresWorker(normalizedPrompt)) {
+  if (!requiresWorker(normalizedPrompt)) {
     return {
       decision: 'quick_chat',
       confidence: 0.62,
@@ -398,108 +296,6 @@ export function createWorkerCoordinatorDecision(
       contextRefs,
     }),
   };
-}
-
-/**
- * Creates the V1 Workflow Coordinator summary for one Goal Mode plan draft.
- *
- * @param input Goal planning context.
- * @returns Product-facing plan draft summary.
- */
-export function createWorkerCoordinatorGoalPlanDraft(
-  input: WorkerCoordinatorGoalPlanDraftInput
-): WorkerCoordinatorGoalPlanDraftSummary {
-  return projectWorkerCoordinatorGoalPlanDraft(
-    input,
-    createDeterministicGoalPlanFallback({
-      goalTitle: input.title,
-      objective: input.objective,
-    })
-  );
-}
-
-/**
- * Projects one existing immutable Plan through the Workflow Coordinator summary shape.
- *
- * @param input Goal planning context used for product-safe summary metadata.
- * @param plan Existing authoritative Plan that must not be regenerated during replay.
- * @returns Product-facing plan draft summary for the supplied Plan.
- */
-export function projectWorkerCoordinatorGoalPlanDraft(
-  input: WorkerCoordinatorGoalPlanDraftInput,
-  plan: GoalPlanOutput
-): WorkerCoordinatorGoalPlanDraftSummary {
-  return {
-    mode: 'goal',
-    sourceAgentId: WORKER_COORDINATOR_AGENT_ID,
-    confidence: 0.84,
-    rationale: `Workflow Coordinator drafted a reviewable Goal Mode plan for "${input.title}".`,
-    contextRefs: [
-      { kind: 'workspace', id: input.workspaceId },
-      { kind: 'thread', id: input.threadId },
-    ],
-    requiredApprovals: ['plan_approval'],
-    plan,
-  };
-}
-
-/**
- * Creates the V1 Workflow Coordinator stop decision for one Goal Mode worker step.
- *
- * @param input Goal step stop-decision context.
- * @returns Product-facing stop decision summary.
- */
-export function createWorkerCoordinatorGoalStopDecision(
-  input: WorkerCoordinatorGoalStopDecisionInput
-): WorkerCoordinatorGoalStopDecision {
-  if (input.stopDecision.outcome === 'continue') {
-    throw new Error('Goal Mode lower-level continue is invalid.');
-  }
-  const outcome =
-    input.stopDecision.outcome === 'complete' &&
-    input.hasOtherIncompleteTasksAfterAddressedTaskCompletion
-      ? 'continue'
-      : input.stopDecision.outcome;
-
-  return {
-    schemaVersion: 1,
-    mode: 'goal',
-    sourceAgentId: WORKER_COORDINATOR_AGENT_ID,
-    requestId: input.requestId,
-    outcome,
-    shouldStop: outcome !== 'continue',
-    stopReason: input.stopDecision.stopReason,
-    rationale: rationaleForGoalStopDecision(outcome),
-    contextRefs: [
-      { kind: 'workspace', id: input.workspaceId },
-      { kind: 'thread', id: input.threadId },
-    ],
-    evidence: {
-      itemIds: [...input.evidence.itemIds],
-      artifactIds: [...input.evidence.artifactIds],
-    },
-  };
-}
-
-/**
- * Creates a user-safe rationale for one Goal Mode stop outcome.
- *
- * @param outcome Goal Mode stop outcome.
- * @returns Rationale string.
- */
-function rationaleForGoalStopDecision(outcome: StopAfterTurnDecision['outcome']): string {
-  switch (outcome) {
-    case 'review':
-      return 'Worker turn completed and needs human review before Goal Mode continues.';
-    case 'block':
-      return 'Worker turn ended with a blocker that Goal Mode cannot resolve automatically.';
-    case 'abort':
-      return 'Worker turn was aborted before Goal Mode could continue.';
-    case 'complete':
-      return 'Worker turn completed the Goal Mode objective.';
-    case 'continue':
-      return 'Worker turn can continue to the next bounded Goal Mode step.';
-  }
 }
 
 /**

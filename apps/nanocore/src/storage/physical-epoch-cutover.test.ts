@@ -261,7 +261,11 @@ describe('physical Epoch cutover', () => {
         .prepare('SELECT * FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
         .get('sandbox_1') as Record<string, unknown>;
       expect(sandboxOrigin).toBe('pre-witness');
-      expect(convertedSandbox).toEqual(predecessorSandbox);
+      const { pinned_goal_id: _retiredPin, ...retainedSandbox } = predecessorSandbox as Record<
+        string,
+        unknown
+      >;
+      expect(convertedSandbox).toEqual(retainedSandbox);
       expect(sqlite.prepare('SELECT * FROM harness_instance_records').all()).toEqual(
         predecessor.prepare('SELECT * FROM harness_instance_records').all()
       );

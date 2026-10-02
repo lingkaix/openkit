@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { StartThreadGoalRequestSchema } from './dashboard.js';
 import { StartTaskModeRequestSchema } from './task-mode.js';
 
 import {
@@ -96,18 +95,6 @@ describe('Worker environment App API schemas', () => {
         workerStorageChoice: { kind: 'fresh' },
       }).workerStorageChoice
     ).toEqual({ kind: 'fresh' });
-    expect(
-      StartThreadGoalRequestSchema.parse({
-        objective: 'Ship the feature.',
-        requestId: REQUEST_ID,
-        workerStorageChoice: {
-          expectedRevision: 4,
-          kind: 'selected',
-          purpose: 'work',
-          storageRef: STORAGE_REF,
-        },
-      }).workerStorageChoice
-    ).toMatchObject({ storageRef: STORAGE_REF });
   });
 
   it('projects bounded environment lineage without host paths or runtime handles', () => {

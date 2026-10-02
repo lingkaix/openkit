@@ -9094,11 +9094,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).sandboxBindingRef;
       const selectedBinding = getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef });
       if (!selectedBinding) throw new Error('Expected attached retained storage.');
-      coreDb.sqlite
-        .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_compatible'")
-        .run();
       expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
-      coreDb.sqlite.prepare('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL').run();
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
@@ -10027,10 +10023,8 @@ describe('createConfiguredTurnExecutor', () => {
         .run('a'.repeat(64));
       expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
       coreDb.sqlite
-        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?, pinned_goal_id = ?')
-        .run(originPhysicalEpoch, 'goal_guard');
-      expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('capacity-saturated');
-      coreDb.sqlite.exec('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL');
+        .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
+        .run(originPhysicalEpoch);
       if (withHarness) {
         // Fresh Epoch absence also retires stale binding lifecycle projections.
         expect(backend.inspectMaterializationCapacity?.(desiredPackage)).toBe('available');
@@ -10115,7 +10109,6 @@ describe('createConfiguredTurnExecutor', () => {
 
   it.each([
     'busy',
-    'pinned',
     'uncertain',
   ] as const)('reports one incompatible %s resident as saturated without a second Sandbox effect', async (residentState) => {
     const coreDb = createFactoryCoreDb();
@@ -10168,13 +10161,6 @@ describe('createConfiguredTurnExecutor', () => {
           .prepare(
             `UPDATE harness_instance_records SET active_turn_count = 1
                WHERE harness_instance_id = 'harness-capacity-guard'`
-          )
-          .run();
-      } else if (residentState === 'pinned') {
-        coreDb.sqlite
-          .prepare(
-            `UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_capacity_guard'
-               WHERE sandbox_runtime_id = 'sandbox-runtime-capacity-guard'`
           )
           .run();
       } else {
@@ -10487,13 +10473,7 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare('UPDATE sandbox_runtime_records SET origin_physical_epoch = ?')
         .run('a'.repeat(64));
-      coreDb.sqlite
-        .prepare("UPDATE sandbox_runtime_records SET pinned_goal_id = 'goal_restart_unproved'")
-        .run();
-      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe(
-        'capacity-saturated'
-      );
-      coreDb.sqlite.prepare('UPDATE sandbox_runtime_records SET pinned_goal_id = NULL').run();
+      expect(restartedBackend.inspectMaterializationCapacity?.(secondPackage)).toBe('available');
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings

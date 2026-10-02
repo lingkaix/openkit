@@ -19,7 +19,6 @@ import {
   type TurnSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import { goalRows } from './action-center.js';
 import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -30,7 +29,7 @@ import { projectThreadTaskInputs } from './context/worker-context-projection.js'
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import { registerAppApiRoute } from './openapi.js';
-import { listGoalRecordsForThread } from './runtime/goal-store.js';
+import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { readCommandRequestRecordsFromSqlite } from './storage/command-request-records.js';
@@ -500,16 +499,6 @@ export function registerDashboardRoutes({
       const visibleThreads = store
         .listThreads(workspaceId)
         .filter((thread) => isThreadVisible(store, thread, actor?.userId));
-      const goalAttention = new Set(
-        workspaceDb
-          ? goalRows(workspaceDb, workspaceId, authorized('review.apply'), visibleThreads)
-              .filter(
-                (row) =>
-                  row.severity === 'needs_input' && row.actions.some((action) => !action.disabled)
-              )
-              .map((row) => row.threadId)
-          : []
-      );
       const rows: ConversationNavigationResponse['items'] = visibleThreads
         .filter((thread) => thread.status === 'active')
         .map((thread) => {
@@ -517,19 +506,8 @@ export function registerDashboardRoutes({
           const items = store.listThreadItems(workspaceId, thread.id);
           const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
           const latestTurn = activeTurn ?? turns.at(-1);
-          const goals = workspaceDb
-            ? listGoalRecordsForThread(workspaceDb, { workspaceId, threadId: thread.id })
-            : [];
-          const activeGoal = goals.findLast((goal) =>
-            [
-              'planning',
-              'awaiting_plan_approval',
-              'running',
-              'paused',
-              'awaiting_user',
-              'reviewing',
-            ].includes(goal.status)
-          );
+          const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
+          const activeGoal = goals.findLast((goal) => goal.disposition === null);
           const latestGoal = activeGoal ?? goals.at(-1);
           const hasGoalContext =
             latestGoal && (activeGoal || latestGoal.updatedAt >= (latestTurn?.startedAt ?? ''));
@@ -548,12 +526,9 @@ export function registerDashboardRoutes({
                   ? 'chat'
                   : 'unknown';
           const needsYou =
-            goalAttention.has(thread.id) ||
             pendingApprovalItems(store, items, approvalAllowed).length > 0 ||
             pendingQuestionItems(store, items, turnAllowed, actor?.userId ?? null).length > 0;
-          const working =
-            turns.some((turn) => isActiveWorkStatus(turn.status)) ||
-            activeGoal?.status === 'running';
+          const working = turns.some((turn) => isActiveWorkStatus(turn.status));
           const times = [
             ...turns.flatMap((turn) => [turn.startedAt, turn.completedAt]),
             ...items.flatMap((item) => [item.createdAt, item.completedAt]),
