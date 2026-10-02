@@ -153,7 +153,7 @@ type StopReason =
 
 `budget_exhausted` means the thread or turn budget is exhausted and no new substantive work should start.
 
-New execution does not use `awaiting_human`, a worker human gate, or `ask_user`. A user-input or approval request is a pending request, as [Pending Requests](20260930-pending_requests.md) defines, and the raising Turn stays running. Goal worker admission is unavailable, as [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) defines.
+Worker stop reasons are limited to the five values above. A user-input or approval request is a pending request, as [Pending Requests](20260930-pending_requests.md) defines, and the raising Turn stays running. Goal worker admission is unavailable, as [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) defines.
 
 Low-level provider clients may still throw.
 
@@ -273,7 +273,7 @@ NanoCore is the sole canonicalization owner and may close a mode only when the r
 
 An unknown or incompatible pair is retained for inspection and produces `recovery_required`; NanoCore does not guess from Turn status, collapse all non-completed results to `error`, or treat adapter-private text as a new Core reason.
 
-New execution does not use worker Gates, `awaiting_human`, the `human-gate` stop, `blocked/ask_user`, `waiting_for_user`, or a suspended source AgentSession. A Task worker's approval or user-input request is a pending request: the Turn stays running, and the response is delivered by the next Turn, as [Pending Requests](20260930-pending_requests.md) and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) define. Goal worker execution is not a live path, as [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) defines. An unknown or contradictory terminal tuple stays `recovery_required`. None of these paths restarts a stopped worker, synthesizes a receipt, or creates a settlement workflow. Later work requires a new command and Turn.
+Human requests do not pause worker execution, suspend the source AgentSession, or introduce a waiting checkpoint stage. A Task worker's approval or user-input request is a pending request: the Turn stays running, and the response is delivered by the next Turn, as [Pending Requests](20260930-pending_requests.md) and [Task Mode Worker Delegation](20260704-task_mode_worker_delegation.md) define. Goal worker execution is not a live path, as [Goal Mode Coordination](20260704-goal_mode_coordination.md#availability-during-the-agent-communication-redesign) defines. An unknown or contradictory terminal tuple stays `recovery_required`. None of these paths restarts a stopped worker, synthesizes a receipt, or creates a settlement workflow. Later work requires a new command and Turn.
 
 The envelope owns execution reliability after the owning mode service accepts a Coordinator decision. It does not own a second continuation or delegation decision.
 

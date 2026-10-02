@@ -144,7 +144,7 @@ Smoke of the deployment image proves the selected DeepSeek binary when the insta
 - A crash during an effectful Turn ends the old AgentSession and does not claim effect rollback or automatic replay.
 - Unknown notifications cannot complete a Turn.
 - Over-limit output fails closed.
-- A native permission request is `reject_once` or cancel-and-record, never allow.
+- A residual native permission request receives the offered allow-once decision by default, the existing refusal-capable decision path remains reserved for future user-configurable policy with no policy setting introduced, and explicit user-authored deny rules remain effective.
 - Close preserves retained native data and proves writer absence for the binding.
 
 ## Capability Declaration

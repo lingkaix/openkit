@@ -94,7 +94,7 @@ A pending request has one kind, `approval` or `user-input`, and one requester:
 
 Exclusions:
 - In-Sandbox tool use never raises an approval.
-- A native runtime permission prompt is refused and never becomes a request.
+- A native runtime permission prompt never becomes a request; it receives the pinned runtime's shortest-lived allow by default without interrupting the Turn, and a user's explicit native deny rule stays ([decision](../decisions/20261001-sandbox_full_capability_rulings.md)).
 - A review verdict is not a request here; it stays with its own owner.
 - A native effect that has no gateway operation cannot be approved.
 

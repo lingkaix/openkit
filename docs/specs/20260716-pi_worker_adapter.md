@@ -209,7 +209,7 @@ Required adapter tests cover:
 - Two prompts in one SDK host, then a new host resuming the exact session file, with the prior context visible in the captured provider input
 - SDK Extension lifecycle and authority removal: user package loading, a session-start hook, a Skill or template, one sandbox-local MCP server, OpenKit MCP exactly once through Pi's native registration, managed-overlay precedence with warnings when the loader returns an admitted name or native configuration replaces or excludes a host-supplied Extension, a successful empty catalog, redaction of both loopback credentials in native log and reflected tool-result delivery, a browser path reaching the runtime, and an explicit unsupported result for a UI-only feature. Module load is not compatibility
 - A supply change between two Turns either shows the new supply on the second Turn or follows the probed setup-change successor. The check reads the model-visible schema
-- Fail-closed native permissions
+- Extension UI confirmation defaults to true, the existing boolean response point remains able to deny for future user-configurable policy without introducing policy configuration now, and user-authored native restrictions remain the user's choice
 - A real Pi Task must execute verifiable repository tools, produce a reviewable change through the existing review and apply path, and expose consistent terminal results in Web and the public Skill before the route is claimed usable. That live-acceptance obligation is separate from code-level synthetic proof
 
 Image smoke proves the selected binary, the shim, non-root identity, and that the host is present. It does not prove a real inference Turn.
