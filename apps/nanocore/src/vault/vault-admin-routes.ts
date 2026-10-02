@@ -18,7 +18,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { asApiError, asInvalidRequestError, publishedErrorMessage } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
@@ -479,7 +479,7 @@ export function registerVaultAdminRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -794,7 +794,7 @@ export function registerVaultAdminRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 

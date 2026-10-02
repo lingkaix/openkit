@@ -6,7 +6,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from './api-errors.js';
+import { asApiError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
@@ -88,7 +88,7 @@ export function registerAutomationRoutes({
         AutomationRecordSchema.parse(automationStore.updateAutomation(userId, automationId, input))
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'automation_update_failed');
+      return asApiError(publishedErrorMessage(error), 'automation_update_failed');
     }
   });
 
@@ -107,7 +107,7 @@ export function registerAutomationRoutes({
 
       return c.body(null, 204);
     } catch (error) {
-      return asApiError((error as Error).message, 'automation_delete_failed');
+      return asApiError(publishedErrorMessage(error), 'automation_delete_failed');
     }
   });
 }

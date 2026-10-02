@@ -22,7 +22,12 @@ import {
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
-import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from '../api-errors.js';
 import { listArtifactReviews } from '../artifact-reviews.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
@@ -91,7 +96,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -126,7 +131,7 @@ export function registerWorkspaceSyncRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -248,7 +253,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -264,7 +269,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -280,7 +285,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -296,7 +301,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -312,7 +317,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -328,7 +333,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -344,7 +349,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -360,7 +365,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -462,7 +467,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -478,7 +483,7 @@ export function registerWorkspaceSyncRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -504,7 +509,7 @@ export function registerWorkspaceSyncRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

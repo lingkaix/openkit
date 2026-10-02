@@ -2,7 +2,7 @@ import { SubmitTurnFeedbackRequestSchema } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 
-import { apiErrorPayload, asApiError } from '../api-errors.js';
+import { apiErrorPayload, asApiError, publishedErrorMessage } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -36,7 +36,7 @@ export function registerFeedbackRoutes({
     try {
       return c.json(updateTurnFeedback(requestStore(c), c.req.param('turnId'), parsed.data));
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

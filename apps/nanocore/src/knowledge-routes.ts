@@ -41,7 +41,12 @@ import {
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import {
@@ -240,7 +245,7 @@ export function registerKnowledgeRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -463,7 +468,7 @@ export function registerKnowledgeRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'knowledge_source_list_failed', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_source_list_failed', 404);
     }
   });
 
@@ -533,7 +538,7 @@ export function registerKnowledgeRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'knowledge_observation_list_failed', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_observation_list_failed', 404);
     }
   });
 
@@ -602,7 +607,7 @@ export function registerKnowledgeRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'knowledge_claim_list_failed', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_claim_list_failed', 404);
     }
   });
 
@@ -669,7 +674,7 @@ export function registerKnowledgeRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'knowledge_conflict_list_failed', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_conflict_list_failed', 404);
     }
   });
 
@@ -751,7 +756,7 @@ export function registerKnowledgeRoutes({
         )
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'knowledge_indexes_read_failed', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_indexes_read_failed', 404);
     }
   });
 
@@ -835,7 +840,7 @@ export function registerKnowledgeRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message, 'knowledge_source_not_found', 404);
+      return asApiError(publishedErrorMessage(error), 'knowledge_source_not_found', 404);
     }
   });
 

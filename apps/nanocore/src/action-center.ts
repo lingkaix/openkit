@@ -6,7 +6,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { StopReason } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import { asApiError } from './api-errors.js';
+import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listArtifactReviews } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -90,7 +90,7 @@ export function registerActionCenterRoutes({
       if (error instanceof GoalSteeringAuthorityError) {
         return asApiError(error.message, error.code, error.status);
       }
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

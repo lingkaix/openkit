@@ -1,4 +1,5 @@
 import type { ActorRef } from '@openkit/protocol';
+import { publishedErrorMessage } from '../api-errors.js';
 import type { FsStore } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { updateGoalTask } from './goal-store.js';
@@ -136,7 +137,7 @@ export async function startGoalTaskWorkerTurn(
       turnId: turn.id,
       stage: 'failed',
       stopReason: 'error',
-      diagnosticsSummary: (error as Error).message,
+      diagnosticsSummary: publishedErrorMessage(error),
     });
     input.store.updateTurn(turn.id, {
       status: 'failed',

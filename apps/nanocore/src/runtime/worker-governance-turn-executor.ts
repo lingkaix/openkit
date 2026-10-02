@@ -19,6 +19,7 @@ import {
   type StopReason,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { publishedErrorMessage } from '../api-errors.js';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -3042,7 +3043,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ? primaryError.explanation
         : undefined
     );
-    const message = error instanceof Error ? error.message : 'The governed worker turn failed.';
+    const message = publishedErrorMessage(error, 'The governed worker turn failed.');
     terminalizeGovernedWorkerTurn({
       agentSessionId,
       agentSessionRetained,

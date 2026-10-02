@@ -533,3 +533,22 @@ describe('Workspace sharing routes', () => {
     ).toEqual({ count: 0 });
   });
 });
+
+it('keeps sharing request parse detail at its excluded validation publisher', async () => {
+  const fixture = createFixture();
+  const response = await jsonRequest(
+    fixture.app,
+    `/api/app/workspaces/${fixture.workspaceId}/invitations`,
+    'POST',
+    {
+      inviteeEmail: 42,
+      proposedAccessLevel: 'viewer',
+      requestId: '00000000-0000-4000-8000-000000000001',
+    }
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({
+    code: 'invalid_request',
+    message: expect.stringContaining('inviteeEmail'),
+  });
+});

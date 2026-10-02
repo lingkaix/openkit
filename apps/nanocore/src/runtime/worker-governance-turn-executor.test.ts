@@ -7811,3 +7811,167 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
   );
   return withTestPreparedNativeEnvironment(actual);
 });
+
+describe('retained-record failure publication', () => {
+  it.each([
+    ['healthy', false],
+    ['syntax', false],
+    ['unknown-key', false],
+    ['syntax', true],
+    ['unknown-key', true],
+  ] as const)('publishes %s start with cleanup failure %s safely', async (variant, cleanupFails) => {
+    const marker = 'ROW_SECRET_X9';
+    const fixture = createWorkerContextExecutorFixture(`published-${variant}-${cleanupFails}`);
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+      )
+      .run();
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.failTeardown = cleanupFails;
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-18T01:00:06.000Z',
+    });
+    createSchedulerAdmissionEntry(fixture.coreDb, {
+      queueEntryId: 'queue_unrelated',
+      workspaceId: 'ws_demo',
+      threadId: 'th_unrelated',
+      turnId: 'tu_unrelated',
+      turnInput: 'Unrelated private input',
+      triggerActor: { kind: 'user', id: 'user_local' },
+      requestedAgentId: 'agent_codex_host',
+      profileRef: null,
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+    const bytes =
+      variant === 'syntax'
+        ? marker
+        : JSON.stringify({
+            kind: 'user',
+            id: 'user_local',
+            ...(variant === 'unknown-key' ? { [marker]: 'private' } : {}),
+          });
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_admission_entries SET status = 'admitted', trigger_actor_json = ? WHERE queue_entry_id = 'queue_unrelated'"
+      )
+      .run(bytes);
+    try {
+      const start = executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      if (variant === 'healthy') {
+        await start;
+        expect(backend.calls).toContain('launch');
+        expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('completed');
+      } else {
+        const caught = await start.catch((error: unknown) => error);
+        expect(caught).toBeInstanceOf(cleanupFails ? AggregateError : Error);
+        expect((caught as Error).message).toContain(marker);
+        expect(backend.calls).toContain('materialize');
+        expect(backend.calls).toContain('cleanupSession');
+        expect(backend.calls).not.toContain('launch');
+        const turn = fixture.store.getTurnById(fixture.turn.id);
+        const disk = readFileSync(
+          join(
+            fixture.coreDb.dataRoot,
+            'workspaces/ws_demo/threads/th_demo/turns',
+            fixture.turn.id,
+            'turn.json'
+          ),
+          'utf8'
+        );
+        expect(turn).toMatchObject({
+          status: 'failed',
+          error: {
+            code: 'worker_governance_turn_failed',
+            message: 'The retained record could not be read.',
+          },
+        });
+        expect(JSON.parse(disk)).toMatchObject({ error: turn.error });
+        const session = fixture.store.getAgentSession(fixture.agentSessionId);
+        expect(session).toMatchObject({
+          status: 'failed',
+          message: 'The retained record could not be read.',
+        });
+        const terminal = fixture.store
+          .getTurnEvents(fixture.turn.id)
+          .find((event) => event.event === 'turn.completed');
+        expect(terminal).toMatchObject({
+          data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
+        });
+        const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
+        const response = await app.request(
+          `/api/workspaces/ws_demo/threads/th_demo/turns/${fixture.turn.id}`
+        );
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toMatchObject({ error: turn.error });
+        for (const published of [
+          disk,
+          JSON.stringify(session),
+          JSON.stringify(terminal),
+          JSON.stringify(body),
+        ])
+          expect(published).not.toContain(marker);
+      }
+      expect(
+        fixture.coreDb.sqlite
+          .prepare(
+            "SELECT trigger_actor_json AS bytes FROM scheduler_admission_entries WHERE queue_entry_id = 'queue_unrelated'"
+          )
+          .get()
+      ).toEqual({ bytes });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('persists the authored missing-repository recovery sentence unchanged', async () => {
+    const fixture = createWorkerContextExecutorFixture('published-authored');
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+      )
+      .run();
+    const backend = new FakeWorkerGovernanceBackend();
+    const message =
+      'Workspace review is not actionable (git_repository_missing): review_demo. Link repository resource repo_demo in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.';
+    vi.spyOn(backend, 'materialize').mockRejectedValueOnce(new Error(message));
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-18T01:00:06.000Z',
+    });
+    try {
+      await expect(
+        executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+      ).rejects.toThrow(message);
+      expect(fixture.store.getTurnById(fixture.turn.id)).toMatchObject({
+        status: 'failed',
+        error: { code: 'worker_governance_turn_failed', message },
+      });
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+});

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-
 import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import { publishedErrorMessage } from '../api-errors.js';
 
 import type { FsStore } from '../lib/store.js';
 import { type ModelCaptureContext, withTurnModelCapture } from '../llm/model-capture.js';
@@ -524,7 +524,7 @@ function persistGoalPlanResult(
         sourceTaskEvidenceDigest = goalPlanSourceEvidenceDigest(sourceTaskEvidence, resources);
       }
     } catch (error) {
-      throw new GoalPlanRevisionError('goal_plan_revision_invalid', (error as Error).message);
+      throw new GoalPlanRevisionError('goal_plan_revision_invalid', publishedErrorMessage(error));
     }
     const historicalTaskIds = new Set(
       listGoalTasks(input.workspaceDb, {

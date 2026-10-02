@@ -30,6 +30,7 @@ import {
   asApiError,
   asCommandError,
   asInvalidRequestError,
+  publishedErrorMessage,
 } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
@@ -4645,7 +4646,9 @@ export function registerTaskModeRoute({
         }
         if (checkpoint?.requestId === taskInput.requestId) {
           return asApiError(
-            redactInternalAgentText(error instanceof Error ? error.message : String(error)),
+            redactInternalAgentText(
+              publishedErrorMessage(error, error instanceof Error ? undefined : String(error))
+            ),
             'recovery_required',
             409
           );

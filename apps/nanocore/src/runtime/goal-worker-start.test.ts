@@ -1,14 +1,19 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { ensureLocalUser } from '../auth/identity.js';
+import * as scheduler from '../scheduler-records.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalRecord, createGoalTask, listGoalTasks } from './goal-store.js';
 import { startGoalTaskWorkerTurn } from './goal-worker-start.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
-import { getWorkerCheckpoint } from './worker-checkpoints.js';
+import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const USER_ACTOR = { kind: 'user', id: 'user_demo' } as const;
 
@@ -185,4 +190,107 @@ describe('goal worker start', () => {
       workspaceDb.sqlite.close();
     }
   });
+});
+
+it.each([
+  'syntax',
+  'unknown-key',
+] as const)('keeps %s start diagnostics safe in the checkpoint and Action Center', async (variant) => {
+  const marker = 'ROW_SECRET_X9';
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-start-publication-'));
+  const store = createDemoStore({ dataRoot });
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  applyScopedMigrations(workspaceDb);
+  const parsed = z
+    .object({ id: z.string() })
+    .strict()
+    .safeParse({ id: 'demo', [marker]: 'private' });
+  if (parsed.success) throw new Error('Expected retained schema failure.');
+  const error = variant === 'syntax' ? new SyntaxError(marker) : parsed.error;
+  try {
+    addReadyGoalTask(workspaceDb);
+    await expect(
+      startGoalTaskWorkerTurn({
+        workspaceDb,
+        store,
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        taskId: 'task_demo',
+        requestId: 'req_publication',
+        requestInputHash: 'sha256:publication',
+        prepared: preparedFixture(),
+        startWorker: () => {
+          throw error;
+        },
+      })
+    ).rejects.toBe(error);
+    const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_1');
+    expect(checkpoint).toMatchObject({
+      stage: 'failed',
+      stopReason: 'error',
+      diagnosticsSummary: 'The retained record could not be read.',
+    });
+    expect(store.getTurnById('tu_1')).toMatchObject({
+      error: { code: 'worker_start_failed', message: 'Worker start failed.' },
+    });
+    // A terminal start failure is not actionable; exercise the later summary publisher on an interrupted recovery tuple.
+    const recoveryTurn = store.createTurn('ws_demo', 'th_demo', 'Inspect checkpoint diagnostics', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    store.updateTurn(recoveryTurn.id, { status: 'interrupted', agentSessionId: 'as_recovery' });
+    store.createAgentSession({
+      id: 'as_recovery',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      agentId: 'agent_codex_host',
+      status: 'interrupted',
+      message: 'Interrupted recovery fixture.',
+      createdAt: '2026-07-18T01:00:06.000Z',
+      updatedAt: '2026-07-18T01:00:06.000Z',
+    });
+    upsertWorkerCheckpoint(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: recoveryTurn.id,
+      requestId: 'req_recovery_projection',
+      requestInputHash: 'sha256:recovery',
+      stage: 'preparing',
+      iteration: 0,
+      workerSessionId: 'as_recovery',
+      diagnosticsSummary: checkpoint!.diagnosticsSummary,
+    });
+    vi.spyOn(scheduler, 'listSchedulerSessionLeasesForTurn').mockReturnValue([
+      {
+        agentSessionId: 'as_recovery',
+        status: 'released',
+        recoveryState: null,
+        releaseReason: 'scheduler-restart-backend-cleanup',
+      } as ReturnType<typeof scheduler.listSchedulerSessionLeasesForTurn>[number],
+    ]);
+    const app = createApp({ coreDb, store });
+    const response = await app.request('/api/app/workspaces/ws_demo/action-center');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'checkpoint_recovery',
+          summary: 'The retained record could not be read.',
+        }),
+      ])
+    );
+    expect(JSON.stringify(body)).not.toContain(marker);
+    expect(JSON.stringify(checkpoint)).not.toContain(marker);
+  } finally {
+    vi.restoreAllMocks();
+    workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
+  }
 });

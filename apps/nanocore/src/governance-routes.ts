@@ -12,7 +12,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from './api-errors.js';
+import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { isDeploymentAdminActor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -131,7 +131,7 @@ export function registerGovernanceRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -151,7 +151,7 @@ export function registerGovernanceRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -171,7 +171,7 @@ export function registerGovernanceRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -191,7 +191,7 @@ export function registerGovernanceRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -216,7 +216,7 @@ export function registerGovernanceRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -239,7 +239,7 @@ export function registerGovernanceRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -259,7 +259,7 @@ export function registerGovernanceRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -282,7 +282,7 @@ export function registerGovernanceRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -308,7 +308,7 @@ export function registerGovernanceRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -332,7 +332,7 @@ export function registerGovernanceRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

@@ -43,7 +43,12 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
 
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { CoreMode } from './config/mode.js';
@@ -1599,10 +1604,8 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
   let neverLaunched = false;
   try {
     neverLaunched = isProvenNeverLaunchedGoalAttempt(input, leases);
-  } catch (error) {
-    throw goalStepRecoveryError(
-      `The Goal checkpoint launch evidence could not be read: ${error instanceof Error ? error.message : String(error)}`
-    );
+  } catch {
+    throw goalStepRecoveryError('The Goal checkpoint launch evidence could not be read.');
   }
   if (
     leases.length !== 1 ||
@@ -1677,10 +1680,8 @@ export async function classifyGoalStepCheckpointAfterSchedulerRecovery(input: {
     stopReason = neverLaunched
       ? 'error'
       : recoverWorkerCheckpointStopReason(input.coreDb, input.store, input.workspaceDb, checkpoint);
-  } catch (error) {
-    throw goalStepRecoveryError(
-      `The boot Goal checkpoint has no complete worker owner tuple: ${error instanceof Error ? error.message : String(error)}`
-    );
+  } catch {
+    throw goalStepRecoveryError('The boot Goal checkpoint has no complete worker owner tuple.');
   }
   const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
   const currentEvidence = collectWorkerTurnEvidence(
@@ -2762,7 +2763,7 @@ export function registerGoalRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 

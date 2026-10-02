@@ -20,7 +20,12 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
@@ -596,7 +601,7 @@ export function resolveGitPushCredentialEnv(input: {
  * @returns Protocol-stamped API error response.
  */
 function asRepositoryApiError(error: unknown): Response {
-  const message = (error as Error).message;
+  const message = publishedErrorMessage(error);
 
   if (error instanceof TurnStartValidationError) {
     return asApiError(error.message, error.code, error.status);

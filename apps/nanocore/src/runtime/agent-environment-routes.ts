@@ -5,7 +5,7 @@ import {
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -36,7 +36,7 @@ export function registerAgentEnvironmentRoutes({
         workspaceDb.sqlite.close();
       }
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -61,7 +61,7 @@ export function registerAgentEnvironmentRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message, 'not_found', 404);
+      return asApiError(publishedErrorMessage(error), 'not_found', 404);
     }
   });
 }

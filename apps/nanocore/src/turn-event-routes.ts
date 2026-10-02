@@ -2,7 +2,7 @@ import { ProductSseEventEnvelopeSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 
-import { apiErrorPayload, asApiError } from './api-errors.js';
+import { apiErrorPayload, asApiError, publishedErrorMessage } from './api-errors.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
@@ -62,7 +62,7 @@ export function registerTurnEventRoutes({
     try {
       ownerTurn = store.getTurnById(turnId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
 
     if (workspaceAccess) {
@@ -72,7 +72,7 @@ export function registerTurnEventRoutes({
     try {
       store.getTurn(workspaceId, threadId, turnId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
 
     /**

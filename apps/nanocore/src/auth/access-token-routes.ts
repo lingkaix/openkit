@@ -13,7 +13,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -264,7 +264,7 @@ export function registerAccessTokenRoutes({
         201
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'access_token_issue_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'access_token_issue_failed', 400);
     }
   });
 

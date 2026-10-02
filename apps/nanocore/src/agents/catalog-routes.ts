@@ -4,7 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -90,7 +90,7 @@ export function registerAgentCatalogRoutes({
 
       return c.json(listAgentCatalog(store, authorizedWorkspaceIds(c)));
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -100,7 +100,7 @@ export function registerAgentCatalogRoutes({
 
       return c.json(getAgentCatalogEntry(store, authorizedWorkspaceIds(c), c.req.param('agentId')));
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

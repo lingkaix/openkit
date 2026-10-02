@@ -6,7 +6,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
@@ -83,7 +83,7 @@ export function registerSchedulerAdmissionRoutes({
 
       return c.json(ListSchedulerAdmissionsResponseSchema.parse({ items }));
     } catch (error) {
-      return asApiError((error as Error).message, 'scheduler_admissions_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'scheduler_admissions_failed', 400);
     }
   });
 
@@ -137,7 +137,7 @@ export function registerSchedulerAdmissionRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message, 'scheduler_admission_retry_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'scheduler_admission_retry_failed', 400);
     }
   });
 
@@ -191,7 +191,7 @@ export function registerSchedulerAdmissionRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message, 'scheduler_admission_cancel_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'scheduler_admission_cancel_failed', 400);
     }
   });
 }

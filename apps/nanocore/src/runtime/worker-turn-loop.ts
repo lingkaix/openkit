@@ -1,4 +1,5 @@
 import type { ActorRef, StopReason } from '@openkit/protocol';
+import { publishedErrorMessage } from '../api-errors.js';
 
 import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
@@ -285,7 +286,10 @@ export async function runWorkerTurnLoop(
       stage: 'failed',
       stopReason: 'error',
       ...(workerSessionId ? { workerSessionId } : {}),
-      diagnosticsSummary: error instanceof Error ? error.message : String(error),
+      diagnosticsSummary: publishedErrorMessage(
+        error,
+        error instanceof Error ? undefined : String(error)
+      ),
       ...(input.now ? { now: input.now } : {}),
     });
 

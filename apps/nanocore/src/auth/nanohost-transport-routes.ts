@@ -13,7 +13,7 @@ import {
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -320,7 +320,7 @@ export function registerNanoHostTransportRoutes({
         201
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'nanohost_enroll_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'nanohost_enroll_failed', 400);
     }
   });
 
@@ -403,7 +403,7 @@ export function registerNanoHostTransportRoutes({
         201
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'nanohost_transport_issue_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'nanohost_transport_issue_failed', 400);
     }
   });
 
@@ -523,7 +523,7 @@ export function registerNanoHostTransportRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'nanohost_transport_rotate_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'nanohost_transport_rotate_failed', 400);
     }
   });
 

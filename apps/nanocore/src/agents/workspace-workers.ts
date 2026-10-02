@@ -9,7 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
@@ -99,7 +99,7 @@ export function registerWorkspaceWorkerRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     } finally {
       workspaceDb?.sqlite.close();
     }

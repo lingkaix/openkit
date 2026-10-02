@@ -6,7 +6,12 @@ import {
   WorkspaceResourcesResponseSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
@@ -62,7 +67,7 @@ export function registerWorkspaceRoutes({
 
       return c.json(ListWorkspacesResponseSchema.parse({ items }));
     } catch (error) {
-      return asApiError((error as Error).message, 'workspace_list_failed', 500);
+      return asApiError(publishedErrorMessage(error), 'workspace_list_failed', 500);
     }
   });
 
@@ -111,7 +116,7 @@ export function registerWorkspaceRoutes({
         readWorkspace(requestStore(c), c.req.param('workspaceId'), c.get('actor')?.userId)
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -123,7 +128,7 @@ export function registerWorkspaceRoutes({
         )
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 

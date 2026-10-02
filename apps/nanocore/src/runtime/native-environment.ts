@@ -62,7 +62,7 @@ export function resolvePublicNativeEnvironment(
     throw new DeterministicAgentPreparationError('Native environment credential collision.');
   const resolvedValues = NativeEnvironmentValuesSchema.safeParse(Object.fromEntries(values));
   if (!resolvedValues.success) {
-    throw new DeterministicAgentPreparationError(resolvedValues.error.message);
+    throw new DeterministicAgentPreparationError('The native environment could not be prepared.');
   }
   return {
     imageDigest: defaults.imageDigest,

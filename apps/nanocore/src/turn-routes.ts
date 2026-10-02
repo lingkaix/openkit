@@ -9,7 +9,12 @@ import {
 import type { Context, Hono } from 'hono';
 import type { z } from 'zod';
 
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
@@ -162,7 +167,7 @@ export function registerTurnRoutes({
     try {
       ownerTurn = store.getTurnById(turnId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
 
     const workspaceAccess = c.get('workspaceAccess');
@@ -196,7 +201,7 @@ export function registerTurnRoutes({
         TurnReadProjectionSchema.parse({ ...projectOrdinaryTurn(turn), contextPackageDigest })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 

@@ -20,7 +20,7 @@ import {
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { goalRows } from './action-center.js';
-import { asApiError } from './api-errors.js';
+import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
@@ -577,7 +577,7 @@ export function registerDashboardRoutes({
       );
       return c.json(ConversationNavigationResponseSchema.parse({ items: rows }));
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     } finally {
       workspaceDb?.sqlite.close();
     }
@@ -650,7 +650,7 @@ export function registerDashboardRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -851,7 +851,7 @@ export function registerDashboardRoutes({
       if (error instanceof HTTPException) {
         throw error;
       }
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 }

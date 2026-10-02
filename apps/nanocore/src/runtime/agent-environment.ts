@@ -23,6 +23,7 @@ import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protoco
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { ZodError, type z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
+import { publishedErrorMessage } from '../api-errors.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -286,7 +287,9 @@ function parseAgentEnvironmentPlanningFields(
     };
   } catch (error) {
     if (error instanceof ZodError) {
-      throw new DeterministicAgentPreparationError(error.message);
+      throw new DeterministicAgentPreparationError(
+        'The Agent Environment Package could not be prepared.'
+      );
     }
     throw error;
   }
@@ -799,7 +802,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   } catch (error) {
     // This planner is a pure projection of the already resolved static package and slot.
     if (error instanceof Error) {
-      throw new DeterministicAgentPreparationError(error.message);
+      throw new DeterministicAgentPreparationError(publishedErrorMessage(error));
     }
     throw error;
   }

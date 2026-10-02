@@ -9,7 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { asApiError, asInvalidRequestError, publishedErrorMessage } from '../api-errors.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -112,7 +112,7 @@ export function registerDataRootAdminRoutes({
       return c.json(DataRootBackupCreateResponseSchema.parse(dataRootBackupResponse(verified)));
     } catch (error) {
       return asApiError(
-        error instanceof Error ? error.message : String(error),
+        publishedErrorMessage(error, error instanceof Error ? undefined : String(error)),
         'data_root_backup_failed',
         400
       );
@@ -148,7 +148,7 @@ export function registerDataRootAdminRoutes({
       return c.json(DataRootBackupVerifyResponseSchema.parse(dataRootBackupResponse(verified)));
     } catch (error) {
       return asApiError(
-        error instanceof Error ? error.message : String(error),
+        publishedErrorMessage(error, error instanceof Error ? undefined : String(error)),
         'data_root_backup_verify_failed',
         400
       );

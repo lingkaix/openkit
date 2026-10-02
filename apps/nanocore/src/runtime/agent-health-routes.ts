@@ -1,7 +1,7 @@
 import { AgentHealthRefreshResponseSchema } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 
-import { asApiError } from '../api-errors.js';
+import { asApiError, publishedErrorMessage } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
@@ -29,7 +29,7 @@ export function registerAgentHealthRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'agent_health_refresh_failed');
+      return asApiError(publishedErrorMessage(error), 'agent_health_refresh_failed');
     }
   });
 }

@@ -16,7 +16,12 @@ import {
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   type ArtifactReviewMediaType,
@@ -97,7 +102,7 @@ export function registerArtifactRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -110,7 +115,7 @@ export function registerArtifactRoutes({
     try {
       return c.json(store.getArtifact(workspaceId, artifactId));
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -138,7 +143,7 @@ export function registerArtifactRoutes({
 
       return c.json(content);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
   });
 
@@ -182,7 +187,7 @@ export function registerArtifactRoutes({
       store = requestStore(c);
       store.getWorkspace(workspaceId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
     assertArtifactWorkspaceLineage(c, store, workspaceId, artifactId);
     const workspaceDb = openWorkspaceDb(workspaceId);
@@ -449,7 +454,7 @@ export function registerArtifactRoutes({
       store = requestStore(c);
       store.getWorkspace(workspaceId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
 
     try {
@@ -552,7 +557,7 @@ export function registerArtifactRoutes({
       store = requestStore(c);
       store.getWorkspace(workspaceId);
     } catch (error) {
-      return asApiError((error as Error).message);
+      return asApiError(publishedErrorMessage(error));
     }
     const actorId = c.get('actor').userId;
     const turnId = deterministicArtifactCommandId('tu_artifact', [

@@ -7,7 +7,12 @@ import {
 import type { ActorRef } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 
-import { asApiError, asCommandError, asInvalidRequestError } from '../api-errors.js';
+import {
+  asApiError,
+  asCommandError,
+  asInvalidRequestError,
+  publishedErrorMessage,
+} from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
@@ -72,7 +77,7 @@ export function registerWorkerRecoveryRoutes({
         })
       );
     } catch (error) {
-      return asApiError((error as Error).message, 'recovery_list_failed', 400);
+      return asApiError(publishedErrorMessage(error), 'recovery_list_failed', 400);
     }
   });
 

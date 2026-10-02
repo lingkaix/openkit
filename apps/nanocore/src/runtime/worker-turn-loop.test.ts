@@ -374,3 +374,42 @@ function latestPermissionDecision(workspaceDb: WorkspaceDb): {
     result: string;
   };
 }
+
+it('bounds quoting worker errors in the loop checkpoint before rethrowing', async () => {
+  const coreDb = createCoreDb();
+  const workspaceDb = createWorkspaceDb(coreDb);
+  const error = new SyntaxError('ROW_SECRET_X9');
+  try {
+    await expect(
+      runWorkerTurnLoop({
+        coreDb,
+        workspaceDb,
+        triggerActor: { kind: 'user', id: 'user_local' },
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        goalId: 'goal_demo',
+        taskId: 'task_demo',
+        requestId: 'req_publication',
+        requestInputHash: 'sha256:publication',
+        reviewRequired: false,
+        remainingWorkerIterations: 0,
+        prepare: () => preparedWorkerTurn(false),
+        reserveTurn: () => ({ turnId: 'tu_publication' }),
+        startWorker: () => {
+          throw error;
+        },
+        awaitWorker: () => ({ stopReason: 'completed' }),
+      })
+    ).rejects.toBe(error);
+    const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', 'tu_publication');
+    expect(checkpoint).toMatchObject({
+      stage: 'failed',
+      stopReason: 'error',
+      diagnosticsSummary: 'The retained record could not be read.',
+    });
+    expect(JSON.stringify(checkpoint)).not.toContain('ROW_SECRET_X9');
+  } finally {
+    workspaceDb.sqlite.close();
+    coreDb.sqlite.close();
+  }
+});
