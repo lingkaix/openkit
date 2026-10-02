@@ -398,12 +398,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['importWorkspaceArtifact'], {
-  mutating: true,
-  policyOperation: 'artifact.write',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
+
 registerOperations(
   catalog,
   [
@@ -548,12 +543,6 @@ registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(catalog, ['GET /api/workspaces/:workspaceId/artifacts'], {
-  mutating: false,
-  policyOperation: 'artifact.read',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 
 registerOperations(
   catalog,
@@ -630,7 +619,6 @@ registerOperations(
   catalog,
   [
     'approveThreadGoalPlan',
-    'submitArtifactReviewDecision',
     'submitGoalReviewDecision',
     'submitWorkspaceSyncReviewDecision',
     'submitWorkspaceRecoveryDecision',
@@ -642,26 +630,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(
-  catalog,
-  [
-    'listArtifactReviews',
-    'GET /api/workspaces/:workspaceId/artifacts/:artifactId',
-    'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'artifact.read',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['introduceWorkspaceArtifact'], {
-  mutating: true,
-  policyOperation: 'artifact.write',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
+
 registerOperations(
   catalog,
   [

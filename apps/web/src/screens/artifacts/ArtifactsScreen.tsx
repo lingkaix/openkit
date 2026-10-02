@@ -63,7 +63,7 @@ const ARTIFACT_STATUS: Record<ArtifactListItem['status'], { label: string; tone:
  * matching the listed version, and not a loading or failed read.
  *
  * @param listed Current list row for the selected Artifact.
- * @param detail Exact `getArtifact` payload, if loaded.
+ * @param detail Exact `artifact.read` payload, if loaded.
  * @param detailFailed True when the exact read is in error.
  * @returns True only when introduction may be submitted.
  */

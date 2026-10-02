@@ -235,8 +235,8 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
             {
               kind: 'open_artifact',
               label: 'Open artifact',
-              method: 'GET',
-              href: `/api/workspaces/${review.workspaceId}/artifacts/${review.artifactId}`,
+              method: 'POST',
+              href: operationHttpPath('artifact.read'),
             },
           ],
         },

@@ -7,14 +7,14 @@ import { sha256Content } from '../material/data';
 
 /** Product-safe Artifact list fields; list payloads never carry preview bytes. */
 export type ArtifactListItem = Pick<
-  Awaited<ReturnType<CoreClient['core']['listArtifacts']>>['items'][number],
+  Awaited<ReturnType<CoreClient['operations']['artifact.list']>>['items'][number],
   'id' | 'kind' | 'status' | 'summary' | 'title' | 'version'
 >;
 
-/** Media types admitted by `client.app.importWorkspaceArtifact`. */
+/** Media types admitted by `client.operations['artifact.import']`. */
 export type ArtifactImportMediaType = Parameters<
-  CoreClient['app']['importWorkspaceArtifact']
->[1]['mediaType'];
+  CoreClient['operations']['artifact.import']
+>[0]['mediaType'];
 
 /** Frozen import command bound to one Workspace and request identity. */
 export interface ArtifactImportInput {
@@ -36,7 +36,7 @@ export interface ArtifactIntroduceInput {
 
 /** Authoritative introduce settlement: command receipt, Turn read, and frozen request. */
 export interface ArtifactIntroduceSettlement {
-  result: Awaited<ReturnType<CoreClient['app']['introduceWorkspaceArtifact']>>;
+  result: Awaited<ReturnType<CoreClient['operations']['artifact.introduce']>>;
   turn: Awaited<ReturnType<CoreClient['operations']['turn.read']>>;
   input: ArtifactIntroduceInput;
 }
@@ -251,7 +251,7 @@ export function isAuthoritativeIntroduceItem(
 }
 
 /**
- * Lists selected-Workspace Artifacts through `client.core.listArtifacts`.
+ * Lists selected-Workspace Artifacts through `client.operations['artifact.list']`.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe list rows.
@@ -261,7 +261,9 @@ export function useArtifacts(workspaceId: string | null) {
   return useQuery({
     queryKey: artifactKeys.list(workspaceId ?? ''),
     queryFn: async (): Promise<ArtifactListItem[]> => {
-      const { items } = await client.core.listArtifacts(workspaceId as string);
+      const { items } = await client.operations['artifact.list']({
+        workspaceId: workspaceId as string,
+      });
       return items.map((item) => ({
         id: item.id,
         kind: item.kind,
@@ -279,18 +281,21 @@ export function useArtifacts(workspaceId: string | null) {
 /**
  * Imports one immutable Workspace Artifact bound to the command's Workspace.
  *
- * @returns Mutation over `client.app.importWorkspaceArtifact`.
+ * @returns Mutation over `client.operations['artifact.import']`.
  */
 export function useImportWorkspaceArtifact() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: async (input: ArtifactImportInput) =>
-      client.app.importWorkspaceArtifact(input.workspaceId, {
-        title: input.title,
-        mediaType: input.mediaType,
-        content: input.content,
-        contentDigest: await sha256Content(input.content),
-        requestId: input.requestId,
+      client.operations['artifact.import']({
+        workspaceId: input.workspaceId,
+        ...{
+          title: input.title,
+          mediaType: input.mediaType,
+          content: input.content,
+          contentDigest: await sha256Content(input.content),
+          requestId: input.requestId,
+        },
       }),
     retry: false,
   });
@@ -328,21 +333,21 @@ export async function importComposerFile(
 /**
  * Introduces one exact Artifact version, then reads the authoritative completed Turn.
  *
- * @returns Mutation over `client.app.introduceWorkspaceArtifact` plus `client.operations['turn.read']`.
+ * @returns Mutation over `client.operations['artifact.introduce']` plus `client.operations['turn.read']`.
  */
 export function useIntroduceWorkspaceArtifact() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: async (input: ArtifactIntroduceInput): Promise<ArtifactIntroduceSettlement> => {
-      const result = await client.app.introduceWorkspaceArtifact(
-        input.workspaceId,
-        input.threadId,
-        input.artifactId,
-        {
+      const result = await client.operations['artifact.introduce']({
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        artifactId: input.artifactId,
+        ...{
           expectedArtifactVersion: input.expectedArtifactVersion,
           requestId: input.requestId,
-        }
-      );
+        },
+      });
       const turn = await client.operations['turn.read']({
         workspaceId: input.workspaceId,
         threadId: input.threadId,

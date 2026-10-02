@@ -10,6 +10,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('dashboard and search Thread audiences', () => {
@@ -250,31 +251,47 @@ describe('dashboard and search Thread audiences', () => {
         });
         const deniedArtifactId = userId === 'user_local' ? 'ar_other-private' : 'ar_local-private';
         const ownArtifactId = userId === 'user_local' ? 'ar_local-private' : 'ar_other-private';
-        const catalog = await app.request(`/api/workspaces/${workspace.id}/artifacts`, { headers });
+        const catalog = await app.request(
+          ...artifactOperationRequest('artifact.list', { workspaceId: workspace.id }, { headers })
+        );
         expect(catalog.status).toBe(200);
         expect((await catalog.json()).items.map((item: { id: string }) => item.id).sort()).toEqual(
-          [ownArtifactId, 'ar_Task', 'ar_Goal'].sort()
+          [
+            ownArtifactId,
+            ...(scope === 'server-admin' ? [deniedArtifactId] : []),
+            'ar_Task',
+            'ar_Goal',
+          ].sort()
         );
         const record = await app.request(`/api/workspaces/${workspace.id}`, { headers });
         expect(await record.json()).toMatchObject({ counts: { artifactCount: 3 } });
-        for (const suffix of ['', '/content']) {
+        {
           const hidden = await app.request(
-            `/api/workspaces/${workspace.id}/artifacts/${deniedArtifactId}${suffix}`,
-            { headers }
+            ...artifactOperationRequest(
+              'artifact.read',
+              { workspaceId: workspace.id, artifactId: deniedArtifactId },
+              { headers }
+            )
           );
-          expect(hidden.status).toBe(404);
-          expect(await hidden.text()).not.toContain(denied.name);
+          expect(hidden.status).toBe(scope === 'server-admin' ? 200 : 404);
+          if (scope !== 'server-admin') expect(await hidden.text()).not.toContain(denied.name);
           const visible = await app.request(
-            `/api/workspaces/${workspace.id}/artifacts/${ownArtifactId}${suffix}`,
-            { headers }
+            ...artifactOperationRequest(
+              'artifact.read',
+              { workspaceId: workspace.id, artifactId: ownArtifactId },
+              { headers }
+            )
           );
           expect(visible.status).toBe(200);
         }
         const hiddenReview = await app.request(
-          `/api/app/workspaces/${workspace.id}/artifacts/${deniedArtifactId}/reviews`,
-          { headers }
+          ...artifactOperationRequest(
+            'artifact.review-list',
+            { workspaceId: workspace.id, artifactId: deniedArtifactId },
+            { headers }
+          )
         );
-        expect(hiddenReview.status).toBe(404);
+        expect(hiddenReview.status).toBe(scope === 'server-admin' ? 200 : 404);
         if (scope === 'server-admin') {
           const receiving = store.createThread(workspace.id, 'Attachment audience');
           const attached = await app.request(
@@ -314,17 +331,21 @@ describe('dashboard and search Thread audiences', () => {
             lastMutationRequestId: 'import-safe',
           });
           const introduced = await app.request(
-            `/api/app/workspaces/${workspace.id}/threads/${denied.id}/artifacts/ar_imported_safe/introductions`,
-            {
-              method: 'POST',
-              headers: { ...headers, 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: 'forbidden-introduction',
-                expectedArtifactVersion: 1,
-              }),
-            }
+            ...artifactOperationRequest(
+              'artifact.introduce',
+              { workspaceId: workspace.id, threadId: denied.id, artifactId: 'ar_imported_safe' },
+              {
+                method: 'POST',
+                headers: { ...headers, 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: 'forbidden-introduction',
+                  expectedArtifactVersion: 1,
+                }),
+              }
+            )
           );
-          expect(introduced.status).toBe(404);
+          expect(introduced.status).toBe(409);
+          expect(await introduced.json()).toMatchObject({ code: 'thread_busy' });
         }
         const search = await app.request('/api/app/search?q=needle', { headers });
         expect(search.status).toBe(200);

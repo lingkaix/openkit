@@ -1340,10 +1340,10 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
 test('the catalog projects the approved Artifact, Material, and Goal steering operations', async () => {
   const { operationCatalog } = await operations();
   const expectedMappings = {
-    'artifact.import': 'importWorkspaceArtifact',
-    'artifact.introduce': 'introduceWorkspaceArtifact',
-    'artifact.review-decide': 'submitArtifactReviewDecision',
-    'artifact.review-list': 'listArtifactReviews',
+    'artifact.import': 'artifact.import',
+    'artifact.introduce': 'artifact.introduce',
+    'artifact.review.decide': 'artifact.review.decide',
+    'artifact.review-list': 'artifact.review-list',
     'material.list': 'listWorkspaceMaterials',
     'material.create': 'createWorkspaceMaterial',
     'material.read': 'getWorkspaceMaterial',
@@ -1367,7 +1367,7 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
 
   assert.deepEqual(mapped, expectedMappings);
   const artifactReviewDecision = operationCatalog.find(
-    (entry) => entry.id === 'artifact.review-decide'
+    (entry) => entry.id === 'artifact.review.decide'
   );
   assert.equal(
     artifactReviewDecision?.inputSchema.safeParse({

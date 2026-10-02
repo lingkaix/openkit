@@ -78,10 +78,6 @@ import {
   ImportPluginResponseSchema,
   ImportSkillRequestSchema,
   ImportSkillResponseSchema,
-  ImportWorkspaceArtifactRequestSchema,
-  ImportWorkspaceArtifactResponseSchema,
-  IntroduceWorkspaceArtifactRequestSchema,
-  IntroduceWorkspaceArtifactResponseSchema,
   IssueNanoHostTransportTokenRequestSchema,
   IssueNanoHostTransportTokenResponseSchema,
   LeaveWorkspaceRequestSchema,
@@ -89,7 +85,6 @@ import {
   LightAppBatchResponseSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  ListArtifactReviewsResponseSchema,
   ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListGitPushRecordsResponseSchema,
@@ -216,8 +211,6 @@ import {
   StorageLayoutReportResponseSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
-  SubmitArtifactReviewDecisionRequestSchema,
-  SubmitArtifactReviewDecisionResponseSchema,
   SubmitConversationRequestSchema,
   SubmitConversationResponseSchema,
   SubmitGenerativePresentationActionRequestSchema,
@@ -355,18 +348,6 @@ const USER_ID_PARAMETER = {
   in: 'path',
   required: true,
   schema: { type: 'string', minLength: 1 },
-} as const;
-const ARTIFACT_ID_PARAMETER = {
-  name: 'artifactId',
-  in: 'path',
-  required: true,
-  schema: { $ref: '#/components/schemas/ArtifactId' },
-} as const;
-const ARTIFACT_VERSION_PARAMETER = {
-  name: 'artifactVersion',
-  in: 'path',
-  required: true,
-  schema: { type: 'integer', minimum: 1 },
 } as const;
 const MATERIAL_ID_PARAMETER = {
   name: 'materialId',
@@ -659,7 +640,8 @@ function productOperationPaths() {
           summary: definition.description,
           requestSchema: `${id}.input`,
           responseSchema: `${id}.output`,
-          responseStatus: '200',
+          responseStatus:
+            'successStatus' in definition ? (`${definition.successStatus}` as const) : '200',
           ...(definition.mutating && 'requestId' in definition.inputSchema.shape
             ? { parameters: [REQUEST_ID_HEADER] }
             : {}),
@@ -3163,50 +3145,6 @@ export function createAppOpenApiDocument() {
         },
       },
 
-      '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews': {
-        get: appJsonOperation({
-          operationId: 'listArtifactReviews',
-          tag: 'reviews',
-          summary: 'List version-keyed Artifact Reviews.',
-          parameters: [WORKSPACE_ID_PARAMETER, ARTIFACT_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ListArtifactReviewsResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/versions/{artifactVersion}/review/decision':
-        {
-          post: appJsonOperation({
-            operationId: 'submitArtifactReviewDecision',
-            tag: 'reviews',
-            summary: 'Decide one exact Artifact Review.',
-            parameters: [WORKSPACE_ID_PARAMETER, ARTIFACT_ID_PARAMETER, ARTIFACT_VERSION_PARAMETER],
-            requestSchema: 'SubmitArtifactReviewDecisionRequest',
-            responseStatus: '200',
-            responseSchema: 'SubmitArtifactReviewDecisionResponse',
-          }),
-        },
-      '/api/app/workspaces/{workspaceId}/artifacts/imports': {
-        post: appJsonOperation({
-          operationId: 'importWorkspaceArtifact',
-          tag: 'artifacts',
-          summary: 'Import one immutable Workspace-only Artifact.',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestSchema: 'ImportWorkspaceArtifactRequest',
-          responseStatus: '201',
-          responseSchema: 'ImportWorkspaceArtifactResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/artifacts/{artifactId}/introductions': {
-        post: appJsonOperation({
-          operationId: 'introduceWorkspaceArtifact',
-          tag: 'artifacts',
-          summary: 'Introduce one exact Workspace-only Artifact version into a Thread.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, ARTIFACT_ID_PARAMETER],
-          requestSchema: 'IntroduceWorkspaceArtifactRequest',
-          responseStatus: '201',
-          responseSchema: 'IntroduceWorkspaceArtifactResponse',
-        }),
-      },
       '/api/app/workspaces/{workspaceId}/light-apps': {
         get: appJsonOperation({
           operationId: 'listLightApps',
@@ -5718,11 +5656,6 @@ export function createAppOpenApiDocument() {
         ImportPluginResponse: toJsonSchema(ImportPluginResponseSchema),
         ImportSkillRequest: toJsonSchema(ImportSkillRequestSchema),
         ImportSkillResponse: toJsonSchema(ImportSkillResponseSchema),
-        ImportWorkspaceArtifactRequest: toJsonSchema(ImportWorkspaceArtifactRequestSchema),
-        ImportWorkspaceArtifactResponse: toJsonSchema(ImportWorkspaceArtifactResponseSchema),
-        IntroduceWorkspaceArtifactRequest: toJsonSchema(IntroduceWorkspaceArtifactRequestSchema),
-        IntroduceWorkspaceArtifactResponse: toJsonSchema(IntroduceWorkspaceArtifactResponseSchema),
-        ListArtifactReviewsResponse: toJsonSchema(ListArtifactReviewsResponseSchema),
         ListWorkspaceMaterialRevisionsResponse: toJsonSchema(
           ListWorkspaceMaterialRevisionsResponseSchema
         ),
@@ -5737,12 +5670,6 @@ export function createAppOpenApiDocument() {
         ),
         SelectMcpVersionRequest: toJsonSchema(SelectMcpVersionRequestSchema),
         SelectSkillVersionRequest: toJsonSchema(SelectSkillVersionRequestSchema),
-        SubmitArtifactReviewDecisionRequest: toJsonSchema(
-          SubmitArtifactReviewDecisionRequestSchema
-        ),
-        SubmitArtifactReviewDecisionResponse: toJsonSchema(
-          SubmitArtifactReviewDecisionResponseSchema
-        ),
         UnbindThreadMaterialRequest: toJsonSchema(UnbindThreadMaterialRequestSchema),
         UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),

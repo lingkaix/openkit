@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactResponseSchema,
@@ -11,7 +10,6 @@ import {
 } from '@openkit/app-api-schemas';
 import { GetArtifactResponseSchema, ListArtifactsResponseSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import {
   createArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
@@ -30,6 +28,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -72,11 +71,14 @@ function postJson(
   path: string,
   body: unknown
 ): Promise<Response> {
-  return app.request(path, {
+  const options = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  };
+  return typeof path === 'string'
+    ? app.request(path, options)
+    : app.request(...artifactOperationRequest(path[0], path[1], options));
 }
 
 /**
@@ -137,7 +139,7 @@ function createReviewFixture(
 }
 
 describe('Core artifact routes', () => {
-  it('lists, reads, and opens markdown artifact content', async () => {
+  it('lists and reads exact markdown inline Artifact content', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Artifact content thread');
     const turn = store.createTurn('ws_demo', thread.id, 'Create artifact', {
@@ -165,9 +167,15 @@ describe('Core artifact routes', () => {
     });
     const app = createApp({ store });
 
-    const listRes = await app.request('/api/workspaces/ws_demo/artifacts');
-    const getRes = await app.request('/api/workspaces/ws_demo/artifacts/ar_markdown');
-    const res = await app.request('/api/workspaces/ws_demo/artifacts/ar_markdown/content');
+    const listRes = await app.request(
+      ...artifactOperationRequest('artifact.list', { workspaceId: 'ws_demo' })
+    );
+    const getRes = await app.request(
+      ...artifactOperationRequest('artifact.read', {
+        workspaceId: 'ws_demo',
+        artifactId: 'ar_markdown',
+      })
+    );
 
     expect(listRes.status).toBe(200);
     expect(ListArtifactsResponseSchema.parse(await listRes.json())).toMatchObject({
@@ -177,13 +185,11 @@ describe('Core artifact routes', () => {
     expect(GetArtifactResponseSchema.parse(await getRes.json())).toMatchObject({
       id: 'ar_markdown',
       workspaceId: 'ws_demo',
+      content: { format: 'markdown', body: '# Output' },
     });
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('text/markdown');
-    await expect(res.text()).resolves.toBe('# Output');
   });
 
-  it('serves text and JSON artifact content through their existing representations', async () => {
+  it('reads exact text and JSON inline Artifact content with their recorded formats', async () => {
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Artifact format thread');
     const turn = store.createTurn('ws_demo', thread.id, 'Create formatted artifacts', {
@@ -241,14 +247,27 @@ describe('Core artifact routes', () => {
     });
     const app = createApp({ store });
 
-    const textRes = await app.request('/api/workspaces/ws_demo/artifacts/ar_text/content');
-    const jsonRes = await app.request('/api/workspaces/ws_demo/artifacts/ar_json/content');
+    const textRes = await app.request(
+      ...artifactOperationRequest('artifact.read', {
+        workspaceId: 'ws_demo',
+        artifactId: 'ar_text',
+      })
+    );
+    const jsonRes = await app.request(
+      ...artifactOperationRequest('artifact.read', {
+        workspaceId: 'ws_demo',
+        artifactId: 'ar_json',
+      })
+    );
 
     expect(textRes.status).toBe(200);
-    expect(textRes.headers.get('content-type')).toContain('text/plain');
-    await expect(textRes.text()).resolves.toBe('Plain output');
+    await expect(textRes.json()).resolves.toMatchObject({
+      content: { format: 'text', body: 'Plain output' },
+    });
     expect(jsonRes.status).toBe(200);
-    await expect(jsonRes.json()).resolves.toEqual({ format: 'json', body: '{"ok":true}' });
+    await expect(jsonRes.json()).resolves.toMatchObject({
+      content: { format: 'json', body: '{"ok":true}' },
+    });
   });
 
   it('imports exact Artifact bytes and introduces the immutable origin into an idle Thread', async () => {
@@ -272,14 +291,19 @@ describe('Core artifact routes', () => {
       contentDigest,
       content,
     } as const;
-    const importPath = `/api/app/workspaces/${workspace.id}/artifacts/imports`;
 
     try {
-      const importedRes = await app.request(importPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(importBody),
-      });
+      const importedRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: workspace.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(importBody),
+          }
+        )
+      );
       expect(importedRes.status).toBe(201);
       const imported = ImportWorkspaceArtifactResponseSchema.parse(await importedRes.json());
       expect(imported.artifactVersion).toBe(1);
@@ -303,31 +327,49 @@ describe('Core artifact routes', () => {
         },
       });
 
-      const importReplayRes = await app.request(importPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(importBody),
-      });
+      const importReplayRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: workspace.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(importBody),
+          }
+        )
+      );
       expect(importReplayRes.status).toBe(201);
       expect(ImportWorkspaceArtifactResponseSchema.parse(await importReplayRes.json())).toEqual(
         imported
       );
 
-      const digestMismatchRes = await app.request(importPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...importBody, content: `${content}!` }),
-      });
+      const digestMismatchRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: workspace.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...importBody, content: `${content}!` }),
+          }
+        )
+      );
       expect(digestMismatchRes.status).toBe(400);
       await expect(digestMismatchRes.json()).resolves.toMatchObject({
         code: 'source_digest_mismatch',
       });
 
-      const changedImportRes = await app.request(importPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...importBody, title: 'Changed import title' }),
-      });
+      const changedImportRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: workspace.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...importBody, title: 'Changed import title' }),
+          }
+        )
+      );
       expect(changedImportRes.status).toBe(409);
       await expect(changedImportRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
@@ -337,12 +379,17 @@ describe('Core artifact routes', () => {
         requestId: 'artifact-introduction-route-1',
         expectedArtifactVersion: 1,
       } as const;
-      const introductionPath = `/api/app/workspaces/${workspace.id}/threads/${thread.id}/artifacts/${imported.artifactId}/introductions`;
-      const introducedRes = await app.request(introductionPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(introductionBody),
-      });
+      const introducedRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.introduce',
+          { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(introductionBody),
+          }
+        )
+      );
       expect(introducedRes.status).toBe(201);
       const introduced = IntroduceWorkspaceArtifactResponseSchema.parse(await introducedRes.json());
       expect(introduced).toMatchObject({
@@ -364,12 +411,15 @@ describe('Core artifact routes', () => {
       expect(store.getArtifact(workspace.id, imported.artifactId)).toEqual(artifact);
 
       const changedArtifactRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/threads/${thread.id}/artifacts/ar_other/introductions`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(introductionBody),
-        }
+        ...artifactOperationRequest(
+          'artifact.introduce',
+          { workspaceId: workspace.id, threadId: thread.id, artifactId: 'ar_other' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(introductionBody),
+          }
+        )
       );
       expect(changedArtifactRes.status).toBe(409);
       await expect(changedArtifactRes.json()).resolves.toMatchObject({
@@ -380,11 +430,17 @@ describe('Core artifact routes', () => {
         kind: 'user',
         id: 'user_local',
       });
-      const introductionReplayRes = await app.request(introductionPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(introductionBody),
-      });
+      const introductionReplayRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.introduce',
+          { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(introductionBody),
+          }
+        )
+      );
       expect(introductionReplayRes.status).toBe(201);
       expect(
         IntroduceWorkspaceArtifactResponseSchema.parse(await introductionReplayRes.json())
@@ -392,25 +448,37 @@ describe('Core artifact routes', () => {
 
       const turnCount = store.listThreadTurns(workspace.id, thread.id).length;
       const itemCount = store.listThreadItems(workspace.id, thread.id).length;
-      const busyRes = await app.request(introductionPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'artifact-introduction-route-busy',
-          expectedArtifactVersion: 1,
-        }),
-      });
+      const busyRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.introduce',
+          { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'artifact-introduction-route-busy',
+              expectedArtifactVersion: 1,
+            }),
+          }
+        )
+      );
       expect(busyRes.status).toBe(409);
       await expect(busyRes.json()).resolves.toMatchObject({ code: 'thread_busy' });
       expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(turnCount);
       expect(store.listThreadItems(workspace.id, thread.id)).toHaveLength(itemCount);
 
       artifact.content.body = `${content}!`;
-      const corruptReplayRes = await app.request(importPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(importBody),
-      });
+      const corruptReplayRes = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: workspace.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(importBody),
+          }
+        )
+      );
       expect(corruptReplayRes.status).toBe(409);
       await expect(corruptReplayRes.json()).resolves.toMatchObject({
         code: 'recovery_required',
@@ -452,11 +520,14 @@ describe('Core artifact routes', () => {
     const firstReview = reviews[0]!;
     workspaceDb.sqlite.close();
     const app = createApp({ coreDb, dataRoot, store });
-    const listPath = '/api/app/workspaces/ws_demo/artifacts/ar_review_first/reviews';
-    const decisionPath =
-      '/api/app/workspaces/ws_demo/artifacts/ar_review_first/versions/1/review/decision';
-    const secondDecisionPath =
-      '/api/app/workspaces/ws_demo/artifacts/ar_review_second/versions/1/review/decision';
+    const decisionPath = [
+      'artifact.review.decide',
+      { workspaceId: 'ws_demo', artifactId: 'ar_review_first', artifactVersion: 1 },
+    ] as const;
+    const secondDecisionPath = [
+      'artifact.review.decide',
+      { workspaceId: 'ws_demo', artifactId: 'ar_review_second', artifactVersion: 1 },
+    ] as const;
     const request = {
       requestId: 'artifact-review-reject-1',
       decision: 'rejected',
@@ -464,7 +535,12 @@ describe('Core artifact routes', () => {
     } as const;
 
     try {
-      const listRes = await app.request(listPath);
+      const listRes = await app.request(
+        ...artifactOperationRequest('artifact.review-list', {
+          workspaceId: 'ws_demo',
+          artifactId: 'ar_review_first',
+        })
+      );
       expect(listRes.status).toBe(200);
       expect(ListArtifactReviewsResponseSchema.parse(await listRes.json())).toEqual({
         reviews: [firstReview],
@@ -577,12 +653,19 @@ describe('Core artifact routes', () => {
         }
 
         // An explicitly submitted output with the same presentation remains a deliverable.
-        const catalog = await app.request('/api/workspaces/ws_demo/artifacts');
+        const catalog = await app.request(
+          ...artifactOperationRequest('artifact.list', { workspaceId: 'ws_demo' })
+        );
         expect(catalog.status).toBe(200);
         expect(
           ListArtifactsResponseSchema.parse(await catalog.json()).items.map((item) => item.id)
         ).toEqual(['ar_deliverable_same_title']);
-        const historical = await app.request('/api/workspaces/ws_demo/artifacts/ar_review_first');
+        const historical = await app.request(
+          ...artifactOperationRequest('artifact.read', {
+            workspaceId: 'ws_demo',
+            artifactId: 'ar_review_first',
+          })
+        );
         expect(historical.status).toBe(200);
         const dashboard = await app.request('/api/app/workspaces/ws_demo/dashboard');
         expect(dashboard.status).toBe(200);
@@ -712,7 +795,10 @@ describe('Core artifact routes', () => {
     try {
       const response = await postJson(
         app,
-        '/api/app/workspaces/ws_demo/artifacts/ar_review_rollback/versions/1/review/decision',
+        [
+          'artifact.review.decide',
+          { workspaceId: 'ws_demo', artifactId: 'ar_review_rollback', artifactVersion: 1 },
+        ],
         {
           requestId: 'artifact-review-rollback-1',
           decision: 'accepted',
@@ -836,8 +922,10 @@ describe('Core artifact routes', () => {
     });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-repository-'));
     seedWritableGitRepository(repositoryPath);
-    const decisionPath =
-      '/api/app/workspaces/ws_demo/artifacts/ar_review_redo/versions/1/review/decision';
+    const decisionPath = [
+      'artifact.review.decide',
+      { workspaceId: 'ws_demo', artifactId: 'ar_review_redo', artifactVersion: 1 },
+    ] as const;
     const request = {
       requestId: '0190f4c8-0000-7000-8000-000000000401',
       decision: 'redo',
@@ -938,7 +1026,10 @@ describe('Core artifact routes', () => {
 
       const partialRes = await postJson(
         app,
-        '/api/app/workspaces/ws_demo/artifacts/ar_review_partial/versions/1/review/decision',
+        [
+          'artifact.review.decide',
+          { workspaceId: 'ws_demo', artifactId: 'ar_review_partial', artifactVersion: 1 },
+        ],
         {
           requestId: partialRequestId,
           decision: 'redo',

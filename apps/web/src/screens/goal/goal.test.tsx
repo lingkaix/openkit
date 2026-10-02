@@ -378,8 +378,6 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getArtifact: vi.fn().mockResolvedValue(ARTIFACT),
-      listArtifacts: vi.fn().mockResolvedValue({ items: [ARTIFACT] }),
       startTurn: vi.fn(),
       ...overrides.core,
     },
@@ -442,7 +440,6 @@ function makeClient(
         goalId: 'goal1',
         activeTurnId: 'turn_worker',
       }),
-      listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [REVIEW] }),
       getWorkspaceMaterial: vi.fn().mockResolvedValue({
         material: {
           workspaceId: 'ws1',
@@ -464,13 +461,6 @@ function makeClient(
               : MATERIAL_CURRENT_REVISION,
         })),
       saveWorkspaceMaterialRevision: vi.fn(),
-      submitArtifactReviewDecision: vi.fn().mockResolvedValue({
-        reviewId: 'review1',
-        artifactId: 'artifact1',
-        artifactVersion: 1,
-        decision: 'accepted',
-        followUpTurnId: null,
-      }),
       ...overrides.app,
     },
     actionCenter: {
@@ -479,6 +469,16 @@ function makeClient(
     },
 
     operations: {
+      'artifact.read': vi.fn().mockResolvedValue(ARTIFACT),
+      'artifact.list': vi.fn().mockResolvedValue({ items: [ARTIFACT] }),
+      'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [REVIEW] }),
+      'artifact.review.decide': vi.fn().mockResolvedValue({
+        reviewId: 'review1',
+        artifactId: 'artifact1',
+        artifactVersion: 1,
+        decision: 'accepted',
+        followUpTurnId: null,
+      }),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       ...overrides.operations,
       'workspace.list': vi
@@ -2595,8 +2595,6 @@ describe('goal surfaces (WP-5)', () => {
 
   it('shows authorized runtime activity in the shared Thread lens without Items', async () => {
     const client = makeClient({
-      app: {},
-
       operations: {
         'thread.dashboard': vi.fn().mockResolvedValue({
           turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
@@ -2787,10 +2785,10 @@ describe('Artifact Review S14', () => {
         );
       });
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-      app: {
-        listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-        getWorkspaceMaterialRevision,
+      app: { getWorkspaceMaterialRevision },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
@@ -2829,10 +2827,10 @@ describe('Artifact Review S14', () => {
   ])('fails closed for an unresolved Review with $mismatch', async ({ artifact }) => {
     const submitArtifactReviewDecision = vi.fn();
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(artifact) },
-      app: {
-        listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-        submitArtifactReviewDecision,
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(artifact),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
@@ -2871,10 +2869,10 @@ describe('Artifact Review S14', () => {
         decision === 'needs_refinement' || decision === 'redo' ? 'turn_follow_up' : null,
     });
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-      app: {
-        listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-        submitArtifactReviewDecision,
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
@@ -2892,12 +2890,12 @@ describe('Artifact Review S14', () => {
     await user.click(action);
 
     await waitFor(() =>
-      expect(submitArtifactReviewDecision).toHaveBeenCalledWith(
-        'ws1',
-        PROPOSAL_REVIEW.artifactId,
-        PROPOSAL_REVIEW.artifactVersion,
-        feedback ? { decision, feedback } : { decision }
-      )
+      expect(submitArtifactReviewDecision).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        artifactId: PROPOSAL_REVIEW.artifactId,
+        artifactVersion: PROPOSAL_REVIEW.artifactVersion,
+        ...(feedback ? { decision, feedback } : { decision }),
+      })
     );
     expect(client.core.startTurn).not.toHaveBeenCalled();
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
@@ -2961,12 +2959,11 @@ describe('Artifact Review S14', () => {
         );
       });
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-      app: {
-        listArtifactReviews,
-        getWorkspaceMaterial,
-        getWorkspaceMaterialRevision,
-        submitArtifactReviewDecision,
+      app: { getWorkspaceMaterial, getWorkspaceMaterialRevision },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': listArtifactReviews,
+        'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
@@ -2998,13 +2995,12 @@ describe('Artifact Review S14', () => {
     );
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
     expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(1);
-    expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(
-      1,
-      'ws1',
-      PROPOSAL_REVIEW.artifactId,
-      PROPOSAL_REVIEW.artifactVersion,
-      { decision: 'accepted' }
-    );
+    expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(1, {
+      workspaceId: 'ws1',
+      artifactId: PROPOSAL_REVIEW.artifactId,
+      artifactVersion: PROPOSAL_REVIEW.artifactVersion,
+      ...{ decision: 'accepted' },
+    });
 
     const retry = screen.queryByRole('button', { name: /try again|refresh|reload/i });
     if (retry) {
@@ -3020,13 +3016,12 @@ describe('Artifact Review S14', () => {
     expect(reject).toBeEnabled();
     await user.click(reject);
     await waitFor(() => expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(2));
-    expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(
-      2,
-      'ws1',
-      PROPOSAL_REVIEW.artifactId,
-      PROPOSAL_REVIEW.artifactVersion,
-      { decision: 'rejected' }
-    );
+    expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(2, {
+      workspaceId: 'ws1',
+      artifactId: PROPOSAL_REVIEW.artifactId,
+      artifactVersion: PROPOSAL_REVIEW.artifactVersion,
+      ...{ decision: 'rejected' },
+    });
   });
 
   it('shows a successful decision only after the exact Review refetch settles', async () => {
@@ -3049,8 +3044,10 @@ describe('Artifact Review S14', () => {
           })
       );
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-      app: { listArtifactReviews },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': listArtifactReviews,
+      },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
@@ -3082,8 +3079,10 @@ describe('Artifact Review S14', () => {
       appliedMaterialRevisionId: 'revision_applied',
     };
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(newerArtifact) },
-      app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [decidedReview] }) },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(newerArtifact),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [decidedReview] }),
+      },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
@@ -3152,8 +3151,13 @@ describe('Artifact Review S14', () => {
         appliedMaterialRevisionId: decision === 'accepted' ? 'revision_applied' : null,
       };
       const client = makeClient({
-        core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-        app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [decidedReview] }) },
+        core: {},
+        app: {},
+
+        operations: {
+          'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+          'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [decidedReview] }),
+        },
       });
       renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
@@ -3176,11 +3180,11 @@ describe('Artifact Review S14', () => {
 
   it('disables every review write while the connection probe is checking', async () => {
     const client = makeClient({
-      core: {
-        meta: vi.fn().mockImplementation(() => new Promise(() => undefined)),
-        getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+      core: { meta: vi.fn().mockImplementation(() => new Promise(() => undefined)) },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
-      app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }) },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
@@ -3194,11 +3198,11 @@ describe('Artifact Review S14', () => {
 
   it('keeps all review actions visible but disabled when disconnected', async () => {
     const client = makeClient({
-      core: {
-        meta: vi.fn().mockRejectedValue(new Error('down')),
-        getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+      core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
-      app: { listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }) },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);
 
@@ -3217,10 +3221,10 @@ describe('Artifact Review S14', () => {
     const user = userEvent.setup();
     const submitArtifactReviewDecision = vi.fn().mockImplementation(() => new Promise(() => {}));
     const client = makeClient({
-      core: { getArtifact: vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT) },
-      app: {
-        listArtifactReviews: vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
-        submitArtifactReviewDecision,
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
+        'artifact.review.decide': submitArtifactReviewDecision,
       },
     });
     renderApp('/goals/ws1/th1/artifacts/artifact1', client);

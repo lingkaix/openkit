@@ -101,9 +101,6 @@ const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
   'GET /api/workspaces/:workspaceId/threads',
   'PATCH /api/workspaces/:workspaceId/threads/:threadId',
   'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
-  'GET /api/workspaces/:workspaceId/artifacts',
-  'GET /api/workspaces/:workspaceId/artifacts/:artifactId',
-  'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content',
   'GET /api/workspaces/:workspaceId/threads/:threadId/events',
   'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
   'POST /api/approvals/:approvalRequestId/respond',
@@ -2216,19 +2213,19 @@ describe('app api openapi projection', () => {
     const operations = [
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/artifacts/imports',
-        'importWorkspaceArtifact',
-        'ImportWorkspaceArtifactRequest',
+        '/api/app/operations/artifact.import',
+        'artifact.import',
+        'artifact.import.input',
         '201',
-        'ImportWorkspaceArtifactResponse',
+        'artifact.import.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/artifacts/{artifactId}/introductions',
-        'introduceWorkspaceArtifact',
-        'IntroduceWorkspaceArtifactRequest',
+        '/api/app/operations/artifact.introduce',
+        'artifact.introduce',
+        'artifact.introduce.input',
         '201',
-        'IntroduceWorkspaceArtifactResponse',
+        'artifact.introduce.output',
       ],
       [
         'get',
@@ -2365,75 +2362,34 @@ describe('app api openapi projection', () => {
     });
   });
 
-  it('projects the Stage 4 Artifact Review operations from shared schemas', () => {
+  it('projects Artifact Review inputs, outputs and header request identity from definitions', () => {
     const document = createAppOpenApiDocument();
-
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews']?.get
-    ).toMatchObject({
-      operationId: 'listArtifactReviews',
-      tags: ['reviews'],
-      parameters: [
-        { name: 'workspaceId', in: 'path', required: true },
-        { name: 'artifactId', in: 'path', required: true },
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/ListArtifactReviewsResponse' },
+    for (const [id, parameters] of [
+      ['artifact.review-list', undefined],
+      ['artifact.review.decide', [{ name: 'x-openkit-request-id', in: 'header', required: true }]],
+    ] as const) {
+      const operation = document.paths[`/api/app/operations/${id}`].post;
+      expect(operation).toMatchObject({
+        operationId: id,
+        tags: ['artifact'],
+        requestBody: {
+          content: { 'application/json': { schema: { $ref: `#/components/schemas/${id}.input` } } },
+        },
+        responses: {
+          '200': {
+            content: {
+              'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
             },
           },
-        },
-        default: {
-          content: {
-            'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
+          default: {
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/ApiError' } } },
           },
         },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/versions/{artifactVersion}/review/decision'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'submitArtifactReviewDecision',
-      tags: ['reviews'],
-      parameters: [
-        { name: 'workspaceId', in: 'path', required: true },
-        { name: 'artifactId', in: 'path', required: true },
-        {
-          name: 'artifactVersion',
-          in: 'path',
-          required: true,
-          schema: { type: 'integer', minimum: 1 },
-        },
-      ],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionRequest' },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/SubmitArtifactReviewDecisionResponse' },
-            },
-          },
-        },
-        default: {
-          content: {
-            'application/json': { schema: { $ref: '#/components/schemas/ApiError' } },
-          },
-        },
-      },
-    });
-    expect(document.components.schemas.ListArtifactReviewsResponse).toBeDefined();
-    expect(document.components.schemas.SubmitArtifactReviewDecisionRequest).toBeDefined();
-    expect(document.components.schemas.SubmitArtifactReviewDecisionResponse).toBeDefined();
+      });
+      if (parameters) expect(operation.parameters).toMatchObject(parameters);
+      expect(document.components.schemas[`${id}.input`]).toBeDefined();
+      expect(document.components.schemas[`${id}.output`]).toBeDefined();
+    }
   });
 
   it('projects the closed Workspace sharing and lifecycle surface from shared schemas', () => {
@@ -3274,10 +3230,6 @@ describe('app api openapi projection', () => {
       'recoverWorkspaceAccess',
       'disableUser',
       'submitTurnFeedback',
-      'listArtifactReviews',
-      'submitArtifactReviewDecision',
-      'importWorkspaceArtifact',
-      'introduceWorkspaceArtifact',
       'listWorkspaceSyncReviews',
       'getWorkspaceSyncReview',
       'submitWorkspaceSyncReviewDecision',

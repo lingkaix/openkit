@@ -703,19 +703,25 @@ describe('Administration', () => {
           .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
       },
       {
-        getArtifact: vi.fn().mockImplementation((_workspaceId, artifactId) =>
-          Promise.resolve(
-            artifactId === AUTHORED_CANDIDATE.artifactId
-              ? {
-                  ...AUTHORED_ARTIFACT,
-                  content: { format: 'json', body: JSON.stringify(authoredPayload) },
-                }
-              : {
-                  ...CANDIDATE_ARTIFACT,
-                  content: { format: 'json', body: JSON.stringify(candidatePayload) },
-                }
-          )
-        ),
+        'artifact.read': vi
+          .fn()
+          .mockImplementation(
+            ({
+              workspaceId: _workspaceId,
+              artifactId,
+            }: Parameters<CoreClient['operations']['artifact.read']>[0]) =>
+              Promise.resolve(
+                artifactId === AUTHORED_CANDIDATE.artifactId
+                  ? {
+                      ...AUTHORED_ARTIFACT,
+                      content: { format: 'json', body: JSON.stringify(authoredPayload) },
+                    }
+                  : {
+                      ...CANDIDATE_ARTIFACT,
+                      content: { format: 'json', body: JSON.stringify(candidatePayload) },
+                    }
+              )
+          ),
         'thread.items': vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM, CANDIDATE_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -931,7 +937,7 @@ describe('Administration', () => {
     const client = makeClient(
       { prepareWorkerEnvironment },
       {
-        getArtifact: vi.fn().mockResolvedValue(AUTHORED_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(AUTHORED_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -957,7 +963,7 @@ describe('Administration', () => {
     const client = makeClient(
       {},
       {
-        getArtifact,
+        'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CANDIDATE_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -967,7 +973,10 @@ describe('Administration', () => {
     await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('No environment candidate')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review activation' })).not.toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, RESOLVED_CANDIDATE.artifactId);
+    expect(getArtifact).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      artifactId: RESOLVED_CANDIDATE.artifactId,
+    });
   });
 
   it('does not apply a discovered configuration candidate until the administrator confirms it', async () => {
@@ -975,7 +984,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1000,7 +1009,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1052,7 +1061,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1079,7 +1088,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
         meta: vi.fn().mockRejectedValue(new Error('down')),
@@ -1100,7 +1109,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
+        'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1134,7 +1143,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi
+        'artifact.read': vi
           .fn()
           .mockImplementation(() =>
             !connected && failedRead === 'candidate'
@@ -1174,12 +1183,16 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact: vi
+        'artifact.read': vi
           .fn()
-          .mockImplementation((_workspaceId, artifactId) =>
-            Promise.resolve(
-              artifactId === CONFIG_CANDIDATE_B.artifactId ? CONFIG_ARTIFACT_B : CONFIG_ARTIFACT
-            )
+          .mockImplementation(
+            ({
+              workspaceId: _workspaceId,
+              artifactId,
+            }: Parameters<CoreClient['operations']['artifact.read']>[0]) =>
+              Promise.resolve(
+                artifactId === CONFIG_CANDIDATE_B.artifactId ? CONFIG_ARTIFACT_B : CONFIG_ARTIFACT
+              )
           ),
         'thread.items': vi.fn().mockImplementation(() => Promise.resolve({ items })),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
@@ -1216,15 +1229,21 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     const getArtifact = vi
       .fn()
-      .mockImplementation((_workspaceId, artifactId) =>
-        Promise.resolve(
-          artifactId === CONFIG_OUTCOME_ITEM.artifactId ? CONFIG_OUTCOME_ARTIFACT : CONFIG_ARTIFACT
-        )
+      .mockImplementation(
+        ({
+          workspaceId: _workspaceId,
+          artifactId,
+        }: Parameters<CoreClient['operations']['artifact.read']>[0]) =>
+          Promise.resolve(
+            artifactId === CONFIG_OUTCOME_ITEM.artifactId
+              ? CONFIG_OUTCOME_ARTIFACT
+              : CONFIG_ARTIFACT
+          )
       );
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact,
+        'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM, CONFIG_OUTCOME_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1237,8 +1256,14 @@ describe('Administration', () => {
     expect(screen.queryByText('Ready for review')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review configuration' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Apply configuration' })).not.toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_CANDIDATE.artifactId);
-    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_OUTCOME_ITEM.artifactId);
+    expect(getArtifact).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      artifactId: CONFIG_CANDIDATE.artifactId,
+    });
+    expect(getArtifact).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      artifactId: CONFIG_OUTCOME_ITEM.artifactId,
+    });
     expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
   });
 
@@ -1252,7 +1277,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact,
+        'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
@@ -1263,7 +1288,10 @@ describe('Administration', () => {
     expect(await screen.findByText('No environment candidate')).toBeInTheDocument();
     expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review configuration' })).not.toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith(QUICK_CHAT.id, CONFIG_CANDIDATE.artifactId);
+    expect(getArtifact).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      artifactId: CONFIG_CANDIDATE.artifactId,
+    });
     expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
   });
 
@@ -1273,7 +1301,7 @@ describe('Administration', () => {
     const client = makeClient(
       { applyAdministrationConfiguration },
       {
-        getArtifact,
+        'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }

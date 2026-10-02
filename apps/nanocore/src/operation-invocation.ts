@@ -14,6 +14,10 @@ import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import { readThreadDashboard } from './app-dashboard.js';
+import {
+  ArtifactOperationError,
+  createArtifactOperationImplementations,
+} from './artifact-operations.js';
 import type { Actor } from './auth/identity.js';
 import {
   assertAuthorizedWorkspaceLineage,
@@ -71,6 +75,17 @@ export interface OperationInvocationDependencies {
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
+  /** Existing app-owned worker starter used only by Artifact Review refinement and redo. */
+  readonly startModeWorkerTurn?: (input: {
+    readonly store: FsStore;
+    readonly triggerActor: ActorRef;
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly prompt: string;
+    readonly requestId: string;
+    readonly requestedAgentId: string;
+    readonly reservedTurnId?: string | undefined;
+  }) => Promise<ReturnType<FsStore['getTurnById']>>;
   /** Existing configured RuntimeTarget observation owner inputs, used only by the administration read. */
   readonly mode?: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
@@ -212,6 +227,7 @@ function createOperationImplementations(
     ...createThreadOperationImplementations(dependencies),
     ...createTurnOperationImplementations(dependencies),
     ...createKnowledgeOperationImplementations(dependencies),
+    ...createArtifactOperationImplementations(dependencies),
     'nanohost.runtime-target': () => {
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb: dependencies.coreDb,
@@ -395,7 +411,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         );
       return validated.data as OperationOutput<K> | PreparedTaskKnowledgeContext;
     } catch (error) {
-      if (error instanceof KnowledgeOperationError)
+      if (error instanceof KnowledgeOperationError || error instanceof ArtifactOperationError)
         throw new OperationInvocationError(error.code, error.message, error.status);
       throw error;
     } finally {

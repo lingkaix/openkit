@@ -117,14 +117,6 @@ import {
   GetWorkspaceMaterialRevisionResponseSchema,
   type GetWorkspaceSyncReviewResponse,
   GetWorkspaceSyncReviewResponseSchema,
-  type ImportWorkspaceArtifactRequest,
-  ImportWorkspaceArtifactRequestSchema,
-  type ImportWorkspaceArtifactResponse,
-  ImportWorkspaceArtifactResponseSchema,
-  type IntroduceWorkspaceArtifactRequest,
-  IntroduceWorkspaceArtifactRequestSchema,
-  type IntroduceWorkspaceArtifactResponse,
-  IntroduceWorkspaceArtifactResponseSchema,
   type IssueNanoHostTransportTokenRequest,
   IssueNanoHostTransportTokenRequestSchema,
   type IssueNanoHostTransportTokenResponse,
@@ -142,8 +134,6 @@ import {
   LightAppBatchResponseSchema,
   type ListAgentEnvironmentPackageSnapshotsResponse,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  type ListArtifactReviewsResponse,
-  ListArtifactReviewsResponseSchema,
   type ListAutomationsResponse,
   ListAutomationsResponseSchema,
   type ListBackendWorkspaceHandlesResponse,
@@ -339,10 +329,6 @@ import {
   SubmitAdministrationConversationRequestSchema,
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
-  type SubmitArtifactReviewDecisionRequest,
-  SubmitArtifactReviewDecisionRequestSchema,
-  type SubmitArtifactReviewDecisionResponse,
-  SubmitArtifactReviewDecisionResponseSchema,
   type SubmitConversationRequest,
   SubmitConversationRequestSchema,
   type SubmitConversationResponse,
@@ -493,13 +479,6 @@ export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
 export type SubmitConversationInput = OptionalRequestId<SubmitConversationRequest>;
 /** Goal Mode start input with optional caller-provided request id. */
 export type StartThreadGoalInput = OptionalRequestId<StartThreadGoalRequest>;
-/** Workspace Artifact import input with optional caller-provided request id. */
-export type ImportWorkspaceArtifactInput = OptionalRequestId<ImportWorkspaceArtifactRequest>;
-/** Workspace Artifact introduction input with optional caller-provided request id. */
-export type IntroduceWorkspaceArtifactInput = OptionalRequestId<IntroduceWorkspaceArtifactRequest>;
-/** Artifact Review decision input with optional caller-provided request id. */
-export type SubmitArtifactReviewDecisionInput =
-  OptionalRequestId<SubmitArtifactReviewDecisionRequest>;
 /** Workspace Material create input with optional caller-provided request id. */
 export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
 /** Workspace Material revision save input with optional caller-provided request id. */
@@ -703,18 +682,6 @@ export interface AppApiClient {
     workspaceId: string,
     input: RecoverDeletedWorkspaceInput
   ): Promise<RecoverDeletedWorkspaceResponse>;
-  /** Imports one immutable Workspace Artifact version. */
-  importWorkspaceArtifact(
-    workspaceId: string,
-    input: ImportWorkspaceArtifactInput
-  ): Promise<ImportWorkspaceArtifactResponse>;
-  /** Introduces one exact Workspace Artifact version into a Thread. */
-  introduceWorkspaceArtifact(
-    workspaceId: string,
-    threadId: string,
-    artifactId: string,
-    input: IntroduceWorkspaceArtifactInput
-  ): Promise<IntroduceWorkspaceArtifactResponse>;
   /** Lists Light Apps. */
   listLightApps(workspaceId: string): Promise<ListLightAppsResponse>;
   /** Creates one Light App. */
@@ -805,18 +772,6 @@ export interface AppApiClient {
     input: SubmitGenerativePresentationActionRequest,
     requestId?: string
   ): Promise<GenerativePresentationDataModelResponse>;
-  /** Lists version-keyed Reviews for one Artifact. */
-  listArtifactReviews(
-    workspaceId: string,
-    artifactId: string
-  ): Promise<ListArtifactReviewsResponse>;
-  /** Decides one exact version-keyed Artifact Review. */
-  submitArtifactReviewDecision(
-    workspaceId: string,
-    artifactId: string,
-    artifactVersion: number,
-    input: SubmitArtifactReviewDecisionInput
-  ): Promise<SubmitArtifactReviewDecisionResponse>;
   /** Lists Workspace Materials. */
   listWorkspaceMaterials(workspaceId: string): Promise<ListWorkspaceMaterialsResponse>;
   /** Creates one Workspace Material. */
@@ -1418,24 +1373,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RecoverDeletedWorkspaceResponseSchema
       );
     },
-    importWorkspaceArtifact: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/artifacts/imports`,
-        ImportWorkspaceArtifactRequestSchema.parse(request),
-        ImportWorkspaceArtifactResponseSchema
-      );
-    },
-    introduceWorkspaceArtifact: (workspaceId, threadId, artifactId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/artifacts/${artifactId}/introductions`,
-        IntroduceWorkspaceArtifactRequestSchema.parse(request),
-        IntroduceWorkspaceArtifactResponseSchema
-      );
-    },
     listLightApps: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/light-apps`,
@@ -1526,20 +1463,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         GenerativePresentationDataModelResponseSchema,
         { 'x-openkit-request-id': requestId ?? createRequestId() }
       ),
-    listArtifactReviews: (workspaceId, artifactId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/reviews`,
-        ListArtifactReviewsResponseSchema
-      ),
-    submitArtifactReviewDecision: (workspaceId, artifactId, artifactVersion, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/artifacts/${artifactId}/versions/${artifactVersion}/review/decision`,
-        SubmitArtifactReviewDecisionRequestSchema.parse(request),
-        SubmitArtifactReviewDecisionResponseSchema
-      );
-    },
     listWorkspaceMaterials: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/materials`,

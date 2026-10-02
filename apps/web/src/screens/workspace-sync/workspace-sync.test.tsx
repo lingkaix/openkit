@@ -1147,7 +1147,10 @@ describe('Workspace changes', () => {
         listWorkspaceChangeSets: vi.fn().mockResolvedValue({ items: [PREVIEW_CHANGE_SET] }),
         listStagedWorkspaceReviews: vi.fn().mockResolvedValue({ items: [PREVIEW_STAGED_REVIEW] }),
       },
-      { getArtifact, listArtifacts: vi.fn().mockResolvedValue({ items: [PREVIEW_ARTIFACT] }) }
+      {
+        'artifact.read': getArtifact,
+        'artifact.list': vi.fn().mockResolvedValue({ items: [PREVIEW_ARTIFACT] }),
+      }
     );
     renderApp('/workspace-changes', client, (next) => {
       pathname = next;

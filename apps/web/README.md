@@ -362,3 +362,5 @@ Prepared Worker environment review displays the measured image identity, the def
 Workspace review diff presentation uses the shared patch byte decoder for both UTF-8 text and exact encoded patches; presentation decoding does not change the retained bytes or digest.
 
 Workspace discovery and account admission use `client.operations['workspace.list']({})`; discovery selects each summary's nested Workspace record. Workspace resources, Thread creation/read/items/dashboard and Turn details use the corresponding derived operation methods with one selector object. Account admission and switcher discovery remain separate TanStack views, so tests that control their timing provide explicit successive responses from the same operation. The event stream continues to use the existing Core Client subscription.
+
+Artifact inventory, inspection, import, introduction, Action Center Review decisions and Administration inspection use definition-derived `client.operations` with explicit selectors. Existing cache keys, request identity, byte digests and Review refetch ownership remain with their hooks.

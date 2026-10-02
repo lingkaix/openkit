@@ -1,8 +1,11 @@
 import {
+  ArtifactIdSchema,
   CreateKnowledgeEntryRequestSchema,
   CreateThreadRequestSchema,
   DeleteKnowledgeEntryRequestSchema,
+  GetArtifactResponseSchema,
   KnowledgeEntrySchema,
+  ListArtifactsResponseSchema,
   ListKnowledgeEntriesResponseSchema,
   RequestIdSchema,
   ThreadIdSchema,
@@ -56,6 +59,15 @@ import {
   GetLightAppResponseSchema,
   LightAppRecordSchema,
 } from './light-apps.js';
+import {
+  ImportWorkspaceArtifactRequestSchema,
+  ImportWorkspaceArtifactResponseSchema,
+  IntroduceWorkspaceArtifactRequestSchema,
+  IntroduceWorkspaceArtifactResponseSchema,
+  ListArtifactReviewsResponseSchema,
+  SubmitArtifactReviewDecisionRequestSchema,
+  SubmitArtifactReviewDecisionResponseSchema,
+} from './material.js';
 import { NanoHostRuntimeTargetStatusResponseSchema } from './nanohost.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 
@@ -505,6 +517,79 @@ export const KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS = {
   },
 } as const;
 
+/** Sole public contracts for Artifact inventory, immutable content, import, introduction and version-owned Review decisions. */
+export const ARTIFACT_OPERATION_DEFINITIONS = {
+  'artifact.list': {
+    description: 'List visible submitted outputs and directly imported files.',
+    inputSchema: z.object(workspaceSelector).strict(),
+    outputSchema: ListArtifactsResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.read': {
+    description: 'Read one Artifact with its exact inline content and immutable origin.',
+    inputSchema: z.object({ ...workspaceSelector, artifactId: ArtifactIdSchema }).strict(),
+    outputSchema: GetArtifactResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.import': {
+    description: 'Import one immutable Workspace Artifact version.',
+    inputSchema: ImportWorkspaceArtifactRequestSchema.safeExtend({ ...workspaceSelector }),
+    outputSchema: ImportWorkspaceArtifactResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.write',
+    mutating: true,
+    successStatus: 201,
+  },
+  'artifact.introduce': {
+    description: 'Introduce one exact imported Artifact version into an idle Thread.',
+    inputSchema: IntroduceWorkspaceArtifactRequestSchema.extend({
+      ...threadSelector,
+      artifactId: ArtifactIdSchema,
+    }),
+    outputSchema: IntroduceWorkspaceArtifactResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'artifact.write',
+    mutating: true,
+    successStatus: 201,
+  },
+  'artifact.review-list': {
+    description: 'List version-keyed Reviews for one visible Artifact.',
+    inputSchema: z.object({ ...workspaceSelector, artifactId: ArtifactIdSchema }).strict(),
+    outputSchema: ListArtifactReviewsResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.review.decide': {
+    description: 'Decide one exact version-owned Artifact Review.',
+    inputSchema: SubmitArtifactReviewDecisionRequestSchema.safeExtend({
+      ...workspaceSelector,
+      artifactId: ArtifactIdSchema,
+      artifactVersion: z.number().int().positive(),
+    }),
+    outputSchema: SubmitArtifactReviewDecisionResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'review.apply',
+    mutating: true,
+  },
+} as const;
+
 /** JSON product operations; administration's private Tool retains its separate public transport. */
 export const PRODUCT_OPERATION_DEFINITIONS = {
   ...KERNEL_OPERATION_DEFINITIONS,
@@ -513,6 +598,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...TURN_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  ...ARTIFACT_OPERATION_DEFINITIONS,
 } as const;
 
 /** Static composition of the implemented families; this is not a registration surface. */
@@ -546,8 +632,9 @@ export function operationModelInput(
   schema: z.ZodObject,
   boundFields: readonly string[]
 ): z.ZodObject {
-  const mask = Object.fromEntries(
-    boundFields.filter((key) => key in schema.shape).map((key) => [key, true])
-  ) as Parameters<typeof schema.omit>[0];
-  return schema.omit(mask);
+  const shape = Object.fromEntries(
+    Object.entries(schema.shape).filter(([key]) => !boundFields.includes(key))
+  );
+  // Zod omit rejects refined objects; cloning the shape retains each field and the owner's cross-field checks.
+  return schema.clone({ ...schema.def, shape });
 }

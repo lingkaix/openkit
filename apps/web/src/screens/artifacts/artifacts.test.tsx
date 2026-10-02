@@ -349,19 +349,6 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listArtifacts: vi
-        .fn()
-        .mockImplementation((workspaceId: string) =>
-          Promise.resolve(ListArtifactsResponseSchema.parse({ items: artifactsFor(workspaceId) }))
-        ),
-      getArtifact: vi.fn().mockImplementation((workspaceId: string, artifactId: string) => {
-        const record = artifacts.find(
-          (item) => item.workspaceId === workspaceId && item.id === artifactId
-        );
-        return record
-          ? Promise.resolve(record)
-          : Promise.reject(new Error(`Artifact not found: ${artifactId}`));
-      }),
       listThreads: vi
         .fn()
         .mockImplementation((workspaceId: string) =>
@@ -369,13 +356,32 @@ function makeClient(
         ),
       ...overrides.core,
     },
-    app: {
-      importWorkspaceArtifact: vi.fn().mockResolvedValue(IMPORT_MUTATION),
-      introduceWorkspaceArtifact: vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
-      ...overrides.app,
-    },
+    app: { ...overrides.app },
 
     operations: {
+      'artifact.list': vi
+        .fn()
+        .mockImplementation(
+          ({ workspaceId }: Parameters<CoreClient['operations']['artifact.list']>[0]) =>
+            Promise.resolve(ListArtifactsResponseSchema.parse({ items: artifactsFor(workspaceId) }))
+        ),
+      'artifact.read': vi
+        .fn()
+        .mockImplementation(
+          ({
+            workspaceId,
+            artifactId,
+          }: Parameters<CoreClient['operations']['artifact.read']>[0]) => {
+            const record = artifacts.find(
+              (item) => item.workspaceId === workspaceId && item.id === artifactId
+            );
+            return record
+              ? Promise.resolve(record)
+              : Promise.reject(new Error(`Artifact not found: ${artifactId}`));
+          }
+        ),
+      'artifact.import': vi.fn().mockResolvedValue(IMPORT_MUTATION),
+      'artifact.introduce': vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
       'turn.read': vi.fn(),
       ...overrides.operations,
       'workspace.list': vi
@@ -492,14 +498,13 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
   renderApp(
     '/artifacts',
     makeClient({
-      core: {
-        listArtifacts: vi
+      operations: {
+        'artifact.list': vi
           .fn()
           .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
+        'artifact.introduce': introduceWorkspaceArtifact,
+        'turn.read': getTurn,
       },
-      app: { introduceWorkspaceArtifact },
-
-      operations: { 'turn.read': getTurn },
     })
   );
   expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
@@ -516,7 +521,12 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
       [{ workspaceId: WORKSPACE.id, threadId: THREAD.id, turnId: INTRODUCE_MUTATION.turnId }],
     ])
   );
-  return { command, 'turn.read': getTurn, introduceWorkspaceArtifact, turnRead };
+  return {
+    command,
+    'turn.read': getTurn,
+    'artifact.introduce': introduceWorkspaceArtifact,
+    turnRead,
+  };
 }
 
 /** Fail-closed recovery UI after a contradictory introduction Turn, with no later mutation. */
@@ -537,13 +547,13 @@ async function assertFailClosedIntroductionRecovery(
 }
 
 function acceptedImport(mock: ReturnType<typeof vi.fn>, index = 0) {
-  const [workspaceId, input] = mock.mock.calls[index] ?? [];
+  const [{ workspaceId, ...input }] = mock.mock.calls[index] ?? [];
   expect(workspaceId).toBe(WORKSPACE.id);
   return ImportWorkspaceArtifactRequestSchema.parse(input);
 }
 
 function acceptedIntroduce(mock: ReturnType<typeof vi.fn>, index = 0) {
-  const [workspaceId, threadId, artifactId, input] = mock.mock.calls[index] ?? [];
+  const [{ workspaceId, threadId, artifactId, ...input }] = mock.mock.calls[index] ?? [];
   expect([workspaceId, threadId, artifactId]).toEqual([
     WORKSPACE.id,
     THREAD.id,
@@ -582,8 +592,12 @@ async function startTypedCommandFailure(
   renderApp(
     '/artifacts',
     makeClient({
-      core: { listArtifacts, getArtifact },
-      app: { importWorkspaceArtifact, introduceWorkspaceArtifact },
+      operations: {
+        'artifact.list': listArtifacts,
+        'artifact.read': getArtifact,
+        'artifact.import': importWorkspaceArtifact,
+        'artifact.introduce': introduceWorkspaceArtifact,
+      },
     })
   );
 
@@ -604,10 +618,10 @@ async function startTypedCommandFailure(
       : acceptedIntroduce(introduceWorkspaceArtifact);
   return {
     first,
-    getArtifact,
-    importWorkspaceArtifact,
-    introduceWorkspaceArtifact,
-    listArtifacts,
+    'artifact.read': getArtifact,
+    'artifact.import': importWorkspaceArtifact,
+    'artifact.introduce': introduceWorkspaceArtifact,
+    'artifact.list': listArtifacts,
     mutation,
   };
 }
@@ -636,13 +650,17 @@ describe('Artifacts', () => {
     expect(screen.getByText('File · v1')).toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
     assertNoLeakedInternals();
-    expect(vi.mocked(client.core.listArtifacts).mock.calls).toEqual([[WORKSPACE.id]]);
-    expect(client.core.getArtifact).not.toHaveBeenCalled();
+    expect(vi.mocked(client.operations['artifact.list']).mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
+    expect(client.operations['artifact.read']).not.toHaveBeenCalled();
 
     await openArtifact(user, ARTIFACT.title);
 
     await waitFor(() =>
-      expect(vi.mocked(client.core.getArtifact).mock.calls).toEqual([[WORKSPACE.id, ARTIFACT.id]])
+      expect(vi.mocked(client.operations['artifact.read']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
+      ])
     );
     expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
     assertNoLeakedInternals();
@@ -660,7 +678,9 @@ describe('Artifacts', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Artifacts' })).toBeInTheDocument();
     await waitFor(() =>
-      expect(vi.mocked(client.core.getArtifact).mock.calls).toEqual([[WORKSPACE.id, ARTIFACT.id]])
+      expect(vi.mocked(client.operations['artifact.read']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
+      ])
     );
     expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
     expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
@@ -696,7 +716,7 @@ describe('Artifacts', () => {
       expect(screen.queryByText(ARTIFACT.title)).not.toBeInTheDocument();
       expect(screen.queryByText(IMPORTED_ARTIFACT.title)).not.toBeInTheDocument();
     }
-    expect(client.core.getArtifact).not.toHaveBeenCalled();
+    expect(client.operations['artifact.read']).not.toHaveBeenCalled();
     expect(screen.queryByText(ARTIFACT.content.body)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORTED_ARTIFACT.content.body)).not.toBeInTheDocument();
     expect(screen.queryByText(ARTIFACT_B.content.body)).not.toBeInTheDocument();
@@ -717,7 +737,7 @@ describe('Artifacts', () => {
   ])('$name', async ({ list, expectLoading }) => {
     renderApp(
       '/artifacts',
-      makeClient({ core: { listArtifacts: vi.fn().mockImplementation(list) } })
+      makeClient({ core: {}, operations: { 'artifact.list': vi.fn().mockImplementation(list) } })
     );
     if (expectLoading) {
       await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
@@ -755,7 +775,10 @@ describe('Artifacts', () => {
       .fn()
       .mockRejectedValueOnce(error)
       .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [ARTIFACT] }));
-    renderApp('/artifacts', makeClient({ core: { listArtifacts } }));
+    renderApp(
+      '/artifacts',
+      makeClient({ core: {}, operations: { 'artifact.list': listArtifacts } })
+    );
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(message);
@@ -764,7 +787,10 @@ describe('Artifacts', () => {
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listArtifacts.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -774,7 +800,7 @@ describe('Artifacts', () => {
       .fn()
       .mockRejectedValueOnce(new Error('artifact-read-private failure'))
       .mockResolvedValue(ARTIFACT);
-    renderApp('/artifacts', makeClient({ core: { getArtifact } }));
+    renderApp('/artifacts', makeClient({ core: {}, operations: { 'artifact.read': getArtifact } }));
 
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     await openArtifact(user, ARTIFACT.title);
@@ -787,8 +813,8 @@ describe('Artifacts', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
     expect(getArtifact.mock.calls).toEqual([
-      [WORKSPACE.id, ARTIFACT.id],
-      [WORKSPACE.id, ARTIFACT.id],
+      [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
+      [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
     ]);
   });
 
@@ -802,7 +828,11 @@ describe('Artifacts', () => {
     const importWorkspaceArtifact = vi.fn().mockResolvedValue(IMPORT_MUTATION);
     renderApp(
       '/artifacts',
-      makeClient({ core: { listArtifacts }, app: { importWorkspaceArtifact } })
+      makeClient({
+        core: {},
+        app: {},
+        operations: { 'artifact.list': listArtifacts, 'artifact.import': importWorkspaceArtifact },
+      })
     );
 
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
@@ -824,7 +854,10 @@ describe('Artifacts', () => {
 
     importRead.resolve(ListArtifactsResponseSchema.parse({ items: [ARTIFACT, IMPORTED_ARTIFACT] }));
     expect(await screen.findByText(IMPORT_TITLE)).toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listArtifacts.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
   });
 
   it('introduces from listed Threads at the selected Artifact version and settles from the completed Turn item', async () => {
@@ -838,10 +871,14 @@ describe('Artifacts', () => {
     const { client } = renderApp(
       '/artifacts',
       makeClient({
-        core: { listArtifacts },
-        app: { introduceWorkspaceArtifact },
+        core: {},
+        app: {},
 
-        operations: { 'turn.read': getTurn },
+        operations: {
+          'artifact.list': listArtifacts,
+          'artifact.introduce': introduceWorkspaceArtifact,
+          'turn.read': getTurn,
+        },
       })
     );
 
@@ -876,7 +913,7 @@ describe('Artifacts', () => {
       ])
     );
     expect(screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))).not.toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: WORKSPACE.id }]]);
 
     const matched = introduceItem({
       id: INTRODUCE_MUTATION.itemId,
@@ -908,7 +945,7 @@ describe('Artifacts', () => {
     const {
       command,
       'turn.read': getTurn,
-      introduceWorkspaceArtifact,
+      'artifact.introduce': introduceWorkspaceArtifact,
       turnRead,
     } = await startImportedIntroduction(user);
 
@@ -943,11 +980,12 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: {
-          listArtifacts: vi
+        core: { listThreads },
+
+        operations: {
+          'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
-          listThreads,
         },
       })
     );
@@ -973,11 +1011,12 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: {
-          listArtifacts: vi
+        core: { listThreads },
+
+        operations: {
+          'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
-          listThreads,
         },
       })
     );
@@ -1020,7 +1059,12 @@ describe('Artifacts', () => {
       '/artifacts',
       makeClient({
         core: { meta },
-        app: { importWorkspaceArtifact, introduceWorkspaceArtifact },
+        app: {},
+
+        operations: {
+          'artifact.import': importWorkspaceArtifact,
+          'artifact.introduce': introduceWorkspaceArtifact,
+        },
       })
     );
 
@@ -1083,21 +1127,34 @@ describe('Artifacts', () => {
       .mockResolvedValue(
         ListArtifactsResponseSchema.parse({ items: [SECONDARY_IMPORTED_ARTIFACT] })
       );
-    const getArtifact = vi.fn().mockImplementation((_workspaceId: string, artifactId: string) => {
-      if (artifactId === SECONDARY_IMPORTED_ARTIFACT.id) {
-        return Promise.resolve(SECONDARY_IMPORTED_ARTIFACT);
-      }
-      if (artifactId === IMPORTED_ARTIFACT.id && listArtifacts.mock.calls.length < 2) {
-        return Promise.resolve(IMPORTED_ARTIFACT);
-      }
-      return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
-    });
+    const getArtifact = vi
+      .fn()
+      .mockImplementation(
+        ({
+          workspaceId: _workspaceId,
+          artifactId,
+        }: Parameters<CoreClient['operations']['artifact.read']>[0]) => {
+          if (artifactId === SECONDARY_IMPORTED_ARTIFACT.id) {
+            return Promise.resolve(SECONDARY_IMPORTED_ARTIFACT);
+          }
+          if (artifactId === IMPORTED_ARTIFACT.id && listArtifacts.mock.calls.length < 2) {
+            return Promise.resolve(IMPORTED_ARTIFACT);
+          }
+          return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
+        }
+      );
     const introduceWorkspaceArtifact = vi.fn().mockRejectedValue(error);
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listArtifacts, getArtifact },
-        app: { introduceWorkspaceArtifact },
+        core: {},
+        app: {},
+
+        operations: {
+          'artifact.list': listArtifacts,
+          'artifact.read': getArtifact,
+          'artifact.introduce': introduceWorkspaceArtifact,
+        },
       })
     );
 
@@ -1151,8 +1208,14 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listArtifacts, getArtifact },
-        app: { introduceWorkspaceArtifact },
+        core: {},
+        app: {},
+
+        operations: {
+          'artifact.list': listArtifacts,
+          'artifact.read': getArtifact,
+          'artifact.introduce': introduceWorkspaceArtifact,
+        },
       })
     );
 
@@ -1226,9 +1289,13 @@ describe('Artifacts', () => {
       '/artifacts',
       makeClient({
         core: {},
-        app: { importWorkspaceArtifact, introduceWorkspaceArtifact },
+        app: {},
 
-        operations: { 'workspace.list': listWorkspaces },
+        operations: {
+          'artifact.import': importWorkspaceArtifact,
+          'artifact.introduce': introduceWorkspaceArtifact,
+          'workspace.list': listWorkspaces,
+        },
       })
     );
 
@@ -1273,7 +1340,10 @@ describe('Artifacts', () => {
     const user = userEvent.setup();
     const importRead = createDeferred<typeof IMPORT_MUTATION>();
     const importWorkspaceArtifact = vi.fn().mockReturnValue(importRead.promise);
-    const { client } = renderApp('/artifacts', makeClient({ app: { importWorkspaceArtifact } }));
+    const { client } = renderApp(
+      '/artifacts',
+      makeClient({ app: {}, operations: { 'artifact.import': importWorkspaceArtifact } })
+    );
 
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     await submitImport(user);
@@ -1289,7 +1359,9 @@ describe('Artifacts', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     await waitFor(() =>
       expect(
-        vi.mocked(client.core.listArtifacts).mock.calls.some((call) => call[0] === WORKSPACE_B.id)
+        vi
+          .mocked(client.operations['artifact.list'])
+          .mock.calls.some((call) => call[0].workspaceId === WORKSPACE_B.id)
       ).toBe(true)
     );
 
@@ -1301,7 +1373,7 @@ describe('Artifacts', () => {
     expect(screen.queryByText(IMPORT_MUTATION.artifactId)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_TITLE)).not.toBeInTheDocument();
     expect(ws1Command.requestId).toEqual(expect.any(String));
-    expect(client.app.introduceWorkspaceArtifact).not.toHaveBeenCalled();
+    expect(client.operations['artifact.introduce']).not.toHaveBeenCalled();
   });
 
   it('clears a selected-Artifact introduction error when switching Artifacts', async () => {
@@ -1309,7 +1381,10 @@ describe('Artifacts', () => {
     const introduceWorkspaceArtifact = vi
       .fn()
       .mockRejectedValue(privateError(409, 'conflict', 'artifact-a-private failure'));
-    renderApp('/artifacts', makeClient({ app: { introduceWorkspaceArtifact } }));
+    renderApp(
+      '/artifacts',
+      makeClient({ app: {}, operations: { 'artifact.introduce': introduceWorkspaceArtifact } })
+    );
 
     expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
     await chooseIntroduceThread(user);
@@ -1329,7 +1404,10 @@ describe('Artifacts', () => {
   it('keeps a turn-output Artifact ineligible for introduction after a Thread is selected', async () => {
     const user = userEvent.setup();
     const introduceWorkspaceArtifact = vi.fn();
-    const { client } = renderApp('/artifacts', makeClient({ app: { introduceWorkspaceArtifact } }));
+    const { client } = renderApp(
+      '/artifacts',
+      makeClient({ app: {}, operations: { 'artifact.introduce': introduceWorkspaceArtifact } })
+    );
 
     expect(ARTIFACT.origin.kind).toBe('turn-output');
     expect(ARTIFACT.threadId).toBe('th_weekly');
@@ -1338,7 +1416,9 @@ describe('Artifacts', () => {
     await openArtifact(user, ARTIFACT.title);
     expect(await screen.findByText(ARTIFACT.content.body)).toBeInTheDocument();
     await waitFor(() =>
-      expect(vi.mocked(client.core.getArtifact).mock.calls).toEqual([[WORKSPACE.id, ARTIFACT.id]])
+      expect(vi.mocked(client.operations['artifact.read']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id, artifactId: ARTIFACT.id }],
+      ])
     );
 
     await selectListedOption(user, 'Conversation', THREAD_NAME);
@@ -1351,14 +1431,14 @@ describe('Artifacts', () => {
   it.each([
     {
       name: 'the exact Artifact read is still loading',
-      getArtifact: () => new Promise(() => {}),
+      'artifact.read': () => new Promise(() => {}),
       afterOpen: async () => {
         await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
       },
     },
     {
       name: 'the exact Artifact read failed',
-      getArtifact: () => Promise.reject(new Error('artifact-read-private failure')),
+      'artifact.read': () => Promise.reject(new Error('artifact-read-private failure')),
       afterOpen: async () => {
         const alert = await screen.findByRole('alert');
         expect(alert).toHaveTextContent(/couldn't load that artifact/i);
@@ -1367,27 +1447,30 @@ describe('Artifacts', () => {
     },
     {
       name: 'the exact Artifact version disagrees with the list row',
-      getArtifact: () => Promise.resolve(IMPORTED_ARTIFACT_V2),
+      'artifact.read': () => Promise.resolve(IMPORTED_ARTIFACT_V2),
       afterOpen: async (getArtifact: ReturnType<typeof vi.fn>) => {
         await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(1));
         expect(screen.queryByText(/revised edition/i)).not.toBeInTheDocument();
         expect(screen.getByText(/version 1/i)).toBeInTheDocument();
       },
     },
-  ])('disables introduction while $name', async ({ getArtifact, afterOpen }) => {
+  ])('disables introduction while $name', async ({ 'artifact.read': getArtifact, afterOpen }) => {
     const user = userEvent.setup();
     const artifactRead = vi.fn().mockImplementation(getArtifact);
     const introduceWorkspaceArtifact = vi.fn();
     renderApp(
       '/artifacts',
       makeClient({
-        core: {
-          listArtifacts: vi
+        core: {},
+        app: {},
+
+        operations: {
+          'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
-          getArtifact: artifactRead,
+          'artifact.read': artifactRead,
+          'artifact.introduce': introduceWorkspaceArtifact,
         },
-        app: { introduceWorkspaceArtifact },
       })
     );
 
@@ -1404,7 +1487,9 @@ describe('Artifacts', () => {
     await selectListedOption(user, 'Conversation', THREAD_NAME);
     expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
-    expect(artifactRead.mock.calls).toEqual([[WORKSPACE.id, IMPORTED_ARTIFACT.id]]);
+    expect(artifactRead.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id, artifactId: IMPORTED_ARTIFACT.id }],
+    ]);
     assertNoLeakedInternals();
   });
 
@@ -1495,7 +1580,7 @@ describe('Artifacts', () => {
     const {
       command,
       'turn.read': getTurn,
-      introduceWorkspaceArtifact,
+      'artifact.introduce': introduceWorkspaceArtifact,
       turnRead,
     } = await startImportedIntroduction(user);
 
@@ -1523,7 +1608,7 @@ describe('Artifacts', () => {
     status,
   }) => {
     const user = userEvent.setup();
-    const { first, importWorkspaceArtifact } = await startTypedCommandFailure(
+    const { first, 'artifact.import': importWorkspaceArtifact } = await startTypedCommandFailure(
       user,
       'import',
       privateError(status, code, `${code}-private failure`),
@@ -1614,10 +1699,10 @@ describe('Artifacts', () => {
     const user = userEvent.setup();
     const {
       first,
-      getArtifact,
-      importWorkspaceArtifact,
-      introduceWorkspaceArtifact,
-      listArtifacts,
+      'artifact.read': getArtifact,
+      'artifact.import': importWorkspaceArtifact,
+      'artifact.introduce': introduceWorkspaceArtifact,
+      'artifact.list': listArtifacts,
       mutation,
     } = await startTypedCommandFailure(
       user,
@@ -1663,12 +1748,15 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: {
-          listArtifacts: vi
+        core: {},
+        app: {},
+
+        operations: {
+          'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [ARTIFACT] })),
+          'artifact.import': importWorkspaceArtifact,
         },
-        app: { importWorkspaceArtifact },
       })
     );
 
@@ -1700,7 +1788,11 @@ describe('Artifacts', () => {
     const importWorkspaceArtifact = vi.fn().mockResolvedValue(IMPORT_MUTATION);
     renderApp(
       '/artifacts',
-      makeClient({ core: { listArtifacts }, app: { importWorkspaceArtifact } })
+      makeClient({
+        core: {},
+        app: {},
+        operations: { 'artifact.list': listArtifacts, 'artifact.import': importWorkspaceArtifact },
+      })
     );
 
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
@@ -1719,7 +1811,11 @@ describe('Artifacts', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(3));
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1);
-    expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listArtifacts.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /import artifact/i })).toBeEnabled()
@@ -1753,10 +1849,15 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listArtifacts, getArtifact },
-        app: { importWorkspaceArtifact },
+        core: {},
+        app: {},
 
-        operations: { 'workspace.list': listWorkspaces },
+        operations: {
+          'artifact.list': listArtifacts,
+          'artifact.read': getArtifact,
+          'artifact.import': importWorkspaceArtifact,
+          'workspace.list': listWorkspaces,
+        },
       })
     );
 

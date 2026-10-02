@@ -18,12 +18,13 @@ export type ThreadGoalPlanReadResponse = Awaited<
 >;
 /** One server-owned, version-keyed Artifact Review projection. */
 export type ArtifactReview = Awaited<
-  ReturnType<CoreClient['app']['listArtifactReviews']>
+  ReturnType<CoreClient['operations']['artifact.review-list']>
 >['reviews'][number];
 /** Public decision input accepted by the exact Artifact Review endpoint. */
-export type ArtifactReviewDecisionInput = Parameters<
-  CoreClient['app']['submitArtifactReviewDecision']
->[3];
+export type ArtifactReviewDecisionInput = Omit<
+  Parameters<CoreClient['operations']['artifact.review.decide']>[0],
+  'workspaceId' | 'artifactId' | 'artifactVersion'
+>;
 
 /**
  * Goal Mode data hooks (WP-5). All goal, plan, steering, and artifact-review
@@ -426,7 +427,7 @@ export function useArtifact(workspaceId: string | null, artifactId: string) {
   return useQuery({
     queryKey: goalKeys.artifact(workspaceId ?? '', artifactId),
     queryFn: (): Promise<GetArtifactResponse> =>
-      client.core.getArtifact(workspaceId as string, artifactId),
+      client.operations['artifact.read']({ workspaceId: workspaceId as string, artifactId }),
     enabled: Boolean(workspaceId && artifactId),
   });
 }
@@ -437,7 +438,12 @@ export function useArtifactReviews(workspaceId: string | null, artifactId: strin
   return useQuery({
     queryKey: goalKeys.reviews(workspaceId ?? '', artifactId),
     queryFn: async () =>
-      (await client.app.listArtifactReviews(workspaceId as string, artifactId)).reviews,
+      (
+        await client.operations['artifact.review-list']({
+          workspaceId: workspaceId as string,
+          artifactId,
+        })
+      ).reviews,
     enabled: Boolean(workspaceId && artifactId),
   });
 }
@@ -452,7 +458,12 @@ export function useSubmitArtifactReview(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: ArtifactReviewDecisionInput) =>
-      client.app.submitArtifactReviewDecision(workspaceId, artifactId, artifactVersion, input),
+      client.operations['artifact.review.decide']({
+        workspaceId,
+        artifactId,
+        artifactVersion,
+        ...input,
+      }),
     onSuccess: () =>
       queryClient.refetchQueries({
         queryKey: goalKeys.reviews(workspaceId, artifactId),

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -129,16 +130,6 @@ async function expectThreadNotFound(
   });
 }
 
-/** Sends one request and requires the Artifact owner's missing-or-inaccessible 404. */
-async function expectArtifactNotFound(
-  app: ReturnType<typeof createApp>,
-  request: LineageRequest
-): Promise<void> {
-  const response = await sendLineageRequest(app, request);
-  expect(response.status, await response.clone().text()).toBe(404);
-  expect(await response.text()).toBe('Artifact not found.');
-}
-
 /** Issues one lineage request with optional JSON body. */
 async function sendLineageRequest(
   app: ReturnType<typeof createApp>,
@@ -230,31 +221,35 @@ describe('Workspace child lineage', () => {
   });
 
   it('denies foreign Artifact reads, reviews, decisions, and introduction', async () => {
-    const corePath = `/api/workspaces/${fixture.allowedWorkspace.id}/artifacts/${fixture.foreignArtifact.id}`;
-    const appPath = `/api/app/workspaces/${fixture.allowedWorkspace.id}/artifacts/${fixture.foreignArtifact.id}`;
-
-    for (const request of [
-      { path: corePath },
-      { path: `${corePath}/content` },
-      { path: `${appPath}/reviews` },
-      {
-        method: 'POST',
-        path: `${appPath}/versions/1/review/decision`,
-        body: {
+    for (const [id, child] of [
+      ['artifact.read', {}],
+      ['artifact.review-list', {}],
+      [
+        'artifact.review.decide',
+        {
+          artifactVersion: 1,
           decision: 'accepted',
           requestId: '00000000-0000-4000-8000-000000000406',
         },
-      },
-      {
-        method: 'POST',
-        path: `/api/app/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.allowedThread.id}/artifacts/${fixture.foreignArtifact.id}/introductions`,
-        body: {
+      ],
+      [
+        'artifact.introduce',
+        {
+          threadId: fixture.allowedThread.id,
           expectedArtifactVersion: 1,
           requestId: '00000000-0000-4000-8000-000000000407',
         },
-      },
-    ] satisfies LineageRequest[]) {
-      await expectArtifactNotFound(fixture.app, request);
+      ],
+    ] as const) {
+      const response = await fixture.app.request(
+        ...artifactOperationRequest(
+          id,
+          { workspaceId: fixture.allowedWorkspace.id, artifactId: fixture.foreignArtifact.id },
+          { body: JSON.stringify(child) }
+        )
+      );
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe('Artifact not found.');
     }
   });
 

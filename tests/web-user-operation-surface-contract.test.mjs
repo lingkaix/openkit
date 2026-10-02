@@ -4,10 +4,10 @@ import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 248;
+const EXPECTED_CATALOG_SIZE = 247;
 const EXPECTED_SERVER_SIZE = 55;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 191;
+const EXPECTED_INCLUDED_SIZE = 190;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -67,8 +67,8 @@ const WEB_OPERATION_GROUPS = {
     submitTurnFeedback: { disposition: 'live', surface: 'Chat' },
   },
   Artifacts: {
-    importWorkspaceArtifact: { disposition: 'live', surface: 'Artifacts' },
-    introduceWorkspaceArtifact: { disposition: 'live', surface: 'Artifacts' },
+    'artifact.import': { disposition: 'live', surface: 'Artifacts' },
+    'artifact.introduce': { disposition: 'live', surface: 'Artifacts' },
   },
   Automations: {
     createAutomation: { disposition: 'roadmap', roadmap: 'R092' },
@@ -187,9 +187,9 @@ const WEB_OPERATION_GROUPS = {
     setDefaultWorkspaceRepository: { disposition: 'workflow', surface: 'Repositories' },
   },
   Reviews: {
-    listArtifactReviews: { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },
     'knowledge.proposal.reverse': { disposition: 'roadmap', roadmap: 'R072' },
-    submitArtifactReviewDecision: { disposition: 'live', surface: 'Artifact review' },
+    'artifact.review.decide': { disposition: 'live', surface: 'Artifact review' },
     submitGoalReviewDecision: { disposition: 'live', surface: 'Goal' },
     'knowledge.proposal.decide': { disposition: 'live', surface: 'Knowledge' },
   },
@@ -263,16 +263,12 @@ const WEB_OPERATION_GROUPS = {
     },
   },
   'Core artifacts': {
-    'GET /api/workspaces/:workspaceId/artifacts': {
+    'artifact.list': {
       disposition: 'live',
       surface: 'Artifacts',
     },
-    'GET /api/workspaces/:workspaceId/artifacts/:artifactId': {
+    'artifact.read': {
       disposition: 'live',
-      surface: 'Artifact review',
-    },
-    'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content': {
-      disposition: 'workflow',
       surface: 'Artifact review',
     },
   },

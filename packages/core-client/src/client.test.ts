@@ -1746,8 +1746,8 @@ describe('createCoreClient', () => {
     expect(client.catalog).toBeDefined();
     expect(client.repositories).toBeDefined();
     expect('updateArtifactMetadata' in client.core).toBe(false);
-    expect(client.app.listArtifactReviews).toBeTypeOf('function');
-    expect(client.app.submitArtifactReviewDecision).toBeTypeOf('function');
+    expect(client.operations['artifact.review-list']).toBeTypeOf('function');
+    expect(client.operations['artifact.review.decide']).toBeTypeOf('function');
     expect('refreshAgentHealth' in client.app).toBe(false);
 
     for (const alias of [
@@ -1848,7 +1848,7 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/operations/thread.create': { body: thread() },
       'POST /api/turns': { body: turn() },
-      'GET /api/workspaces/ws_demo/artifacts/artifact_demo': { body: artifact() },
+      'POST /api/app/operations/artifact.read': { body: artifact() },
     });
 
     await expect(client.operations['workspace.list']({})).resolves.toMatchObject({
@@ -1864,7 +1864,9 @@ describe('createCoreClient', () => {
       turnId: 'tu_demo',
       answers: { branch: ['main'] },
     });
-    await expect(client.core.getArtifact('ws_demo', 'artifact_demo')).resolves.toEqual(artifact());
+    await expect(
+      client.operations['artifact.read']({ workspaceId: 'ws_demo', artifactId: 'artifact_demo' })
+    ).resolves.toEqual(artifact());
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'POST /api/app/operations/workspace.list',
@@ -1873,7 +1875,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/thread.create',
       'POST /api/turns',
       'POST /api/turns',
-      'GET /api/workspaces/ws_demo/artifacts/artifact_demo',
+      'POST /api/app/operations/artifact.read',
     ]);
     expect(requests[1]?.body).toMatchObject({ name: 'Demo', requestId: expect.any(String) });
     expect(requests[3]?.body).toMatchObject({ name: 'Demo thread', workspaceId: 'ws_demo' });
@@ -1913,7 +1915,7 @@ describe('createCoreClient', () => {
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt': {
         body: turn(),
       },
-      'GET /api/workspaces/ws_demo/artifacts': { body: { items: [artifact()] } },
+      'POST /api/app/operations/artifact.list': { body: { items: [artifact()] } },
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews': {
         body: { items: [workspaceSyncReview()] },
       },
@@ -2210,7 +2212,9 @@ describe('createCoreClient', () => {
         turnId: 'turn_demo',
       })
     ).resolves.toEqual(turn());
-    await expect(client.core.listArtifacts('ws_demo')).resolves.toEqual({ items: [artifact()] });
+    await expect(client.operations['artifact.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+      items: [artifact()],
+    });
     await expect(client.app.listWorkspaceSyncReviews('ws_demo')).resolves.toEqual({
       items: [workspaceSyncReview()],
     });
@@ -2298,7 +2302,7 @@ describe('createCoreClient', () => {
       'POST /api/workspaces/ws_demo/threads/th_demo/archive',
       'POST /api/app/operations/turn.read',
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt',
-      'GET /api/workspaces/ws_demo/artifacts',
+      'POST /api/app/operations/artifact.list',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1',
       'POST /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1/decision',
@@ -2354,7 +2358,7 @@ describe('createCoreClient', () => {
     });
   });
 
-  it('routes the Stage 2 Artifact and Material surface through client.app', async () => {
+  it('routes derived Artifact operations and the Stage 2 Material app surface', async () => {
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const material = {
       workspaceId: 'ws_demo',
@@ -2389,12 +2393,12 @@ describe('createCoreClient', () => {
     };
     const routeCases = [
       [
-        'POST /api/app/workspaces/ws_demo/artifacts/imports',
+        'POST /api/app/operations/artifact.import',
         { artifactId: 'artifact_demo', artifactVersion: 1 },
         201,
       ],
       [
-        'POST /api/app/workspaces/ws_demo/threads/th_demo/artifacts/artifact_demo/introductions',
+        'POST /api/app/operations/artifact.introduce',
         {
           artifactId: 'artifact_demo',
           artifactVersion: 1,
@@ -2452,14 +2456,22 @@ describe('createCoreClient', () => {
     );
 
     const responses = [
-      await client.app.importWorkspaceArtifact('ws_demo', {
-        title: 'Imported artifact',
-        mediaType: 'text/markdown',
-        contentDigest,
-        content: '# Imported artifact',
+      await client.operations['artifact.import']({
+        workspaceId: 'ws_demo',
+        ...{
+          title: 'Imported artifact',
+          mediaType: 'text/markdown',
+          contentDigest,
+          content: '# Imported artifact',
+        },
       }),
-      await client.app.introduceWorkspaceArtifact('ws_demo', 'th_demo', 'artifact_demo', {
-        expectedArtifactVersion: 1,
+      await client.operations['artifact.introduce']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        artifactId: 'artifact_demo',
+        ...{
+          expectedArtifactVersion: 1,
+        },
       }),
       await client.app.listWorkspaceMaterials('ws_demo'),
       await client.app.createWorkspaceMaterial('ws_demo', {
@@ -2493,19 +2505,28 @@ describe('createCoreClient', () => {
       }),
     ];
 
+    expect(requests.slice(0, 2).map(({ headers }) => headers['x-openkit-request-id'])).toEqual([
+      expect.any(String),
+      expect.any(String),
+    ]);
     expect(responses).toEqual(routeCases.map(([, body]) => body));
     expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual(
       routeCases.map(([path]) => path)
     );
     expect(requests.map(({ body }) => body)).toEqual([
       {
-        requestId: expect.any(String),
+        workspaceId: 'ws_demo',
         title: 'Imported artifact',
         mediaType: 'text/markdown',
         contentDigest,
         content: '# Imported artifact',
       },
-      { requestId: expect.any(String), expectedArtifactVersion: 1 },
+      {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        artifactId: 'artifact_demo',
+        expectedArtifactVersion: 1,
+      },
       null,
       {
         requestId: expect.any(String),
@@ -2539,7 +2560,7 @@ describe('createCoreClient', () => {
     ]);
   });
 
-  it('routes the Stage 4 Artifact Review surface through client.app', async () => {
+  it('routes Artifact Review through derived operations', async () => {
     const contentDigest = `sha256:${'a'.repeat(64)}`;
     const review = {
       workspaceId: 'ws_demo',
@@ -2567,27 +2588,43 @@ describe('createCoreClient', () => {
       followUpTurnId: null,
     };
     const { client, requests } = createFakeClient({
-      'GET /api/app/workspaces/ws_demo/artifacts/artifact_demo/reviews': {
+      'POST /api/app/operations/artifact.review-list': {
         body: { reviews: [review] },
       },
-      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/versions/1/review/decision': {
+      'POST /api/app/operations/artifact.review.decide': {
         body: decision,
       },
     });
 
-    await expect(client.app.listArtifactReviews('ws_demo', 'artifact_demo')).resolves.toEqual({
+    await expect(
+      client.operations['artifact.review-list']({
+        workspaceId: 'ws_demo',
+        artifactId: 'artifact_demo',
+      })
+    ).resolves.toEqual({
       reviews: [review],
     });
     await expect(
-      client.app.submitArtifactReviewDecision('ws_demo', 'artifact_demo', 1, {
-        decision: 'accepted',
+      client.operations['artifact.review.decide']({
+        workspaceId: 'ws_demo',
+        artifactId: 'artifact_demo',
+        artifactVersion: 1,
+        ...{
+          decision: 'accepted',
+        },
       })
     ).resolves.toEqual(decision);
     expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
-      'GET /api/app/workspaces/ws_demo/artifacts/artifact_demo/reviews',
-      'POST /api/app/workspaces/ws_demo/artifacts/artifact_demo/versions/1/review/decision',
+      'POST /api/app/operations/artifact.review-list',
+      'POST /api/app/operations/artifact.review.decide',
     ]);
-    expect(requests[1]?.body).toEqual({ decision: 'accepted', requestId: expect.any(String) });
+    expect(requests[1]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
+    expect(requests[1]?.body).toEqual({
+      workspaceId: 'ws_demo',
+      artifactId: 'artifact_demo',
+      artifactVersion: 1,
+      decision: 'accepted',
+    });
   });
 
   it('routes the exact closed Workspace sharing surface through client.app', async () => {

@@ -1,15 +1,13 @@
+import type { OperationOutput } from '@openkit/app-api-schemas';
 import {
   type AnswerUserInputRequestSchema,
   ApprovalRequestSchema,
   type ArchiveThreadRequestSchema,
-  type ArtifactSchema,
   type CreateKnowledgeEntryRequestSchema,
   type CreateWorkspaceRequestSchema,
   type DeleteKnowledgeEntryRequestSchema,
-  GetArtifactResponseSchema,
   type InterruptTurnRequestSchema,
   type KnowledgeEntrySchema,
-  ListArtifactsResponseSchema,
   type ListKnowledgeEntriesResponseSchema,
   ListThreadsResponseSchema,
   MetaResponseSchema,
@@ -88,12 +86,12 @@ export type WithdrawPendingRequestInput = OptionalRequestId<
 export type WithdrawPendingRequestBody = Omit<WithdrawPendingRequestInput, 'pendingRequestId'>;
 /** Pending-request command outcome. */
 export type PendingRequestOutcome = z.infer<typeof PendingRequestOutcomeSchema>;
-/** Artifact list response. */
-export type ListArtifactsResponse = z.infer<typeof ListArtifactsResponseSchema>;
-/** Artifact response. */
-export type Artifact = z.infer<typeof ArtifactSchema>;
-/** Artifact detail response. */
-export type GetArtifactResponse = z.infer<typeof GetArtifactResponseSchema>;
+/** Definition-derived Artifact inventory result. */
+export type ListArtifactsResponse = OperationOutput<'artifact.list'>;
+/** Definition-derived exact Artifact read result. */
+export type GetArtifactResponse = OperationOutput<'artifact.read'>;
+/** Exact Artifact record projected by its definition-derived read. */
+export type Artifact = GetArtifactResponse;
 /** Core protocol HTTP and SSE projection client. */
 export interface CoreProjectionClient {
   /** Reads server metadata and protocol capability flags. */
@@ -129,10 +127,6 @@ export interface CoreProjectionClient {
     pendingRequestId: string,
     input: WithdrawPendingRequestBody
   ): Promise<PendingRequestOutcome>;
-  /** Lists workspace artifacts. */
-  listArtifacts(workspaceId: string): Promise<ListArtifactsResponse>;
-  /** Reads one artifact. */
-  getArtifact(workspaceId: string, artifactId: string): Promise<GetArtifactResponse>;
   /** Subscribes to one validated turn event stream. */
   subscribeTurnEvents(options: {
     workspaceId: string;
@@ -203,13 +197,6 @@ export function createCoreProjectionClient(
         `/api/pending-requests/${pendingRequestId}/withdraw`,
         withRequestId({ ...input, pendingRequestId }),
         PendingRequestOutcomeSchema
-      ),
-    listArtifacts: (workspaceId) =>
-      transport.getJson(`/api/workspaces/${workspaceId}/artifacts`, ListArtifactsResponseSchema),
-    getArtifact: (workspaceId, artifactId) =>
-      transport.getJson(
-        `/api/workspaces/${workspaceId}/artifacts/${artifactId}`,
-        GetArtifactResponseSchema
       ),
     subscribeTurnEvents: (subscribeOptions) =>
       subscribeTurnEvents({

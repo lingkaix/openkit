@@ -51,3 +51,5 @@ Public native environment administration uses `runtime.agent-environment-read` a
 The Workspace, Thread and Turn JSON operations are derived from `PRODUCT_OPERATION_DEFINITIONS`, including their strict inputs, output codecs and `client.operations[id]` handlers. Their settled CLI ids are unchanged; no handwritten catalog entries, old SDK method aliases or lower-fidelity Workspace list exclusion remain. Turn streaming remains a transport exclusion.
 
 Knowledge CLI discovery and invocation derive all 19 Knowledge and four retained entry operations from the shared definition tables. Canonical dotted ids replace the former hyphenated CLI spellings without aliases; `knowledge.retrieval` retains its settled semantic id.
+
+Artifact CLI discovery and execution derive the six entries from `ARTIFACT_OPERATION_DEFINITIONS`. `artifact.review-list` retains its settled semantic id; `artifact.review.decide` uses the existing domain command id instead of the former CLI spelling `artifact.review-decide`, with no alias.

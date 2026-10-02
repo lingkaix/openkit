@@ -106,14 +106,24 @@ interface ThreadMaterialSummary {
  * Reads one successful controlled-setup response from the isolated Core.
  *
  * @param path App API path below the isolated Core URL.
+ * @param input Optional definition-derived operation input.
  * @returns Parsed response body.
  * @throws When the stack is absent, the request fails, the status is not 200, or JSON is invalid.
  */
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, input?: Record<string, unknown>): Promise<T> {
   if (!stack) throw new Error('The isolated Web stack is not running.');
-  const response = await fetch(`${stack.coreUrl}${path}`);
+  const response = await fetch(
+    `${stack.coreUrl}${path}`,
+    input
+      ? {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      : undefined
+  );
   const body = await response.text();
-  expect(response.status, `GET ${path}: ${body}`).toBe(200);
+  expect(response.status, `${input ? 'POST' : 'GET'} ${path}: ${body}`).toBe(200);
   return JSON.parse(body) as T;
 }
 
@@ -326,14 +336,17 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
   const artifacts = (
-    await getJson<{ items: ProposalArtifactSummary[] }>('/api/workspaces/ws_demo/artifacts')
+    await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
+      workspaceId: 'ws_demo',
+    })
   ).items;
   const proposals = (
     await Promise.all(
       artifacts.map(async (artifact) => {
         const reviews = (
           await getJson<{ reviews: ProposalReviewSummary[] }>(
-            `/api/app/workspaces/ws_demo/artifacts/${artifact.id}/reviews`
+            '/api/app/operations/artifact.review-list',
+            { workspaceId: 'ws_demo', artifactId: artifact.id }
           )
         ).reviews;
         return reviews.some(
@@ -437,7 +450,9 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(materialAfterConflict.currentRevisionId).toBe(userRevision.revisionId);
   expect(
     (
-      await getJson<{ items: ProposalArtifactSummary[] }>('/api/workspaces/ws_demo/artifacts')
+      await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
+        workspaceId: 'ws_demo',
+      })
     ).items.find((artifact) => artifact.id === proposals[1]!.id)?.content.body
   ).toBe(proposals[1]!.content.body);
 

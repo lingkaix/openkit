@@ -1999,33 +1999,40 @@ describe('Recovery and search', () => {
       if (state.currentWorkspaceId === WORKSPACE_B.id) events.push('workspace');
     });
     let pathname = '';
-    const listArtifacts = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items:
-          workspaceId === WORKSPACE_B.id
-            ? [
-                {
-                  id: SEARCH_ARTIFACT.id,
-                  kind: 'report',
-                  status: 'ready',
-                  title: SEARCH_ARTIFACT.title,
-                  summary: 'One-page research summary.',
-                  version: 1,
-                },
-                SEARCH_ARTIFACT_DISTRACTOR,
-              ]
-            : [],
-      })
-    );
-    const getArtifact = vi.fn().mockImplementation((workspaceId: string, artifactId: string) => {
-      if (workspaceId === WORKSPACE_B.id && artifactId === SEARCH_ARTIFACT.id) {
-        return Promise.resolve(SEARCH_ARTIFACT_RECORD);
-      }
-      return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
-    });
+    const listArtifacts = vi
+      .fn()
+      .mockImplementation(
+        ({ workspaceId }: Parameters<CoreClient['operations']['artifact.list']>[0]) =>
+          Promise.resolve({
+            items:
+              workspaceId === WORKSPACE_B.id
+                ? [
+                    {
+                      id: SEARCH_ARTIFACT.id,
+                      kind: 'report',
+                      status: 'ready',
+                      title: SEARCH_ARTIFACT.title,
+                      summary: 'One-page research summary.',
+                      version: 1,
+                    },
+                    SEARCH_ARTIFACT_DISTRACTOR,
+                  ]
+                : [],
+          })
+      );
+    const getArtifact = vi
+      .fn()
+      .mockImplementation(
+        ({ workspaceId, artifactId }: Parameters<CoreClient['operations']['artifact.read']>[0]) => {
+          if (workspaceId === WORKSPACE_B.id && artifactId === SEARCH_ARTIFACT.id) {
+            return Promise.resolve(SEARCH_ARTIFACT_RECORD);
+          }
+          return Promise.reject(new Error(`Artifact not found: ${artifactId}`));
+        }
+      );
     const client = makeClient(
       { search: vi.fn().mockResolvedValue({ items: [SEARCH_ARTIFACT] }) },
-      { listArtifacts, getArtifact }
+      { 'artifact.list': listArtifacts, 'artifact.read': getArtifact }
     );
     renderApp('/chat', client, (next) => {
       pathname = next;
@@ -2044,9 +2051,13 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(pathname).toBe(SEARCH_ARTIFACT_DESTINATION));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
     expect(events).toEqual(['workspace', 'navigate']);
-    await waitFor(() => expect(listArtifacts).toHaveBeenCalledWith(WORKSPACE_B.id));
     await waitFor(() =>
-      expect(getArtifact.mock.calls).toEqual([[WORKSPACE_B.id, SEARCH_ARTIFACT.id]])
+      expect(listArtifacts).toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id })
+    );
+    await waitFor(() =>
+      expect(getArtifact.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE_B.id, artifactId: SEARCH_ARTIFACT.id }],
+      ])
     );
     expect(await screen.findByText(SEARCH_ARTIFACT_BODY)).toBeInTheDocument();
     expect(screen.queryByText(SEARCH_ARTIFACT_DISTRACTOR_BODY)).not.toBeInTheDocument();

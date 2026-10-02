@@ -405,7 +405,7 @@ describe.each([
           'thread.read': vi
             .fn()
             .mockResolvedValue({ ...THREAD, id: surface === 'starter' ? 'th-new' : 'th1' }),
-          listArtifacts: vi
+          'artifact.list': vi
             .fn()
             .mockResolvedValue({ items: [{ id: 'brief', version: 2, title: 'Brief' }] }),
         },

@@ -820,13 +820,11 @@ function makeClient(
         recentCompletions: [],
         attentionNeeded: [],
       }),
-      submitArtifactReviewDecision: vi.fn().mockResolvedValue({}),
       listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listWorkspaceWorkers: vi.fn().mockImplementation(async (workspaceId: string) => ({
         workspaceId,
         items: [],
       })),
-
       ...overrides.app,
     },
     agents: {
@@ -875,6 +873,7 @@ function makeClient(
     },
 
     operations: {
+      'artifact.review.decide': vi.fn().mockResolvedValue({}),
       'knowledge.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
       'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
@@ -1416,9 +1415,7 @@ describe('Overview / Action Center (board 07)', () => {
   it('waits for complete exact detail before enabling an attention grant', async () => {
     const detail = createDeferred<unknown>();
     const client = makeClient({
-      app: {},
       actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
-
       operations: { 'thread.dashboard': vi.fn().mockReturnValue(detail.promise) },
     });
     renderApp('/', client);
@@ -1448,7 +1445,6 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('keeps authorized denial available when attention detail is unavailable', async () => {
     const client = makeClient({
-      app: {},
       actionCenter: {
         listHumanAttention: vi.fn().mockResolvedValue({
           items: [
@@ -1467,7 +1463,6 @@ describe('Overview / Action Center (board 07)', () => {
           ],
         }),
       },
-
       operations: {
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
@@ -1505,9 +1500,7 @@ describe('Overview / Action Center (board 07)', () => {
     'read-only',
   ])('keeps attention approval controls closed for %s authority/state', async (state) => {
     const client = makeClient({
-      app: {},
       actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
-
       operations: {
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
@@ -2010,8 +2003,10 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        app: { submitArtifactReviewDecision },
+        app: {},
         actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
+
+        operations: { 'artifact.review.decide': submitArtifactReviewDecision },
       })
     );
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
@@ -2019,7 +2014,7 @@ describe('Overview / Action Center (board 07)', () => {
       within(await screen.findByRole('alert')).getByRole('button', { name: 'Try again' })
     );
     await waitFor(() => expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(2));
-    expect(submitArtifactReviewDecision.mock.calls[0][3]).toEqual({
+    expect(submitArtifactReviewDecision.mock.calls[0][0]).toMatchObject({
       decision: 'accepted',
       requestId: expect.any(String),
     });
@@ -2654,9 +2649,7 @@ describe('Agents roster continued', () => {
       );
     const list = vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] });
     const client = makeClient({
-      core: {},
       agents: { list },
-
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
@@ -6741,8 +6734,6 @@ describe('Repositories (board 19)', () => {
 
   it('does not expose a set-default repository action on Quick Chat', async () => {
     const client = makeClient({
-      core: {},
-
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
@@ -6916,7 +6907,6 @@ describe('First run (board 18)', () => {
       .mockResolvedValue({});
     const client = makeClient({
       core: { meta },
-
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [].map((workspace) => ({
@@ -6941,8 +6931,6 @@ describe('First run (board 18)', () => {
 
   it('shows welcome guidance when connected with no workspaces', async () => {
     const client = makeClient({
-      core: {},
-
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [].map((workspace) => ({

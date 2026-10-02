@@ -38,7 +38,6 @@ import {
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
 import { registerApprovalRoutes } from './approval-routes.js';
-import { registerArtifactRoutes } from './artifact-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
 import {
@@ -1402,6 +1401,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/mcp', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   registerRemoteMcpRoutes({
     app,
+    startModeWorkerTurn,
+    repositoryWorkspaceDb,
     getBootReadiness,
     coreDb: options.coreDb,
     store: sharedStore,
@@ -1692,6 +1693,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerOperationJsonRoutes({
     app,
+    startModeWorkerTurn,
     coreDb: options.coreDb,
     workspaceMutationAdmission,
     inflightCommands,
@@ -2005,15 +2007,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     repositoryWorkspaceDb,
     requestStore,
-  });
-
-  registerArtifactRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    openWorkspaceDb: repositoryWorkspaceDb,
-    requestStore,
-    startModeWorkerTurn,
   });
 
   registerWorkspaceSyncRoutes({

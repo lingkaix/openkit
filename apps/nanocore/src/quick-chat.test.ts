@@ -24,6 +24,7 @@ import { readWorkObservations } from './storage/work-observations.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
+import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { createVaultReference } from './vault/vault-references.js';
@@ -1271,17 +1272,23 @@ describe('quick chat app API', () => {
       );
       expect(knowledge.status).toBe(200);
       const content = '# Maintenance report acceptance\n\nartifact-roundtrip-c7f46a19; 62 passed.';
-      const imported = await app.request('/api/app/workspaces/ws_demo/artifacts/imports', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'artifact-source-import',
-          title: 'Maintenance report acceptance',
-          mediaType: 'text/markdown',
-          contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-          content,
-        }),
-      });
+      const imported = await app.request(
+        ...artifactOperationRequest(
+          'artifact.import',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'artifact-source-import',
+              title: 'Maintenance report acceptance',
+              mediaType: 'text/markdown',
+              contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+              content,
+            }),
+          }
+        )
+      );
       expect(imported.status, await imported.clone().text()).toBe(201);
       const artifact = await imported.json();
       const input =

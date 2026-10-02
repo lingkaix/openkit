@@ -1718,6 +1718,333 @@
         }
       }
     },
+    "/api/app/operations/artifact.list": {
+      "post": {
+        "operationId": "artifact.list",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "List visible submitted outputs and directly imported files.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List visible submitted outputs and directly imported files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.read": {
+      "post": {
+        "operationId": "artifact.read",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Read one Artifact with its exact inline content and immutable origin.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one Artifact with its exact inline content and immutable origin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.import": {
+      "post": {
+        "operationId": "artifact.import",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Import one immutable Workspace Artifact version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.import.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Import one immutable Workspace Artifact version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.import.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.introduce": {
+      "post": {
+        "operationId": "artifact.introduce",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Introduce one exact imported Artifact version into an idle Thread.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.introduce.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Introduce one exact imported Artifact version into an idle Thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.introduce.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.review-list": {
+      "post": {
+        "operationId": "artifact.review-list",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "List version-keyed Reviews for one visible Artifact.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.review-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List version-keyed Reviews for one visible Artifact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.review-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/artifact.review.decide": {
+      "post": {
+        "operationId": "artifact.review.decide",
+        "tags": [
+          "artifact"
+        ],
+        "summary": "Decide one exact version-owned Artifact Review.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/artifact.review.decide.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decide one exact version-owned Artifact Review.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/artifact.review.decide.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/members": {
       "get": {
         "operationId": "listWorkspaceMembers",
@@ -6986,273 +7313,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkspaceDashboardResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews": {
-      "get": {
-        "operationId": "listArtifactReviews",
-        "tags": [
-          "reviews"
-        ],
-        "summary": "List version-keyed Artifact Reviews.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "artifactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ArtifactId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List version-keyed Artifact Reviews.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListArtifactReviewsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/versions/{artifactVersion}/review/decision": {
-      "post": {
-        "operationId": "submitArtifactReviewDecision",
-        "tags": [
-          "reviews"
-        ],
-        "summary": "Decide one exact Artifact Review.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "artifactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ArtifactId"
-            }
-          },
-          {
-            "name": "artifactVersion",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "minimum": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SubmitArtifactReviewDecisionRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Decide one exact Artifact Review.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubmitArtifactReviewDecisionResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/artifacts/imports": {
-      "post": {
-        "operationId": "importWorkspaceArtifact",
-        "tags": [
-          "artifacts"
-        ],
-        "summary": "Import one immutable Workspace-only Artifact.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ImportWorkspaceArtifactRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Import one immutable Workspace-only Artifact.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportWorkspaceArtifactResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/artifacts/{artifactId}/introductions": {
-      "post": {
-        "operationId": "introduceWorkspaceArtifact",
-        "tags": [
-          "artifacts"
-        ],
-        "summary": "Introduce one exact Workspace-only Artifact version into a Thread.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "artifactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ArtifactId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IntroduceWorkspaceArtifactRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Introduce one exact Workspace-only Artifact version into a Thread.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IntroduceWorkspaceArtifactResponse"
                 }
               }
             }
@@ -24548,6 +24608,987 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "null"
       },
+      "artifact.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "turnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "report",
+                    "diff",
+                    "file",
+                    "summary"
+                  ]
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "draft",
+                    "ready",
+                    "archived"
+                  ]
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "content": {
+                  "type": "object",
+                  "properties": {
+                    "format": {
+                      "type": "string",
+                      "enum": [
+                        "markdown",
+                        "text",
+                        "json"
+                      ]
+                    },
+                    "body": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "format",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "lastMutationRequestId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "origin": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "turn-output"
+                        },
+                        "threadId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "turnId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "threadId",
+                        "turnId",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "imported"
+                        },
+                        "sourceKind": {
+                          "type": "string",
+                          "const": "direct-import"
+                        },
+                        "sourceId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "sourceDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "actor": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "automation",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "recordedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceKind",
+                        "sourceId",
+                        "sourceDigest",
+                        "actor",
+                        "requestId",
+                        "recordedAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "workspaceId",
+                "threadId",
+                "turnId",
+                "kind",
+                "title",
+                "status",
+                "summary",
+                "version",
+                "content",
+                "contentDigest",
+                "lastMutationRequestId",
+                "origin",
+                "createdAt",
+                "updatedAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "artifactId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "report",
+              "diff",
+              "file",
+              "summary"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "ready",
+              "archived"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "content": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "markdown",
+                  "text",
+                  "json"
+                ]
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "format",
+              "body"
+            ],
+            "additionalProperties": false
+          },
+          "contentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "lastMutationRequestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "turn-output"
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "threadId",
+                  "turnId",
+                  "requestId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "imported"
+                  },
+                  "sourceKind": {
+                    "type": "string",
+                    "const": "direct-import"
+                  },
+                  "sourceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "actor": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "user"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "agent",
+                              "automation",
+                              "integration",
+                              "system"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "responsibleUserId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "id",
+                          "responsibleUserId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "recordedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "sourceKind",
+                  "sourceId",
+                  "sourceDigest",
+                  "actor",
+                  "requestId",
+                  "recordedAt"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "workspaceId",
+          "threadId",
+          "turnId",
+          "kind",
+          "title",
+          "status",
+          "summary",
+          "version",
+          "content",
+          "contentDigest",
+          "lastMutationRequestId",
+          "origin",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.import.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mediaType": {
+            "type": "string",
+            "enum": [
+              "text/markdown",
+              "text/plain",
+              "application/json"
+            ]
+          },
+          "contentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "title",
+          "mediaType",
+          "contentDigest",
+          "content",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.import.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "number",
+            "const": 1
+          }
+        },
+        "required": [
+          "artifactId",
+          "artifactVersion"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.introduce.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedArtifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedArtifactVersion",
+          "workspaceId",
+          "threadId",
+          "artifactId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.introduce.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "turnId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "itemId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "artifactId",
+          "artifactVersion",
+          "turnId",
+          "itemId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "artifactId"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "reviews": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reviewId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "artifactId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "artifactVersion": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "sourceThreadId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceTurnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sourceAgentId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "materialProposal": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "materialId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "baseRevisionId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "baseContentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "materialId",
+                        "baseRevisionId",
+                        "baseContentDigest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decision": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "accepted",
+                        "needs_refinement",
+                        "redo",
+                        "rejected",
+                        "deferred"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decisionActorId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "feedback": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decidedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "followUpTurnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "appliedMaterialRevisionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "workspaceId",
+                "reviewId",
+                "artifactId",
+                "artifactVersion",
+                "contentDigest",
+                "sourceThreadId",
+                "sourceTurnId",
+                "sourceAgentId",
+                "materialProposal",
+                "decision",
+                "decisionActorId",
+                "feedback",
+                "decidedAt",
+                "followUpTurnId",
+                "appliedMaterialRevisionId",
+                "createdAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "reviews"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review.decide.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "needs_refinement",
+              "redo",
+              "rejected",
+              "deferred"
+            ]
+          },
+          "feedback": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "decision",
+          "workspaceId",
+          "artifactId",
+          "artifactVersion"
+        ],
+        "additionalProperties": false
+      },
+      "artifact.review.decide.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "reviewId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "needs_refinement",
+              "redo",
+              "rejected",
+              "deferred"
+            ]
+          },
+          "followUpTurnId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reviewId",
+          "artifactId",
+          "artifactVersion",
+          "decision",
+          "followUpTurnId"
+        ],
+        "additionalProperties": false
+      },
       "AbortNanoHostTransportRotationResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -31298,310 +32339,6 @@
         ],
         "additionalProperties": false
       },
-      "ImportWorkspaceArtifactRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "mediaType": {
-            "type": "string",
-            "enum": [
-              "text/markdown",
-              "text/plain",
-              "application/json"
-            ]
-          },
-          "contentDigest": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "content": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "requestId",
-          "title",
-          "mediaType",
-          "contentDigest",
-          "content"
-        ],
-        "additionalProperties": false
-      },
-      "ImportWorkspaceArtifactResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "artifactId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "artifactVersion": {
-            "type": "number",
-            "const": 1
-          }
-        },
-        "required": [
-          "artifactId",
-          "artifactVersion"
-        ],
-        "additionalProperties": false
-      },
-      "IntroduceWorkspaceArtifactRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedArtifactVersion": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedArtifactVersion"
-        ],
-        "additionalProperties": false
-      },
-      "IntroduceWorkspaceArtifactResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "artifactId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "artifactVersion": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "turnId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "itemId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "artifactId",
-          "artifactVersion",
-          "turnId",
-          "itemId"
-        ],
-        "additionalProperties": false
-      },
-      "ListArtifactReviewsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "reviews": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "reviewId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "artifactId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "artifactVersion": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                },
-                "sourceThreadId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "sourceTurnId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "sourceAgentId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "materialProposal": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "materialId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "baseRevisionId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "baseContentDigest": {
-                          "type": "string",
-                          "pattern": "^sha256:[a-f0-9]{64}$"
-                        }
-                      },
-                      "required": [
-                        "materialId",
-                        "baseRevisionId",
-                        "baseContentDigest"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "decision": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "accepted",
-                        "needs_refinement",
-                        "redo",
-                        "rejected",
-                        "deferred"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "decisionActorId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "feedback": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "decidedAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "followUpTurnId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "appliedMaterialRevisionId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "workspaceId",
-                "reviewId",
-                "artifactId",
-                "artifactVersion",
-                "contentDigest",
-                "sourceThreadId",
-                "sourceTurnId",
-                "sourceAgentId",
-                "materialProposal",
-                "decision",
-                "decisionActorId",
-                "feedback",
-                "decidedAt",
-                "followUpTurnId",
-                "appliedMaterialRevisionId",
-                "createdAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "reviews"
-        ],
-        "additionalProperties": false
-      },
       "ListWorkspaceMaterialRevisionsResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -31906,83 +32643,6 @@
           "digest",
           "expectedRevision",
           "requestId"
-        ],
-        "additionalProperties": false
-      },
-      "SubmitArtifactReviewDecisionRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "decision": {
-            "type": "string",
-            "enum": [
-              "accepted",
-              "needs_refinement",
-              "redo",
-              "rejected",
-              "deferred"
-            ]
-          },
-          "feedback": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "requestId",
-          "decision"
-        ],
-        "additionalProperties": false
-      },
-      "SubmitArtifactReviewDecisionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "reviewId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "artifactId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "artifactVersion": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "decision": {
-            "type": "string",
-            "enum": [
-              "accepted",
-              "needs_refinement",
-              "redo",
-              "rejected",
-              "deferred"
-            ]
-          },
-          "followUpTurnId": {
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "reviewId",
-          "artifactId",
-          "artifactVersion",
-          "decision",
-          "followUpTurnId"
         ],
         "additionalProperties": false
       },
@@ -74147,5 +74807,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0f6b5f76282e5ced86a50f8670ea045de75f45e05ac09a698a4db87fe3ddd667"
+  "x-openkit-source-digest": "sha256:a40d4d97419e7f04c95437a4709e280b0981680d3dcc3f58f5c7a0056c6b4e03"
 }

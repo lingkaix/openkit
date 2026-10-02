@@ -475,7 +475,10 @@ describe.each([
     const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
     const queryClient = renderApp(
       path,
-      makeClient({ listArtifacts }, { importWorkspaceArtifact, submitConversation })
+      makeClient(
+        { 'artifact.list': listArtifacts },
+        { 'artifact.import': importWorkspaceArtifact, submitConversation }
+      )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Review this file');
     await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(1));
@@ -496,12 +499,15 @@ describe.each([
     await act(async () => read.resolve(content));
     await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
     expect(randomUUID).toHaveBeenCalledTimes(1);
-    expect(importWorkspaceArtifact).toHaveBeenCalledWith('ws1', {
-      title: name,
-      mediaType,
-      content,
-      contentDigest: 'sha256:2641e795d217a25722a8e1554b6d51257b2fabe3c1ce8f760f19da116706b696',
-      requestId,
+    expect(importWorkspaceArtifact).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...{
+        title: name,
+        mediaType,
+        content,
+        contentDigest: 'sha256:2641e795d217a25722a8e1554b6d51257b2fabe3c1ce8f760f19da116706b696',
+        requestId,
+      },
     });
     expect(listArtifacts).toHaveBeenCalledTimes(1);
     expect(send).toBeDisabled();
@@ -509,7 +515,7 @@ describe.each([
     await act(async () => imported.resolve({ artifactId: 'uploaded-notes', artifactVersion: 3 }));
     expect(await screen.findByRole('button', { name: `Remove ${name}` })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Attachments' })).not.toBeInTheDocument();
-    expect(listArtifacts.mock.calls).toEqual([['ws1'], ['ws1']]);
+    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }], [{ workspaceId: 'ws1' }]]);
     expect(queryClient.getQueryState(['artifacts', 'ws1'])?.fetchStatus).toBe('fetching');
     expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -536,7 +542,13 @@ describe.each([
     });
     const importWorkspaceArtifact = vi.fn().mockRejectedValue(new Error('Import unavailable'));
     const submitConversation = vi.fn().mockReturnValue(new Promise(() => {}));
-    renderApp(path, makeClient({ listArtifacts }, { importWorkspaceArtifact, submitConversation }));
+    renderApp(
+      path,
+      makeClient(
+        { 'artifact.list': listArtifacts },
+        { 'artifact.import': importWorkspaceArtifact, submitConversation }
+      )
+    );
     const message = await screen.findByRole('textbox', { name: 'Message' });
     await user.type(message, 'Keep this draft');
     const trigger = screen.getByRole('button', { name: 'Add artifact or upload attachment' });
@@ -554,7 +566,7 @@ describe.each([
     await waitFor(() => expect(trigger).toBeEnabled());
     expect(text).toHaveBeenCalledTimes(1);
     expect(importWorkspaceArtifact).toHaveBeenCalledTimes(stage === 'file read' ? 0 : 1);
-    expect(listArtifacts.mock.calls).toEqual([['ws1']]);
+    expect(listArtifacts.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
     expect(message).toHaveValue('Keep this draft');
     expect(input).toHaveValue('');
     expect(screen.getByRole('dialog', { name: 'Attachments' })).toBeInTheDocument();
@@ -612,7 +624,7 @@ describe.each([
       makeClient(
         {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
-          listArtifacts: vi.fn().mockResolvedValue({
+          'artifact.list': vi.fn().mockResolvedValue({
             items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
           }),
         },
@@ -5195,7 +5207,7 @@ describe('conversation artifact inspection', () => {
       '/chat/ws1/th1',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        getArtifact,
+        'artifact.read': getArtifact,
       })
     );
     await screen.findAllByText(reference.title);
@@ -5203,7 +5215,7 @@ describe('conversation artifact inspection', () => {
     await user.click(screen.getAllByRole('button', { name: 'View content' })[0]);
     const dialog = await screen.findByRole('dialog', { name: reference.title });
     expect(await within(dialog).findByText(/Reviewed content/)).toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith('ws1', 'artifact_diff');
+    expect(getArtifact).toHaveBeenCalledWith({ workspaceId: 'ws1', artifactId: 'artifact_diff' });
     expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
     await user.click(
@@ -5224,7 +5236,7 @@ describe('conversation artifact inspection', () => {
       '/chat/ws1/th1',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        getArtifact,
+        'artifact.read': getArtifact,
       })
     );
     await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
@@ -5282,7 +5294,9 @@ describe('conversation artifact inspection', () => {
       '/chat/ws1/th1',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        getArtifact: vi.fn().mockResolvedValue({ ...artifact, content: { format: 'json', body } }),
+        'artifact.read': vi
+          .fn()
+          .mockResolvedValue({ ...artifact, content: { format: 'json', body } }),
       })
     );
     await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
@@ -5643,7 +5657,7 @@ describe('Worker environment Advanced choice', () => {
     const client = makeClient(
       {
         'thread.create': createThread,
-        listArtifacts: vi.fn().mockResolvedValue({
+        'artifact.list': vi.fn().mockResolvedValue({
           items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
         }),
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
@@ -5730,7 +5744,7 @@ describe('Worker environment Advanced choice', () => {
         {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
           listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
-          listArtifacts: vi.fn().mockResolvedValue({
+          'artifact.list': vi.fn().mockResolvedValue({
             items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
           }),
         },

@@ -696,15 +696,15 @@ export function useDecideAttention() {
         row.artifactId &&
         row.artifactVersion
       ) {
-        return client.app.submitArtifactReviewDecision(
-          row.source.workspaceId,
-          row.source.artifactId,
-          row.source.artifactVersion,
-          {
+        return client.operations['artifact.review.decide']({
+          workspaceId: row.source.workspaceId,
+          artifactId: row.source.artifactId,
+          artifactVersion: row.source.artifactVersion,
+          ...{
             decision: action.kind === 'accept_review' ? 'accepted' : 'rejected',
             requestId,
-          }
-        );
+          },
+        });
       }
       throw new Error(`Inline decision is not available for action ${action.kind}`);
     },

@@ -1194,7 +1194,10 @@ async function discoverAdministrationCandidates(
   const outcomes: ApplyAdministrationConfigurationResponse[] = [];
   let configuration: ConfigurationCandidate | null = null;
   for (const reference of references.toReversed()) {
-    const artifact = await client.core.getArtifact(workspaceId, reference.artifactId);
+    const artifact = await client.operations['artifact.read']({
+      workspaceId,
+      artifactId: reference.artifactId,
+    });
     if (
       artifact.id !== reference.artifactId ||
       artifact.version !== reference.artifactVersion ||

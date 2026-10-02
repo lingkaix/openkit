@@ -893,8 +893,8 @@ describe('action center app API', () => {
         {
           kind: 'open_artifact',
           label: 'Open artifact',
-          method: 'GET',
-          href: `/api/workspaces/${workspace.id}/artifacts/${artifact.id}`,
+          method: 'POST',
+          href: '/api/app/operations/artifact.read',
         },
       ]);
 
