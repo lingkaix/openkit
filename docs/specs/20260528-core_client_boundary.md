@@ -13,7 +13,7 @@ It owns the composed client surface, schema package split, typed client grouping
 
 ## Does Not Own
 
-This spec does not own stable core protocol semantics, individual App API route behavior, Web UI screens, NanoCore service implementation, auth internals, runtime config semantics, or worker runtime behavior.
+This spec does not own stable core protocol semantics, individual App API route behavior, Web UI screens, NanoCore service implementation, auth internals, runtime config semantics, worker runtime behavior, or the semantic contract of a public operation. [Operation Definition](20261002-operation_definition.md) owns that semantic contract.
 
 ## Core References
 
@@ -30,6 +30,8 @@ Related specs:
 - `docs/specs/20260721-provider_subscription_accounts.md`
 - `docs/specs/20260704-app_api_openapi_projection.md`
 - `docs/specs/20260831-unified_conversation_composer.md`
+- `docs/specs/20261002-operation_definition.md`
+- `docs/specs/20260704-workspace_backup_export_import.md`
 
 ## Summary
 
@@ -53,13 +55,23 @@ It also forced the Web UI to consume a flat API surface where stable Core semant
 
 `@openkit/protocol` owns stable Core records, command requests, command responses, event envelopes, error shapes, capability metadata, and conformance fixtures.
 
-`@openkit/app-api-schemas` owns runtime-neutral schemas for NanoCore App API payloads.
+`@openkit/app-api-schemas` owns runtime-neutral schemas for NanoCore App API payloads. Until a resource family is cut over, a hand-maintained schema in that package is that family's payload contract. When the family is cut over, the payload schema is the definition table's schema, and a hand-maintained schema for the same operation is not a second contract.
 
 `apps/nanocore` owns App API route behavior and parses route output through `@openkit/app-api-schemas`.
 
-`@openkit/core-client` owns transport, response validation, request-id insertion, SSE iteration, and the composed TypeScript client surface.
+`@openkit/core-client` owns transport, response validation, request-id insertion, SSE iteration, and the composed TypeScript client surface. Until a resource family is cut over, the hand-maintained client methods stated in this specification are that family's client contract. When the family is cut over, client typing is derived from the definition table, and the hand-maintained mapping is deleted with the old route.
 
 `apps/web` consumes only the composed client.
+
+## Operation Definition Projection
+
+Until a resource family is cut over, the routes and hand-maintained client methods this specification states for that family remain its contract.
+
+When that resource family is cut over, the accepted target applies. [Operation Definition](20261002-operation_definition.md) owns the definition table, the canonical operation id, and derived HTTP placement and transport spelling. This specification does not restate that mechanism. A JSON product operation in the family has one HTTP route per canonical operation id. Client typing for the family is derived from that definition table. The same cutover deletes the family's old route, its hand-maintained client mapping, and its hand-maintained descriptor together. A schema view derived from the definition is not a second contract.
+
+The three Workspace archive operations `workspace.archive-download`, `workspace.archive-import-dry-run`, and `workspace.archive-import` keep their streaming bindings. [Workspace Backup, Export, and Import](20260704-workspace_backup_export_import.md) owns those bindings. This specification does not fold those three operations into one JSON route.
+
+This specification keeps route and client projection detail. That detail is transport, response validation, request-id insertion, SSE iteration, the composed client surface, and the grouping of a derived operation on that surface.
 
 ## Client Shape
 
@@ -210,7 +222,7 @@ Web's [built browser package graph regression](../../apps/web/test/browser-packa
 
 The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.app.getConversationTargets` and `client.app.submitConversation` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
 
-NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract.
+NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Those hand-maintained mappings are the current implementation. They remain until each resource family is cut over under Operation Definition Projection.
 
 Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
 

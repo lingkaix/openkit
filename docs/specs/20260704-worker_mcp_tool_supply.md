@@ -14,7 +14,7 @@ updated: 2026-09-30
 - Gateway-side credential injection binding for MCP server calls.
 - Tool schema retention: `McpToolSchemaSnapshot` records for replay and audit interpretability.
 - Policy binding for `tool.use` actions and approval-required tools, including the gateway's capture, re-evaluation, and execution of an approved call.
-- The Turn-boundary tool snapshot a worker sees, and the built-in `openkit-work` server's supply and dispatch seam.
+- The Turn-boundary tool snapshot a worker sees, and the built-in `openkit-work` server's supply. Until that resource family is cut over, this specification also owns that server's in-process dispatch seam. When the family is cut over, the tools execute through invocation and this specification keeps the supply.
 - MCP error normalization into stable capability error codes.
 - Usage and audit emission for MCP capability calls.
 
@@ -126,9 +126,15 @@ Rules:
 
 ### Server lifecycle
 
-The explicitly selected built-in `openkit-repository` target uses the same native MCP projection and authenticated package admission. Its reserved identity, repository-only tool and in-process dispatch are owned by [Worker Agent Capability](20260703-worker_agent_capability.md#built-in-repository-target); [Git Write Workflow](20260704-git_write_workflow.md#worker-initiated-repository-push) owns its effect authority and its human and automatic approval modes. The comparison of this target with a proxied vendor server is deferred.
+The explicitly selected built-in `openkit-repository` target uses the same native MCP projection and authenticated package admission. Its reserved identity, repository-only tool and in-process dispatch are owned by [Worker Agent Capability](20260703-worker_agent_capability.md#built-in-repository-target); [Git Write Workflow](20260704-git_write_workflow.md#worker-initiated-repository-push) owns its effect authority and its human and automatic approval modes. The comparison of this target with a proxied vendor server is deferred. Until that resource family is cut over, the in-process dispatch named here remains the contract.
 
-The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_request_input`, `work_list_peers`, and `work_read_peer`, whose identity and semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Built-in invocation evidence does not replace the repository owner's exact target Approval, permission decision or terminal push record.
+The built-in `openkit-work` server is supplied to every worker AgentSession without manifest selection, like `openkit-generative`. It carries `work_request_input`, `work_list_peers`, and `work_read_peer`, whose identity and semantics [Worker Agent Capability](20260703-worker_agent_capability.md) owns. It uses the same projection, has a reserved id that no catalog entry can take, is dispatched in process, and starts no subprocess. The target starts no MCP subprocess, contacts no configured external MCP server, accepts no replacement catalog entry and grants no App API bearer access. Built-in invocation evidence does not replace the repository owner's exact target Approval, permission decision or terminal push record. Until that resource family is cut over, the in-process dispatch named here remains the contract.
+
+### Built-in operation derivation
+
+Until a built-in resource family is cut over, in-process dispatch through the authenticated package session remains that family's contract. The reserved id, the refusal of a replacement catalog entry, and the absence of an App API bearer stay in force before and after that cutover.
+
+When the family is cut over, the accepted target applies. Built-in worker MCP Tools are derived from the definitions and execute through invocation. [Operation Definition](20261002-operation_definition.md) owns that mechanism. This specification does not restate it. Worker supply assembly keeps capability admission and its immutable selections, including the Turn-boundary snapshot and the reserved supply of these built-in targets. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. Model-facing schemas omit those bound fields. A conflicting argument is rejected before any effect. Catalog servers and external MCP servers are not these built-in tools. Their snapshot, policy, credential, and upstream call rules remain the rules in this specification. The hand-maintained built-in descriptor is deleted in the family's cutover.
 
 - NanoCore owns the lifecycle. States: `inactive`, `starting`, `ready`, `degraded`, `failed`. Transitions are recorded as operational diagnostics; health checks run while any live session has the entry enabled.
 - `stdio` servers are spawned and supervised by NanoCore on demand (first call or session start, an implementation choice) and reaped when idle past a bound. Spawned server processes run in NanoCore's host context in this slice; sandboxing them is deferred, and server trust is therefore deployment configuration. Import is inactive and has no spawn or discovery effect. Activation of a new or changed stdio command or package executable requires deployment-admin authority, separately from ordinary Workspace catalog management.
@@ -245,6 +251,7 @@ Previously open questions are resolved by accepted defaults: `stdio` MCP servers
 - `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
 
 - `docs/specs/20260703-worker_agent_capability.md`
+- `docs/specs/20261002-operation_definition.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260703-vault_secret_injection.md`

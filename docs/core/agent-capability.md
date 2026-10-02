@@ -9,7 +9,7 @@ Agent capabilities are governed runtime paths supplied to worker agents during e
 
 This document owns runtime capability access, gateway projection, internal-role Tool identity and admission, gateway-mediated usage metering, routing, transformer selection, credential injection contracts, context access paths, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
 
-This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, or system-wide non-gateway metering.
+This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, system-wide non-gateway metering, or the semantic definition and invocation procedure of a public operation.
 
 ## Purpose
 
@@ -128,6 +128,8 @@ Agents should see stable local or protocol-level endpoints instead of provider-s
 
 ## Internal Role Tool Identity And Admission
 
+Until a resource family is cut over, its internal-role Tools follow the naming grammar and canonical verb vocabulary below; after cutover, each Tool uses its public operation's canonical semantic id for discovery, invocation, and evidence, with only a mechanically derived, collision-checked transport spelling.
+
 An internal-role Tool has one Core-owned canonical dotted ID in the form `<domain>[.<resource>].<verb>`. Every segment MUST contain lowercase ASCII letters, digits, or underscores, MUST begin with a letter, and MUST describe the governed product domain, resource and operation rather than a consuming role, route, transport, provider or implementation class. Internal roles expose capabilities for their accepted product responsibilities; they do not acquire a general Worker harness by importing an installed MCP server's Tool catalog.
 
 The canonical verb vocabulary is: `search` returns bounded candidates; `read` resolves one exact target or source; `create` creates a schema-defined resource; `update` changes an exact resource under its owner's preconditions; `delete` requests the owner's explicitly defined removal or retirement; `start` requests an explicit mode handoff; `propose` submits a candidate for authoritative acceptance; `dispatch` requests execution admission; `respond` answers one exact owned request; `cancel` requests termination through the owning control contract; `request` creates an owned attention request; and `report` submits a state claim to its owner. Broad verbs such as `manage`, `execute`, `act`, `mutate`, and `send_message` MUST NOT conceal target, effect, delivery, or authority. A transaction operation may use `dispatch` only for a closed owner-defined typed transaction, never arbitrary commands or executable code.
@@ -142,7 +144,9 @@ One canonical Tool ID MUST retain one semantic contract wherever it is reused. A
 
 A provider adapter MAY project a collision-checked request-local alias when dotted names violate provider constraints. It MUST retain an exact alias-to-canonical-ID mapping, MUST NOT reconstruct identity or authority by parsing the alias, and MUST use the canonical ID for internal usage, audit, evidence and diagnostics. Where MCP implements that capability, retain its exact upstream identity separately as execution evidence without presenting the upstream schema/name as a model Tool.
 
-Trusted server code creates Tool closures bound to the authenticated actor and exact role, scope, audience, budget, confirmation, credential, and delegation context required by existing owners. The model may provide only schema-admitted operation arguments and MUST NOT supply or widen those bound authority facts.
+Until a resource family is cut over, trusted server code creates Tool closures bound to the authenticated actor and exact role, scope, audience, budget, confirmation, credential, and delegation context required by existing owners. The model may provide only schema-admitted operation arguments and MUST NOT supply or widen those bound authority facts.
+
+When that resource family is cut over, the accepted target applies. Built-in worker MCP Tools and internal-role Tools are derived from the one semantic definition of the public operation and execute through its invocation seam. Trusted entry assembly and worker supply assembly keep capability admission and their immutable selections. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. The model-facing schema omits those bound fields. A conflicting argument is rejected before any effect. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md). This document keeps capability admission and does not take that definition or that invocation procedure.
 
 Every concrete call MUST be reauthorized against current Core state by its command or resource owner. Tool presence means permission for the model to request an operation, not proof that the request is authorized, within budget, current, audience-safe, successfully applied, or settled.
 
@@ -262,3 +266,4 @@ Feature discovery may report which server or client features are available. Desp
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/metering.md`
+- `docs/decisions/20261002-operation_definition_rulings.md`

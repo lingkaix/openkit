@@ -143,6 +143,8 @@ Context:
 
 The following registry is the unique owner of the closed V1 product-operation to access-right mapping for centralized Workspace authorization and the governed effects already named by current specifications. A concrete public operation maps to exactly one primary product operation below. Operation identifiers and access-right identifiers are intentionally distinct. Active-membership associations are owned separately by `docs/specs/20260715-multi_user_workspace_system.md` and may narrow through current Policy, credentials, gate eligibility, and lifecycle facts. Earlier fixed-role terminology in concrete runtime projections identifies the pre-cutover implementation, not an additional target ceiling.
 
+This specification keeps this registry. That one primary product operation is the primary policy operation named by [Operation Definition](20261002-operation_definition.md). The access right is the right this table assigns to that product operation. Invocation performs one primary admission through that primary policy operation. This specification's existing enforcement decides that admission. This specification does not define a second primary admission for the same call. Deeper effect checks already named here, including `runtime.launch`, `vault.use`, `network.egress`, and `repo.push`, stay with their effect owners. Permission-based blocking stays deferred and is not defined in this specification. An owner's or administrator's later choice to keep users from an operation through the Policy Kernel is that deferred permission. The deny, approval, and launch-blocking outcomes in this specification are a different fact, and they stay as written.
+
 | Product operation | Required access right | Operation boundary |
 | --- | --- | --- |
 | `api.call` | `ar:core-api-call` | Boot and deployment API calls. |
@@ -186,7 +188,7 @@ Governed metadata reads, user-scoped invitation discovery and response, self-lea
 
 ### Initial Generative Operation Projection
 
-These concrete operation mappings extend the existing registry; they add no access-right identifiers or Light App ACL. Each endpoint/catalog descriptor has one fixed primary product operation and mutation posture. The initial contracts are owned by [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md); implementation registration remains required before publication.
+These concrete operation mappings extend the existing registry; they add no access-right identifiers or Light App ACL. Until that resource family is cut over, each endpoint or catalog descriptor has one fixed primary product operation and mutation posture. When the family is cut over, [Operation Definition](20261002-operation_definition.md) names that primary policy operation and the mutation posture, and the descriptor does not state them again. The initial contracts are owned by [Kernel](20260908-generative_kernel_data_operations.md) and [Generative UI](20260908-generative_ui_interaction.md). The mapping must be in this registry, and it must be implemented in the existing enforcement, before publication. That implementation is not a runtime registration API.
 
 | Concrete operation IDs | Primary operation / required right | Mutation posture and additional owner checks |
 | --- | --- | --- |
@@ -197,7 +199,7 @@ These concrete operation mappings extend the existing registry; they add no acce
 | `generative-ui.get`, `generative-ui.resource`, `generative-ui.refresh` | `thread.read` / `ar:thread-read` | Read-only, including the refresh POST; exact destination Thread audience and owning source read authorization. |
 | `generative-ui.action` | `workspace.write` / `ar:workspace-write` | Mutating; only the admitted static Kernel update binding, current Thread/source read eligibility and the owning Kernel mutation checks. |
 
-The refresh and action routes are separate operation descriptors; a client-controlled action name cannot change token mutation posture. The former rejects mutating bindings; the latter rejects refresh bindings. Selected Worker invocation also passes the existing governed `tool.use` route before dispatching the exact owning operation. A shared MCP name cannot collapse these operations into one unclassified grant. The current active-member association supplies these existing rights; authentication, current membership, token intersection, exact Worker lineage, Workspace state, confidentiality and existing effect/gate restrictions still apply. Do not bypass `WORKSPACE_ROLE_OPERATION_CEILINGS` at a handler. This Generative Apps MVP publishes the operations above through that existing owner/editor/viewer mapping and records unmet equal-member eligibility for editor schema writes and viewer record writes. The shared role-ceiling cutover remains a separate membership-owner change and is not a prerequisite for these operation registrations.
+The refresh and action routes are separate operation descriptors; a client-controlled action name cannot change token mutation posture. The former rejects mutating bindings; the latter rejects refresh bindings. Selected Worker invocation also passes the existing governed `tool.use` route before dispatching the exact owning operation. A shared MCP name cannot collapse these operations into one unclassified grant. The current active-member association supplies these existing rights; authentication, current membership, token intersection, exact Worker lineage, Workspace state, confidentiality and existing effect/gate restrictions still apply. Do not bypass `WORKSPACE_ROLE_OPERATION_CEILINGS` at a handler. This Generative Apps MVP publishes the operations above through that existing owner/editor/viewer mapping and records unmet equal-member eligibility for editor schema writes and viewer record writes. The shared role-ceiling cutover remains a separate membership-owner change and is not a prerequisite for these operation registrations. The `tool.use` pass in this paragraph is the governed tool-supply check this registry already names. It is not a second primary admission of the public operation.
 
 ## PermissionDecision
 
@@ -379,11 +381,12 @@ The active-member association is adapter vocabulary; fixed owner/editor/viewer c
 - Policy changes during an active worker session should update future gateway checks, including the re-evaluation of a captured call before it executes; mark the session stale when setup or resource assumptions changed, so a successor applies them at the next Turn; and interrupt or recycle the session only when a newly denied high-risk external action would otherwise remain possible. A change to in-Sandbox tools is not a reason to interrupt a Turn.
 - Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
 - Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
-- Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass.
+- Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass. This registry does not treat `server-admin` as a content right. Credential eligibility is not decided here. [Operation Definition](20261002-operation_definition.md) names that authorizer rule and the owning documents whose amendments are pending.
 
 ## Deferred / Future Work
 
 - Extend the accepted V1 product-operation registry only when a new owning specification introduces a materially different authorization family.
+- Permission-based blocking stays deferred to the Policy Kernel implementation and is not defined in this specification.
 - Add broader product fact mapping from NanoCore objects to `@openkit/policy-kernel` policy state and access requests outside the active-membership Workspace authorization slice.
 - Extend or wrap the policy kernel itself to produce `require_approval`, `require_escalation`, `defer`, `not_applicable`, and policy errors instead of mapping those product outcomes in NanoCore helper code.
 - Bind future worker-session families and future AEP snapshot producers to policy snapshot ids as they ship.
@@ -414,6 +417,7 @@ The active-member association is adapter vocabulary; fixed owner/editor/viewer c
 ## Links
 
 - `docs/core/permissions.md`
+- `docs/specs/20261002-operation_definition.md`
 - `docs/core/audit.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-capability.md`
