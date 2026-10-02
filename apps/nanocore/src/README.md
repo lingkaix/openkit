@@ -32,6 +32,7 @@ This directory contains NanoCore's composition root and feature owners. `app.ts`
 - `capability/` owns capability-call and usage-ledger operations.
 - `context/` owns LLM context projection and its projection policy.
 - `diagnostics/` owns product-safe setup and runtime diagnostic projections.
+- `knowledge-operations.ts` joins the two Knowledge definition tables to the existing domain owners without HTTP context. Public and trusted Task preparation share definition admission and retrieval; their output views remain distinct. `knowledge-operation-projections.test.ts` exercises all 23 operations through real HTTP, client and CLI projections, readonly refusal, eligible administration, Source lineage, restricted content, retired routes and trusted Task preparation.
 - `knowledge/` owns OKF parsing and validation helpers; knowledge workflows remain with their cohesive root owners.
 - `policy/` adapts product approval gates and permission decisions while canonical authorization semantics remain in `@openkit/policy-kernel`.
 - `docker/` contains source-adjacent contract tests for application and worker container assets.

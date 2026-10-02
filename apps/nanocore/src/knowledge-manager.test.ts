@@ -27,8 +27,9 @@ import { ensureLocalUser } from './auth/identity.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const requestId = '00000000-0000-4000-8000-000000000111';
@@ -130,15 +131,18 @@ describe('Knowledge proposal decision lineage', () => {
 
     try {
       const response = await app.request(
-        `/api/app/workspaces/ws_demo/knowledge/proposals/${proposal.id}/decision`,
-        {
-          body: JSON.stringify({
-            decision: 'rejected',
-            requestId: '00000000-0000-4000-8000-000000000116',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.decide',
+          { workspaceId: 'ws_demo', proposalId: proposal.id },
+          {
+            body: JSON.stringify({
+              decision: 'rejected',
+              requestId: '00000000-0000-4000-8000-000000000116',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
 
       expect(response.status, await response.clone().text()).toBe(403);
@@ -159,17 +163,23 @@ describe('Knowledge Store save-time validation', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const response = await app.request('/api/workspaces/ws_demo/knowledge', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000112',
-          kind: 'project-context',
-          title: 'Unresolved source page',
-          content: 'This page must not become active.',
-          sourceReferences: ['source:ks_123e4567-e89b-42d3-a456-426614174000'],
-        }),
-      });
+      const response = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000112',
+              kind: 'project-context',
+              title: 'Unresolved source page',
+              content: 'This page must not become active.',
+              sourceReferences: ['source:ks_123e4567-e89b-42d3-a456-426614174000'],
+            }),
+          }
+        )
+      );
 
       expect(response.status, await response.clone().text()).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' });
@@ -190,17 +200,23 @@ describe('Knowledge Store save-time validation', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const createResponse = await app.request('/api/workspaces/ws_demo/knowledge', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000113',
-          kind: 'project-context',
-          title: 'Valid active page',
-          content: 'These bytes must survive a rejected update.',
-        }),
-      });
-      expect(createResponse.status, await createResponse.clone().text()).toBe(201);
+      const createResponse = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000113',
+              kind: 'project-context',
+              title: 'Valid active page',
+              content: 'These bytes must survive a rejected update.',
+            }),
+          }
+        )
+      );
+      expect(createResponse.status, await createResponse.clone().text()).toBe(200);
       const knowledge = (await createResponse.json()) as { id: string };
       const pagePath = join(
         dataRoot,
@@ -213,15 +229,18 @@ describe('Knowledge Store save-time validation', () => {
       const activePageBytes = readFileSync(pagePath);
 
       const updateResponse = await app.request(
-        `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-        {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000114',
-            title: 'API token rotation',
-          }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.update',
+          { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+          {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000114',
+              title: 'API token rotation',
+            }),
+          }
+        )
       );
 
       expect(updateResponse.status, await updateResponse.clone().text()).toBe(400);
@@ -242,19 +261,25 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
     const sourceContent = 'Release cadence is weekly.';
-    const registerRes = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000101',
-        kind: 'document',
-        title: 'Release notes',
-        uri: 'file://release.md',
-        content: sourceContent,
-        originatingThreadId: 'th_demo',
-      }),
-    });
-    expect(registerRes.status).toBe(201);
+    const registerRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000101',
+            kind: 'document',
+            title: 'Release notes',
+            uri: 'file://release.md',
+            content: sourceContent,
+            originatingThreadId: 'th_demo',
+          }),
+        }
+      )
+    );
+    expect(registerRes.status).toBe(200);
 
     const registered = RegisterKnowledgeSourceResponseSchema.parse(await registerRes.json());
     expect(registered.source).toMatchObject({
@@ -315,14 +340,19 @@ describe('Knowledge Manager answer operation', () => {
       materialPath: `sources/materials/${registered.source.id}/content.txt`,
     });
 
-    const listRes = await app.request('/api/app/workspaces/ws_demo/knowledge/sources');
+    const listRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.source.list', { workspaceId: 'ws_demo' })
+    );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeSourcesResponseSchema.parse(await listRes.json())).toMatchObject({
       items: [{ id: registered.source.id, title: 'Release notes' }],
     });
 
     const readRes = await app.request(
-      `/api/app/workspaces/ws_demo/knowledge/sources/${registered.source.id}`
+      ...knowledgeOperationRequest('knowledge.source.read', {
+        workspaceId: 'ws_demo',
+        sourceId: registered.source.id,
+      })
     );
     expect(readRes.status).toBe(200);
     expect(ReadKnowledgeSourceResponseSchema.parse(await readRes.json())).toMatchObject({
@@ -389,19 +419,25 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const recordRes = await app.request('/api/app/workspaces/ws_demo/knowledge/observations', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000102',
-        kind: 'retrieval',
-        summary: 'Worker repeatedly needed release cadence context.',
-        sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
-        producer: 'knowledge-manager',
-        confidence: 0.75,
-      }),
-    });
-    expect(recordRes.status).toBe(201);
+    const recordRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.observation.record',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000102',
+            kind: 'retrieval',
+            summary: 'Worker repeatedly needed release cadence context.',
+            sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+            producer: 'knowledge-manager',
+            confidence: 0.75,
+          }),
+        }
+      )
+    );
+    expect(recordRes.status).toBe(200);
 
     const recorded = RecordKnowledgeObservationResponseSchema.parse(await recordRes.json());
     expect(recorded.observation).toMatchObject({
@@ -433,7 +469,9 @@ describe('Knowledge Manager answer operation', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([recorded.observation]);
 
-    const listRes = await app.request('/api/app/workspaces/ws_demo/knowledge/observations');
+    const listRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.observation.list', { workspaceId: 'ws_demo' })
+    );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeObservationsResponseSchema.parse(await listRes.json())).toMatchObject({
       items: [{ id: recorded.observation.id, kind: 'retrieval' }],
@@ -471,18 +509,24 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const recordRes = await app.request('/api/app/workspaces/ws_demo/knowledge/claims', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000103',
-        statement: 'Release cadence is weekly.',
-        sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
-        producer: 'knowledge-manager',
-        confidence: 0.8,
-      }),
-    });
-    expect(recordRes.status).toBe(201);
+    const recordRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.claim.record',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000103',
+            statement: 'Release cadence is weekly.',
+            sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+            producer: 'knowledge-manager',
+            confidence: 0.8,
+          }),
+        }
+      )
+    );
+    expect(recordRes.status).toBe(200);
 
     const recorded = RecordKnowledgeClaimResponseSchema.parse(await recordRes.json());
     expect(recorded.claim).toMatchObject({
@@ -514,7 +558,9 @@ describe('Knowledge Manager answer operation', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([recorded.claim]);
 
-    const listRes = await app.request('/api/app/workspaces/ws_demo/knowledge/claims');
+    const listRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.claim.list', { workspaceId: 'ws_demo' })
+    );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeClaimsResponseSchema.parse(await listRes.json())).toMatchObject({
       items: [{ id: recorded.claim.id, statement: 'Release cadence is weekly.' }],
@@ -552,19 +598,25 @@ describe('Knowledge Manager answer operation', () => {
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const recordRes = await app.request('/api/app/workspaces/ws_demo/knowledge/conflicts', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000104',
-        subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-        sourceReferences: ['source:ks_release', 'source:ks_correction'],
-        summary: 'Release cadence has contradictory source evidence.',
-        suggestedActions: ['Ask the user which source is authoritative.'],
-        producer: 'knowledge-manager',
-      }),
-    });
-    expect(recordRes.status).toBe(201);
+    const recordRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.conflict.record',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000104',
+            subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
+            sourceReferences: ['source:ks_release', 'source:ks_correction'],
+            summary: 'Release cadence has contradictory source evidence.',
+            suggestedActions: ['Ask the user which source is authoritative.'],
+            producer: 'knowledge-manager',
+          }),
+        }
+      )
+    );
+    expect(recordRes.status).toBe(200);
 
     const recorded = RecordKnowledgeConflictResponseSchema.parse(await recordRes.json());
     expect(recorded.conflict).toMatchObject({
@@ -594,23 +646,28 @@ describe('Knowledge Manager answer operation', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([recorded.conflict]);
 
-    const listRes = await app.request('/api/app/workspaces/ws_demo/knowledge/conflicts');
+    const listRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.conflict.list', { workspaceId: 'ws_demo' })
+    );
     expect(listRes.status).toBe(200);
     expect(ListKnowledgeConflictsResponseSchema.parse(await listRes.json())).toMatchObject({
       items: [{ id: recorded.conflict.id, status: 'conflicting' }],
     });
 
     const resolveRes = await app.request(
-      `/api/app/workspaces/ws_demo/knowledge/conflicts/${recorded.conflict.id}/resolution`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000105',
-          resolution: 'Friday release reviews are authoritative for this workspace.',
-          resolvedBy: 'knowledge-manager',
-        }),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.conflict.resolve',
+        { workspaceId: 'ws_demo', conflictId: recorded.conflict.id },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000105',
+            resolution: 'Friday release reviews are authoritative for this workspace.',
+            resolvedBy: 'knowledge-manager',
+          }),
+        }
+      )
     );
     expect(resolveRes.status).toBe(200);
 
@@ -630,7 +687,9 @@ describe('Knowledge Manager answer operation', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([recorded.conflict, resolved.conflict]);
 
-    const resolvedListRes = await app.request('/api/app/workspaces/ws_demo/knowledge/conflicts');
+    const resolvedListRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.conflict.list', { workspaceId: 'ws_demo' })
+    );
     expect(resolvedListRes.status).toBe(200);
     expect(ListKnowledgeConflictsResponseSchema.parse(await resolvedListRes.json())).toMatchObject({
       items: [{ id: recorded.conflict.id, status: 'resolved' }],
@@ -664,7 +723,7 @@ describe('Knowledge Manager answer operation', () => {
   it('reads fresh Knowledge Store derived indexes through the App API', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-index-route-'));
     const store = createDemoStore({ dataRoot });
-    const app = createApp({ dataRoot, store });
+    const app = createAppWithWorkspaceAuthority({ dataRoot, store });
     const timestamp = '2026-07-07T00:00:00.000Z';
     const knowledge = store.createKnowledgeEntry('ws_demo', {
       kind: 'project-context',
@@ -730,7 +789,9 @@ describe('Knowledge Manager answer operation', () => {
       ].join('\n')
     );
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/indexes');
+    const res = await app.request(
+      ...knowledgeOperationRequest('knowledge.indexes', { workspaceId: 'ws_demo' })
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeDerivedIndexesResponseSchema.parse(await res.json());
@@ -854,11 +915,17 @@ describe('Knowledge Manager answer operation', () => {
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'release-plan.md'), releasePage);
     writeFileSync(join(workspaceRoot, 'knowledge', 'pages', 'old-plan.md'), oldPage);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/retrievals', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'release cadence', limit: 1 }),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.retrieval',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'release cadence', limit: 1 }),
+        }
+      )
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeRetrievalResponseSchema.parse(await res.json());
@@ -929,17 +996,23 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        kind: 'project-context',
-        title: 'Release plan',
-        content: 'Release cadence is weekly with a Friday review.',
-      }),
-    });
-    expect(createRes.status).toBe(201);
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            kind: 'project-context',
+            title: 'Release plan',
+            content: 'Release cadence is weekly with a Friday review.',
+          }),
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
     const knowledge = (await createRes.json()) as { id: string };
     const pagePath = join(
       dataRoot,
@@ -958,11 +1031,17 @@ describe('Knowledge Manager answer operation', () => {
     );
     rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: 'ws_demo' });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'release cadence' }),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.answer',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'release cadence' }),
+        }
+      )
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
@@ -1028,12 +1107,18 @@ describe('Knowledge Manager answer operation', () => {
 
   it('returns insufficient evidence instead of speculating', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-insufficient-evidence-'));
-    const app = createApp({ dataRoot, store: createDemoStore({ dataRoot }) });
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'unwritten roadmap promise' }),
-    });
+    const app = createAppWithWorkspaceAuthority({ dataRoot, store: createDemoStore({ dataRoot }) });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.answer',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'unwritten roadmap promise' }),
+        }
+      )
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
@@ -1048,26 +1133,38 @@ describe('Knowledge Manager answer operation', () => {
   it('returns insufficient evidence for a single shared query token', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-weak-overlap-'));
     const store = createDemoStore({ dataRoot });
-    const app = createApp({ dataRoot, store });
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        kind: 'project-context',
-        title: 'Workspace maintenance notes',
-        content: 'This page is not about the selected Assistant model.',
-      }),
-    });
-    expect(createRes.status).toBe(201);
+    const app = createAppWithWorkspaceAuthority({ dataRoot, store });
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            kind: 'project-context',
+            title: 'Workspace maintenance notes',
+            content: 'This page is not about the selected Assistant model.',
+          }),
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: 'Reply exactly CATALOG_OK_GROK. Do not call tools.',
-      }),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.answer',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: 'Reply exactly CATALOG_OK_GROK. Do not call tools.',
+          }),
+        }
+      )
+    );
     expect(res.status).toBe(200);
     expect(KnowledgeManagerAnswerResponseSchema.parse(await res.json())).toMatchObject({
       citations: [],
@@ -1080,24 +1177,36 @@ describe('Knowledge Manager answer operation', () => {
   it('answers a one-term query that appears on the selected page', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-one-term-answer-'));
     const store = createDemoStore({ dataRoot });
-    const app = createApp({ dataRoot, store });
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        kind: 'project-context',
-        title: 'Cadence',
-        content: 'Weekly ship after smoke.',
-      }),
-    });
-    expect(createRes.status).toBe(201);
+    const app = createAppWithWorkspaceAuthority({ dataRoot, store });
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            kind: 'project-context',
+            title: 'Cadence',
+            content: 'Weekly ship after smoke.',
+          }),
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'Cadence' }),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.answer',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'Cadence' }),
+        }
+      )
+    );
     expect(res.status).toBe(200);
     const body = KnowledgeManagerAnswerResponseSchema.parse(await res.json());
     expect(body).toMatchObject({
@@ -1110,11 +1219,17 @@ describe('Knowledge Manager answer operation', () => {
         title: 'Cadence',
       }),
     ]);
-    const incidental = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'Weekly' }),
-    });
+    const incidental = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.answer',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'Weekly' }),
+        }
+      )
+    );
     expect(KnowledgeManagerAnswerResponseSchema.parse(await incidental.json()).outcome).toBe(
       'insufficient-evidence'
     );
@@ -1127,40 +1242,58 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     const app = createApp({ coreDb, dataRoot, store: createDemoStore({ dataRoot }) });
 
-    const sourceRes = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000105',
-        kind: 'document',
-        title: 'Release source',
-        uri: 'file://release-source.md',
-        content: 'Authoritative release source says Friday review is required.',
-      }),
-    });
-    expect(sourceRes.status).toBe(201);
+    const sourceRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000105',
+            kind: 'document',
+            title: 'Release source',
+            uri: 'file://release-source.md',
+            content: 'Authoritative release source says Friday review is required.',
+          }),
+        }
+      )
+    );
+    expect(sourceRes.status).toBe(200);
     const source = RegisterKnowledgeSourceResponseSchema.parse(await sourceRes.json()).source;
 
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId,
-        kind: 'project-context',
-        title: 'Release plan',
-        content: 'Release cadence is weekly with a Friday review.',
-        sourceReferences: [`source:${source.id}`],
-      }),
-    });
-    expect(createRes.status).toBe(201);
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            kind: 'project-context',
+            title: 'Release plan',
+            content: 'Release cadence is weekly with a Friday review.',
+            sourceReferences: [`source:${source.id}`],
+          }),
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
     const knowledge = (await createRes.json()) as { id: string };
 
     const prepare = () =>
-      app.request('/api/app/workspaces/ws_demo/knowledge/manager/context', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'release cadence', limit: 5 }),
-      });
+      app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.context.prepare',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ query: 'release cadence', limit: 5 }),
+          }
+        )
+      );
     const res = await prepare();
     expect(res.status, await res.clone().text()).toBe(200);
     const body = KnowledgeManagerPrepareContextResponseSchema.parse(await res.json());
@@ -1219,12 +1352,15 @@ describe('Knowledge Manager answer operation', () => {
     ).toBe(false);
 
     const legacyRequest = await app.request(
-      '/api/app/workspaces/ws_demo/knowledge/manager/context',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'release cadence', artifactIds: [] }),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.context.prepare',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'release cadence', artifactIds: [] }),
+        }
+      )
     );
     expect(legacyRequest.status).toBe(400);
     await expect(legacyRequest.json()).resolves.toMatchObject({ code: 'invalid_request' });
@@ -1249,18 +1385,24 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const sourceRes = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000224',
-        kind: 'document',
-        title: 'Reviewed release source',
-        uri: 'file://reviewed-release-source.md',
-        content: 'Friday release reviews are required.',
-      }),
-    });
-    expect(sourceRes.status, await sourceRes.clone().text()).toBe(201);
+    const sourceRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000224',
+            kind: 'document',
+            title: 'Reviewed release source',
+            uri: 'file://reviewed-release-source.md',
+            content: 'Friday release reviews are required.',
+          }),
+        }
+      )
+    );
+    expect(sourceRes.status, await sourceRes.clone().text()).toBe(200);
     const source = RegisterKnowledgeSourceResponseSchema.parse(await sourceRes.json()).source;
     const sourceReference = `source:${source.id}@${source.contentDigest}`;
     const canonicalPageBytes = proposalPageBytes(
@@ -1280,11 +1422,17 @@ describe('Knowledge Manager answer operation', () => {
       confidence: 0.7,
     };
     const draft = (input: typeof draftRequest) =>
-      app.request('/api/app/workspaces/ws_demo/knowledge/manager/proposals', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
-      });
+      app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.draft',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(input),
+          }
+        )
+      );
 
     const firstRes = await draft(draftRequest);
     expect(firstRes.status, await firstRes.clone().text()).toBe(200);
@@ -1370,34 +1518,52 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const first = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000331',
-        kind: 'project-context',
-        title: 'Release plan',
-        content: 'Release cadence is weekly.',
-      }),
-    });
-    expect(first.status).toBe(201);
-    const second = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000332',
-        kind: 'project-context',
-        title: ' release   plan ',
-        content: 'Friday review is required.',
-      }),
-    });
-    expect(second.status).toBe(201);
+    const first = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000331',
+            kind: 'project-context',
+            title: 'Release plan',
+            content: 'Release cadence is weekly.',
+          }),
+        }
+      )
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000332',
+            kind: 'project-context',
+            title: ' release   plan ',
+            content: 'Friday review is required.',
+          }),
+        }
+      )
+    );
+    expect(second.status).toBe(200);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/repairs', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.repair.suggest',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      )
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeManagerSuggestRepairResponseSchema.parse(await res.json());
@@ -1459,34 +1625,52 @@ describe('Knowledge Manager answer operation', () => {
     authorizeDemoWorkspace(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
-    const first = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000341',
-        kind: 'project-context',
-        title: 'Release plan',
-        content: 'Release cadence is weekly.',
-      }),
-    });
-    expect(first.status).toBe(201);
-    const second = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000342',
-        kind: 'project-context',
-        title: ' release plan ',
-        content: 'Friday review is required.',
-      }),
-    });
-    expect(second.status).toBe(201);
+    const first = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000341',
+            kind: 'project-context',
+            title: 'Release plan',
+            content: 'Release cadence is weekly.',
+          }),
+        }
+      )
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000342',
+            kind: 'project-context',
+            title: ' release plan ',
+            content: 'Friday review is required.',
+          }),
+        }
+      )
+    );
+    expect(second.status).toBe(200);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/health', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    });
+    const res = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.health.check',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      )
+    );
     expect(res.status).toBe(200);
 
     const body = KnowledgeManagerHealthCheckResponseSchema.parse(await res.json());
@@ -1554,15 +1738,15 @@ describe('Knowledge Manager answer operation', () => {
     );
     const cases = [
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/answer',
+        id: 'knowledge.answer',
         body: { query: 'release cadence' },
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/context',
+        id: 'knowledge.context.prepare',
         body: { query: 'release cadence' },
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
+        id: 'knowledge.proposal.draft',
         body: {
           requestId: '00000000-0000-4000-8000-000000000119',
           knowledgePageId: 'caller-override',
@@ -1574,15 +1758,15 @@ describe('Knowledge Manager answer operation', () => {
         },
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/repairs',
+        id: 'knowledge.repair.suggest',
         body: {},
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/health',
+        id: 'knowledge.health.check',
         body: {},
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/sources',
+        id: 'knowledge.source.register',
         body: {
           requestId: 'req_source_caller_override',
           kind: 'document',
@@ -1593,12 +1777,18 @@ describe('Knowledge Manager answer operation', () => {
     ] as const;
 
     for (const testCase of cases) {
-      const response = await app.request(testCase.path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...testCase.body, caller: 'assistant' }),
-      });
-      expect(response.status, testCase.path).toBe(400);
+      const response = await app.request(
+        ...knowledgeOperationRequest(
+          testCase.id,
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...testCase.body, caller: 'assistant' }),
+          }
+        )
+      );
+      expect(response.status, testCase.id).toBe(400);
       await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' });
     }
   });
@@ -1610,28 +1800,28 @@ describe('Knowledge Manager answer operation', () => {
     vi.spyOn(readStore, 'listKnowledge').mockImplementation(() => {
       throw new Error(unsafeMessage);
     });
-    const readApp = createApp({ store: readStore });
+    const readApp = createAppWithWorkspaceAuthority({ store: readStore });
     const readCases = [
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/answer',
+        id: 'knowledge.answer',
         body: { query: 'release cadence' },
         code: 'knowledge_manager_answer_failed',
         message: 'Knowledge Manager answer failed.',
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/context',
+        id: 'knowledge.context.prepare',
         body: { query: 'release cadence' },
         code: 'knowledge_manager_context_failed',
         message: 'Knowledge Manager context preparation failed.',
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/repairs',
+        id: 'knowledge.repair.suggest',
         body: {},
         code: 'knowledge_manager_repair_suggest_failed',
         message: 'Knowledge Manager repair suggestion failed.',
       },
       {
-        path: '/api/app/workspaces/ws_demo/knowledge/manager/health',
+        id: 'knowledge.health.check',
         body: {},
         code: 'knowledge_manager_health_check_failed',
         message: 'Knowledge Manager health check failed.',
@@ -1639,12 +1829,18 @@ describe('Knowledge Manager answer operation', () => {
     ] as const;
 
     for (const testCase of readCases) {
-      const response = await readApp.request(testCase.path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(testCase.body),
-      });
-      expect(response.status, testCase.path).toBe(500);
+      const response = await readApp.request(
+        ...knowledgeOperationRequest(
+          testCase.id,
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(testCase.body),
+          }
+        )
+      );
+      expect(response.status, testCase.id).toBe(500);
       const text = await response.text();
       expect(JSON.parse(text)).toMatchObject({ code: testCase.code, message: testCase.message });
       expect(text).not.toContain('/Users/private');
@@ -1655,7 +1851,7 @@ describe('Knowledge Manager answer operation', () => {
     vi.spyOn(proposalStore, 'createKnowledgeProposal').mockImplementation(() => {
       throw new Error(unsafeMessage);
     });
-    const proposalApp = createApp({ store: proposalStore });
+    const proposalApp = createAppWithWorkspaceAuthority({ store: proposalStore });
     const proposalBytes = proposalPageBytes(
       'redacted-failure',
       'Redacted failure',
@@ -1663,20 +1859,23 @@ describe('Knowledge Manager answer operation', () => {
       'Unexpected failures remain private.'
     );
     const proposalResponse = await proposalApp.request(
-      '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000120',
-          knowledgePageId: 'redacted-failure',
-          canonicalPageBytes: proposalBytes,
-          contentDigest: `sha256:${createHash('sha256').update(proposalBytes).digest('hex')}`,
-          sourceReferences: [SYNTACTIC_PROPOSAL_SOURCE_REFERENCE],
-          rationale: 'Exercise unexpected failure redaction.',
-          confidence: 1,
-        }),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.proposal.draft',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000120',
+            knowledgePageId: 'redacted-failure',
+            canonicalPageBytes: proposalBytes,
+            contentDigest: `sha256:${createHash('sha256').update(proposalBytes).digest('hex')}`,
+            sourceReferences: [SYNTACTIC_PROPOSAL_SOURCE_REFERENCE],
+            rationale: 'Exercise unexpected failure redaction.',
+            confidence: 1,
+          }),
+        }
+      )
     );
     expect(proposalResponse.status).toBe(500);
     const proposalText = await proposalResponse.text();

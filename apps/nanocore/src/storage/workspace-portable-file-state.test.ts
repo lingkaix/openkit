@@ -2,18 +2,17 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   KnowledgeRetrievalResponseSchema,
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -239,12 +238,15 @@ describe('workspace portable file state', () => {
 
     const app = createApp({ coreDb, dataRoot, store });
     const retrievalRes = await app.request(
-      `/api/app/workspaces/${sourceWorkspaceId}/knowledge/retrievals`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'portable file convention', limit: 1 }),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.retrieval',
+        { workspaceId: sourceWorkspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'portable file convention', limit: 1 }),
+        }
+      )
     );
     expect(retrievalRes.status, await retrievalRes.clone().text()).toBe(200);
     const retrieval = KnowledgeRetrievalResponseSchema.parse(await retrievalRes.json());
@@ -445,12 +447,15 @@ describe('workspace portable file state', () => {
     expect(readFileSync(importedAcceptedPagePath, 'utf8')).toBe(expectedImportedAcceptedPageBytes);
 
     const importedRetrievalRes = await app.request(
-      `/api/app/workspaces/${importedWorkspaceId}/knowledge/retrievals`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'Exact accepted proposal bytes', limit: 1 }),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.retrieval',
+        { workspaceId: importedWorkspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'Exact accepted proposal bytes', limit: 1 }),
+        }
+      )
     );
     expect(importedRetrievalRes.status, await importedRetrievalRes.clone().text()).toBe(200);
     const importedRetrieval = KnowledgeRetrievalResponseSchema.parse(

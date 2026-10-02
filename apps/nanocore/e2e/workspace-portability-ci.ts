@@ -74,7 +74,7 @@ async function runSource(outputDir: string): Promise<void> {
     });
     assert.equal(readPath(sourceReferences.data, 'items', 0, 'status'), 'active');
 
-    await runCli(harness.baseUrl, 'knowledge-entry.create', {
+    await runCli(harness.baseUrl, 'knowledge.create', {
       content: 'The fixed two-job artifact transfer preserves authoritative knowledge.',
       kind: 'project-context',
       requestId: randomUUID(),
@@ -188,7 +188,7 @@ async function runTarget(inputDir: string): Promise<void> {
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('base64')));
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('utf8')));
 
-    await runCli(harness.baseUrl, 'knowledge-entry.create', {
+    await runCli(harness.baseUrl, 'knowledge.create', {
       content: 'Target behavior remains writable after explicit local resource re-binding.',
       kind: 'task-summary',
       requestId: randomUUID(),
@@ -314,7 +314,7 @@ async function readSemanticSnapshot(
 ): Promise<SemanticSnapshot> {
   const workspace = await getJson(`${baseUrl}/api/workspaces/${workspaceId}`);
   const knowledge = requiredArray(
-    (await getJson(`${baseUrl}/api/workspaces/${workspaceId}/knowledge`)).items
+    (await runCli(baseUrl, 'knowledge.list', { workspaceId })).data.items
   )
     .map((entry) => ({
       id: requiredString(readPath(entry, 'id'), 'Knowledge id'),
@@ -330,10 +330,11 @@ async function readSemanticSnapshot(
 
   for (const thread of threads) {
     const threadId = requiredString(readPath(thread, 'id'), 'Thread id');
-    const items = requiredArray(
-      (await postJson(`${baseUrl}/api/app/operations/thread.items`, { workspaceId, threadId }))
-        .items
-    );
+    const itemsResponse = await postJson(`${baseUrl}/api/app/operations/thread.items`, {
+      workspaceId,
+      threadId,
+    });
+    const items = requiredArray(((await itemsResponse.json()) as Record<string, unknown>).items);
     const turnIds = [
       ...new Set(
         items
@@ -344,11 +345,12 @@ async function readSemanticSnapshot(
     const turns = [];
 
     for (const turnId of turnIds) {
-      const turn = await postJson(`${baseUrl}/api/app/operations/turn.read`, {
+      const turnResponse = await postJson(`${baseUrl}/api/app/operations/turn.read`, {
         workspaceId,
         threadId,
         turnId,
       });
+      const turn = (await turnResponse.json()) as Record<string, unknown>;
       const events = await readTurnEventsUntil(
         baseUrl,
         workspaceId,

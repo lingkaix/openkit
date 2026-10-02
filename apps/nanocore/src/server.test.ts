@@ -62,7 +62,6 @@ import {
   ThreadSchema,
 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import {
@@ -197,6 +196,7 @@ import {
 } from './test-support/app.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
+import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -589,18 +589,24 @@ async function draftKnowledgeProposalFixture(
   app: ReturnType<typeof createNanoCoreApp>,
   suffix: string
 ) {
-  const sourceResponse = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      requestId: `knowledge-source-${suffix}`,
-      kind: 'document',
-      title: `Proposal source ${suffix}`,
-      uri: `file://proposal-source-${suffix}.md`,
-      content: `Authoritative proposal source ${suffix}.`,
-    }),
-  });
-  expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(201);
+  const sourceResponse = await app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.source.register',
+      { workspaceId: 'ws_demo' },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: `knowledge-source-${suffix}`,
+          kind: 'document',
+          title: `Proposal source ${suffix}`,
+          uri: `file://proposal-source-${suffix}.md`,
+          content: `Authoritative proposal source ${suffix}.`,
+        }),
+      }
+    )
+  );
+  expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(200);
   const source = (await sourceResponse.json()) as {
     source: { id: string; contentDigest: string };
   };
@@ -628,19 +634,25 @@ async function draftKnowledgeProposalFixture(
   ].join('\n');
   const contentDigest = artifactDigest(canonicalPageBytes);
   const requestId = knowledgeProposalRequestId(`draft-${suffix}`);
-  const response = await app.request('/api/app/workspaces/ws_demo/knowledge/manager/proposals', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      requestId,
-      knowledgePageId,
-      canonicalPageBytes,
-      contentDigest,
-      sourceReferences: [sourceReference],
-      rationale: `Preserve proposal lesson ${suffix}.`,
-      confidence: 0.8,
-    }),
-  });
+  const response = await app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.proposal.draft',
+      { workspaceId: 'ws_demo' },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId,
+          knowledgePageId,
+          canonicalPageBytes,
+          contentDigest,
+          sourceReferences: [sourceReference],
+          rationale: `Preserve proposal lesson ${suffix}.`,
+          confidence: 0.8,
+        }),
+      }
+    )
+  );
   expect(response.status, await response.clone().text()).toBe(200);
   const body = (await response.json()) as { proposal: { id: string } };
 
@@ -689,11 +701,17 @@ function submitKnowledgeProposalDecision(
   requestId: string,
   decision: 'accepted' | 'rejected' | 'deferred'
 ): Promise<Response> {
-  return app.request(`/api/app/workspaces/ws_demo/knowledge/proposals/${proposalId}/decision`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ requestId, decision }),
-  });
+  return app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.proposal.decide',
+      { workspaceId: 'ws_demo', proposalId: proposalId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId, decision }),
+      }
+    )
+  );
 }
 
 /**
@@ -714,11 +732,17 @@ function submitKnowledgeProposalReversal(
     expectedContentDigest: string;
   }
 ): Promise<Response> {
-  return app.request(`/api/app/workspaces/ws_demo/knowledge/proposals/${proposalId}/reversal`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  });
+  return app.request(
+    ...knowledgeOperationRequest(
+      'knowledge.proposal.reverse',
+      { workspaceId: 'ws_demo', proposalId: proposalId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }
+    )
+  );
 }
 
 /**
@@ -5229,39 +5253,59 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store, turnExecutor: new FakeTurnExecutor() });
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000201',
-        kind: 'preference',
-        title: 'Temporary preference',
-        content: 'Remove this after the test.',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000201',
+            kind: 'preference',
+            title: 'Temporary preference',
+            content: 'Remove this after the test.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
     const knowledge = (await createRes.json()) as { id: string };
 
-    const updateRes = await app.request(`/api/workspaces/ws_demo/knowledge/${knowledge.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000213',
-        title: 'Updated preference',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const updateRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.update',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000213',
+            title: 'Updated preference',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
     expect(updateRes.status).toBe(200);
 
-    const deleteRes = await app.request(`/api/workspaces/ws_demo/knowledge/${knowledge.id}`, {
-      method: 'DELETE',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000214',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const deleteRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.delete',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'DELETE',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000214',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
-    expect(deleteRes.status).toBe(204);
+    expect(deleteRes.status).toBe(200);
 
-    const listRes = await app.request('/api/workspaces/ws_demo/knowledge');
+    const listRes = await app.request(
+      ...knowledgeOperationRequest('knowledge.list', { workspaceId: 'ws_demo' })
+    );
     const list = (await listRes.json()) as { items: Array<{ id: string }> };
 
     expect(list.items.some((entry) => entry.id === knowledge.id)).toBe(false);
@@ -8435,7 +8479,7 @@ describe('nanocore server', () => {
 
   it('deduplicates repeated workspace, knowledge, and thread commands', async () => {
     const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
     const canonicalApp = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
 
     const workspaceBody = {
@@ -8490,16 +8534,28 @@ describe('nanocore server', () => {
       title: 'Idempotent knowledge',
       content: 'Store this once.',
     };
-    const knowledgeFirst = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      body: JSON.stringify(knowledgeBody),
-      headers: jsonHeaders(),
-    });
-    const knowledgeSecond = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      body: JSON.stringify(knowledgeBody),
-      headers: jsonHeaders(),
-    });
+    const knowledgeFirst = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify(knowledgeBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
+    const knowledgeSecond = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify(knowledgeBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
     const knowledge = (await knowledgeFirst.json()) as { id: string };
     const duplicateKnowledge = (await knowledgeSecond.json()) as { id: string };
 
@@ -8513,20 +8569,26 @@ describe('nanocore server', () => {
       title: 'Idempotent knowledge updated',
     };
     const knowledgeUpdateFirst = await app.request(
-      `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify(knowledgeUpdateBody),
-        headers: jsonHeaders(),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.update',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(knowledgeUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
     );
     const knowledgeUpdateSecond = await app.request(
-      `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify(knowledgeUpdateBody),
-        headers: jsonHeaders(),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.update',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(knowledgeUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
     );
 
     expect((await knowledgeUpdateFirst.json()) as { id: string; title: string }).toMatchObject({
@@ -8542,35 +8604,47 @@ describe('nanocore server', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000514',
     };
     const knowledgeDeleteFirst = await app.request(
-      `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-      {
-        method: 'DELETE',
-        body: JSON.stringify(knowledgeDeleteBody),
-        headers: jsonHeaders(),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.delete',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'DELETE',
+          body: JSON.stringify(knowledgeDeleteBody),
+          headers: jsonHeaders(),
+        }
+      )
     );
     const knowledgeDeleteSecond = await app.request(
-      `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-      {
-        method: 'DELETE',
-        body: JSON.stringify(knowledgeDeleteBody),
-        headers: jsonHeaders(),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.delete',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'DELETE',
+          body: JSON.stringify(knowledgeDeleteBody),
+          headers: jsonHeaders(),
+        }
+      )
     );
     const knowledgeDeleteNewRequest = await app.request(
-      `/api/workspaces/ws_demo/knowledge/${knowledge.id}`,
-      {
-        method: 'DELETE',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000515',
-        }),
-        headers: jsonHeaders(),
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.delete',
+        { workspaceId: 'ws_demo', knowledgeEntryId: knowledge.id },
+        {
+          method: 'DELETE',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000515',
+          }),
+          headers: jsonHeaders(),
+        }
+      )
     );
 
-    expect(knowledgeDeleteFirst.status).toBe(204);
-    expect(knowledgeDeleteSecond.status).toBe(204);
-    expect(knowledgeDeleteNewRequest.status).toBe(404);
+    expect(knowledgeDeleteFirst.status).toBe(200);
+    expect(knowledgeDeleteSecond.status).toBe(200);
+    expect(knowledgeDeleteNewRequest.status).toBe(403);
+    await expect(knowledgeDeleteNewRequest.json()).resolves.toMatchObject({
+      code: 'workspace_access_denied',
+    });
 
     const threadBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000505',
@@ -8870,25 +8944,43 @@ describe('nanocore server', () => {
         body: JSON.stringify({ name: 'Missing request id' }),
         headers: jsonHeaders(),
       }),
-      app.request('/api/workspaces/ws_demo/knowledge', {
-        method: 'POST',
-        body: JSON.stringify({
-          kind: 'preference',
-          title: 'Missing request id',
-          content: 'Should fail.',
-        }),
-        headers: jsonHeaders(),
-      }),
-      app.request('/api/workspaces/ws_demo/knowledge/mem_project', {
-        method: 'PATCH',
-        body: JSON.stringify({ title: 'Missing request id' }),
-        headers: jsonHeaders(),
-      }),
-      app.request('/api/workspaces/ws_demo/knowledge/mem_project', {
-        method: 'DELETE',
-        body: JSON.stringify({}),
-        headers: jsonHeaders(),
-      }),
+      canonicalApp.request(
+        ...knowledgeOperationRequest(
+          'knowledge.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              kind: 'preference',
+              title: 'Missing request id',
+              content: 'Should fail.',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
+      canonicalApp.request(
+        ...knowledgeOperationRequest(
+          'knowledge.update',
+          { workspaceId: 'ws_demo', knowledgeEntryId: 'mem_project' },
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ title: 'Missing request id' }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
+      canonicalApp.request(
+        ...knowledgeOperationRequest(
+          'knowledge.delete',
+          { workspaceId: 'ws_demo', knowledgeEntryId: 'mem_project' },
+          {
+            method: 'DELETE',
+            body: JSON.stringify({}),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
       ((input: Record<string, unknown>) =>
         canonicalApp.request('/api/app/operations/thread.create', {
           method: 'POST',
@@ -10367,19 +10459,25 @@ describe('nanocore server', () => {
 
   it('rejects secret-bearing or host-path-bearing proposal text without durable mutation', async () => {
     const store = createDemoStore();
-    const app = createApp({ store });
-    const sourceResponse = await app.request('/api/app/workspaces/ws_demo/knowledge/sources', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: 'knowledge-source-unsafe-proposal',
-        kind: 'document',
-        title: 'Unsafe proposal input source',
-        uri: 'file://unsafe-proposal-source.md',
-        content: 'Authoritative source without unsafe proposal text.',
-      }),
-    });
-    expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(201);
+    const app = createApp({ store }, true);
+    const sourceResponse = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.source.register',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: 'knowledge-source-unsafe-proposal',
+            kind: 'document',
+            title: 'Unsafe proposal input source',
+            uri: 'file://unsafe-proposal-source.md',
+            content: 'Authoritative source without unsafe proposal text.',
+          }),
+        }
+      )
+    );
+    expect(sourceResponse.status, await sourceResponse.clone().text()).toBe(200);
     const source = (await sourceResponse.json()) as {
       source: { id: string; contentDigest: string };
     };
@@ -10429,20 +10527,23 @@ describe('nanocore server', () => {
         '',
       ].join('\n');
       const response = await app.request(
-        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: knowledgeProposalRequestId(`unsafe-proposal-${index}`),
-            knowledgePageId,
-            canonicalPageBytes,
-            contentDigest: artifactDigest(canonicalPageBytes),
-            sourceReferences: [sourceReference],
-            rationale: unsafe.rationale,
-            confidence: 0.8,
-          }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.draft',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: knowledgeProposalRequestId(`unsafe-proposal-${index}`),
+              knowledgePageId,
+              canonicalPageBytes,
+              contentDigest: artifactDigest(canonicalPageBytes),
+              sourceReferences: [sourceReference],
+              rationale: unsafe.rationale,
+              confidence: 0.8,
+            }),
+          }
+        )
       );
       const body = await response.text();
 
@@ -10561,21 +10662,24 @@ describe('nanocore server', () => {
 
   it('rejects edited knowledge proposal decisions without mutation', async () => {
     const store = createDemoStore();
-    const app = createApp({ store });
+    const app = createApp({ store }, true);
 
     const res = await app.request(
-      '/api/app/workspaces/ws_demo/knowledge/proposals/kp_review_edit/decision',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'knowledge-review-edit-1',
-          decision: 'edited',
-          title: 'Edited proposal title',
-          summary: 'Edited proposal summary.',
-          message: 'Use the edited version.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...knowledgeOperationRequest(
+        'knowledge.proposal.decide',
+        { workspaceId: 'ws_demo', proposalId: 'kp_review_edit' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'knowledge-review-edit-1',
+            decision: 'edited',
+            title: 'Edited proposal title',
+            summary: 'Edited proposal summary.',
+            message: 'Use the edited version.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
 
     expect(res.status).toBe(400);

@@ -8,9 +8,9 @@ import {
   type DeleteKnowledgeEntryRequestSchema,
   GetArtifactResponseSchema,
   type InterruptTurnRequestSchema,
-  KnowledgeEntrySchema,
+  type KnowledgeEntrySchema,
   ListArtifactsResponseSchema,
-  ListKnowledgeEntriesResponseSchema,
+  type ListKnowledgeEntriesResponseSchema,
   ListThreadsResponseSchema,
   MetaResponseSchema,
   PendingRequestOutcomeSchema,
@@ -104,22 +104,6 @@ export interface CoreProjectionClient {
   getWorkspace(workspaceId: string): Promise<WorkspaceRecord>;
   /** Updates one workspace. */
   updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<WorkspaceRecord>;
-  /** Lists workspace knowledge entries. */
-  listKnowledge(workspaceId: string): Promise<ListKnowledgeEntriesResponse>;
-  /** Creates one knowledge entry. */
-  createKnowledge(workspaceId: string, input: CreateKnowledgeInput): Promise<KnowledgeEntry>;
-  /** Updates one knowledge entry. */
-  updateKnowledge(
-    workspaceId: string,
-    knowledgeEntryId: string,
-    input: UpdateKnowledgeInput
-  ): Promise<KnowledgeEntry>;
-  /** Deletes one knowledge entry. */
-  deleteKnowledge(
-    workspaceId: string,
-    knowledgeEntryId: string,
-    input?: DeleteKnowledgeInput
-  ): Promise<void>;
   /** Lists workspace threads. */
   listThreads(workspaceId: string): Promise<ListThreadsResponse>;
   /** Updates one thread. */
@@ -174,28 +158,6 @@ export function createCoreProjectionClient(
         `/api/workspaces/${workspaceId}`,
         withRequestId(input),
         WorkspaceRecordSchema
-      ),
-    listKnowledge: (workspaceId) =>
-      transport.getJson(
-        `/api/workspaces/${workspaceId}/knowledge`,
-        ListKnowledgeEntriesResponseSchema
-      ),
-    createKnowledge: (workspaceId, input) =>
-      transport.postJson(
-        `/api/workspaces/${workspaceId}/knowledge`,
-        withRequestId(input),
-        KnowledgeEntrySchema
-      ),
-    updateKnowledge: (workspaceId, knowledgeEntryId, input) =>
-      transport.patchJson(
-        `/api/workspaces/${workspaceId}/knowledge/${knowledgeEntryId}`,
-        withRequestId(input),
-        KnowledgeEntrySchema
-      ),
-    deleteKnowledge: (workspaceId, knowledgeEntryId, input = {}) =>
-      transport.deleteJson(
-        `/api/workspaces/${workspaceId}/knowledge/${knowledgeEntryId}`,
-        withRequestId(input)
       ),
     listThreads: (workspaceId) =>
       transport.getJson(`/api/workspaces/${workspaceId}/threads`, ListThreadsResponseSchema),

@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
+  KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+  KNOWLEDGE_OPERATION_DEFINITIONS,
+  operationHttpPath,
   PRODUCT_OPERATION_DEFINITIONS,
   SubscriptionProviderIdSchema,
 } from '@openkit/app-api-schemas';
@@ -98,10 +101,6 @@ const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
   'GET /api/workspaces/:workspaceId/threads',
   'PATCH /api/workspaces/:workspaceId/threads/:threadId',
   'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
-  'GET /api/workspaces/:workspaceId/knowledge',
-  'POST /api/workspaces/:workspaceId/knowledge',
-  'PATCH /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
-  'DELETE /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
   'GET /api/workspaces/:workspaceId/artifacts',
   'GET /api/workspaces/:workspaceId/artifacts/:artifactId',
   'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content',
@@ -1279,322 +1278,11 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/answer']?.post
-    ).toMatchObject({
-      operationId: 'answerKnowledgeManager',
-      tags: ['knowledge'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/KnowledgeManagerAnswerRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeManagerAnswerResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/knowledge/sources']).toMatchObject({
-      get: {
-        operationId: 'listKnowledgeSources',
-        tags: ['knowledge'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListKnowledgeSourcesResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-      post: {
-        operationId: 'registerKnowledgeSource',
-        tags: ['knowledge'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RegisterKnowledgeSourceRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/RegisterKnowledgeSourceResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/sources/{sourceId}']?.get
-    ).toMatchObject({
-      operationId: 'readKnowledgeSource',
-      tags: ['knowledge'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'sourceId', in: 'path', required: true }),
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ReadKnowledgeSourceResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/observations']
-    ).toMatchObject({
-      get: {
-        operationId: 'listKnowledgeObservations',
-        tags: ['knowledge'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListKnowledgeObservationsResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-      post: {
-        operationId: 'recordKnowledgeObservation',
-        tags: ['knowledge'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RecordKnowledgeObservationRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/RecordKnowledgeObservationResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/knowledge/claims']).toMatchObject({
-      get: {
-        operationId: 'listKnowledgeClaims',
-        tags: ['knowledge'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListKnowledgeClaimsResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-      post: {
-        operationId: 'recordKnowledgeClaim',
-        tags: ['knowledge'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RecordKnowledgeClaimRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/RecordKnowledgeClaimResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-    });
+
     expect(document.paths).not.toHaveProperty(
       '/api/app/workspaces/{workspaceId}/knowledge/claims/{claimId}/promotion'
     );
-    expect(document.paths['/api/app/workspaces/{workspaceId}/knowledge/conflicts']).toMatchObject({
-      get: {
-        operationId: 'listKnowledgeConflicts',
-        tags: ['knowledge'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListKnowledgeConflictsResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-      post: {
-        operationId: 'recordKnowledgeConflict',
-        tags: ['knowledge'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RecordKnowledgeConflictRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '201': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/RecordKnowledgeConflictResponse',
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/knowledge/conflicts/{conflictId}/resolution'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'resolveKnowledgeConflict',
-      tags: ['knowledge'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/ResolveKnowledgeConflictRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ResolveKnowledgeConflictResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/indexes']?.get
-    ).toMatchObject({
-      operationId: 'readKnowledgeIndexes',
-      tags: ['knowledge'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeDerivedIndexesResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/retrievals']?.post
-    ).toMatchObject({
-      operationId: 'retrieveKnowledge',
-      tags: ['knowledge'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/RetrieveKnowledgeRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeRetrievalResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/context']?.post
-    ).toMatchObject({
-      operationId: 'prepareKnowledgeContext',
-      tags: ['knowledge'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/KnowledgeManagerPrepareContextRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeManagerPrepareContextResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+
     for (const path of [
       '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}',
       '/api/app/workspaces/{workspaceId}/knowledge/manager/context/{contextPackageId}/materialization',
@@ -1615,84 +1303,7 @@ describe('app api openapi projection', () => {
     ]) {
       expect(document.components.schemas).not.toHaveProperty(schemaName);
     }
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/proposals']?.post
-    ).toMatchObject({
-      operationId: 'draftKnowledgeProposal',
-      tags: ['knowledge'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/KnowledgeManagerDraftProposalRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeManagerDraftProposalResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/repairs']?.post
-    ).toMatchObject({
-      operationId: 'suggestKnowledgeRepairs',
-      tags: ['knowledge'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/KnowledgeManagerSuggestRepairRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeManagerSuggestRepairResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/manager/health']?.post
-    ).toMatchObject({
-      operationId: 'checkKnowledgeHealth',
-      tags: ['knowledge'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/KnowledgeManagerHealthCheckRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/KnowledgeManagerHealthCheckResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+
     expect(document.paths['/api/app/workspaces/{workspaceId}/dashboard']?.get).toMatchObject({
       operationId: 'getWorkspaceDashboard',
       tags: ['dashboards'],
@@ -1916,33 +1527,7 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review']?.post
     ).toBeUndefined();
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision']
-        ?.post
-    ).toMatchObject({
-      operationId: 'submitKnowledgeProposalDecision',
-      tags: ['reviews'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SubmitKnowledgeProposalDecisionRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/SubmitKnowledgeProposalDecisionResponse',
-              },
-            },
-          },
-        },
-      },
-    });
+
     expect(
       document.paths[
         '/api/app/workspaces/{workspaceId}/threads/{threadId}/goals/{goalId}/reviews/{reviewId}/decision'
@@ -3298,22 +2883,22 @@ describe('app api openapi projection', () => {
       scope: 'user',
     });
 
-    expect(PUBLIC_OPERATION_ACCESS.retrieveKnowledge?.mutating).toBe(true);
-    expect(PUBLIC_OPERATION_ACCESS.prepareKnowledgeContext).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.retrieval']?.mutating).toBe(true);
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.context.prepare']).toMatchObject({
       mutating: true,
       policyOperation: 'knowledge.read',
-      resolver: 'path-workspace',
+      resolver: 'body-workspace',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS.reverseKnowledgeProposal).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.proposal.reverse']).toMatchObject({
       mutating: true,
       policyOperation: 'knowledge.write',
-      resolver: 'workspace-child-lineage',
+      resolver: 'body-workspace',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS.answerKnowledgeManager?.mutating).toBe(false);
-    expect(PUBLIC_OPERATION_ACCESS.suggestKnowledgeRepairs?.mutating).toBe(false);
-    expect(PUBLIC_OPERATION_ACCESS.checkKnowledgeHealth?.mutating).toBe(false);
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.answer']?.mutating).toBe(false);
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.repair.suggest']?.mutating).toBe(false);
+    expect(PUBLIC_OPERATION_ACCESS['knowledge.health.check']?.mutating).toBe(false);
   });
 
   it('enforces semantic invariants for every documented operation', () => {
@@ -3688,23 +3273,6 @@ describe('app api openapi projection', () => {
       'getWorkspaceAccessRecoveryState',
       'recoverWorkspaceAccess',
       'disableUser',
-      'registerKnowledgeSource',
-      'listKnowledgeSources',
-      'recordKnowledgeObservation',
-      'listKnowledgeObservations',
-      'recordKnowledgeClaim',
-      'listKnowledgeClaims',
-      'recordKnowledgeConflict',
-      'listKnowledgeConflicts',
-      'resolveKnowledgeConflict',
-      'readKnowledgeIndexes',
-      'retrieveKnowledge',
-      'readKnowledgeSource',
-      'answerKnowledgeManager',
-      'prepareKnowledgeContext',
-      'draftKnowledgeProposal',
-      'suggestKnowledgeRepairs',
-      'checkKnowledgeHealth',
       'submitTurnFeedback',
       'listArtifactReviews',
       'submitArtifactReviewDecision',
@@ -3733,8 +3301,6 @@ describe('app api openapi projection', () => {
       'purgeWorkerEnvironment',
       'prepareWorkerEnvironment',
       'activateWorkerEnvironment',
-      'submitKnowledgeProposalDecision',
-      'reverseKnowledgeProposal',
       'submitGoalReviewDecision',
     ]);
   });
@@ -3835,3 +3401,46 @@ function listSourceFiles(root: URL): string[] {
 
   return files;
 }
+
+/** Knowledge bindings preserve exact schemas through definition derivation after legacy descriptors are removed. */
+describe('Knowledge OpenAPI derivation', () => {
+  it('projects every retained Knowledge input and output with no old operation descriptor', () => {
+    const document = createAppOpenApiDocument();
+    const definitions = {
+      ...KNOWLEDGE_OPERATION_DEFINITIONS,
+      ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+    };
+    expect(Object.keys(definitions)).toHaveLength(23);
+    for (const [id, definition] of Object.entries(definitions)) {
+      const route = document.paths[operationHttpPath(id)] as unknown as {
+        post: Record<string, unknown>;
+      };
+      expect(route.post).toMatchObject({
+        operationId: id,
+        tags: ['knowledge'],
+        requestBody: {
+          content: { 'application/json': { schema: { $ref: `#/components/schemas/${id}.input` } } },
+        },
+        responses: {
+          '200': {
+            content: {
+              'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
+            },
+          },
+        },
+      });
+      const components = document.components.schemas as Record<string, unknown>;
+      expect(components[`${id}.input`]).toEqual(
+        z.toJSONSchema(
+          'requestId' in definition.inputSchema.shape
+            ? definition.inputSchema.omit({ requestId: true } as never)
+            : definition.inputSchema
+        )
+      );
+      expect(components[`${id}.output`]).toEqual(z.toJSONSchema(definition.outputSchema));
+    }
+    expect(Object.keys(document.paths).filter((path) => /\/knowledge(?:\/|$)/.test(path))).toEqual(
+      []
+    );
+  });
+});

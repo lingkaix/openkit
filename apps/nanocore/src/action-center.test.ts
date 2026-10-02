@@ -1250,12 +1250,12 @@ describe('action center app API', () => {
           expect.objectContaining({
             kind: 'accept_knowledge',
             method: 'POST',
-            href: `/api/app/workspaces/ws_demo/knowledge/proposals/${knowledgeProposal.id}/decision`,
+            href: '/api/app/operations/knowledge.proposal.decide',
           }),
           expect.objectContaining({
             kind: 'reject_knowledge',
             method: 'POST',
-            href: `/api/app/workspaces/ws_demo/knowledge/proposals/${knowledgeProposal.id}/decision`,
+            href: '/api/app/operations/knowledge.proposal.decide',
           }),
         ]),
       });

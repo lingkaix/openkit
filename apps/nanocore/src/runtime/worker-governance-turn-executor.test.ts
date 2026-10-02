@@ -79,6 +79,7 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { createInitialGoalIntentItem } from '../test-support/goal-intent.js';
+import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -6013,12 +6014,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
         confidence: 0.8,
       };
       const draftResponse = await app.request(
-        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(draftRequest),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.draft',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(draftRequest),
+          }
+        )
       );
       expect(draftResponse.status, await draftResponse.clone().text()).toBe(200);
       const drafted = KnowledgeManagerDraftProposalResponseSchema.parse(await draftResponse.json());
@@ -6037,20 +6041,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         JSON.stringify(invalidSourceReferences)
       );
       const invalidDraftResponse = await app.request(
-        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000640',
-            knowledgePageId: 'direct-task-lesson',
-            canonicalPageBytes: invalidCandidatePageBytes,
-            contentDigest: turnRuntimeSha256(Buffer.from(invalidCandidatePageBytes, 'utf8')),
-            sourceReferences: invalidSourceReferences,
-            rationale: 'An earlier completed Item must not masquerade as final worker output.',
-            confidence: 0.8,
-          }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.draft',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000640',
+              knowledgePageId: 'direct-task-lesson',
+              canonicalPageBytes: invalidCandidatePageBytes,
+              contentDigest: turnRuntimeSha256(Buffer.from(invalidCandidatePageBytes, 'utf8')),
+              sourceReferences: invalidSourceReferences,
+              rationale: 'An earlier completed Item must not masquerade as final worker output.',
+              confidence: 0.8,
+            }),
+          }
+        )
       );
       expect(invalidDraftResponse.status).toBe(400);
       await expect(invalidDraftResponse.json()).resolves.toMatchObject({ code: 'invalid_request' });
@@ -6058,25 +6065,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
       const decisionRequestId = '00000000-0000-4000-8000-000000000641';
       const acceptedDecision = await app.request(
-        `/api/app/workspaces/ws_demo/knowledge/proposals/${drafted.proposal.id}/decision`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.decide',
+          { workspaceId: 'ws_demo', proposalId: drafted.proposal.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+          }
+        )
       );
       expect(acceptedDecision.status, await acceptedDecision.clone().text()).toBe(200);
       const retrievalResponse = await app.request(
-        '/api/app/workspaces/ws_demo/knowledge/retrievals',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            query: 'Direct Task lesson',
-            limit: 5,
-            pinnedConceptIds: [],
-          }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.retrieval',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              query: 'Direct Task lesson',
+              limit: 5,
+              pinnedConceptIds: [],
+            }),
+          }
+        )
       );
       expect(retrievalResponse.status, await retrievalResponse.clone().text()).toBe(200);
       const acceptedRetrieval = (await retrievalResponse.json()) as {
@@ -6118,12 +6131,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceDb.sqlite.close();
       rmSync(fixture.tracePath);
       const interruptedReplay = await app.request(
-        '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(draftRequest),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.draft',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(draftRequest),
+          }
+        )
       );
       expect(interruptedReplay.status).toBe(409);
       await expect(interruptedReplay.json()).resolves.toMatchObject({
@@ -6132,12 +6148,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(fixture.store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
 
       const conflictingResume = await app.request(
-        `/api/app/workspaces/ws_demo/knowledge/proposals/${drafted.proposal.id}/decision`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
-        }
+        ...knowledgeOperationRequest(
+          'knowledge.proposal.decide',
+          { workspaceId: 'ws_demo', proposalId: drafted.proposal.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId: decisionRequestId, decision: 'accepted' }),
+          }
+        )
       );
       expect(conflictingResume.status).toBe(409);
       await expect(conflictingResume.json()).resolves.toMatchObject({

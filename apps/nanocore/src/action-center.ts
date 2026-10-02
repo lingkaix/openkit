@@ -3,6 +3,7 @@ import {
   type HumanAttentionAction,
   type HumanAttentionRow,
   ListHumanAttentionResponseSchema,
+  operationHttpPath,
 } from '@openkit/app-api-schemas';
 import type { StopReason } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -1148,19 +1149,19 @@ function knowledgeReviewRows(store: FsStore, workspaceId: string): HumanAttentio
           {
             kind: 'accept_knowledge',
             label: 'Accept',
-            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            href: operationHttpPath('knowledge.proposal.decide'),
             method: 'POST',
           },
           {
             kind: 'reject_knowledge',
             label: 'Reject',
-            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            href: operationHttpPath('knowledge.proposal.decide'),
             method: 'POST',
           },
           {
             kind: 'defer',
             label: 'Defer',
-            href: `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposal.id}/decision`,
+            href: operationHttpPath('knowledge.proposal.decide'),
             method: 'POST',
           },
         ],

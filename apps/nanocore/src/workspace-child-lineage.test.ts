@@ -2,14 +2,13 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { ApiErrorSchema } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** One direct Core request expected to fail closed on child lineage. */
@@ -200,27 +199,33 @@ describe('Workspace child lineage', () => {
   });
 
   it('denies foreign Knowledge reads and mutations through an authorized Workspace path', async () => {
-    const path = `/api/workspaces/${fixture.allowedWorkspace.id}/knowledge/${fixture.foreignKnowledge.id}`;
-
-    for (const request of [
-      {
-        method: 'PATCH',
-        path,
-        body: {
+    for (const [id, child] of [
+      [
+        'knowledge.update',
+        {
+          knowledgeEntryId: fixture.foreignKnowledge.id,
           requestId: '00000000-0000-4000-8000-000000000403',
           title: 'Do not update this entry',
         },
-      },
-      {
-        method: 'DELETE',
-        path,
-        body: { requestId: '00000000-0000-4000-8000-000000000404' },
-      },
-      {
-        path: `/api/app/workspaces/${fixture.allowedWorkspace.id}/knowledge/sources/${fixture.foreignKnowledgeSource.id}`,
-      },
-    ] satisfies LineageRequest[]) {
-      await expectWorkspaceAccessDenied(fixture.app, request);
+      ],
+      [
+        'knowledge.delete',
+        {
+          knowledgeEntryId: fixture.foreignKnowledge.id,
+          requestId: '00000000-0000-4000-8000-000000000404',
+        },
+      ],
+      ['knowledge.source.read', { sourceId: fixture.foreignKnowledgeSource.id }],
+    ] as const) {
+      const response = await fixture.app.request(
+        ...knowledgeOperationRequest(
+          id,
+          { workspaceId: fixture.allowedWorkspace.id },
+          { body: JSON.stringify(child) }
+        )
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     }
   });
 

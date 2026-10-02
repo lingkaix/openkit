@@ -13,6 +13,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 - `workspace-sync.ts` records deterministic trusted input and materialization lineage for review fixtures.
 - `mcp-stdio-stub.mjs` publishes a descendant-written PID and credential digest receipt so MCP process cleanup tests verify inherited credentials on supported POSIX hosts without Linux-specific process inspection.
 - `mcp-http-stub.ts` can hold its `delayed` tool response on a test-owned Promise; the test observes request ingress and releases the gate during cleanup to establish concurrency without a guessed delay.
+- `knowledge-operation.ts` projects explicit test selectors and supplied request bytes to definition-derived routes. It supplies no Workspace authority, request identity, data or admission default; malformed bodies stay malformed.
 - Fixtures must use production public paths where practical, stay deterministic, and avoid silently changing production defaults.
 - Add shared helpers only when multiple tests repeat the same fixture knowledge.
 

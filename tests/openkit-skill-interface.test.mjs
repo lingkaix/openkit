@@ -590,7 +590,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   ]);
   assert.equal(new Set(operationCatalog.map((entry) => entry.id)).size, operationCatalog.length);
   assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.claim-promote'));
-  assert.ok(operationCatalog.some((entry) => entry.id === 'knowledge.context-prepare'));
+  assert.ok(operationCatalog.some((entry) => entry.id === 'knowledge.context.prepare'));
   for (const id of [
     'knowledge.context-trace',
     'knowledge.context-materialization',
@@ -756,17 +756,17 @@ test('one catalog covers the checked App API and public Core projection', async 
   );
 
   const proposalOperationIds = operationCatalog
-    .filter((entry) => entry.id.startsWith('knowledge.proposal-'))
+    .filter((entry) => entry.id.startsWith('knowledge.proposal.'))
     .map((entry) => entry.id)
     .sort();
   assert.deepEqual(proposalOperationIds, [
-    'knowledge.proposal-decide',
-    'knowledge.proposal-draft',
-    'knowledge.proposal-reverse',
+    'knowledge.proposal.decide',
+    'knowledge.proposal.draft',
+    'knowledge.proposal.reverse',
   ]);
   assert.ok(!operationCatalog.some((entry) => entry.id === 'knowledge.reflect'));
   const proposalDecision = operationCatalog.find(
-    (entry) => entry.id === 'knowledge.proposal-decide'
+    (entry) => entry.id === 'knowledge.proposal.decide'
   );
   const proposalDecisionInput = {
     workspaceId: 'workspace_1',
@@ -791,7 +791,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     false
   );
   const [proposalReverse] = operationCatalog.filter(
-    (entry) => entry.id === 'knowledge.proposal-reverse'
+    (entry) => entry.id === 'knowledge.proposal.reverse'
   );
   const proposalReverseInput = {
     workspaceId: 'workspace_1',
@@ -801,8 +801,8 @@ test('one catalog covers the checked App API and public Core projection', async 
     knowledgePageId: 'lessons/release-review',
     expectedContentDigest: `sha256:${'a'.repeat(64)}`,
   };
-  assert.equal(proposalReverse.clientMethod, 'app.reverseKnowledgeProposal');
-  assert.equal(proposalReverse.appOperationId, 'reverseKnowledgeProposal');
+  assert.equal(proposalReverse.clientMethod, 'operations.knowledge.proposal.reverse');
+  assert.equal(proposalReverse.appOperationId, 'knowledge.proposal.reverse');
   assert.deepEqual(
     Object.keys(proposalReverse.inputSchema.shape).sort(),
     Object.keys(proposalReverseInput).sort()

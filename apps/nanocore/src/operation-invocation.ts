@@ -29,6 +29,11 @@ import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
+import type { PreparedTaskKnowledgeContext } from './knowledge-manager.js';
+import {
+  createKnowledgeOperationImplementations,
+  KnowledgeOperationError,
+} from './knowledge-operations.js';
 import type { FsStore } from './lib/store.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from './runtime/nanohost-runtime-target.js';
@@ -42,6 +47,7 @@ import { readAuthorizedWorkspaces } from './workspace-sharing-routes.js';
 /** Trusted entry context, constructed by authentication or Worker supply assembly. */
 export type OperationInvocationContext =
   | { readonly kind: 'public'; readonly actor: Actor }
+  | { readonly kind: 'task'; readonly actor: Actor; readonly traceId: string }
   | {
       readonly kind: 'worker';
       readonly actor: ActorRef;
@@ -73,18 +79,7 @@ export interface OperationInvocationDependencies {
 /** Typed boundary failure; output failure never implies effect rollback. */
 export class OperationInvocationError extends Error {
   public constructor(
-    public readonly code:
-      | 'bound_input_conflict'
-      | 'workspace_access_denied'
-      | 'invalid_operation_output'
-      | 'invalid_request'
-      | 'unsupported_operation'
-      | 'not_found'
-      | 'deployment_admin_required'
-      | 'nanohost_transport_admin_server_mode_required'
-      | 'nanohost_transport_storage_unavailable'
-      | 'nanohost_transport_config_unavailable'
-      | 'nanohost_runtime_target_not_found',
+    public readonly code: string,
     message: string,
     public readonly status: number
   ) {
@@ -125,7 +120,13 @@ export type OperationImplementations = {
     actor: ActorRef,
     context: OperationInvocationContext,
     workspaceIds: readonly string[]
-  ) => OperationOutput<K> | Promise<OperationOutput<K>>;
+  ) =>
+    | OperationOutput<K>
+    | (K extends 'knowledge.context.prepare' ? PreparedTaskKnowledgeContext : never)
+    | Promise<
+        | OperationOutput<K>
+        | (K extends 'knowledge.context.prepare' ? PreparedTaskKnowledgeContext : never)
+      >;
 };
 
 /** Exact family join signatures; descriptors and id sets remain solely in the shared tables. */
@@ -197,7 +198,7 @@ function createTurnOperationImplementations(
 
 /** Requires public authenticated context for families that have no Worker projection. */
 function publicActor(context: OperationInvocationContext): Actor {
-  if (context.kind !== 'public') throw denied();
+  if (context.kind === 'worker') throw denied();
   return context.actor;
 }
 
@@ -210,6 +211,7 @@ function createOperationImplementations(
     ...createWorkspaceOperationImplementations(dependencies),
     ...createThreadOperationImplementations(dependencies),
     ...createTurnOperationImplementations(dependencies),
+    ...createKnowledgeOperationImplementations(dependencies),
     'nanohost.runtime-target': () => {
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb: dependencies.coreDb,
@@ -229,13 +231,29 @@ function createOperationImplementations(
 
 /** Native transport-free seam; projections supply arguments and trusted entry context only. */
 export function createOperationInvocation(dependencies: OperationInvocationDependencies) {
-  return async <K extends OperationId>(
+  function invoke(
+    id: 'knowledge.context.prepare',
+    value: unknown,
+    context: Extract<OperationInvocationContext, { kind: 'task' }>
+  ): Promise<PreparedTaskKnowledgeContext>;
+  function invoke<K extends OperationId>(
+    id: K,
+    value: unknown,
+    context: Exclude<OperationInvocationContext, { kind: 'task' }>
+  ): Promise<OperationOutput<K>>;
+  async function invoke<K extends OperationId>(
     id: K,
     value: unknown,
     context: OperationInvocationContext
-  ): Promise<OperationOutput<K>> => {
+  ): Promise<OperationOutput<K> | PreparedTaskKnowledgeContext> {
     if (!Object.hasOwn(OPERATION_DEFINITIONS, id))
       throw new OperationInvocationError('unsupported_operation', 'Unknown operation.', 400);
+    if (context.kind === 'task' && id !== 'knowledge.context.prepare')
+      throw new OperationInvocationError(
+        'invalid_request',
+        'Task context is reserved for Knowledge preparation.',
+        400
+      );
     const definition = OPERATION_DEFINITIONS[id];
     const assembled = bindOperationInput(value, context, definition.mutating);
     const parsed = definition.inputSchema.safeParse(assembled);
@@ -359,7 +377,14 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         context,
         workspaceIds
       );
-      const validated = definition.outputSchema.safeParse(output);
+      // Task owns a trace-only view of the same definition; public projections keep their complete output contract.
+      const outputSchema =
+        context.kind === 'task'
+          ? OPERATION_DEFINITIONS['knowledge.context.prepare'].outputSchema.pick({
+              retrievalTraceId: true,
+            })
+          : definition.outputSchema;
+      const validated = outputSchema.safeParse(output);
       if (!validated.success)
         throw new OperationInvocationError(
           'invalid_operation_output',
@@ -368,11 +393,16 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
             : 'Operation output is invalid.',
           500
         );
-      return validated.data as OperationOutput<K>;
+      return validated.data as OperationOutput<K> | PreparedTaskKnowledgeContext;
+    } catch (error) {
+      if (error instanceof KnowledgeOperationError)
+        throw new OperationInvocationError(error.code, error.message, error.status);
+      throw error;
     } finally {
       release?.();
     }
-  };
+  }
+  return invoke;
 }
 
 /** Requires the existing Kernel storage owner without creating substitute state. */

@@ -40,7 +40,10 @@ export function registerOperationJsonRoutes(
             403
           );
         }
-        const input = definition.mutating ? { ...args, requestId } : args;
+        const input =
+          definition.mutating && 'requestId' in definition.inputSchema.shape
+            ? { ...args, requestId }
+            : args;
         const parsed = definition.inputSchema.safeParse(input);
         if (!parsed.success) return asInvalidRequestError(parsed.error);
         const invoke = createOperationInvocation({ ...dependencies, store: requestStore(c) });

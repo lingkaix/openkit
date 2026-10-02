@@ -331,6 +331,8 @@ Failed Turns retain their recorded dashboard errors in conversation history afte
 
 ### Knowledge retrieval
 
+Every production Knowledge caller in `screens/workspace/data.ts` uses the definition-derived `client.operations` map with one Workspace-bound argument. The existing entry, Source, ledger, retrieval, manager and proposal-decision hooks retain their retry, request identity and Workspace-cache ownership.
+
 Retrieval preserves the recorded trace identity and selected-hit order while composing titles and previews of at most 240 characters from the selected Workspace's existing authorized Knowledge read. These are explicitly labeled current content and may differ from the recorded retrieval; they are not a retrieval-time snapshot. Each available hit links to the existing full-content display. Missing entries and failed current reads show content as unavailable, including when a failed refetch retains cached data. Workspace changes hide results from another Workspace, and excluded hits retain only their existing reason labels without content enrichment.
 
 ### Artifacts and typography

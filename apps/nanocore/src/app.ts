@@ -92,7 +92,6 @@ import { registerGoalRoutes, waitForWorkerTurnTerminalState } from './goal-route
 import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { registerKernelRoutes } from './kernel-routes.js';
-import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -1403,6 +1402,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/mcp', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   registerRemoteMcpRoutes({
     app,
+    getBootReadiness,
     coreDb: options.coreDb,
     store: sharedStore,
     inflightCommands,
@@ -1661,6 +1661,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
+    workspaceMutationAdmission,
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     repositoryWorkspaceDb,
@@ -1785,6 +1786,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
+    workspaceMutationAdmission,
     repositoryWorkspaceDb,
     requestStore,
     startModeWorkerTurn,
@@ -1839,13 +1841,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       : {}),
   });
 
-  registerKnowledgeRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
   registerTurnRoutes({
     app,
     coreDb: options.coreDb,

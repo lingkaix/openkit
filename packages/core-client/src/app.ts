@@ -129,30 +129,11 @@ import {
   IssueNanoHostTransportTokenRequestSchema,
   type IssueNanoHostTransportTokenResponse,
   IssueNanoHostTransportTokenResponseSchema,
-  type KnowledgeDerivedIndexesResponse,
-  KnowledgeDerivedIndexesResponseSchema,
   type KnowledgeManagerAnswerRequest,
-  KnowledgeManagerAnswerRequestSchema,
-  type KnowledgeManagerAnswerResponse,
-  KnowledgeManagerAnswerResponseSchema,
   type KnowledgeManagerDraftProposalRequest,
-  KnowledgeManagerDraftProposalRequestSchema,
-  type KnowledgeManagerDraftProposalResponse,
-  KnowledgeManagerDraftProposalResponseSchema,
   type KnowledgeManagerHealthCheckRequest,
-  KnowledgeManagerHealthCheckRequestSchema,
-  type KnowledgeManagerHealthCheckResponse,
-  KnowledgeManagerHealthCheckResponseSchema,
   type KnowledgeManagerPrepareContextRequest,
-  KnowledgeManagerPrepareContextRequestSchema,
-  type KnowledgeManagerPrepareContextResponse,
-  KnowledgeManagerPrepareContextResponseSchema,
   type KnowledgeManagerSuggestRepairRequest,
-  KnowledgeManagerSuggestRepairRequestSchema,
-  type KnowledgeManagerSuggestRepairResponse,
-  KnowledgeManagerSuggestRepairResponseSchema,
-  type KnowledgeRetrievalResponse,
-  KnowledgeRetrievalResponseSchema,
   type LeaveWorkspaceRequest,
   LeaveWorkspaceRequestSchema,
   type LightAppBatchRequest,
@@ -169,14 +150,6 @@ import {
   ListBackendWorkspaceHandlesResponseSchema,
   type ListInterruptedWorkerStatesResponse,
   ListInterruptedWorkerStatesResponseSchema,
-  type ListKnowledgeClaimsResponse,
-  ListKnowledgeClaimsResponseSchema,
-  type ListKnowledgeConflictsResponse,
-  ListKnowledgeConflictsResponseSchema,
-  type ListKnowledgeObservationsResponse,
-  ListKnowledgeObservationsResponseSchema,
-  type ListKnowledgeSourcesResponse,
-  ListKnowledgeSourcesResponseSchema,
   type ListLightAppRecordsResponse,
   ListLightAppRecordsResponseSchema,
   type ListLightAppsResponse,
@@ -269,20 +242,9 @@ import {
   QuickChatRequestSchema,
   type QuickChatResponse,
   QuickChatResponseSchema,
-  type ReadKnowledgeSourceResponse,
-  ReadKnowledgeSourceResponseSchema,
   type RecordKnowledgeClaimRequest,
-  RecordKnowledgeClaimRequestSchema,
-  type RecordKnowledgeClaimResponse,
-  RecordKnowledgeClaimResponseSchema,
   type RecordKnowledgeConflictRequest,
-  RecordKnowledgeConflictRequestSchema,
-  type RecordKnowledgeConflictResponse,
-  RecordKnowledgeConflictResponseSchema,
   type RecordKnowledgeObservationRequest,
-  RecordKnowledgeObservationRequestSchema,
-  type RecordKnowledgeObservationResponse,
-  RecordKnowledgeObservationResponseSchema,
   type RecoverDeletedWorkspaceRequest,
   RecoverDeletedWorkspaceRequestSchema,
   type RecoverDeletedWorkspaceResponse,
@@ -292,15 +254,9 @@ import {
   type RefreshGenerativePresentationRequest,
   RefreshGenerativePresentationRequestSchema,
   type RegisterKnowledgeSourceRequest,
-  RegisterKnowledgeSourceRequestSchema,
-  type RegisterKnowledgeSourceResponse,
-  RegisterKnowledgeSourceResponseSchema,
   type RemoveWorkspaceMemberRequest,
   RemoveWorkspaceMemberRequestSchema,
   type ResolveKnowledgeConflictRequest,
-  ResolveKnowledgeConflictRequestSchema,
-  type ResolveKnowledgeConflictResponse,
-  ResolveKnowledgeConflictResponseSchema,
   type RestoreThreadMaterialRequest,
   RestoreThreadMaterialRequestSchema,
   type RestoreThreadMaterialResponse,
@@ -314,7 +270,6 @@ import {
   type RetireLightAppResponse,
   RetireLightAppResponseSchema,
   type RetrieveKnowledgeRequest,
-  RetrieveKnowledgeRequestSchema,
   type RetryInterruptedWorkerCheckpointRequest,
   RetryInterruptedWorkerCheckpointRequestSchema,
   type RetryInterruptedWorkerCheckpointResponse,
@@ -322,9 +277,6 @@ import {
   type RetrySchedulerAdmissionResponse,
   RetrySchedulerAdmissionResponseSchema,
   type ReverseKnowledgeProposalRequest,
-  ReverseKnowledgeProposalRequestSchema,
-  type ReverseKnowledgeProposalResponse,
-  ReverseKnowledgeProposalResponseSchema,
   type ReviseThreadGoalIntentRequest,
   ReviseThreadGoalIntentRequestSchema,
   type ReviseThreadGoalIntentResponse,
@@ -402,9 +354,6 @@ import {
   type SubmitGoalReviewDecisionResponse,
   SubmitGoalReviewDecisionResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
-  SubmitKnowledgeProposalDecisionRequestSchema,
-  type SubmitKnowledgeProposalDecisionResponse,
-  SubmitKnowledgeProposalDecisionResponseSchema,
   type SubmitThreadGoalSteeringRequest,
   SubmitThreadGoalSteeringRequestSchema,
   type SubmitThreadGoalSteeringResponse,
@@ -1002,74 +951,6 @@ export interface AppApiClient {
     threadId: string,
     input: SubmitConversationInput
   ): Promise<SubmitConversationResponse>;
-  /** Runs one bounded Knowledge Manager answer operation. */
-  answerKnowledgeManager(
-    workspaceId: string,
-    input: KnowledgeManagerAnswerInput
-  ): Promise<KnowledgeManagerAnswerResponse>;
-  /** Prepares source-traceable context material without assembling the final prompt. */
-  prepareKnowledgeContext(
-    workspaceId: string,
-    input: KnowledgeManagerPrepareContextInput
-  ): Promise<KnowledgeManagerPrepareContextResponse>;
-  /** Drafts one pending Knowledge Proposal for explicit review. */
-  draftKnowledgeProposal(
-    workspaceId: string,
-    input: KnowledgeManagerDraftProposalInput
-  ): Promise<KnowledgeManagerDraftProposalResponse>;
-  /** Suggests review-required knowledge repairs without applying them. */
-  suggestKnowledgeRepairs(
-    workspaceId: string,
-    input: KnowledgeManagerSuggestRepairInput
-  ): Promise<KnowledgeManagerSuggestRepairResponse>;
-  /** Produces one bounded Knowledge Manager health report. */
-  checkKnowledgeHealth(
-    workspaceId: string,
-    input: KnowledgeManagerHealthCheckInput
-  ): Promise<KnowledgeManagerHealthCheckResponse>;
-  /** Registers one workspace Knowledge Source identity from explicit source content. */
-  registerKnowledgeSource(
-    workspaceId: string,
-    input: RegisterKnowledgeSourceInput
-  ): Promise<RegisterKnowledgeSourceResponse>;
-  /** Lists workspace Knowledge Source identities. */
-  listKnowledgeSources(workspaceId: string): Promise<ListKnowledgeSourcesResponse>;
-  /** Reads one workspace Knowledge Source identity. */
-  readKnowledgeSource(workspaceId: string, sourceId: string): Promise<ReadKnowledgeSourceResponse>;
-  /** Reads fresh derived Knowledge Store indexes. */
-  readKnowledgeIndexes(workspaceId: string): Promise<KnowledgeDerivedIndexesResponse>;
-  /** Retrieves ranked Knowledge Store candidates and persists the trace. */
-  retrieveKnowledge(
-    workspaceId: string,
-    input: RetrieveKnowledgeInput
-  ): Promise<KnowledgeRetrievalResponse>;
-  /** Appends one workspace Knowledge Store observation. */
-  recordKnowledgeObservation(
-    workspaceId: string,
-    input: RecordKnowledgeObservationInput
-  ): Promise<RecordKnowledgeObservationResponse>;
-  /** Lists workspace Knowledge Store observations. */
-  listKnowledgeObservations(workspaceId: string): Promise<ListKnowledgeObservationsResponse>;
-  /** Appends one workspace Knowledge Store claim. */
-  recordKnowledgeClaim(
-    workspaceId: string,
-    input: RecordKnowledgeClaimInput
-  ): Promise<RecordKnowledgeClaimResponse>;
-  /** Lists workspace Knowledge Store claims. */
-  listKnowledgeClaims(workspaceId: string): Promise<ListKnowledgeClaimsResponse>;
-  /** Appends one workspace Knowledge Store conflict. */
-  recordKnowledgeConflict(
-    workspaceId: string,
-    input: RecordKnowledgeConflictInput
-  ): Promise<RecordKnowledgeConflictResponse>;
-  /** Resolves one workspace Knowledge Store conflict. */
-  resolveKnowledgeConflict(
-    workspaceId: string,
-    conflictId: string,
-    input: ResolveKnowledgeConflictInput
-  ): Promise<ResolveKnowledgeConflictResponse>;
-  /** Lists workspace Knowledge Store conflicts. */
-  listKnowledgeConflicts(workspaceId: string): Promise<ListKnowledgeConflictsResponse>;
   /** Submits user steering to the active Goal Mode queue. */
   submitThreadGoalSteering(
     workspaceId: string,
@@ -1098,18 +979,6 @@ export interface AppApiClient {
     reviewId: string,
     input: SubmitGoalReviewDecisionInput
   ): Promise<SubmitGoalReviewDecisionResponse>;
-  /** Records one app-local knowledge proposal decision. */
-  submitKnowledgeProposalDecision(
-    workspaceId: string,
-    proposalId: string,
-    input: SubmitKnowledgeProposalDecisionInput
-  ): Promise<SubmitKnowledgeProposalDecisionResponse>;
-  /** Removes one unchanged page created by an accepted Knowledge Proposal. */
-  reverseKnowledgeProposal(
-    workspaceId: string,
-    proposalId: string,
-    input: ReverseKnowledgeProposalInput
-  ): Promise<ReverseKnowledgeProposalResponse>;
   /** Lists workspace synchronization reviews for one workspace. */
   listWorkspaceSyncReviews(workspaceId: string): Promise<ListWorkspaceSyncReviewsResponse>;
   /** Reads one workspace synchronization review by id. */
@@ -1858,102 +1727,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         `/api/app/workspaces/${workspaceId}/conversation-targets${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`,
         ConversationTargetCatalogSchema
       ),
-    answerKnowledgeManager: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/answer`,
-        KnowledgeManagerAnswerRequestSchema.parse(input),
-        KnowledgeManagerAnswerResponseSchema
-      ),
-    prepareKnowledgeContext: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/context`,
-        KnowledgeManagerPrepareContextRequestSchema.parse(input),
-        KnowledgeManagerPrepareContextResponseSchema
-      ),
-    draftKnowledgeProposal: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/proposals`,
-        KnowledgeManagerDraftProposalRequestSchema.parse(input),
-        KnowledgeManagerDraftProposalResponseSchema
-      ),
-    suggestKnowledgeRepairs: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/repairs`,
-        KnowledgeManagerSuggestRepairRequestSchema.parse(input),
-        KnowledgeManagerSuggestRepairResponseSchema
-      ),
-    checkKnowledgeHealth: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/manager/health`,
-        KnowledgeManagerHealthCheckRequestSchema.parse(input),
-        KnowledgeManagerHealthCheckResponseSchema
-      ),
-    registerKnowledgeSource: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/sources`,
-        RegisterKnowledgeSourceRequestSchema.parse(input),
-        RegisterKnowledgeSourceResponseSchema
-      ),
-    listKnowledgeSources: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/sources`,
-        ListKnowledgeSourcesResponseSchema
-      ),
-    readKnowledgeSource: (workspaceId, sourceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/sources/${sourceId}`,
-        ReadKnowledgeSourceResponseSchema
-      ),
-    readKnowledgeIndexes: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/indexes`,
-        KnowledgeDerivedIndexesResponseSchema
-      ),
-    retrieveKnowledge: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/retrievals`,
-        RetrieveKnowledgeRequestSchema.parse(input),
-        KnowledgeRetrievalResponseSchema
-      ),
-    recordKnowledgeObservation: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/observations`,
-        RecordKnowledgeObservationRequestSchema.parse(input),
-        RecordKnowledgeObservationResponseSchema
-      ),
-    listKnowledgeObservations: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/observations`,
-        ListKnowledgeObservationsResponseSchema
-      ),
-    recordKnowledgeClaim: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/claims`,
-        RecordKnowledgeClaimRequestSchema.parse(input),
-        RecordKnowledgeClaimResponseSchema
-      ),
-    listKnowledgeClaims: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/claims`,
-        ListKnowledgeClaimsResponseSchema
-      ),
-    recordKnowledgeConflict: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/conflicts`,
-        RecordKnowledgeConflictRequestSchema.parse(input),
-        RecordKnowledgeConflictResponseSchema
-      ),
-    resolveKnowledgeConflict: (workspaceId, conflictId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/conflicts/${conflictId}/resolution`,
-        ResolveKnowledgeConflictRequestSchema.parse(input),
-        ResolveKnowledgeConflictResponseSchema
-      ),
-    listKnowledgeConflicts: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/conflicts`,
-        ListKnowledgeConflictsResponseSchema
-      ),
     submitThreadGoalSteering: (workspaceId, threadId, input) => {
       const request = withRequestId(input);
 
@@ -1990,18 +1763,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SubmitGoalReviewDecisionResponseSchema
       );
     },
-    submitKnowledgeProposalDecision: (workspaceId, proposalId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposalId}/decision`,
-        SubmitKnowledgeProposalDecisionRequestSchema.parse(input),
-        SubmitKnowledgeProposalDecisionResponseSchema
-      ),
-    reverseKnowledgeProposal: (workspaceId, proposalId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/knowledge/proposals/${proposalId}/reversal`,
-        ReverseKnowledgeProposalRequestSchema.parse(input),
-        ReverseKnowledgeProposalResponseSchema
-      ),
     listWorkspaceSyncReviews: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/workspace-sync/reviews`,

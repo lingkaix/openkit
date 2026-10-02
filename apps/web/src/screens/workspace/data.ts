@@ -49,18 +49,21 @@ export type AgentEntry = Awaited<
 export type WorkspaceWorkerRow = Awaited<
   ReturnType<CoreClient['app']['listWorkspaceWorkers']>
 >['items'][number];
-/** Knowledge entry from `core.listKnowledge`. */
+/** Knowledge entry from `operations['knowledge.list']`. */
 export type KnowledgeItem = KnowledgeEntry;
 /** Bounded Knowledge Store projection returned by the three live list reads. */
 export type KnowledgeStoreProjection = {
-  sources: Awaited<ReturnType<CoreClient['app']['listKnowledgeSources']>>['items'];
-  observations: Awaited<ReturnType<CoreClient['app']['listKnowledgeObservations']>>['items'];
-  claims: Awaited<ReturnType<CoreClient['app']['listKnowledgeClaims']>>['items'];
+  sources: Awaited<ReturnType<CoreClient['operations']['knowledge.source.list']>>['items'];
+  observations: Awaited<
+    ReturnType<CoreClient['operations']['knowledge.observation.list']>
+  >['items'];
+  claims: Awaited<ReturnType<CoreClient['operations']['knowledge.claim.list']>>['items'];
 };
 /** Decision accepted by the existing Knowledge Proposal owner. */
-export type KnowledgeProposalDecision = Parameters<
-  CoreClient['app']['submitKnowledgeProposalDecision']
->[2]['decision'];
+export type KnowledgeProposalDecision = Omit<
+  Parameters<CoreClient['operations']['knowledge.proposal.decide']>[0],
+  'workspaceId' | 'proposalId'
+>['decision'];
 /** Exact Knowledge attention owner and decision submitted by the Web projection. */
 export type KnowledgeProposalDecisionInput = {
   source: Extract<AttentionRow['source'], { type: 'knowledge' }>;
@@ -69,24 +72,30 @@ export type KnowledgeProposalDecisionInput = {
 /** Exact replayable Knowledge entry create bound to one Workspace. */
 export type CreateKnowledgeCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['core']['createKnowledge']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.create']>[0], 'workspaceId'>;
 };
 /** Exact replayable Knowledge entry update bound to one Workspace. */
 export type UpdateKnowledgeCommand = {
   workspaceId: string;
   knowledgeEntryId: string;
-  input: Parameters<CoreClient['core']['updateKnowledge']>[2];
+  input: Omit<
+    Parameters<CoreClient['operations']['knowledge.update']>[0],
+    'workspaceId' | 'knowledgeEntryId'
+  >;
 };
 /** Exact replayable Knowledge entry delete bound to one Workspace. */
 export type DeleteKnowledgeCommand = {
   workspaceId: string;
   knowledgeEntryId: string;
-  input: Parameters<CoreClient['core']['deleteKnowledge']>[2];
+  input: Omit<
+    Parameters<CoreClient['operations']['knowledge.delete']>[0],
+    'workspaceId' | 'knowledgeEntryId'
+  >;
 };
 /** Exact replayable Knowledge Source registration bound to one Workspace. */
 export type RegisterKnowledgeSourceCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['registerKnowledgeSource']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.source.register']>[0], 'workspaceId'>;
 };
 /** Exact Knowledge Source read bound to one Workspace identity. */
 export type ReadKnowledgeSourceCommand = {
@@ -96,48 +105,54 @@ export type ReadKnowledgeSourceCommand = {
 /** Exact replayable Knowledge Observation append bound to one Workspace. */
 export type RecordKnowledgeObservationCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['recordKnowledgeObservation']>[1];
+  input: Omit<
+    Parameters<CoreClient['operations']['knowledge.observation.record']>[0],
+    'workspaceId'
+  >;
 };
 /** Exact replayable Knowledge Claim append bound to one Workspace. */
 export type RecordKnowledgeClaimCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['recordKnowledgeClaim']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.claim.record']>[0], 'workspaceId'>;
 };
 /** Exact replayable Knowledge Conflict append bound to one Workspace. */
 export type RecordKnowledgeConflictCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['recordKnowledgeConflict']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.conflict.record']>[0], 'workspaceId'>;
 };
 /** Exact replayable Knowledge Conflict resolution bound to one Workspace. */
 export type ResolveKnowledgeConflictCommand = {
   workspaceId: string;
   conflictId: string;
-  input: Parameters<CoreClient['app']['resolveKnowledgeConflict']>[2];
+  input: Omit<
+    Parameters<CoreClient['operations']['knowledge.conflict.resolve']>[0],
+    'workspaceId' | 'conflictId'
+  >;
 };
 /** Workspace-bound Knowledge retrieval request. */
 export type RetrieveKnowledgeCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['retrieveKnowledge']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.retrieval']>[0], 'workspaceId'>;
 };
 /** Workspace-bound Knowledge context preparation request. */
 export type PrepareKnowledgeContextCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['prepareKnowledgeContext']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.context.prepare']>[0], 'workspaceId'>;
 };
 /** Workspace-bound Knowledge Manager answer request. */
 export type AnswerKnowledgeManagerCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['answerKnowledgeManager']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.answer']>[0], 'workspaceId'>;
 };
 /** Workspace-bound Knowledge repair suggestion request. */
 export type SuggestKnowledgeRepairsCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['suggestKnowledgeRepairs']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.repair.suggest']>[0], 'workspaceId'>;
 };
 /** Workspace-bound Knowledge health-check request. */
 export type CheckKnowledgeHealthCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['app']['checkKnowledgeHealth']>[1];
+  input: Omit<Parameters<CoreClient['operations']['knowledge.health.check']>[0], 'workspaceId'>;
 };
 /** Selected-Workspace repository resources, diagnostics, and durable push records. */
 export type RepositoryProjection = {
@@ -255,7 +270,8 @@ export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledge(workspaceId ?? ''),
-    queryFn: async () => (await client.core.listKnowledge(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['knowledge.list']({ workspaceId: workspaceId as string })).items,
     enabled: Boolean(workspaceId),
   });
 }
@@ -283,7 +299,9 @@ export function useKnowledgeSources(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledgeSources(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listKnowledgeSources(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['knowledge.source.list']({ workspaceId: workspaceId as string }))
+        .items,
     enabled: Boolean(workspaceId),
     ...knowledgeListQuery,
   });
@@ -294,7 +312,12 @@ export function useKnowledgeObservations(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledgeObservations(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listKnowledgeObservations(workspaceId as string)).items,
+    queryFn: async () =>
+      (
+        await client.operations['knowledge.observation.list']({
+          workspaceId: workspaceId as string,
+        })
+      ).items,
     enabled: Boolean(workspaceId),
     ...knowledgeListQuery,
   });
@@ -305,7 +328,9 @@ export function useKnowledgeClaims(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledgeClaims(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listKnowledgeClaims(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['knowledge.claim.list']({ workspaceId: workspaceId as string }))
+        .items,
     enabled: Boolean(workspaceId),
     ...knowledgeListQuery,
   });
@@ -316,7 +341,9 @@ export function useKnowledgeConflicts(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledgeConflicts(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listKnowledgeConflicts(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['knowledge.conflict.list']({ workspaceId: workspaceId as string }))
+        .items,
     enabled: Boolean(workspaceId),
     ...knowledgeListQuery,
   });
@@ -327,7 +354,7 @@ export function useKnowledgeIndexes(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledgeIndexes(workspaceId ?? ''),
-    queryFn: () => client.app.readKnowledgeIndexes(workspaceId as string),
+    queryFn: () => client.operations['knowledge.indexes']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
     ...knowledgeListQuery,
   });
@@ -338,7 +365,10 @@ export function useRegisterKnowledgeSource() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: RegisterKnowledgeSourceCommand) =>
-      client.app.registerKnowledgeSource(command.workspaceId, command.input),
+      client.operations['knowledge.source.register']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -348,7 +378,10 @@ export function useReadKnowledgeSource() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: ReadKnowledgeSourceCommand) =>
-      client.app.readKnowledgeSource(command.workspaceId, command.sourceId),
+      client.operations['knowledge.source.read']({
+        workspaceId: command.workspaceId,
+        sourceId: command.sourceId,
+      }),
     retry: false,
   });
 }
@@ -358,7 +391,10 @@ export function useRecordKnowledgeObservation() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: RecordKnowledgeObservationCommand) =>
-      client.app.recordKnowledgeObservation(command.workspaceId, command.input),
+      client.operations['knowledge.observation.record']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -368,7 +404,10 @@ export function useRecordKnowledgeClaim() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: RecordKnowledgeClaimCommand) =>
-      client.app.recordKnowledgeClaim(command.workspaceId, command.input),
+      client.operations['knowledge.claim.record']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -378,7 +417,10 @@ export function useRecordKnowledgeConflict() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: RecordKnowledgeConflictCommand) =>
-      client.app.recordKnowledgeConflict(command.workspaceId, command.input),
+      client.operations['knowledge.conflict.record']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -388,7 +430,11 @@ export function useResolveKnowledgeConflict() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: ResolveKnowledgeConflictCommand) =>
-      client.app.resolveKnowledgeConflict(command.workspaceId, command.conflictId, command.input),
+      client.operations['knowledge.conflict.resolve']({
+        workspaceId: command.workspaceId,
+        conflictId: command.conflictId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -398,7 +444,10 @@ export function useRetrieveKnowledge() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: RetrieveKnowledgeCommand) =>
-      client.app.retrieveKnowledge(command.workspaceId, command.input),
+      client.operations['knowledge.retrieval']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -408,7 +457,10 @@ export function usePrepareKnowledgeContext() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: PrepareKnowledgeContextCommand) =>
-      client.app.prepareKnowledgeContext(command.workspaceId, command.input),
+      client.operations['knowledge.context.prepare']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -418,7 +470,7 @@ export function useAnswerKnowledgeManager() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: AnswerKnowledgeManagerCommand) =>
-      client.app.answerKnowledgeManager(command.workspaceId, command.input),
+      client.operations['knowledge.answer']({ workspaceId: command.workspaceId, ...command.input }),
     retry: false,
   });
 }
@@ -428,7 +480,10 @@ export function useSuggestKnowledgeRepairs() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: SuggestKnowledgeRepairsCommand) =>
-      client.app.suggestKnowledgeRepairs(command.workspaceId, command.input),
+      client.operations['knowledge.repair.suggest']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -438,7 +493,10 @@ export function useCheckKnowledgeHealth() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: CheckKnowledgeHealthCommand) =>
-      client.app.checkKnowledgeHealth(command.workspaceId, command.input),
+      client.operations['knowledge.health.check']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -512,11 +570,11 @@ export function useSubmitKnowledgeProposalDecision() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (input: KnowledgeProposalDecisionInput) =>
-      client.app.submitKnowledgeProposalDecision(
-        input.source.workspaceId,
-        input.source.knowledgeProposalId,
-        { decision: input.decision, requestId: createRequestId() }
-      ),
+      client.operations['knowledge.proposal.decide']({
+        workspaceId: input.source.workspaceId,
+        proposalId: input.source.knowledgeProposalId,
+        ...{ decision: input.decision, requestId: createRequestId() },
+      }),
     retry: false,
   });
 }
@@ -527,7 +585,7 @@ export function useCreateKnowledge() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: CreateKnowledgeCommand) =>
-      client.core.createKnowledge(command.workspaceId, command.input),
+      client.operations['knowledge.create']({ workspaceId: command.workspaceId, ...command.input }),
     retry: false,
     onSuccess: (_data, command) => {
       void queryClient.invalidateQueries({
@@ -542,7 +600,11 @@ export function useUpdateKnowledge() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: UpdateKnowledgeCommand) =>
-      client.core.updateKnowledge(command.workspaceId, command.knowledgeEntryId, command.input),
+      client.operations['knowledge.update']({
+        workspaceId: command.workspaceId,
+        knowledgeEntryId: command.knowledgeEntryId,
+        ...command.input,
+      }),
     retry: false,
   });
 }
@@ -552,7 +614,11 @@ export function useDeleteKnowledge() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: DeleteKnowledgeCommand) =>
-      client.core.deleteKnowledge(command.workspaceId, command.knowledgeEntryId, command.input),
+      client.operations['knowledge.delete']({
+        workspaceId: command.workspaceId,
+        knowledgeEntryId: command.knowledgeEntryId,
+        ...command.input,
+      }),
     retry: false,
   });
 }

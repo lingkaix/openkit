@@ -49,3 +49,5 @@ Public native environment administration uses `runtime.agent-environment-read` a
 `runtime.file-delete` projects deployment-admin Provider profile removal through `client.runtimeConfig.deleteFile`. It requires the exact file ID, `kind: provider` and current revision. Subscription account removal remains a separate operation. Both preserve configuration references; Provider activation follows the existing reload and restart workflow.
 
 The Workspace, Thread and Turn JSON operations are derived from `PRODUCT_OPERATION_DEFINITIONS`, including their strict inputs, output codecs and `client.operations[id]` handlers. Their settled CLI ids are unchanged; no handwritten catalog entries, old SDK method aliases or lower-fidelity Workspace list exclusion remain. Turn streaming remains a transport exclusion.
+
+Knowledge CLI discovery and invocation derive all 19 Knowledge and four retained entry operations from the shared definition tables. Canonical dotted ids replace the former hyphenated CLI spellings without aliases; `knowledge.retrieval` retains its settled semantic id.

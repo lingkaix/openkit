@@ -780,10 +780,7 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
-      createKnowledge: vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
-      updateKnowledge: vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
-      deleteKnowledge: vi.fn().mockResolvedValue(undefined),
+
       createWorkspace: vi.fn().mockResolvedValue({
         id: 'ws-new',
         name: 'New workspace',
@@ -829,25 +826,7 @@ function makeClient(
         workspaceId,
         items: [],
       })),
-      listKnowledgeSources: vi.fn().mockResolvedValue({ items: [] }),
-      listKnowledgeObservations: vi.fn().mockResolvedValue({ items: [] }),
-      listKnowledgeClaims: vi.fn().mockResolvedValue({ items: [] }),
-      listKnowledgeConflicts: vi.fn().mockResolvedValue({ items: [] }),
-      readKnowledgeIndexes: vi.fn().mockResolvedValue(EMPTY_KNOWLEDGE_INDEXES),
-      registerKnowledgeSource: vi.fn(),
-      readKnowledgeSource: vi.fn(),
-      recordKnowledgeObservation: vi.fn(),
-      recordKnowledgeClaim: vi.fn(),
-      recordKnowledgeConflict: vi.fn(),
-      resolveKnowledgeConflict: vi.fn(),
-      retrieveKnowledge: vi.fn(),
-      prepareKnowledgeContext: vi.fn(),
-      answerKnowledgeManager: vi.fn(),
-      draftKnowledgeProposal: vi.fn(),
-      suggestKnowledgeRepairs: vi.fn(),
-      checkKnowledgeHealth: vi.fn(),
-      reverseKnowledgeProposal: vi.fn(),
-      submitKnowledgeProposalDecision: vi.fn().mockResolvedValue({}),
+
       ...overrides.app,
     },
     agents: {
@@ -896,6 +875,31 @@ function makeClient(
     },
 
     operations: {
+      'knowledge.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
+      'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
+      'knowledge.delete': vi.fn().mockResolvedValue(undefined),
+      'knowledge.source.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.observation.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.claim.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.conflict.list': vi.fn().mockResolvedValue({ items: [] }),
+      'knowledge.indexes': vi.fn().mockResolvedValue(EMPTY_KNOWLEDGE_INDEXES),
+      'knowledge.source.register': vi.fn(),
+      'knowledge.source.read': vi.fn(),
+      'knowledge.observation.record': vi.fn(),
+      'knowledge.claim.record': vi.fn(),
+      'knowledge.conflict.record': vi.fn(),
+      'knowledge.conflict.resolve': vi.fn(),
+      'knowledge.retrieval': vi.fn(),
+      'knowledge.context.prepare': vi.fn(),
+      'knowledge.answer': vi.fn(),
+      'knowledge.proposal.draft': vi.fn(),
+      'knowledge.repair.suggest': vi.fn(),
+      'knowledge.health.check': vi.fn(),
+      'knowledge.proposal.reverse': vi.fn(),
+      'knowledge.proposal.decide': vi.fn().mockResolvedValue({}),
+      ...overrides.core,
+      ...overrides.app,
       'workspace.resources': vi.fn().mockImplementation(async () => {
         const listAgents = overrides.agents?.list as CoreClient['agents']['list'] | undefined;
         const listed = overrides.agents?.list ? await listAgents?.() : { items: [] };
@@ -1079,31 +1083,31 @@ const KNOWLEDGE_TYPED_WRITE_SLICES = [
   {
     typeName: 'RegisterKnowledgeSourceCommand',
     hookName: 'useRegisterKnowledgeSource',
-    method: 'registerKnowledgeSource',
+    method: 'knowledge.source.register',
     inputIndex: 1,
   },
   {
     typeName: 'RecordKnowledgeObservationCommand',
     hookName: 'useRecordKnowledgeObservation',
-    method: 'recordKnowledgeObservation',
+    method: 'knowledge.observation.record',
     inputIndex: 1,
   },
   {
     typeName: 'RecordKnowledgeClaimCommand',
     hookName: 'useRecordKnowledgeClaim',
-    method: 'recordKnowledgeClaim',
+    method: 'knowledge.claim.record',
     inputIndex: 1,
   },
   {
     typeName: 'RecordKnowledgeConflictCommand',
     hookName: 'useRecordKnowledgeConflict',
-    method: 'recordKnowledgeConflict',
+    method: 'knowledge.conflict.record',
     inputIndex: 1,
   },
   {
     typeName: 'ResolveKnowledgeConflictCommand',
     hookName: 'useResolveKnowledgeConflict',
-    method: 'resolveKnowledgeConflict',
+    method: 'knowledge.conflict.resolve',
     inputIndex: 2,
   },
 ] as const;
@@ -1121,7 +1125,12 @@ const KNOWLEDGE_DRAFT_WRITES = [
 
 /** Counts Core client calls issued for one Workspace identity. */
 function callsOn(method: { mock: { calls: unknown[][] } }, workspaceId: string) {
-  return method.mock.calls.filter((call) => call[0] === workspaceId);
+  return method.mock.calls.filter(
+    (call) =>
+      (typeof call[0] === 'object' && call[0] !== null && 'workspaceId' in call[0]
+        ? call[0].workspaceId
+        : call[0]) === workspaceId
+  );
 }
 
 /** Returns one exported Knowledge type or hook slice from workspace data.ts. */
@@ -1231,21 +1240,29 @@ function knowledgeAuthorityReads(mode: KnowledgeAuthorityMode) {
     catalog,
     listKnowledgeSources: vi
       .fn()
-      .mockImplementation((workspaceId: string) => Promise.resolve(catalog(workspaceId).sources)),
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve(catalog(workspaceId).sources)
+      ),
     listKnowledgeObservations: vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(catalog(workspaceId).observations)
       ),
     listKnowledgeClaims: vi
       .fn()
-      .mockImplementation((workspaceId: string) => Promise.resolve(catalog(workspaceId).claims)),
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve(catalog(workspaceId).claims)
+      ),
     listKnowledgeConflicts: vi
       .fn()
-      .mockImplementation((workspaceId: string) => Promise.resolve(catalog(workspaceId).conflicts)),
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve(catalog(workspaceId).conflicts)
+      ),
     readKnowledgeIndexes: vi
       .fn()
-      .mockImplementation((workspaceId: string) => Promise.resolve(catalog(workspaceId).indexes)),
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve(catalog(workspaceId).indexes)
+      ),
   };
 }
 
@@ -2225,7 +2242,7 @@ describe('Catalog', () => {
     const importSkill = vi.fn().mockResolvedValue({
       entry: {
         availability: 'available',
-        currentDigest: 'sha256:' + 'a'.repeat(64),
+        currentDigest: `sha256:${'a'.repeat(64)}`,
         description: null,
         displayName: 'Repo guidelines',
         id: 'repo-guidelines',
@@ -2233,7 +2250,7 @@ describe('Catalog', () => {
       revision: 3,
       version: {
         createdAt: TIMESTAMP_NEW,
-        digest: 'sha256:' + 'a'.repeat(64),
+        digest: `sha256:${'a'.repeat(64)}`,
         digestFormat: 'openkit-tree-v1',
         entryId: 'repo-guidelines',
         inventory: [],
@@ -2249,12 +2266,12 @@ describe('Catalog', () => {
         skills: [
           {
             availability: 'available',
-            currentDigest: 'sha256:' + 'a'.repeat(64),
+            currentDigest: `sha256:${'a'.repeat(64)}`,
             description: null,
             displayName: 'Repo guidelines',
             id: 'repo-guidelines',
             pinDigest: null,
-            versions: [{ createdAt: TIMESTAMP_NEW, digest: 'sha256:' + 'a'.repeat(64) }],
+            versions: [{ createdAt: TIMESTAMP_NEW, digest: `sha256:${'a'.repeat(64)}` }],
           },
         ],
         mcp: [],
@@ -2286,11 +2303,11 @@ describe('Catalog', () => {
 
   it('submits a Skill candidate from an existing catalog entry', async () => {
     const user = userEvent.setup();
-    const digest = 'sha256:' + 'a'.repeat(64);
+    const digest = `sha256:${'a'.repeat(64)}`;
     const submitSkillCandidate = vi.fn().mockResolvedValue({
       candidate: {
         baseDigest: digest,
-        candidateDigest: 'sha256:' + 'b'.repeat(64),
+        candidateDigest: `sha256:${'b'.repeat(64)}`,
         createdAt: TIMESTAMP_NEW,
         disposition: 'proposed',
         entryId: 'repo-guidelines',
@@ -2335,7 +2352,7 @@ describe('Catalog', () => {
 
   it('keeps nested Skill folder bytes and relative paths on import and candidate update', async () => {
     const user = userEvent.setup();
-    const digest = 'sha256:' + 'a'.repeat(64);
+    const digest = `sha256:${'a'.repeat(64)}`;
     const importSkill = vi.fn().mockResolvedValue({
       entry: {
         availability: 'available',
@@ -2357,7 +2374,7 @@ describe('Catalog', () => {
     const submitSkillCandidate = vi.fn().mockResolvedValue({
       candidate: {
         baseDigest: digest,
-        candidateDigest: 'sha256:' + 'b'.repeat(64),
+        candidateDigest: `sha256:${'b'.repeat(64)}`,
         createdAt: TIMESTAMP_NEW,
         disposition: 'proposed',
         entryId: 'repo-guidelines',
@@ -2470,7 +2487,7 @@ describe('Catalog', () => {
 
   it('imports Skill, candidate, and plugin folders after the native chooser clears the live FileList', async () => {
     const user = userEvent.setup();
-    const digest = 'sha256:' + 'a'.repeat(64);
+    const digest = `sha256:${'a'.repeat(64)}`;
     const importSkill = vi.fn().mockResolvedValue({ revision: 3 });
     const submitSkillCandidate = vi.fn().mockResolvedValue({ revision: 4 });
     const importPlugin = vi.fn().mockResolvedValue({ revision: 3 });
@@ -2584,7 +2601,7 @@ describe('Catalog', () => {
 
   it('preserves MCP deny and approval policy when toggling enablement', async () => {
     const user = userEvent.setup();
-    const digest = 'sha256:' + 'c'.repeat(64);
+    const digest = `sha256:${'c'.repeat(64)}`;
     const updateMcpBinding = vi.fn().mockResolvedValue({ revision: 4 });
     const get = vi.fn().mockResolvedValue({
       revision: 3,
@@ -3223,7 +3240,7 @@ describe('Agents actual Workers', () => {
 describe('Knowledge (board 14)', () => {
   it('lists knowledge entries', async () => {
     const client = makeClient({
-      core: { listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+      core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
     });
     renderApp('/knowledge', client);
     expect(await screen.findByText('Write in English; keep answers concise')).toBeInTheDocument();
@@ -3237,7 +3254,7 @@ describe('Knowledge (board 14)', () => {
   it('creates a knowledge entry from the add form', async () => {
     const user = userEvent.setup();
     const createKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY);
-    const client = makeClient({ core: { createKnowledge } });
+    const client = makeClient({ core: { 'knowledge.create': createKnowledge } });
     renderApp('/knowledge', client);
     await screen.findByText(/No entries yet/i);
     await user.click(screen.getByRole('button', { name: /Add knowledge/i }));
@@ -3246,8 +3263,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(createKnowledge).toHaveBeenCalledWith(
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           kind: 'preference',
           title: 'Prefer concise memos',
           content: 'Keep it short.',
@@ -3280,7 +3297,10 @@ describe('Knowledge (board 14)', () => {
       ...KNOWLEDGE_ENTRY,
       title: 'Mutation response must not become visible',
     });
-    renderApp('/knowledge', makeClient({ core: { listKnowledge, updateKnowledge } }));
+    renderApp(
+      '/knowledge',
+      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+    );
 
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
     const title = screen.getByRole('textbox', { name: 'Title' });
@@ -3298,9 +3318,13 @@ describe('Knowledge (board 14)', () => {
     await user.click(save);
 
     await waitFor(() =>
-      expect(updateKnowledge).toHaveBeenCalledWith('ws1', KNOWLEDGE_ENTRY.id, {
-        requestId: expect.any(String),
-        title: 'Prefer concise release notes',
+      expect(updateKnowledge).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        knowledgeEntryId: KNOWLEDGE_ENTRY.id,
+        ...{
+          requestId: expect.any(String),
+          title: 'Prefer concise release notes',
+        },
       })
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
@@ -3324,8 +3348,8 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge: vi.fn().mockResolvedValue({ items: [entry] }),
-          updateKnowledge,
+          'knowledge.list': vi.fn().mockResolvedValue({ items: [entry] }),
+          'knowledge.update': updateKnowledge,
         },
       })
     );
@@ -3342,9 +3366,13 @@ describe('Knowledge (board 14)', () => {
     await user.type(content, 'Changed server content');
     await user.click(save);
     await waitFor(() =>
-      expect(updateKnowledge).toHaveBeenCalledWith('ws1', entry.id, {
-        content: 'Changed server content',
-        requestId: expect.any(String),
+      expect(updateKnowledge).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        knowledgeEntryId: entry.id,
+        ...{
+          content: 'Changed server content',
+          requestId: expect.any(String),
+        },
       })
     );
   });
@@ -3362,7 +3390,10 @@ describe('Knowledge (board 14)', () => {
       .mockRejectedValueOnce(new Error('authoritative read failed'))
       .mockResolvedValueOnce({ items: [UPDATED_KNOWLEDGE_ENTRY] });
     const updateKnowledge = vi.fn().mockResolvedValue(mutationResponse);
-    renderApp('/knowledge', makeClient({ core: { listKnowledge, updateKnowledge } }));
+    renderApp(
+      '/knowledge',
+      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+    );
 
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
     const content = screen.getByRole('textbox', { name: 'Content' });
@@ -3396,7 +3427,10 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValueOnce({ items: [KNOWLEDGE_ENTRY] })
       .mockReturnValueOnce(authoritativeRead.promise);
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
-    renderApp('/knowledge', makeClient({ core: { deleteKnowledge, listKnowledge } }));
+    renderApp(
+      '/knowledge',
+      makeClient({ core: { 'knowledge.delete': deleteKnowledge, 'knowledge.list': listKnowledge } })
+    );
 
     await user.click(
       await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
@@ -3406,8 +3440,12 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
 
     await waitFor(() =>
-      expect(deleteKnowledge).toHaveBeenCalledWith('ws1', KNOWLEDGE_ENTRY.id, {
-        requestId: expect.any(String),
+      expect(deleteKnowledge).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        knowledgeEntryId: KNOWLEDGE_ENTRY.id,
+        ...{
+          requestId: expect.any(String),
+        },
       })
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
@@ -3424,7 +3462,10 @@ describe('Knowledge (board 14)', () => {
       .mockRejectedValueOnce(new Error('authoritative read failed'))
       .mockResolvedValueOnce({ items: [] });
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
-    renderApp('/knowledge', makeClient({ core: { deleteKnowledge, listKnowledge } }));
+    renderApp(
+      '/knowledge',
+      makeClient({ core: { 'knowledge.delete': deleteKnowledge, 'knowledge.list': listKnowledge } })
+    );
 
     await user.click(
       await screen.findByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` })
@@ -3458,8 +3499,8 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
-          [operation === 'update' ? 'updateKnowledge' : 'deleteKnowledge']: mutation,
+          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          [operation === 'update' ? 'knowledge.update' : 'knowledge.delete']: mutation,
         },
       })
     );
@@ -3542,8 +3583,8 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge,
-          [`${operation}Knowledge`]: mutation,
+          'knowledge.list': listKnowledge,
+          [`knowledge.${operation}`]: mutation,
         },
       })
     );
@@ -3577,7 +3618,7 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
     const firstCall = mutation.mock.calls[0];
     const firstRequestId = requestIdFromCall(firstCall);
-    expect(firstCall?.[0]).toBe(WORKSPACE_A.id);
+    expect(firstCall?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
     expect(typeof firstRequestId).toBe('string');
     await retryScopedAlert(
       user,
@@ -3620,7 +3661,7 @@ describe('Knowledge (board 14)', () => {
     }
 
     await waitFor(() => expect(mutation).toHaveBeenCalledTimes(3));
-    expect(mutation.mock.calls[2]?.[0]).toBe(WORKSPACE_A.id);
+    expect(mutation.mock.calls[2]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
     const laterRequestId = requestIdFromCall(mutation.mock.calls[2]);
     expect(typeof laterRequestId).toBe('string');
     expect(laterRequestId).not.toBe(firstRequestId);
@@ -3635,9 +3676,9 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          deleteKnowledge,
-          listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
-          updateKnowledge,
+          'knowledge.delete': deleteKnowledge,
+          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.update': updateKnowledge,
         },
       })
     );
@@ -3680,7 +3721,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           meta,
-          listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
         },
       })
     );
@@ -3704,8 +3745,8 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
-          [`${operation}Knowledge`]: vi.fn().mockReturnValue(pending.promise),
+          'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }),
+          [`knowledge.${operation}`]: vi.fn().mockReturnValue(pending.promise),
         },
       })
     );
@@ -3746,7 +3787,11 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        app: { listKnowledgeClaims, listKnowledgeObservations, listKnowledgeSources },
+        app: {
+          'knowledge.claim.list': listKnowledgeClaims,
+          'knowledge.observation.list': listKnowledgeObservations,
+          'knowledge.source.list': listKnowledgeSources,
+        },
       })
     );
 
@@ -3773,9 +3818,9 @@ describe('Knowledge (board 14)', () => {
     for (const rawValue of ['transcript', 'retained', 'needs-review', 'weak_evidence']) {
       expect(document.body).not.toHaveTextContent(rawValue);
     }
-    expect(listKnowledgeSources).toHaveBeenCalledWith('ws1');
-    expect(listKnowledgeObservations).toHaveBeenCalledWith('ws1');
-    expect(listKnowledgeClaims).toHaveBeenCalledWith('ws1');
+    expect(listKnowledgeSources).toHaveBeenCalledWith({ workspaceId: 'ws1' });
+    expect(listKnowledgeObservations).toHaveBeenCalledWith({ workspaceId: 'ws1' });
+    expect(listKnowledgeClaims).toHaveBeenCalledWith({ workspaceId: 'ws1' });
   });
 
   it('keeps a Loading skeleton visible until the attention read settles', async () => {
@@ -3783,7 +3828,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { listKnowledge: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
+        core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
         actionCenter: { listHumanAttention: vi.fn().mockReturnValue(attentionRead.promise) },
       })
     );
@@ -3803,7 +3848,7 @@ describe('Knowledge (board 14)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('source read failed'))
       .mockResolvedValue({ items: [] });
-    renderApp('/knowledge', makeClient({ app: { listKnowledgeSources } }));
+    renderApp('/knowledge', makeClient({ app: { 'knowledge.source.list': listKnowledgeSources } }));
 
     const alert = await screen.findByRole('alert');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
@@ -3825,10 +3870,10 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         actionCenter: { listHumanAttention },
         app: {
-          listKnowledgeClaims,
-          listKnowledgeObservations,
-          listKnowledgeSources,
-          submitKnowledgeProposalDecision,
+          'knowledge.claim.list': listKnowledgeClaims,
+          'knowledge.observation.list': listKnowledgeObservations,
+          'knowledge.source.list': listKnowledgeSources,
+          'knowledge.proposal.decide': submitKnowledgeProposalDecision,
         },
       })
     );
@@ -3861,7 +3906,7 @@ describe('Knowledge (board 14)', () => {
             .fn()
             .mockResolvedValue({ items: [NON_KNOWLEDGE_PROPOSAL_DECOY, row] }),
         },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
 
@@ -3871,9 +3916,13 @@ describe('Knowledge (board 14)', () => {
     }
     await user.click(action);
     await waitFor(() =>
-      expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith('ws1', 'kp_exact', {
-        decision,
-        requestId: expect.any(String),
+      expect(submitKnowledgeProposalDecision).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        proposalId: 'kp_exact',
+        ...{
+          decision,
+          requestId: expect.any(String),
+        },
       })
     );
     expect(screen.queryByText(NON_KNOWLEDGE_PROPOSAL_DECOY.title)).not.toBeInTheDocument();
@@ -3900,7 +3949,7 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
 
@@ -3929,7 +3978,7 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         actionCenter: { listHumanAttention },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
 
@@ -3972,7 +4021,7 @@ describe('Knowledge (board 14)', () => {
         actionCenter: {
           listHumanAttention: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
         },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
 
@@ -3980,11 +4029,11 @@ describe('Knowledge (board 14)', () => {
     const alert = await screen.findByRole('alert');
     expect(screen.getByText(KNOWLEDGE_PROPOSAL_ROW.title)).toBeInTheDocument();
     expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(1);
-    const firstRequestId = submitKnowledgeProposalDecision.mock.calls[0]?.[2].requestId;
+    const firstRequestId = submitKnowledgeProposalDecision.mock.calls[0]?.[0].requestId;
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(2));
-    expect(submitKnowledgeProposalDecision.mock.calls[1]?.[2].requestId).not.toBe(firstRequestId);
+    expect(submitKnowledgeProposalDecision.mock.calls[1]?.[0].requestId).not.toBe(firstRequestId);
   });
 
   it('does not render or retry a Workspace A proposal decision failure in Workspace B', async () => {
@@ -4012,7 +4061,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {},
         actionCenter: { listHumanAttention },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -4033,8 +4082,8 @@ describe('Knowledge (board 14)', () => {
     expect(alert).toHaveTextContent(/couldn't submit that proposal decision/i);
     expect(alert).not.toHaveTextContent('decision failed.');
     expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(1);
-    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]).toBe(WORKSPACE_A.id);
-    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[1]).toBe('kp_exact');
+    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
+    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]?.proposalId).toBe('kp_exact');
     const firstRequestId = requestIdFromCall(submitKnowledgeProposalDecision.mock.calls[0]);
     expect(typeof firstRequestId).toBe('string');
 
@@ -4056,9 +4105,11 @@ describe('Knowledge (board 14)', () => {
     );
     await waitFor(() => expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(2));
     expect(submitKnowledgeProposalDecision.mock.calls[1]).toEqual([
-      WORKSPACE_A.id,
-      'kp_exact',
-      expect.objectContaining({ decision: 'rejected' }),
+      expect.objectContaining({
+        workspaceId: WORKSPACE_A.id,
+        proposalId: 'kp_exact',
+        decision: 'rejected',
+      }),
     ]);
     const secondRequestId = requestIdFromCall(submitKnowledgeProposalDecision.mock.calls[1]);
     expect(typeof secondRequestId).toBe('string');
@@ -4111,7 +4162,11 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        app: { listKnowledgeSources, readKnowledgeSource, registerKnowledgeSource },
+        app: {
+          'knowledge.source.list': listKnowledgeSources,
+          'knowledge.source.read': readKnowledgeSource,
+          'knowledge.source.register': registerKnowledgeSource,
+        },
       })
     );
 
@@ -4124,11 +4179,14 @@ describe('Knowledge (board 14)', () => {
     ]);
     await user.click(within(sources).getByRole('button', { name: 'Register source' }));
     await waitFor(() =>
-      expect(registerKnowledgeSource).toHaveBeenCalledWith('ws1', {
-        requestId: expect.any(String),
-        kind: REGISTER_SOURCE_INPUT.kind,
-        title: REGISTER_SOURCE_INPUT.title,
-        content: REGISTER_SOURCE_INPUT.content,
+      expect(registerKnowledgeSource).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...{
+          requestId: expect.any(String),
+          kind: REGISTER_SOURCE_INPUT.kind,
+          title: REGISTER_SOURCE_INPUT.title,
+          content: REGISTER_SOURCE_INPUT.content,
+        },
       })
     );
     await waitFor(() => expect(listKnowledgeSources).toHaveBeenCalledTimes(2));
@@ -4141,7 +4199,10 @@ describe('Knowledge (board 14)', () => {
       within(sources).getByRole('button', { name: `View ${KNOWLEDGE_SOURCE.title}` })
     );
     await waitFor(() =>
-      expect(readKnowledgeSource).toHaveBeenCalledWith('ws1', KNOWLEDGE_SOURCE.id)
+      expect(readKnowledgeSource).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        sourceId: KNOWLEDGE_SOURCE.id,
+      })
     );
     expect(within(sources).getByText('Text')).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(SOURCE_DERIVED_REPRESENTATION.path);
@@ -4185,13 +4246,13 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         app: {
-          listKnowledgeClaims,
-          listKnowledgeConflicts,
-          listKnowledgeObservations,
-          recordKnowledgeClaim,
-          recordKnowledgeConflict,
-          recordKnowledgeObservation,
-          resolveKnowledgeConflict,
+          'knowledge.claim.list': listKnowledgeClaims,
+          'knowledge.conflict.list': listKnowledgeConflicts,
+          'knowledge.observation.list': listKnowledgeObservations,
+          'knowledge.claim.record': recordKnowledgeClaim,
+          'knowledge.conflict.record': recordKnowledgeConflict,
+          'knowledge.observation.record': recordKnowledgeObservation,
+          'knowledge.conflict.resolve': resolveKnowledgeConflict,
         },
       })
     );
@@ -4203,7 +4264,7 @@ describe('Knowledge (board 14)', () => {
         selector: ':not(option)',
       })
     ).toBeInTheDocument();
-    expect(listKnowledgeConflicts.mock.calls).toEqual([['ws1']]);
+    expect(listKnowledgeConflicts.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
 
     await selectListedOption(user, ledger, 'Observation kind', OBSERVATION_KIND_OPTION);
     await fillKnowledgeFields(user, ledger, [
@@ -4213,8 +4274,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(ledger).getByRole('button', { name: 'Record observation' }));
     await waitFor(() =>
       expect(recordKnowledgeObservation).toHaveBeenCalledWith(
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           requestId: expect.any(String),
           kind: OBSERVATION_KIND,
           summary: KNOWLEDGE_OBSERVATION.summary,
@@ -4223,7 +4284,10 @@ describe('Knowledge (board 14)', () => {
       )
     );
     await waitFor(() => expect(listKnowledgeObservations).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeObservations.mock.calls).toEqual([['ws1'], ['ws1']]);
+    expect(listKnowledgeObservations.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws1' }],
+    ]);
     expect(await within(ledger).findByText(SERVER_OBSERVATION.summary)).toBeInTheDocument();
     expect(
       screen.queryByText('Mutation observation must not become visible')
@@ -4236,8 +4300,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(ledger).getByRole('button', { name: 'Record claim' }));
     await waitFor(() =>
       expect(recordKnowledgeClaim).toHaveBeenCalledWith(
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           requestId: expect.any(String),
           statement: KNOWLEDGE_CLAIM.statement,
           producer: KNOWLEDGE_CLAIM.producer,
@@ -4245,7 +4309,10 @@ describe('Knowledge (board 14)', () => {
       )
     );
     await waitFor(() => expect(listKnowledgeClaims).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeClaims.mock.calls).toEqual([['ws1'], ['ws1']]);
+    expect(listKnowledgeClaims.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws1' }],
+    ]);
     expect(await within(ledger).findByText(SERVER_CLAIM.statement)).toBeInTheDocument();
     expect(screen.queryByText('Mutation claim must not become visible')).not.toBeInTheDocument();
 
@@ -4257,8 +4324,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(ledger).getByRole('button', { name: 'Record conflict' }));
     await waitFor(() =>
       expect(recordKnowledgeConflict).toHaveBeenCalledWith(
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           requestId: expect.any(String),
           summary: CONFLICT_SUMMARY,
           subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
@@ -4267,7 +4334,10 @@ describe('Knowledge (board 14)', () => {
       )
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(2));
-    expect(listKnowledgeConflicts.mock.calls).toEqual([['ws1'], ['ws1']]);
+    expect(listKnowledgeConflicts.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws1' }],
+    ]);
     expect(
       await within(ledger).findByText(SERVER_CONFLICT.summary, {
         selector: ':not(option)',
@@ -4282,14 +4352,22 @@ describe('Knowledge (board 14)', () => {
     ]);
     await user.click(within(ledger).getByRole('button', { name: 'Resolve conflict' }));
     await waitFor(() =>
-      expect(resolveKnowledgeConflict).toHaveBeenCalledWith('ws1', KNOWLEDGE_CONFLICT.id, {
-        requestId: expect.any(String),
-        resolution: CONFLICT_RESOLUTION,
-        resolvedBy: 'user:test',
+      expect(resolveKnowledgeConflict).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        conflictId: KNOWLEDGE_CONFLICT.id,
+        ...{
+          requestId: expect.any(String),
+          resolution: CONFLICT_RESOLUTION,
+          resolvedBy: 'user:test',
+        },
       })
     );
     await waitFor(() => expect(listKnowledgeConflicts).toHaveBeenCalledTimes(3));
-    expect(listKnowledgeConflicts.mock.calls).toEqual([['ws1'], ['ws1'], ['ws1']]);
+    expect(listKnowledgeConflicts.mock.calls).toEqual([
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws1' }],
+      [{ workspaceId: 'ws1' }],
+    ]);
     expect(screen.queryByText('Mutation resolution is not authority')).not.toBeInTheDocument();
     expect(
       await within(ledger).findByText(SERVER_RESOLVED_CONFLICT.resolution)
@@ -4305,20 +4383,27 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        app: { prepareKnowledgeContext, readKnowledgeIndexes, retrieveKnowledge },
+        app: {
+          'knowledge.context.prepare': prepareKnowledgeContext,
+          'knowledge.indexes': readKnowledgeIndexes,
+          'knowledge.retrieval': retrieveKnowledge,
+        },
       })
     );
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
     const retrieval = knowledgePanel('Retrieval');
-    await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith('ws1'));
+    await waitFor(() => expect(readKnowledgeIndexes).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
     expect(await within(retrieval).findByText('weekly')).toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('knowledge/pages/mem1.md');
 
     await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
     await waitFor(() =>
-      expect(retrieveKnowledge).toHaveBeenCalledWith('ws1', { query: RETRIEVAL_QUERY })
+      expect(retrieveKnowledge).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...{ query: RETRIEVAL_QUERY },
+      })
     );
     expect(await within(retrieval).findByText(RETRIEVAL_TRACE_ID)).toBeInTheDocument();
     expect(within(retrieval).getByText(KNOWLEDGE_ENTRY.id)).toBeInTheDocument();
@@ -4327,7 +4412,10 @@ describe('Knowledge (board 14)', () => {
 
     await user.click(within(retrieval).getByRole('button', { name: 'Prepare context' }));
     await waitFor(() =>
-      expect(prepareKnowledgeContext).toHaveBeenCalledWith('ws1', { query: RETRIEVAL_QUERY })
+      expect(prepareKnowledgeContext).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...{ query: RETRIEVAL_QUERY },
+      })
     );
     expect(await within(retrieval).findByText('prepared')).toBeInTheDocument();
     expect(readKnowledgeIndexes).toHaveBeenCalledTimes(1);
@@ -4358,7 +4446,13 @@ describe('Knowledge (board 14)', () => {
     };
     const listKnowledge = vi.fn().mockResolvedValue({ items: [excluded, second, first] });
     const retrieveKnowledge = vi.fn().mockResolvedValue(trace);
-    renderApp('/knowledge', makeClient({ core: { listKnowledge }, app: { retrieveKnowledge } }));
+    renderApp(
+      '/knowledge',
+      makeClient({
+        core: { 'knowledge.list': listKnowledge },
+        app: { 'knowledge.retrieval': retrieveKnowledge },
+      })
+    );
     await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
     const retrieval = knowledgePanel('Retrieval');
     await fillKnowledgeFields(user, retrieval, [['Query', RETRIEVAL_QUERY]]);
@@ -4397,8 +4491,10 @@ describe('Knowledge (board 14)', () => {
     expect(within(retrieval).queryByText(excluded.content)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(excluded.id)).not.toBeInTheDocument();
     expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
-    expect(listKnowledge.mock.calls).toEqual([[WORKSPACE_A.id]]);
-    expect(retrieveKnowledge.mock.calls).toEqual([[WORKSPACE_A.id, { query: RETRIEVAL_QUERY }]]);
+    expect(listKnowledge.mock.calls).toEqual([[{ workspaceId: WORKSPACE_A.id }]]);
+    expect(retrieveKnowledge.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE_A.id, ...{ query: RETRIEVAL_QUERY } }],
+    ]);
   });
 
   it('keeps the retrieval trace while current content changes or becomes unavailable', async () => {
@@ -4411,7 +4507,10 @@ describe('Knowledge (board 14)', () => {
     const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
     const queryClient = renderApp(
       '/knowledge',
-      makeClient({ core: { listKnowledge }, app: { retrieveKnowledge } })
+      makeClient({
+        core: { 'knowledge.list': listKnowledge },
+        app: { 'knowledge.retrieval': retrieveKnowledge },
+      })
     );
     await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
     const retrieval = knowledgePanel('Retrieval');
@@ -4450,8 +4549,8 @@ describe('Knowledge (board 14)', () => {
     const queryClient = renderApp(
       '/knowledge',
       makeClient({
-        core: { listKnowledge },
-        app: { retrieveKnowledge: vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
+        core: { 'knowledge.list': listKnowledge },
+        app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
       })
     );
     await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
@@ -4484,11 +4583,13 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge: vi.fn().mockImplementation(async (workspaceId: string) => ({
-            items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
-          })),
+          'knowledge.list': vi
+            .fn()
+            .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+              items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
+            })),
         },
-        app: { retrieveKnowledge },
+        app: { 'knowledge.retrieval': retrieveKnowledge },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -4522,7 +4623,9 @@ describe('Knowledge (board 14)', () => {
     expect(within(retrieval).queryByText(collidingB.title)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(collidingB.content)).not.toBeInTheDocument();
     expect(within(retrieval).queryByRole('link')).not.toBeInTheDocument();
-    expect(retrieveKnowledge.mock.calls).toEqual([[WORKSPACE_A.id, { query: RETRIEVAL_QUERY }]]);
+    expect(retrieveKnowledge.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE_A.id, ...{ query: RETRIEVAL_QUERY } }],
+    ]);
   });
 
   it('answers, suggests repairs, and inspects health from the Manager panel', async () => {
@@ -4536,11 +4639,11 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         app: {
-          answerKnowledgeManager,
-          checkKnowledgeHealth,
-          draftKnowledgeProposal,
-          reverseKnowledgeProposal,
-          suggestKnowledgeRepairs,
+          'knowledge.answer': answerKnowledgeManager,
+          'knowledge.health.check': checkKnowledgeHealth,
+          'knowledge.proposal.draft': draftKnowledgeProposal,
+          'knowledge.proposal.reverse': reverseKnowledgeProposal,
+          'knowledge.repair.suggest': suggestKnowledgeRepairs,
         },
       })
     );
@@ -4557,14 +4660,21 @@ describe('Knowledge (board 14)', () => {
     await fillKnowledgeFields(user, manager, [['Question', MANAGER_QUESTION]]);
     await user.click(within(manager).getByRole('button', { name: 'Answer' }));
     await waitFor(() =>
-      expect(answerKnowledgeManager).toHaveBeenCalledWith('ws1', { query: MANAGER_QUESTION })
+      expect(answerKnowledgeManager).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...{ query: MANAGER_QUESTION },
+      })
     );
     expect(await within(manager).findByText(KNOWLEDGE_ANSWER.answer)).toBeInTheDocument();
 
     await user.click(within(manager).getByRole('button', { name: 'Suggest repairs' }));
     await user.click(within(manager).getByRole('button', { name: 'Check health' }));
-    await waitFor(() => expect(suggestKnowledgeRepairs).toHaveBeenCalledWith('ws1', { limit: 10 }));
-    await waitFor(() => expect(checkKnowledgeHealth).toHaveBeenCalledWith('ws1', { limit: 10 }));
+    await waitFor(() =>
+      expect(suggestKnowledgeRepairs).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 10 } })
+    );
+    await waitFor(() =>
+      expect(checkKnowledgeHealth).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 10 } })
+    );
     expect(await within(manager).findByText(KNOWLEDGE_HEALTH.summary)).toBeInTheDocument();
     expect(within(manager).getByText(KNOWLEDGE_REPAIR.title)).toBeInTheDocument();
     expect(draftKnowledgeProposal).not.toHaveBeenCalled();
@@ -4576,7 +4686,7 @@ describe('Knowledge (board 14)', () => {
 
   it.each([
     {
-      method: 'registerKnowledgeSource',
+      method: 'knowledge.source.register',
       panel: 'Sources' as const,
       kind: 'failed',
       privateText: 'Source register rejected.',
@@ -4593,7 +4703,7 @@ describe('Knowledge (board 14)', () => {
         derivedRepresentations: [],
       },
       owner: {
-        method: 'listKnowledgeSources' as const,
+        method: 'knowledge.source.list' as const,
         initial: { items: [KNOWLEDGE_SOURCE] },
         after: { items: [KNOWLEDGE_SOURCE, REGISTERED_SOURCE] },
       },
@@ -4601,8 +4711,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation source must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             kind: REGISTER_SOURCE_INPUT.kind,
             title: REGISTER_SOURCE_INPUT.title,
             content: REGISTER_SOURCE_INPUT.content,
@@ -4611,23 +4721,23 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'readKnowledgeSource',
+      method: 'knowledge.source.read',
       panel: 'Sources' as const,
       kind: 'failed',
       privateText: 'Source not found.',
       error: new ApiCallError(404, 'Source not found.', { code: 'not_found' }),
       message: /couldn't load/i,
       action: `View ${KNOWLEDGE_SOURCE.title}`,
-      seed: { listKnowledgeSources: { items: [KNOWLEDGE_SOURCE] } },
+      seed: { 'knowledge.source.list': { items: [KNOWLEDGE_SOURCE] } },
       success: {
         source: KNOWLEDGE_SOURCE,
         derivedRepresentations: [SOURCE_DERIVED_REPRESENTATION],
       },
       result: 'Text',
-      expected: [['ws1', KNOWLEDGE_SOURCE.id]],
+      expected: [[{ workspaceId: 'ws1', sourceId: KNOWLEDGE_SOURCE.id }]],
     },
     {
-      method: 'recordKnowledgeObservation',
+      method: 'knowledge.observation.record',
       panel: 'Ledger' as const,
       kind: 'failed',
       privateText: 'Observation rejected.',
@@ -4646,7 +4756,7 @@ describe('Knowledge (board 14)', () => {
         },
       },
       owner: {
-        method: 'listKnowledgeObservations' as const,
+        method: 'knowledge.observation.list' as const,
         initial: { items: [] },
         after: { items: [SERVER_OBSERVATION] },
       },
@@ -4654,8 +4764,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation observation must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             kind: OBSERVATION_KIND,
             summary: KNOWLEDGE_OBSERVATION.summary,
             producer: KNOWLEDGE_OBSERVATION.producer,
@@ -4664,7 +4774,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'recordKnowledgeClaim',
+      method: 'knowledge.claim.record',
       panel: 'Ledger' as const,
       kind: 'denied',
       privateText: 'Claim record denied.',
@@ -4679,7 +4789,7 @@ describe('Knowledge (board 14)', () => {
         claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeClaims' as const,
+        method: 'knowledge.claim.list' as const,
         initial: { items: [] },
         after: { items: [SERVER_CLAIM] },
       },
@@ -4687,8 +4797,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation claim must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4696,7 +4806,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'recordKnowledgeClaim',
+      method: 'knowledge.claim.record',
       panel: 'Ledger' as const,
       kind: 'failed',
       privateText: 'Claim record failed.',
@@ -4711,7 +4821,7 @@ describe('Knowledge (board 14)', () => {
         claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeClaims' as const,
+        method: 'knowledge.claim.list' as const,
         initial: { items: [] },
         after: { items: [SERVER_CLAIM] },
       },
@@ -4719,8 +4829,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation claim must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             statement: KNOWLEDGE_CLAIM.statement,
             producer: KNOWLEDGE_CLAIM.producer,
           }),
@@ -4728,7 +4838,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'listKnowledgeConflicts',
+      method: 'knowledge.conflict.list',
       panel: 'Ledger' as const,
       kind: 'denied',
       privateText: 'Conflict list denied.',
@@ -4736,10 +4846,10 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [['ws1']],
+      expected: [[{ workspaceId: 'ws1' }]],
     },
     {
-      method: 'listKnowledgeConflicts',
+      method: 'knowledge.conflict.list',
       panel: 'Ledger' as const,
       kind: 'failed',
       privateText: 'Conflict list failed.',
@@ -4747,10 +4857,10 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: { items: [KNOWLEDGE_CONFLICT] },
       result: KNOWLEDGE_CONFLICT.summary,
-      expected: [['ws1']],
+      expected: [[{ workspaceId: 'ws1' }]],
     },
     {
-      method: 'recordKnowledgeConflict',
+      method: 'knowledge.conflict.record',
       panel: 'Ledger' as const,
       kind: 'denied',
       privateText: 'Conflict record denied.',
@@ -4766,7 +4876,7 @@ describe('Knowledge (board 14)', () => {
         conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeConflicts' as const,
+        method: 'knowledge.conflict.list' as const,
         initial: { items: [KNOWLEDGE_CONFLICT] },
         after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
       },
@@ -4774,8 +4884,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation conflict must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -4784,7 +4894,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'recordKnowledgeConflict',
+      method: 'knowledge.conflict.record',
       panel: 'Ledger' as const,
       kind: 'failed',
       privateText: 'Conflict record failed.',
@@ -4800,7 +4910,7 @@ describe('Knowledge (board 14)', () => {
         conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeConflicts' as const,
+        method: 'knowledge.conflict.list' as const,
         initial: { items: [KNOWLEDGE_CONFLICT] },
         after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
       },
@@ -4808,8 +4918,8 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation conflict must not become visible',
       expected: [
         [
-          'ws1',
           expect.objectContaining({
+            workspaceId: 'ws1',
             summary: CONFLICT_SUMMARY,
             subjectReferences: KNOWLEDGE_CONFLICT.subjectReferences,
             producer: KNOWLEDGE_CONFLICT.producer,
@@ -4818,7 +4928,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'resolveKnowledgeConflict',
+      method: 'knowledge.conflict.resolve',
       panel: 'Ledger' as const,
       kind: 'failed',
       privateText: 'Conflict resolve rejected.',
@@ -4837,7 +4947,7 @@ describe('Knowledge (board 14)', () => {
         },
       },
       owner: {
-        method: 'listKnowledgeConflicts' as const,
+        method: 'knowledge.conflict.list' as const,
         initial: { items: [KNOWLEDGE_CONFLICT] },
         after: { items: [SERVER_RESOLVED_CONFLICT] },
       },
@@ -4845,9 +4955,9 @@ describe('Knowledge (board 14)', () => {
       echo: 'Mutation resolution is not authority',
       expected: [
         [
-          'ws1',
-          KNOWLEDGE_CONFLICT.id,
           expect.objectContaining({
+            workspaceId: 'ws1',
+            conflictId: KNOWLEDGE_CONFLICT.id,
             resolution: CONFLICT_RESOLUTION,
             resolvedBy: 'user:test',
           }),
@@ -4855,7 +4965,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'readKnowledgeIndexes',
+      method: 'knowledge.indexes',
       panel: 'Retrieval' as const,
       kind: 'denied',
       privateText: 'Index read denied.',
@@ -4863,10 +4973,10 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load|access denied/i,
       success: KNOWLEDGE_INDEXES,
       result: 'weekly',
-      expected: [['ws1']],
+      expected: [[{ workspaceId: 'ws1' }]],
     },
     {
-      method: 'readKnowledgeIndexes',
+      method: 'knowledge.indexes',
       panel: 'Retrieval' as const,
       kind: 'failed',
       privateText: 'Index read failed.',
@@ -4874,10 +4984,10 @@ describe('Knowledge (board 14)', () => {
       message: /couldn't load/i,
       success: KNOWLEDGE_INDEXES,
       result: 'weekly',
-      expected: [['ws1']],
+      expected: [[{ workspaceId: 'ws1' }]],
     },
     {
-      method: 'retrieveKnowledge',
+      method: 'knowledge.retrieval',
       panel: 'Retrieval' as const,
       kind: 'failed',
       privateText: 'Retrieval rejected.',
@@ -4887,10 +4997,10 @@ describe('Knowledge (board 14)', () => {
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_RETRIEVAL,
       result: RETRIEVAL_TRACE_ID,
-      expected: [['ws1', { query: RETRIEVAL_QUERY }]],
+      expected: [[{ workspaceId: 'ws1', ...{ query: RETRIEVAL_QUERY } }]],
     },
     {
-      method: 'prepareKnowledgeContext',
+      method: 'knowledge.context.prepare',
       panel: 'Retrieval' as const,
       kind: 'failed',
       privateText: 'Context rejected.',
@@ -4900,10 +5010,10 @@ describe('Knowledge (board 14)', () => {
       fields: [['Query', RETRIEVAL_QUERY]] as const,
       success: KNOWLEDGE_CONTEXT,
       result: 'prepared',
-      expected: [['ws1', { query: RETRIEVAL_QUERY }]],
+      expected: [[{ workspaceId: 'ws1', ...{ query: RETRIEVAL_QUERY } }]],
     },
     {
-      method: 'answerKnowledgeManager',
+      method: 'knowledge.answer',
       panel: 'Manager' as const,
       kind: 'failed',
       privateText: 'Answer rejected.',
@@ -4913,10 +5023,10 @@ describe('Knowledge (board 14)', () => {
       fields: [['Question', MANAGER_QUESTION]] as const,
       success: KNOWLEDGE_ANSWER,
       result: KNOWLEDGE_ANSWER.answer,
-      expected: [['ws1', { query: MANAGER_QUESTION }]],
+      expected: [[{ workspaceId: 'ws1', ...{ query: MANAGER_QUESTION } }]],
     },
     {
-      method: 'suggestKnowledgeRepairs',
+      method: 'knowledge.repair.suggest',
       panel: 'Manager' as const,
       kind: 'denied',
       privateText: 'Repair suggestion denied.',
@@ -4925,10 +5035,10 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [['ws1', { limit: 10 }]],
+      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
     },
     {
-      method: 'suggestKnowledgeRepairs',
+      method: 'knowledge.repair.suggest',
       panel: 'Manager' as const,
       kind: 'failed',
       privateText: 'Repair suggestion failed.',
@@ -4937,10 +5047,10 @@ describe('Knowledge (board 14)', () => {
       action: 'Suggest repairs',
       success: KNOWLEDGE_REPAIRS,
       result: KNOWLEDGE_REPAIR.title,
-      expected: [['ws1', { limit: 10 }]],
+      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
     },
     {
-      method: 'checkKnowledgeHealth',
+      method: 'knowledge.health.check',
       panel: 'Manager' as const,
       kind: 'failed',
       privateText: 'Health rejected.',
@@ -4949,7 +5059,7 @@ describe('Knowledge (board 14)', () => {
       action: 'Check health',
       success: KNOWLEDGE_HEALTH,
       result: KNOWLEDGE_HEALTH.summary,
-      expected: [['ws1', { limit: 10 }]],
+      expected: [[{ workspaceId: 'ws1', ...{ limit: 10 } }]],
     },
   ])('scopes a $kind $method retry to the $panel panel', async (testCase) => {
     const user = userEvent.setup();
@@ -5003,18 +5113,18 @@ describe('Knowledge (board 14)', () => {
     expect(method.mock.calls[0]).toEqual(testCase.expected[0]);
     expect(method.mock.calls[1]).toEqual(method.mock.calls[0]);
     if (
-      testCase.method === 'registerKnowledgeSource' ||
-      testCase.method === 'recordKnowledgeObservation' ||
-      testCase.method === 'recordKnowledgeClaim' ||
-      testCase.method === 'recordKnowledgeConflict' ||
-      testCase.method === 'resolveKnowledgeConflict'
+      testCase.method === 'knowledge.source.register' ||
+      testCase.method === 'knowledge.observation.record' ||
+      testCase.method === 'knowledge.claim.record' ||
+      testCase.method === 'knowledge.conflict.record' ||
+      testCase.method === 'knowledge.conflict.resolve'
     ) {
       expect(typeof firstRequestId).toBe('string');
       expect(requestIdFromCall(method.mock.calls[1])).toBe(firstRequestId);
     }
     if (owner && 'owner' in testCase && testCase.owner) {
       await waitFor(() => expect(owner.mock.calls.length).toBeGreaterThanOrEqual(2));
-      expect(owner.mock.calls.every((call) => call[0] === 'ws1')).toBe(true);
+      expect(owner.mock.calls.every((call) => call[0]?.workspaceId === 'ws1')).toBe(true);
     }
     await proveScopedRetrySettled(
       panel,
@@ -5039,7 +5149,7 @@ describe('Knowledge (board 14)', () => {
       const hookSource = exportedKnowledgeSlice(slice.hookName);
       expect(typeSource).toMatch(
         new RegExp(
-          `input: Parameters<CoreClient\\['app'\\]\\['${slice.method}'\\]>\\[${slice.inputIndex}\\]`
+          `input: Omit<\\s*Parameters<CoreClient\\['operations'\\]\\['${slice.method}'\\]>\\[0\\]`
         )
       );
       expect(hookSource).not.toMatch(/command\.input as /);
@@ -5070,19 +5180,21 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {},
         app: {
-          listKnowledgeConflicts: vi.fn().mockImplementation((workspaceId: string) =>
-            Promise.resolve({
-              items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_CONFLICT] : [],
-            })
-          ),
-          answerKnowledgeManager,
-          prepareKnowledgeContext,
-          recordKnowledgeClaim,
-          recordKnowledgeConflict,
-          recordKnowledgeObservation,
-          registerKnowledgeSource,
-          resolveKnowledgeConflict,
-          retrieveKnowledge,
+          'knowledge.conflict.list': vi
+            .fn()
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+              Promise.resolve({
+                items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_CONFLICT] : [],
+              })
+            ),
+          'knowledge.answer': answerKnowledgeManager,
+          'knowledge.context.prepare': prepareKnowledgeContext,
+          'knowledge.claim.record': recordKnowledgeClaim,
+          'knowledge.conflict.record': recordKnowledgeConflict,
+          'knowledge.observation.record': recordKnowledgeObservation,
+          'knowledge.source.register': registerKnowledgeSource,
+          'knowledge.conflict.resolve': resolveKnowledgeConflict,
+          'knowledge.retrieval': retrieveKnowledge,
         },
 
         operations: {
@@ -5130,7 +5242,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { createKnowledge },
+        core: { 'knowledge.create': createKnowledge },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -5180,16 +5292,21 @@ describe('Knowledge (board 14)', () => {
       derivedRepresentations: [];
     }>();
     const registerKnowledgeSource = vi.fn().mockReturnValue(pendingRegister.promise);
-    const listKnowledgeSources = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_SOURCE] : [],
-      })
-    );
+    const listKnowledgeSources = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_SOURCE] : [],
+        })
+      );
     renderApp(
       '/knowledge',
       makeClient({
         core: {},
-        app: { listKnowledgeSources, registerKnowledgeSource },
+        app: {
+          'knowledge.source.list': listKnowledgeSources,
+          'knowledge.source.register': registerKnowledgeSource,
+        },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -5215,8 +5332,7 @@ describe('Knowledge (board 14)', () => {
     await user.click(within(sources).getByRole('button', { name: 'Register source' }));
     await waitFor(() => expect(registerKnowledgeSource).toHaveBeenCalledTimes(1));
     expect(registerKnowledgeSource).toHaveBeenCalledWith(
-      WORKSPACE_A.id,
-      expect.objectContaining({ title: REGISTER_SOURCE_INPUT.title })
+      expect.objectContaining({ workspaceId: WORKSPACE_A.id, title: REGISTER_SOURCE_INPUT.title })
     );
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
@@ -5279,7 +5395,7 @@ describe('Knowledge (board 14)', () => {
     const authoritativeA = createDeferred<{ items: (typeof KNOWLEDGE_ENTRY)[] }>();
     let aReads = 0;
     let bReads = 0;
-    const listKnowledge = vi.fn().mockImplementation((workspaceId: string) => {
+    const listKnowledge = vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) => {
       if (workspaceId === WORKSPACE_B.id) {
         bReads += 1;
         return Promise.resolve({
@@ -5298,8 +5414,8 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listKnowledge,
-          [testCase.operation === 'update' ? 'updateKnowledge' : 'deleteKnowledge']: mutation,
+          'knowledge.list': listKnowledge,
+          [testCase.operation === 'update' ? 'knowledge.update' : 'knowledge.delete']: mutation,
         },
 
         operations: {
@@ -5335,7 +5451,7 @@ describe('Knowledge (board 14)', () => {
       );
     }
     await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1));
-    expect(mutation.mock.calls[0]?.[0]).toBe(WORKSPACE_A.id);
+    expect(mutation.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
@@ -5400,7 +5516,7 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {},
         actionCenter: { listHumanAttention },
-        app: { submitKnowledgeProposalDecision },
+        app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -5417,7 +5533,7 @@ describe('Knowledge (board 14)', () => {
     );
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
     await waitFor(() => expect(submitKnowledgeProposalDecision).toHaveBeenCalledTimes(1));
-    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]).toBe(WORKSPACE_A.id);
+    expect(submitKnowledgeProposalDecision.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
@@ -5467,11 +5583,11 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {},
         app: {
-          listKnowledgeClaims,
-          listKnowledgeConflicts,
-          listKnowledgeObservations,
-          listKnowledgeSources,
-          readKnowledgeIndexes,
+          'knowledge.claim.list': listKnowledgeClaims,
+          'knowledge.conflict.list': listKnowledgeConflicts,
+          'knowledge.observation.list': listKnowledgeObservations,
+          'knowledge.source.list': listKnowledgeSources,
+          'knowledge.indexes': readKnowledgeIndexes,
         },
 
         operations: {
@@ -5537,7 +5653,7 @@ describe('Knowledge (board 14)', () => {
 
   it.each([
     {
-      method: 'registerKnowledgeSource',
+      method: 'knowledge.source.register',
       panel: 'Sources' as const,
       action: 'Register source',
       message: /couldn't load/i,
@@ -5551,7 +5667,7 @@ describe('Knowledge (board 14)', () => {
         derivedRepresentations: [],
       },
       owner: {
-        method: 'listKnowledgeSources' as const,
+        method: 'knowledge.source.list' as const,
         initial: { items: [KNOWLEDGE_SOURCE] },
         after: { items: [KNOWLEDGE_SOURCE, REGISTERED_SOURCE] },
       },
@@ -5568,8 +5684,8 @@ describe('Knowledge (board 14)', () => {
         ['Source content', NEXT_REGISTER_SOURCE_INPUT.content],
       ] as const,
       nextExpected: [
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           kind: NEXT_REGISTER_SOURCE_INPUT.kind,
           title: NEXT_REGISTER_SOURCE_INPUT.title,
           content: NEXT_REGISTER_SOURCE_INPUT.content,
@@ -5577,7 +5693,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'recordKnowledgeObservation',
+      method: 'knowledge.observation.record',
       panel: 'Ledger' as const,
       action: 'Record observation',
       message: /couldn't load observations/i,
@@ -5593,7 +5709,7 @@ describe('Knowledge (board 14)', () => {
         },
       },
       owner: {
-        method: 'listKnowledgeObservations' as const,
+        method: 'knowledge.observation.list' as const,
         initial: { items: [] },
         after: { items: [SERVER_OBSERVATION] },
       },
@@ -5610,8 +5726,8 @@ describe('Knowledge (board 14)', () => {
         ['Observation producer', NEXT_OBSERVATION.producer],
       ] as const,
       nextExpected: [
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           kind: NEXT_OBSERVATION_KIND,
           summary: NEXT_OBSERVATION.summary,
           producer: NEXT_OBSERVATION.producer,
@@ -5619,7 +5735,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'recordKnowledgeClaim',
+      method: 'knowledge.claim.record',
       panel: 'Ledger' as const,
       action: 'Record claim',
       message: /couldn't load claims/i,
@@ -5631,7 +5747,7 @@ describe('Knowledge (board 14)', () => {
         claim: { ...SERVER_CLAIM, statement: 'Mutation claim must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeClaims' as const,
+        method: 'knowledge.claim.list' as const,
         initial: { items: [] },
         after: { items: [SERVER_CLAIM] },
       },
@@ -5648,15 +5764,15 @@ describe('Knowledge (board 14)', () => {
         ['Claim producer', NEXT_CLAIM.producer],
       ] as const,
       nextExpected: [
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           statement: NEXT_CLAIM.statement,
           producer: NEXT_CLAIM.producer,
         }),
       ],
     },
     {
-      method: 'recordKnowledgeConflict',
+      method: 'knowledge.conflict.record',
       panel: 'Ledger' as const,
       action: 'Record conflict',
       message: /couldn't load conflicts/i,
@@ -5669,7 +5785,7 @@ describe('Knowledge (board 14)', () => {
         conflict: { ...SERVER_CONFLICT, summary: 'Mutation conflict must not become visible' },
       },
       owner: {
-        method: 'listKnowledgeConflicts' as const,
+        method: 'knowledge.conflict.list' as const,
         initial: { items: [KNOWLEDGE_CONFLICT] },
         after: { items: [KNOWLEDGE_CONFLICT, SERVER_CONFLICT] },
       },
@@ -5688,8 +5804,8 @@ describe('Knowledge (board 14)', () => {
         ['Conflict producer', NEXT_CONFLICT_INPUT.producer],
       ] as const,
       nextExpected: [
-        'ws1',
         expect.objectContaining({
+          workspaceId: 'ws1',
           summary: NEXT_CONFLICT_INPUT.summary,
           subjectReferences: NEXT_CONFLICT_INPUT.subjectReferences,
           producer: NEXT_CONFLICT_INPUT.producer,
@@ -5697,7 +5813,7 @@ describe('Knowledge (board 14)', () => {
       ],
     },
     {
-      method: 'resolveKnowledgeConflict',
+      method: 'knowledge.conflict.resolve',
       panel: 'Ledger' as const,
       action: 'Resolve conflict',
       message: /couldn't load conflicts/i,
@@ -5713,7 +5829,7 @@ describe('Knowledge (board 14)', () => {
         },
       },
       owner: {
-        method: 'listKnowledgeConflicts' as const,
+        method: 'knowledge.conflict.list' as const,
         initial: { items: [KNOWLEDGE_CONFLICT] },
         after: { items: [SERVER_RESOLVED_CONFLICT, SECOND_CONFLICT] },
       },
@@ -5730,9 +5846,9 @@ describe('Knowledge (board 14)', () => {
         ['Resolved by', NEXT_RESOLUTION.resolvedBy],
       ] as const,
       nextExpected: [
-        'ws1',
-        SECOND_CONFLICT.id,
         expect.objectContaining({
+          workspaceId: 'ws1',
+          conflictId: SECOND_CONFLICT.id,
           resolution: NEXT_RESOLUTION.resolution,
           resolvedBy: NEXT_RESOLUTION.resolvedBy,
         }),
@@ -5806,31 +5922,31 @@ describe('Knowledge (board 14)', () => {
 
   it.each([
     {
-      method: 'listKnowledgeSources',
+      method: 'knowledge.source.list',
       panel: 'Sources' as const,
       message: /couldn't load/i,
       privateText: 'source list failed.',
     },
     {
-      method: 'listKnowledgeObservations',
+      method: 'knowledge.observation.list',
       panel: 'Ledger' as const,
       message: /couldn't load observations/i,
       privateText: 'observation list failed.',
     },
     {
-      method: 'listKnowledgeClaims',
+      method: 'knowledge.claim.list',
       panel: 'Ledger' as const,
       message: /couldn't load claims/i,
       privateText: 'claim list failed.',
     },
     {
-      method: 'listKnowledgeConflicts',
+      method: 'knowledge.conflict.list',
       panel: 'Ledger' as const,
       message: /couldn't load conflicts/i,
       privateText: 'conflict list failed.',
     },
     {
-      method: 'readKnowledgeIndexes',
+      method: 'knowledge.indexes',
       panel: 'Retrieval' as const,
       message: /couldn't load indexes/i,
       privateText: 'index read failed.',
@@ -5865,7 +5981,7 @@ describe('Knowledge (board 14)', () => {
     expect(retry).toBeDisabled();
     await user.click(retry);
     expect(method).toHaveBeenCalledTimes(1);
-    expect(method.mock.calls).toEqual([[WORKSPACE_A.id]]);
+    expect(method.mock.calls).toEqual([[{ workspaceId: WORKSPACE_A.id }]]);
   });
 });
 

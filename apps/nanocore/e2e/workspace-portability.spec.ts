@@ -25,7 +25,8 @@ describe('nanocore e2e workspace portability', () => {
 
     const workspaceId = 'ws_demo';
     await expectJson(
-      await postJson(`${sourceHarness.baseUrl}/api/workspaces/${workspaceId}/knowledge`, {
+      await postJson(`${sourceHarness.baseUrl}/api/app/operations/knowledge.create`, {
+        workspaceId,
         content: 'L3 workspace portability knowledge survives import.',
         kind: 'project-context',
         requestId: randomUUID(),
@@ -78,7 +79,9 @@ describe('nanocore e2e workspace portability', () => {
     );
     const importedWorkspaceId = String(imported.importedWorkspaceId);
     const knowledge = (await expectJson(
-      await fetch(`${targetHarness.baseUrl}/api/workspaces/${importedWorkspaceId}/knowledge`),
+      await postJson(`${targetHarness.baseUrl}/api/app/operations/knowledge.list`, {
+        workspaceId: importedWorkspaceId,
+      }),
       {}
     )) as { items?: Array<{ title?: string }> };
 

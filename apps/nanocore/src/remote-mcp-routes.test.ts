@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type BootReadinessSnapshot,
   CreateOpenKitAccessTokenResponseSchema,
   OPERATION_DEFINITIONS,
   RotateOpenKitAccessTokenResponseSchema,
@@ -14,6 +15,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import * as invocation from './operation-invocation.js';
 import { openExistingAppDb } from './storage/app-db.js';
@@ -25,7 +27,10 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real isolated credential, membership and Kernel owners behind the App listener. */
-async function fixture(mode: 'local' | 'server' = 'server') {
+async function fixture(
+  mode: 'local' | 'server' = 'server',
+  getBootReadiness?: () => BootReadinessSnapshot
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-remote-mcp-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -80,7 +85,13 @@ async function fixture(mode: 'local' | 'server' = 'server') {
       workspaceIds: ['ws_demo'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  const app = createApp({ coreDb, dataRoot, store, mode });
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    mode,
+    ...(getBootReadiness ? { getBootReadiness } : {}),
+  });
   const selectors = { workspaceId: 'ws_demo', appId: appRecord.appId };
   const message = async (
     method: string,
@@ -123,6 +134,47 @@ async function fixture(mode: 'local' | 'server' = 'server') {
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
+  it('refuses mutating calls while product admission is closed and keeps non-mutating calls available', async () => {
+    let readiness = computeBootReadinessSnapshot({ bootId: 'boot_mcp_admission' });
+    const f = await fixture('server', () => readiness);
+    const token = f.token();
+    readiness = computeBootReadinessSnapshot({
+      bootId: readiness.bootId,
+      subsystems: {
+        storage: {
+          state: 'failed',
+          reasons: [
+            {
+              code: 'storage.failed',
+              message: 'Storage is unavailable.',
+              blocks: ['product_work'],
+            },
+          ],
+        },
+      },
+    });
+    const threadCount = f.store.listThreads('ws_demo').length;
+    const mutation = await f.call(
+      'call',
+      {
+        operation: 'thread.create',
+        input: { workspaceId: 'ws_demo', name: 'Blocked MCP Thread', requestId: randomUUID() },
+      },
+      token.secret
+    );
+    expect(f.store.listThreads('ws_demo')).toHaveLength(threadCount);
+    expect(mutation.isError).toBe(true);
+    expect(JSON.parse(mutation.content[0].text)).toEqual({
+      code: 'product_work_unavailable',
+      message: 'NanoCore is not accepting product work during the current boot readiness state.',
+    });
+    const read = await f.call('call', { operation: 'workspace.list', input: {} }, token.secret);
+    expect(read.isError).not.toBe(true);
+    expect(JSON.parse(read.content[0].text).items).toEqual([
+      expect.objectContaining({ workspace: expect.objectContaining({ id: 'ws_demo' }) }),
+    ]);
+  });
+
   it('challenges missing, unknown, malformed, expired and revoked credentials uniformly before dispatch', async () => {
     const f = await fixture();
     const expired = createOpenKitAccessTokenRecord(f.coreDb, {

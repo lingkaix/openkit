@@ -84,18 +84,6 @@ import {
   IntroduceWorkspaceArtifactResponseSchema,
   IssueNanoHostTransportTokenRequestSchema,
   IssueNanoHostTransportTokenResponseSchema,
-  KnowledgeDerivedIndexesResponseSchema,
-  KnowledgeManagerAnswerRequestSchema,
-  KnowledgeManagerAnswerResponseSchema,
-  KnowledgeManagerDraftProposalRequestSchema,
-  KnowledgeManagerDraftProposalResponseSchema,
-  KnowledgeManagerHealthCheckRequestSchema,
-  KnowledgeManagerHealthCheckResponseSchema,
-  KnowledgeManagerPrepareContextRequestSchema,
-  KnowledgeManagerPrepareContextResponseSchema,
-  KnowledgeManagerSuggestRepairRequestSchema,
-  KnowledgeManagerSuggestRepairResponseSchema,
-  KnowledgeRetrievalResponseSchema,
   LeaveWorkspaceRequestSchema,
   LightAppBatchRequestSchema,
   LightAppBatchResponseSchema,
@@ -107,10 +95,6 @@ import {
   ListGitPushRecordsResponseSchema,
   ListHumanAttentionResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
-  ListKnowledgeClaimsResponseSchema,
-  ListKnowledgeConflictsResponseSchema,
-  ListKnowledgeObservationsResponseSchema,
-  ListKnowledgeSourcesResponseSchema,
   ListLightAppRecordsResponseSchema,
   ListLightAppsResponseSchema,
   ListMcpCatalogResponseSchema,
@@ -169,36 +153,22 @@ import {
   PurgeWorkerEnvironmentResponseSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
-  ReadKnowledgeSourceResponseSchema,
-  RecordKnowledgeClaimRequestSchema,
-  RecordKnowledgeClaimResponseSchema,
-  RecordKnowledgeConflictRequestSchema,
-  RecordKnowledgeConflictResponseSchema,
-  RecordKnowledgeObservationRequestSchema,
-  RecordKnowledgeObservationResponseSchema,
   RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RefreshGenerativePresentationRequestSchema,
-  RegisterKnowledgeSourceRequestSchema,
-  RegisterKnowledgeSourceResponseSchema,
   RemoveWorkspaceMemberRequestSchema,
   RequestGitPushApprovalRequestSchema,
   RequestGitPushApprovalResponseSchema,
-  ResolveKnowledgeConflictRequestSchema,
-  ResolveKnowledgeConflictResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
   ResumeThreadGoalRequestSchema,
   ResumeThreadGoalResponseSchema,
   RetireLightAppRequestSchema,
   RetireLightAppResponseSchema,
-  RetrieveKnowledgeRequestSchema,
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
-  ReverseKnowledgeProposalRequestSchema,
-  ReverseKnowledgeProposalResponseSchema,
   ReviseThreadGoalIntentRequestSchema,
   ReviseThreadGoalIntentResponseSchema,
   ReviseThreadGoalPlanRequestSchema,
@@ -253,8 +223,6 @@ import {
   SubmitGenerativePresentationActionRequestSchema,
   SubmitGoalReviewDecisionRequestSchema,
   SubmitGoalReviewDecisionResponseSchema,
-  SubmitKnowledgeProposalDecisionRequestSchema,
-  SubmitKnowledgeProposalDecisionResponseSchema,
   SubmitSkillCandidateRequestSchema,
   SubmitThreadGoalSteeringRequestSchema,
   SubmitThreadGoalSteeringResponseSchema,
@@ -692,7 +660,9 @@ function productOperationPaths() {
           requestSchema: `${id}.input`,
           responseSchema: `${id}.output`,
           responseStatus: '200',
-          ...(definition.mutating ? { parameters: [REQUEST_ID_HEADER] } : {}),
+          ...(definition.mutating && 'requestId' in definition.inputSchema.shape
+            ? { parameters: [REQUEST_ID_HEADER] }
+            : {}),
         }),
       },
     ])
@@ -2917,577 +2887,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/answer': {
-        post: {
-          operationId: 'answerKnowledgeManager',
-          tags: ['knowledge'],
-          summary: 'Answer a question from workspace knowledge.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/KnowledgeManagerAnswerRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Knowledge Manager answer result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/KnowledgeManagerAnswerResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/sources': {
-        get: {
-          operationId: 'listKnowledgeSources',
-          tags: ['knowledge'],
-          summary: 'List registered workspace knowledge sources.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Registered knowledge sources.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListKnowledgeSourcesResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'registerKnowledgeSource',
-          tags: ['knowledge'],
-          summary: 'Register one workspace knowledge source.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RegisterKnowledgeSourceRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Registered knowledge source.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RegisterKnowledgeSourceResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/sources/{sourceId}': {
-        get: {
-          operationId: 'readKnowledgeSource',
-          tags: ['knowledge'],
-          summary: 'Read one registered workspace knowledge source.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'sourceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Registered knowledge source.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ReadKnowledgeSourceResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/observations': {
-        get: {
-          operationId: 'listKnowledgeObservations',
-          tags: ['knowledge'],
-          summary: 'List workspace Knowledge Store observations.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Knowledge Store observations.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListKnowledgeObservationsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'recordKnowledgeObservation',
-          tags: ['knowledge'],
-          summary: 'Record one workspace Knowledge Store observation.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RecordKnowledgeObservationRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Recorded Knowledge Store observation.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RecordKnowledgeObservationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/claims': {
-        get: {
-          operationId: 'listKnowledgeClaims',
-          tags: ['knowledge'],
-          summary: 'List workspace Knowledge Store claims.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Knowledge Store claims.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListKnowledgeClaimsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'recordKnowledgeClaim',
-          tags: ['knowledge'],
-          summary: 'Record one workspace Knowledge Store claim.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RecordKnowledgeClaimRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Recorded Knowledge Store claim.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RecordKnowledgeClaimResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/conflicts': {
-        get: {
-          operationId: 'listKnowledgeConflicts',
-          tags: ['knowledge'],
-          summary: 'List workspace Knowledge Store conflicts.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Knowledge Store conflicts.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListKnowledgeConflictsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'recordKnowledgeConflict',
-          tags: ['knowledge'],
-          summary: 'Record one workspace Knowledge Store conflict.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RecordKnowledgeConflictRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Recorded Knowledge Store conflict.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RecordKnowledgeConflictResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/conflicts/{conflictId}/resolution': {
-        post: {
-          operationId: 'resolveKnowledgeConflict',
-          tags: ['knowledge'],
-          summary: 'Resolve one workspace Knowledge Store conflict.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'conflictId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ResolveKnowledgeConflictRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Resolved Knowledge Store conflict.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ResolveKnowledgeConflictResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/indexes': {
-        get: {
-          operationId: 'readKnowledgeIndexes',
-          tags: ['knowledge'],
-          summary: 'Read fresh derived Knowledge Store indexes.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Derived Knowledge Store indexes.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/KnowledgeDerivedIndexesResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/retrievals': {
-        post: {
-          operationId: 'retrieveKnowledge',
-          tags: ['knowledge'],
-          summary: 'Retrieve ranked Knowledge Store candidates and persist the trace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RetrieveKnowledgeRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Knowledge Store retrieval trace.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/KnowledgeRetrievalResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/context': {
-        post: {
-          operationId: 'prepareKnowledgeContext',
-          tags: ['knowledge'],
-          summary: 'Select a bounded governed Knowledge retrieval projection.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/KnowledgeManagerPrepareContextRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Governed Knowledge selection and retrieval trace reference.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/KnowledgeManagerPrepareContextResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/proposals': {
-        post: {
-          operationId: 'draftKnowledgeProposal',
-          tags: ['knowledge'],
-          summary: 'Draft one review-required knowledge proposal.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/KnowledgeManagerDraftProposalRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Drafted pending knowledge proposal.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/KnowledgeManagerDraftProposalResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/repairs': {
-        post: {
-          operationId: 'suggestKnowledgeRepairs',
-          tags: ['knowledge'],
-          summary: 'Suggest review-required knowledge repairs.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/KnowledgeManagerSuggestRepairRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Knowledge repair suggestions.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/KnowledgeManagerSuggestRepairResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/manager/health': {
-        post: {
-          operationId: 'checkKnowledgeHealth',
-          tags: ['knowledge'],
-          summary: 'Read one bounded Knowledge Manager health report.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/KnowledgeManagerHealthCheckRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Knowledge Manager health report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/KnowledgeManagerHealthCheckResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/worker-environments': {
         get: {
           operationId: 'listWorkerEnvironments',
@@ -4314,94 +3713,6 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ListServerPermissionDecisionsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/decision': {
-        post: {
-          operationId: 'submitKnowledgeProposalDecision',
-          tags: ['reviews'],
-          summary: 'Record one knowledge proposal review decision.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'proposalId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitKnowledgeProposalDecisionRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Recorded knowledge proposal review decision.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/SubmitKnowledgeProposalDecisionResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/knowledge/proposals/{proposalId}/reversal': {
-        post: {
-          operationId: 'reverseKnowledgeProposal',
-          tags: ['reviews'],
-          summary: 'Remove one unchanged proposal-created Knowledge Page.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'proposalId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ReverseKnowledgeProposalRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Derived projection after bounded Knowledge Proposal reversal.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ReverseKnowledgeProposalResponse' },
                 },
               },
             },
@@ -6492,40 +5803,10 @@ export function createAppOpenApiDocument() {
         IssueNanoHostTransportTokenResponse: toJsonSchema(
           IssueNanoHostTransportTokenResponseSchema
         ),
-        KnowledgeDerivedIndexesResponse: toJsonSchema(KnowledgeDerivedIndexesResponseSchema),
-        KnowledgeRetrievalResponse: toJsonSchema(KnowledgeRetrievalResponseSchema),
-        KnowledgeManagerAnswerRequest: toJsonSchema(KnowledgeManagerAnswerRequestSchema),
-        KnowledgeManagerAnswerResponse: toJsonSchema(KnowledgeManagerAnswerResponseSchema),
-        KnowledgeManagerDraftProposalRequest: toJsonSchema(
-          KnowledgeManagerDraftProposalRequestSchema
-        ),
-        KnowledgeManagerDraftProposalResponse: toJsonSchema(
-          KnowledgeManagerDraftProposalResponseSchema
-        ),
-        KnowledgeManagerHealthCheckRequest: toJsonSchema(KnowledgeManagerHealthCheckRequestSchema),
-        KnowledgeManagerHealthCheckResponse: toJsonSchema(
-          KnowledgeManagerHealthCheckResponseSchema
-        ),
-        KnowledgeManagerPrepareContextRequest: toJsonSchema(
-          KnowledgeManagerPrepareContextRequestSchema
-        ),
-        KnowledgeManagerPrepareContextResponse: toJsonSchema(
-          KnowledgeManagerPrepareContextResponseSchema
-        ),
-        KnowledgeManagerSuggestRepairRequest: toJsonSchema(
-          KnowledgeManagerSuggestRepairRequestSchema
-        ),
-        KnowledgeManagerSuggestRepairResponse: toJsonSchema(
-          KnowledgeManagerSuggestRepairResponseSchema
-        ),
         ListAgentCatalogResponse: toJsonSchema(ListAgentCatalogResponseSchema),
         ListAgentEnvironmentPackageSnapshotsResponse: toJsonSchema(
           ListAgentEnvironmentPackageSnapshotsResponseSchema
         ),
-        ListKnowledgeClaimsResponse: toJsonSchema(ListKnowledgeClaimsResponseSchema),
-        ListKnowledgeConflictsResponse: toJsonSchema(ListKnowledgeConflictsResponseSchema),
-        ListKnowledgeObservationsResponse: toJsonSchema(ListKnowledgeObservationsResponseSchema),
-        ListKnowledgeSourcesResponse: toJsonSchema(ListKnowledgeSourcesResponseSchema),
         ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
         ListHumanAttentionResponse: toJsonSchema(ListHumanAttentionResponseSchema),
         ListGitPushRecordsResponse: toJsonSchema(ListGitPushRecordsResponseSchema),
@@ -6609,18 +5890,6 @@ export function createAppOpenApiDocument() {
         PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
         RequestGitPushApprovalRequest: toJsonSchema(RequestGitPushApprovalRequestSchema),
         RequestGitPushApprovalResponse: toJsonSchema(RequestGitPushApprovalResponseSchema),
-        ReadKnowledgeSourceResponse: toJsonSchema(ReadKnowledgeSourceResponseSchema),
-        RecordKnowledgeClaimRequest: toJsonSchema(RecordKnowledgeClaimRequestSchema),
-        RecordKnowledgeClaimResponse: toJsonSchema(RecordKnowledgeClaimResponseSchema),
-        RecordKnowledgeConflictRequest: toJsonSchema(RecordKnowledgeConflictRequestSchema),
-        RecordKnowledgeConflictResponse: toJsonSchema(RecordKnowledgeConflictResponseSchema),
-        ResolveKnowledgeConflictRequest: toJsonSchema(ResolveKnowledgeConflictRequestSchema),
-        ResolveKnowledgeConflictResponse: toJsonSchema(ResolveKnowledgeConflictResponseSchema),
-        RecordKnowledgeObservationRequest: toJsonSchema(RecordKnowledgeObservationRequestSchema),
-        RecordKnowledgeObservationResponse: toJsonSchema(RecordKnowledgeObservationResponseSchema),
-        RegisterKnowledgeSourceRequest: toJsonSchema(RegisterKnowledgeSourceRequestSchema),
-        RegisterKnowledgeSourceResponse: toJsonSchema(RegisterKnowledgeSourceResponseSchema),
-        RetrieveKnowledgeRequest: toJsonSchema(RetrieveKnowledgeRequestSchema),
         PauseThreadGoalRequest: toJsonSchema(PauseThreadGoalRequestSchema),
         PauseThreadGoalResponse: toJsonSchema(PauseThreadGoalResponseSchema),
         PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
@@ -6723,15 +5992,7 @@ export function createAppOpenApiDocument() {
         ),
         SubmitGoalReviewDecisionRequest: toJsonSchema(SubmitGoalReviewDecisionRequestSchema),
         SubmitGoalReviewDecisionResponse: toJsonSchema(SubmitGoalReviewDecisionResponseSchema),
-        SubmitKnowledgeProposalDecisionRequest: toJsonSchema(
-          SubmitKnowledgeProposalDecisionRequestSchema
-        ),
-        SubmitKnowledgeProposalDecisionResponse: toJsonSchema(
-          SubmitKnowledgeProposalDecisionResponseSchema
-        ),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
-        ReverseKnowledgeProposalRequest: toJsonSchema(ReverseKnowledgeProposalRequestSchema),
-        ReverseKnowledgeProposalResponse: toJsonSchema(ReverseKnowledgeProposalResponseSchema),
         SubmitThreadGoalSteeringRequest: toJsonSchema(SubmitThreadGoalSteeringRequestSchema),
         SubmitThreadGoalSteeringResponse: toJsonSchema(SubmitThreadGoalSteeringResponseSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),

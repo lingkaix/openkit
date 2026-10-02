@@ -1899,10 +1899,10 @@ describe('createCoreClient', () => {
       },
       'GET /api/workspaces/ws_demo': { body: workspace() },
       'PATCH /api/workspaces/ws_demo': { body: workspace() },
-      'GET /api/workspaces/ws_demo/knowledge': { body: { items: [knowledge] } },
-      'POST /api/workspaces/ws_demo/knowledge': { body: knowledge },
-      'PATCH /api/workspaces/ws_demo/knowledge/mem_demo': { body: knowledge },
-      'DELETE /api/workspaces/ws_demo/knowledge/mem_demo': { status: 204 },
+      'POST /api/app/operations/knowledge.list': { body: { items: [knowledge] } },
+      'POST /api/app/operations/knowledge.create': { body: knowledge },
+      'POST /api/app/operations/knowledge.update': { body: knowledge },
+      'POST /api/app/operations/knowledge.delete': { body: null },
       'GET /api/workspaces/ws_demo/threads': { body: { items: [thread()] } },
       'POST /api/app/operations/thread.read': { body: thread() },
       'PATCH /api/workspaces/ws_demo/threads/th_demo': { body: thread() },
@@ -2162,12 +2162,30 @@ describe('createCoreClient', () => {
     await expect(client.core.updateWorkspace('ws_demo', { status: 'archived' })).resolves.toEqual(
       workspace()
     );
-    await expect(client.core.listKnowledge('ws_demo')).resolves.toEqual({ items: [knowledge] });
-    await expect(client.core.createKnowledge('ws_demo', knowledge)).resolves.toEqual(knowledge);
+    await expect(client.operations['knowledge.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
+      items: [knowledge],
+    });
     await expect(
-      client.core.updateKnowledge('ws_demo', 'mem_demo', { title: 'Updated' })
+      client.operations['knowledge.create']({
+        workspaceId: 'ws_demo',
+        kind: knowledge.kind,
+        title: knowledge.title,
+        content: knowledge.content,
+      })
     ).resolves.toEqual(knowledge);
-    await expect(client.core.deleteKnowledge('ws_demo', 'mem_demo')).resolves.toBeUndefined();
+    await expect(
+      client.operations['knowledge.update']({
+        workspaceId: 'ws_demo',
+        knowledgeEntryId: 'mem_demo',
+        ...{ title: 'Updated' },
+      })
+    ).resolves.toEqual(knowledge);
+    await expect(
+      client.operations['knowledge.delete']({
+        workspaceId: 'ws_demo',
+        knowledgeEntryId: 'mem_demo',
+      })
+    ).resolves.toBeNull();
     await expect(client.core.listThreads('ws_demo')).resolves.toEqual({ items: [thread()] });
     await expect(
       client.operations['thread.read']({ workspaceId: 'ws_demo', threadId: 'th_demo' })
@@ -2270,10 +2288,10 @@ describe('createCoreClient', () => {
       'GET /api/meta',
       'GET /api/workspaces/ws_demo',
       'PATCH /api/workspaces/ws_demo',
-      'GET /api/workspaces/ws_demo/knowledge',
-      'POST /api/workspaces/ws_demo/knowledge',
-      'PATCH /api/workspaces/ws_demo/knowledge/mem_demo',
-      'DELETE /api/workspaces/ws_demo/knowledge/mem_demo',
+      'POST /api/app/operations/knowledge.list',
+      'POST /api/app/operations/knowledge.create',
+      'POST /api/app/operations/knowledge.update',
+      'POST /api/app/operations/knowledge.delete',
       'GET /api/workspaces/ws_demo/threads',
       'POST /api/app/operations/thread.read',
       'PATCH /api/workspaces/ws_demo/threads/th_demo',
@@ -2301,7 +2319,8 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/thread.items',
     ]);
     expect(requests[2]?.body).toMatchObject({ status: 'archived', requestId: expect.any(String) });
-    expect(requests[6]?.body).toMatchObject({ requestId: expect.any(String) });
+    expect(requests[6]?.body).toEqual({ workspaceId: 'ws_demo', knowledgeEntryId: 'mem_demo' });
+    expect(requests[6]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
 
   it('keeps approval response mutation on the core approval command path', async () => {
@@ -3019,7 +3038,7 @@ describe('createCoreClient', () => {
           logicalModelId: null,
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/answer': {
+      'POST /api/app/operations/knowledge.answer': {
         body: {
           operationId: 'km_answer_demo',
           operation: 'answer',
@@ -3041,7 +3060,7 @@ describe('createCoreClient', () => {
           uncertainty: null,
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/sources': {
+      'POST /api/app/operations/knowledge.source.register': {
         body: {
           source: {
             id: 'ks_demo',
@@ -3072,7 +3091,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/sources': {
+      'POST /api/app/operations/knowledge.source.list': {
         body: {
           items: [
             {
@@ -3092,7 +3111,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/sources/ks_demo': {
+      'POST /api/app/operations/knowledge.source.read': {
         body: {
           source: {
             id: 'ks_demo',
@@ -3123,7 +3142,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/indexes': {
+      'POST /api/app/operations/knowledge.indexes': {
         body: {
           linkGraph: {
             schemaVersion: 1,
@@ -3182,7 +3201,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/observations': {
+      'POST /api/app/operations/knowledge.observation.record': {
         body: {
           observation: {
             id: 'ko_demo',
@@ -3200,7 +3219,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/observations': {
+      'POST /api/app/operations/knowledge.observation.list': {
         body: {
           items: [
             {
@@ -3220,7 +3239,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/claims': {
+      'POST /api/app/operations/knowledge.claim.record': {
         body: {
           claim: {
             id: 'kc_demo',
@@ -3238,7 +3257,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/claims': {
+      'POST /api/app/operations/knowledge.claim.list': {
         body: {
           items: [
             {
@@ -3258,7 +3277,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/conflicts': {
+      'POST /api/app/operations/knowledge.conflict.record': {
         body: {
           conflict: {
             id: 'kf_demo',
@@ -3274,7 +3293,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'GET /api/app/workspaces/ws_demo/knowledge/conflicts': {
+      'POST /api/app/operations/knowledge.conflict.list': {
         body: {
           items: [
             {
@@ -3292,7 +3311,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/conflicts/kf_demo/resolution': {
+      'POST /api/app/operations/knowledge.conflict.resolve': {
         body: {
           conflict: {
             id: 'kf_demo',
@@ -3311,7 +3330,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/retrievals': {
+      'POST /api/app/operations/knowledge.retrieval': {
         body: {
           traceId: retrievalTraceId,
           workspaceId: 'ws_demo',
@@ -3339,7 +3358,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/context': {
+      'POST /api/app/operations/knowledge.context.prepare': {
         body: {
           operationId: 'km_context_demo',
           operation: 'prepare-context-material',
@@ -3364,7 +3383,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/proposals': {
+      'POST /api/app/operations/knowledge.proposal.draft': {
         body: {
           operationId: 'km_proposal_demo',
           operation: 'draft-proposal',
@@ -3394,7 +3413,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/repairs': {
+      'POST /api/app/operations/knowledge.repair.suggest': {
         body: {
           operationId: 'km_repair_demo',
           operation: 'suggest-repair',
@@ -3414,7 +3433,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/health': {
+      'POST /api/app/operations/knowledge.health.check': {
         body: {
           operationId: 'km_health_demo',
           operation: 'health-check',
@@ -3638,92 +3657,126 @@ describe('createCoreClient', () => {
       item: { type: 'assistant-message', text: 'Answer' },
     });
     await expect(
-      client.app.answerKnowledgeManager('ws_demo', { query: 'release cadence' })
+      client.operations['knowledge.answer']({
+        workspaceId: 'ws_demo',
+        ...{ query: 'release cadence' },
+      })
     ).resolves.toMatchObject({
       outcome: 'answered',
       retrievalTraceId,
       citations: [{ knowledgeEntryId: 'mem_demo' }],
     });
     await expect(
-      client.app.registerKnowledgeSource('ws_demo', {
-        requestId: 'req_source',
-        kind: 'document',
-        title: 'Release notes',
-        uri: 'file://release.md',
-        content: 'Release cadence is weekly.',
-        originatingThreadId: 'th_demo',
+      client.operations['knowledge.source.register']({
+        workspaceId: 'ws_demo',
+        ...{
+          requestId: 'req_source',
+          kind: 'document',
+          title: 'Release notes',
+          uri: 'file://release.md',
+          content: 'Release cadence is weekly.',
+          originatingThreadId: 'th_demo',
+        },
       })
     ).resolves.toMatchObject({
       source: { id: 'ks_demo', title: 'Release notes' },
       derivedRepresentations: [{ sourceId: 'ks_demo', kind: 'text' }],
     });
-    await expect(client.app.listKnowledgeSources('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.source.list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'ks_demo', title: 'Release notes' }],
     });
-    await expect(client.app.readKnowledgeSource('ws_demo', 'ks_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.source.read']({ workspaceId: 'ws_demo', sourceId: 'ks_demo' })
+    ).resolves.toMatchObject({
       source: { id: 'ks_demo', title: 'Release notes' },
       derivedRepresentations: [{ sourceId: 'ks_demo', kind: 'text' }],
     });
-    await expect(client.app.readKnowledgeIndexes('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.indexes']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       linkGraph: { edges: [{ fromId: 'alpha', resolved: true }] },
       validation: { records: [{ conceptId: 'alpha', indexed: true }] },
       sourceReferences: { references: [{ reference: 'source:ks_demo', resolved: true }] },
       fullText: { tokenizer: 'unicode-simple-v1', terms: [{ term: 'alpha' }] },
     });
     await expect(
-      client.app.recordKnowledgeObservation('ws_demo', {
-        requestId: 'req_observation',
-        kind: 'retrieval',
-        summary: 'Worker repeatedly needed release cadence context.',
-        sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
-        producer: 'knowledge-manager',
-        confidence: 0.75,
+      client.operations['knowledge.observation.record']({
+        workspaceId: 'ws_demo',
+        ...{
+          requestId: 'req_observation',
+          kind: 'retrieval',
+          summary: 'Worker repeatedly needed release cadence context.',
+          sourceReferences: ['knowledge:kn_demo', 'source:ks_demo'],
+          producer: 'knowledge-manager',
+          confidence: 0.75,
+        },
       })
     ).resolves.toMatchObject({
       observation: { id: 'ko_demo', kind: 'retrieval', status: 'retained' },
     });
-    await expect(client.app.listKnowledgeObservations('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.observation.list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'ko_demo', kind: 'retrieval' }],
     });
     await expect(
-      client.app.recordKnowledgeClaim('ws_demo', {
-        requestId: 'req_claim',
-        statement: 'Release cadence is weekly.',
-        sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
-        producer: 'knowledge-manager',
-        confidence: 0.8,
+      client.operations['knowledge.claim.record']({
+        workspaceId: 'ws_demo',
+        ...{
+          requestId: 'req_claim',
+          statement: 'Release cadence is weekly.',
+          sourceReferences: ['knowledge:release-plan', 'source:ks_release'],
+          producer: 'knowledge-manager',
+          confidence: 0.8,
+        },
       })
     ).resolves.toMatchObject({
       claim: { id: 'kc_demo', statement: 'Release cadence is weekly.' },
     });
-    await expect(client.app.listKnowledgeClaims('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.claim.list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'kc_demo', statement: 'Release cadence is weekly.' }],
     });
     await expect(
-      client.app.recordKnowledgeConflict('ws_demo', {
-        requestId: 'req_conflict',
-        subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
-        sourceReferences: ['source:ks_release', 'source:ks_correction'],
-        summary: 'Release cadence has contradictory source evidence.',
-        producer: 'knowledge-manager',
+      client.operations['knowledge.conflict.record']({
+        workspaceId: 'ws_demo',
+        ...{
+          requestId: 'req_conflict',
+          subjectReferences: ['knowledge:release-plan', 'claim:kc_release'],
+          sourceReferences: ['source:ks_release', 'source:ks_correction'],
+          summary: 'Release cadence has contradictory source evidence.',
+          producer: 'knowledge-manager',
+        },
       })
     ).resolves.toMatchObject({
       conflict: { id: 'kf_demo', status: 'conflicting' },
     });
-    await expect(client.app.listKnowledgeConflicts('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.conflict.list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'kf_demo', status: 'conflicting' }],
     });
     await expect(
-      client.app.resolveKnowledgeConflict('ws_demo', 'kf_demo', {
-        requestId: 'req_resolve_conflict',
-        resolution: 'Friday release reviews are authoritative.',
-        resolvedBy: 'knowledge-manager',
+      client.operations['knowledge.conflict.resolve']({
+        workspaceId: 'ws_demo',
+        conflictId: 'kf_demo',
+        ...{
+          requestId: 'req_resolve_conflict',
+          resolution: 'Friday release reviews are authoritative.',
+          resolvedBy: 'knowledge-manager',
+        },
       })
     ).resolves.toMatchObject({
       conflict: { id: 'kf_demo', status: 'resolved' },
     });
     await expect(
-      client.app.retrieveKnowledge('ws_demo', { query: 'release cadence', limit: 1 })
+      client.operations['knowledge.retrieval']({
+        workspaceId: 'ws_demo',
+        ...{ query: 'release cadence', limit: 1 },
+      })
     ).resolves.toEqual({
       traceId: retrievalTraceId,
       workspaceId: 'ws_demo',
@@ -3751,9 +3804,12 @@ describe('createCoreClient', () => {
       ],
     });
     await expect(
-      client.app.prepareKnowledgeContext('ws_demo', {
-        query: 'release cadence',
-        limit: 1,
+      client.operations['knowledge.context.prepare']({
+        workspaceId: 'ws_demo',
+        ...{
+          query: 'release cadence',
+          limit: 1,
+        },
       })
     ).resolves.toEqual({
       operationId: 'km_context_demo',
@@ -3790,14 +3846,17 @@ describe('createCoreClient', () => {
       expect(requestedMethodPaths).not.toContain(removedMethodPath);
     }
     await expect(
-      client.app.draftKnowledgeProposal('ws_demo', {
-        requestId: '00000000-0000-4000-8000-000000000621',
-        knowledgePageId: 'lessons/release-review',
-        canonicalPageBytes: proposalPageBytes,
-        contentDigest: proposalPageDigest,
-        sourceReferences: [proposalSourceReference],
-        rationale: 'This evidence supports one reusable release-review rule.',
-        confidence: 0.75,
+      client.operations['knowledge.proposal.draft']({
+        workspaceId: 'ws_demo',
+        ...{
+          requestId: '00000000-0000-4000-8000-000000000621',
+          knowledgePageId: 'lessons/release-review',
+          canonicalPageBytes: proposalPageBytes,
+          contentDigest: proposalPageDigest,
+          sourceReferences: [proposalSourceReference],
+          rationale: 'This evidence supports one reusable release-review rule.',
+          confidence: 0.75,
+        },
       })
     ).resolves.toMatchObject({
       operation: 'draft-proposal',
@@ -3808,22 +3867,26 @@ describe('createCoreClient', () => {
         status: 'pending',
       },
     });
-    await expect(client.app.suggestKnowledgeRepairs('ws_demo', {})).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.repair.suggest']({ workspaceId: 'ws_demo', ...{} })
+    ).resolves.toMatchObject({
       operation: 'suggest-repair',
       suggestions: [{ kind: 'duplicate-title' }],
     });
-    await expect(client.app.checkKnowledgeHealth('ws_demo', {})).resolves.toMatchObject({
+    await expect(
+      client.operations['knowledge.health.check']({ workspaceId: 'ws_demo', ...{} })
+    ).resolves.toMatchObject({
       operation: 'health-check',
       outcome: 'needs-attention',
       repairSuggestions: [{ kind: 'duplicate-title' }],
     });
     for (const path of [
-      '/api/app/workspaces/ws_demo/knowledge/manager/answer',
-      '/api/app/workspaces/ws_demo/knowledge/manager/context',
-      '/api/app/workspaces/ws_demo/knowledge/manager/proposals',
-      '/api/app/workspaces/ws_demo/knowledge/manager/repairs',
-      '/api/app/workspaces/ws_demo/knowledge/manager/health',
-      '/api/app/workspaces/ws_demo/knowledge/sources',
+      '/api/app/operations/knowledge.answer',
+      '/api/app/operations/knowledge.context.prepare',
+      '/api/app/operations/knowledge.proposal.draft',
+      '/api/app/operations/knowledge.repair.suggest',
+      '/api/app/operations/knowledge.health.check',
+      '/api/app/operations/knowledge.source.register',
     ]) {
       expect(requests.find((request) => request.path === path)?.body).not.toHaveProperty('caller');
     }
@@ -3898,23 +3961,23 @@ describe('createCoreClient', () => {
       'POST /api/app/quick-chat',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/task',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/answer',
-      'POST /api/app/workspaces/ws_demo/knowledge/sources',
-      'GET /api/app/workspaces/ws_demo/knowledge/sources',
-      'GET /api/app/workspaces/ws_demo/knowledge/sources/ks_demo',
-      'GET /api/app/workspaces/ws_demo/knowledge/indexes',
-      'POST /api/app/workspaces/ws_demo/knowledge/observations',
-      'GET /api/app/workspaces/ws_demo/knowledge/observations',
-      'POST /api/app/workspaces/ws_demo/knowledge/claims',
-      'GET /api/app/workspaces/ws_demo/knowledge/claims',
-      'POST /api/app/workspaces/ws_demo/knowledge/conflicts',
-      'GET /api/app/workspaces/ws_demo/knowledge/conflicts',
-      'POST /api/app/workspaces/ws_demo/knowledge/conflicts/kf_demo/resolution',
-      'POST /api/app/workspaces/ws_demo/knowledge/retrievals',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/context',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/proposals',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/repairs',
-      'POST /api/app/workspaces/ws_demo/knowledge/manager/health',
+      'POST /api/app/operations/knowledge.answer',
+      'POST /api/app/operations/knowledge.source.register',
+      'POST /api/app/operations/knowledge.source.list',
+      'POST /api/app/operations/knowledge.source.read',
+      'POST /api/app/operations/knowledge.indexes',
+      'POST /api/app/operations/knowledge.observation.record',
+      'POST /api/app/operations/knowledge.observation.list',
+      'POST /api/app/operations/knowledge.claim.record',
+      'POST /api/app/operations/knowledge.claim.list',
+      'POST /api/app/operations/knowledge.conflict.record',
+      'POST /api/app/operations/knowledge.conflict.list',
+      'POST /api/app/operations/knowledge.conflict.resolve',
+      'POST /api/app/operations/knowledge.retrieval',
+      'POST /api/app/operations/knowledge.context.prepare',
+      'POST /api/app/operations/knowledge.proposal.draft',
+      'POST /api/app/operations/knowledge.repair.suggest',
+      'POST /api/app/operations/knowledge.health.check',
       'GET /api/app/search?q=protocol%20design',
       'POST /api/app/workspaces/ws_demo/agents/health/refresh',
       'GET /api/app/agents',
@@ -4311,7 +4374,7 @@ describe('createCoreClient', () => {
           activeTurnId: 'turn_worker',
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/decision': {
+      'POST /api/app/operations/knowledge.proposal.decide': {
         body: {
           review: {
             reviewId: 'kr_demo',
@@ -4333,7 +4396,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/reversal': {
+      'POST /api/app/operations/knowledge.proposal.reverse': {
         body: {
           proposalId: 'kp_demo',
           reviewId: 'kr_demo',
@@ -4520,9 +4583,13 @@ describe('createCoreClient', () => {
       },
     });
     await expect(
-      client.app.submitKnowledgeProposalDecision('ws_demo', 'kp_demo', {
-        requestId: '00000000-0000-4000-8000-000000000622',
-        decision: 'accepted',
+      client.operations['knowledge.proposal.decide']({
+        workspaceId: 'ws_demo',
+        proposalId: 'kp_demo',
+        ...{
+          requestId: '00000000-0000-4000-8000-000000000622',
+          decision: 'accepted',
+        },
       })
     ).resolves.toEqual({
       review: {
@@ -4545,11 +4612,15 @@ describe('createCoreClient', () => {
       },
     });
     await expect(
-      client.app.reverseKnowledgeProposal('ws_demo', 'kp_demo', {
-        requestId: '00000000-0000-4000-8000-000000000623',
-        reviewId: 'kr_demo',
-        knowledgePageId: 'lessons/release-review',
-        expectedContentDigest: proposalPageDigest,
+      client.operations['knowledge.proposal.reverse']({
+        workspaceId: 'ws_demo',
+        proposalId: 'kp_demo',
+        ...{
+          requestId: '00000000-0000-4000-8000-000000000623',
+          reviewId: 'kr_demo',
+          knowledgePageId: 'lessons/release-review',
+          expectedContentDigest: proposalPageDigest,
+        },
       })
     ).resolves.toEqual({
       proposalId: 'kp_demo',
@@ -4593,8 +4664,8 @@ describe('createCoreClient', () => {
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/step',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal/steering',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goals/goal_demo/reviews/review_demo/decision',
-      'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/decision',
-      'POST /api/app/workspaces/ws_demo/knowledge/proposals/kp_demo/reversal',
+      'POST /api/app/operations/knowledge.proposal.decide',
+      'POST /api/app/operations/knowledge.proposal.reverse',
       'GET /api/setup/diagnostics',
       'GET /api/app/automations',
       'POST /api/app/automations',
@@ -4648,17 +4719,17 @@ describe('createCoreClient', () => {
       reason: 'Retry with stronger verification.',
     });
     expect(
-      requests.find((request) => request.path.endsWith('/knowledge/proposals/kp_demo/decision'))
-        ?.body
-    ).toEqual({
-      decision: 'accepted',
-      requestId: '00000000-0000-4000-8000-000000000622',
-    });
+      requests.find((request) =>
+        request.path.endsWith('/api/app/operations/knowledge.proposal.decide')
+      )?.body
+    ).toEqual({ workspaceId: 'ws_demo', proposalId: 'kp_demo', decision: 'accepted' });
     expect(
-      requests.find((request) => request.path.endsWith('/knowledge/proposals/kp_demo/reversal'))
-        ?.body
+      requests.find((request) =>
+        request.path.endsWith('/api/app/operations/knowledge.proposal.reverse')
+      )?.body
     ).toEqual({
-      requestId: '00000000-0000-4000-8000-000000000623',
+      workspaceId: 'ws_demo',
+      proposalId: 'kp_demo',
       reviewId: 'kr_demo',
       knowledgePageId: 'lessons/release-review',
       expectedContentDigest: proposalPageDigest,

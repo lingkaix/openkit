@@ -9,7 +9,6 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
@@ -24,7 +23,9 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -1036,7 +1037,7 @@ describe('quick chat app API', () => {
 
   it('answers an explicit Knowledge Manager query through S61 without calling QuickChatAgent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-knowledge-'));
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       dataRoot,
       store: createDemoStore({ dataRoot }),
@@ -1048,17 +1049,23 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-00000000c001',
-        kind: 'project-context',
-        title: 'Launch cadence',
-        content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(createRes.status).toBe(201);
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-00000000c001',
+            kind: 'project-context',
+            title: 'Launch cadence',
+            content: 'OpenKit ships release candidates only after NanoCore smoke passes on a1.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
     const knowledge = (await createRes.json()) as { id: string };
 
     const res = await app.request(
@@ -1134,7 +1141,7 @@ describe('quick chat app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-weak-knowledge-'));
     const store = createDemoStore({ dataRoot });
     let providerCalls = 0;
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
       dataRoot,
       store,
@@ -1159,17 +1166,23 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const createRes = await app.request('/api/workspaces/ws_demo/knowledge', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-00000000c002',
-        kind: 'project-context',
-        title: 'Workspace maintenance notes',
-        content: 'This page is not about the selected Assistant model.',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(createRes.status).toBe(201);
+    const createRes = await app.request(
+      ...knowledgeOperationRequest(
+        'knowledge.create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-00000000c002',
+            kind: 'project-context',
+            title: 'Workspace maintenance notes',
+            content: 'This page is not about the selected Assistant model.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    expect(createRes.status).toBe(200);
 
     const listKnowledgeProposals = vi.spyOn(store, 'listKnowledgeProposals');
     onTestFinished(() => listKnowledgeProposals.mockRestore());
@@ -1240,17 +1253,23 @@ describe('quick chat app API', () => {
         } as unknown as PiAiGatewayClient,
       });
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-      const knowledge = await app.request('/api/workspaces/ws_demo/knowledge', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-00000000c002',
-          kind: 'project-context',
-          title: 'Maintenance report acceptance',
-          content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
-        }),
-      });
-      expect(knowledge.status).toBe(201);
+      const knowledge = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-00000000c002',
+              kind: 'project-context',
+              title: 'Maintenance report acceptance',
+              content: 'Maintenance report acceptance: unrelated-knowledge-marker.',
+            }),
+          }
+        )
+      );
+      expect(knowledge.status).toBe(200);
       const content = '# Maintenance report acceptance\n\nartifact-roundtrip-c7f46a19; 62 passed.';
       const imported = await app.request('/api/app/workspaces/ws_demo/artifacts/imports', {
         method: 'POST',

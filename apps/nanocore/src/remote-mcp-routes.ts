@@ -1,6 +1,7 @@
 import { ToolSchema } from '@modelcontextprotocol/core';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import {
+  type BootReadinessSnapshot,
   CreateOpenKitAccessTokenResponseSchema,
   OPERATION_DEFINITIONS,
   type OperationId,
@@ -99,12 +100,14 @@ function search(query: string) {
   };
 }
 
-/** Registers stateless Streamable HTTP after the existing auth middleware has admitted a Token. */
+/** Registers stateless Streamable HTTP after Token admission, gating mutations on the shared current boot readiness. */
 export function registerRemoteMcpRoutes({
   app,
+  getBootReadiness,
   ...dependencies
 }: OperationInvocationDependencies & {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly getBootReadiness: () => BootReadinessSnapshot;
 }): void {
   app.all('/mcp', async (c) => {
     const actor = c.get('actor');
@@ -174,10 +177,16 @@ export function registerRemoteMcpRoutes({
           }
           case 'call': {
             const { operation, input } = callSchema.parse(args);
-            definitionFor(operation);
+            const definition = definitionFor(operation);
             operationId = operation;
             // Only the canonical id and UUID correlate audit; never record arbitrary tool input.
             requestId = z.uuid().safeParse(input.requestId).data;
+            if (definition.mutating && !getBootReadiness().acceptingProductWork)
+              throw new OperationInvocationError(
+                'product_work_unavailable',
+                'NanoCore is not accepting product work during the current boot readiness state.',
+                503
+              );
             result = await createOperationInvocation(dependencies)(
               operation as OperationId,
               input,

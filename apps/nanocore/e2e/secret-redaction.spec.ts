@@ -41,16 +41,23 @@ describe('nanocore e2e secret redaction', () => {
     await harness.stop();
     harness = await startNanoCoreHarness({ dataRoot: harness.dataRoot });
 
-    await postJson(`${harness.baseUrl}/api/workspaces/ws_demo/knowledge`, {
+    const created = await postJson(`${harness.baseUrl}/api/app/operations/knowledge.create`, {
+      workspaceId: 'ws_demo',
       kind: 'project-context',
       title: 'Safe knowledge',
       content: 'No provider secrets should appear here.',
       requestId: randomUUID(),
     });
+    expect(created.status).toBe(200);
 
     const diagnostics = await fetchJson(`${harness.baseUrl}/api/diagnostics`);
     const workspace = await fetchJson(`${harness.baseUrl}/api/app/workspaces/ws_demo/dashboard`);
-    const knowledge = await fetchJson(`${harness.baseUrl}/api/workspaces/ws_demo/knowledge`);
+    const knowledgeResponse = await postJson(
+      `${harness.baseUrl}/api/app/operations/knowledge.list`,
+      { workspaceId: 'ws_demo' }
+    );
+    expect(knowledgeResponse.status).toBe(200);
+    const knowledge = await knowledgeResponse.json();
     const payload = JSON.stringify({ diagnostics, knowledge, workspace });
 
     expect(payload).not.toContain(rawUserInfo);

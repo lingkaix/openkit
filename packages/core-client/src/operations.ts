@@ -1,19 +1,24 @@
 import {
-  type OperationInput,
   type OperationOutput,
   operationHttpPath,
   PRODUCT_OPERATION_DEFINITIONS,
   type ProductOperationId,
 } from '@openkit/app-api-schemas';
+import type { z } from 'zod';
 import { createRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
+
+/** Caller arguments retain schema defaults; handlers consume the parsed output type. */
+type OperationArguments<K extends ProductOperationId> = z.input<
+  (typeof PRODUCT_OPERATION_DEFINITIONS)[K]['inputSchema']
+>;
 
 /** Typed operation methods derived solely from the shared definition table. */
 export type OperationClient = {
   readonly [K in ProductOperationId]: (
-    input: OperationInput<K> extends { requestId: string }
-      ? Omit<OperationInput<K>, 'requestId'> & { requestId?: string }
-      : OperationInput<K>
+    input: OperationArguments<K> extends { requestId: string }
+      ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
+      : OperationArguments<K>
   ) => Promise<OperationOutput<K>>;
 };
 
@@ -24,7 +29,7 @@ export function createOperationClient(transport: ClientTransport): OperationClie
       id,
       async (value: Record<string, unknown>) => {
         const parsed = definition.inputSchema.parse(
-          definition.mutating
+          definition.mutating && 'requestId' in definition.inputSchema.shape
             ? { ...value, requestId: value.requestId ?? createRequestId() }
             : value
         );
@@ -33,7 +38,7 @@ export function createOperationClient(transport: ClientTransport): OperationClie
           operationHttpPath(id),
           body,
           definition.outputSchema,
-          definition.mutating ? { 'x-openkit-request-id': requestId! } : undefined
+          definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined
         );
       },
     ])

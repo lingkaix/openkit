@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, relative, resolve, sep } from 'node:path';
 import {
@@ -64,11 +64,6 @@ import {
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
 import {
-  answerKnowledgeManager,
-  prepareTaskKnowledgeContext,
-  resolveWorkspaceKnowledgeReferenceProofs,
-} from './knowledge-manager.js';
-import {
   type CommandRequestRecord,
   type ConversationCommandReceiptMetadata,
   DISPLAY_PROJECTION_REFRESH_ADMISSION,
@@ -89,6 +84,7 @@ import {
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerAppApiRoute } from './openapi.js';
+import { createOperationInvocation } from './operation-invocation.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { getGoalRecord, listGoalRecordsForThread } from './runtime/goal-store.js';
@@ -143,6 +139,7 @@ import {
   getDefaultWorkspaceRepositoryResource,
   type WorkspaceRepositoryResourceRecord,
 } from './workspace/repository-store.js';
+import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Stable attribution id for the direct Quick Chat provider call. */
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
@@ -2159,6 +2156,7 @@ export function registerQuickAndChatModeRoutes({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
+  workspaceMutationAdmission,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
   providerCredentialConfigured,
@@ -2175,6 +2173,7 @@ export function registerQuickAndChatModeRoutes({
     action: string
   ) => void;
   readonly coreDb: CoreDb | undefined;
+  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createChatCompletion'>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -3074,31 +3073,22 @@ export function registerQuickAndChatModeRoutes({
       };
 
       /** Runs the explicitly selected Knowledge Manager and projects its answer into this Thread. */
-      const answerFromWorkspaceKnowledge = (): ConversationCommandResult | null => {
-        const dataRoot = store.getDataRoot();
-        if (!dataRoot) return null;
-        const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-        let referenceProofs: ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> =
-          new Map();
-        try {
-          referenceProofs = resolveWorkspaceKnowledgeReferenceProofs({
-            coreDb,
-            store,
-            workspaceDb,
-            workspaceId,
-          });
-        } finally {
-          workspaceDb?.sqlite.close();
-        }
-        const knowledgeAnswer = answerKnowledgeManager({
-          dataRoot,
-          operationId: `km_answer_${randomUUID()}`,
-          workspaceId,
-          caller: 'app-api',
-          query: conversationPrompt,
-          limit: 3,
-          referenceProofs,
-        });
+      const answerFromWorkspaceKnowledge = async (): Promise<ConversationCommandResult | null> => {
+        if (!store.getDataRoot()) return null;
+        const knowledgeAnswer = await createOperationInvocation({
+          coreDb,
+          store,
+          inflightCommands,
+          repositoryWorkspaceDb,
+          workspaceMutationAdmission,
+        })(
+          'knowledge.answer',
+          { workspaceId, query: conversationPrompt, limit: 3 },
+          {
+            kind: 'public',
+            actor: c.get('actor'),
+          }
+        );
         const completedAt = new Date().toISOString();
         const turn = createChatTurn(completedAt);
         const sourceTitles = knowledgeAnswer.citations.map((citation) => citation.title).join(', ');
@@ -3275,7 +3265,7 @@ export function registerQuickAndChatModeRoutes({
               requestId: chatInput.requestId,
               requestInputHash: commandInputHash(conversationCommandInput(chatInput)),
               reviewRequired: false,
-              prepare: () => {
+              prepare: async () => {
                 const dataRoot = store.getDataRoot();
                 if (!dataRoot) {
                   throw directTaskModeRecoveryError(
@@ -3284,23 +3274,26 @@ export function registerQuickAndChatModeRoutes({
                 }
                 let knowledgeSelectionInput: { readonly retrievalTraceId: string };
                 try {
-                  knowledgeSelectionInput = prepareTaskKnowledgeContext({
-                    dataRoot,
-                    workspaceId,
-                    query: chatInput.input,
-                    referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
-                      coreDb: coreDb!,
-                      store,
-                      workspaceDb,
-                      workspaceId,
-                    }),
-                    traceId: directTaskKnowledgeRetrievalTraceId(
-                      actorId,
-                      workspaceId,
-                      receivingThreadId,
-                      chatInput.requestId
-                    ),
-                  });
+                  knowledgeSelectionInput = await createOperationInvocation({
+                    coreDb,
+                    store,
+                    inflightCommands,
+                    repositoryWorkspaceDb,
+                    workspaceMutationAdmission,
+                  })(
+                    'knowledge.context.prepare',
+                    { workspaceId, query: chatInput.input },
+                    {
+                      kind: 'task',
+                      actor: c.get('actor'),
+                      traceId: directTaskKnowledgeRetrievalTraceId(
+                        actorId,
+                        workspaceId,
+                        receivingThreadId,
+                        chatInput.requestId
+                      ),
+                    }
+                  );
                 } catch (error) {
                   throw directTaskModeRecoveryError(
                     error instanceof Error &&
@@ -3453,7 +3446,7 @@ export function registerQuickAndChatModeRoutes({
       }
 
       if (acceptedTarget.kind === 'knowledge-manager') {
-        const response = answerFromWorkspaceKnowledge();
+        const response = await answerFromWorkspaceKnowledge();
         if (response) return response;
         return {
           body: createRefusedResponse('Workspace Knowledge storage is unavailable.'),
@@ -4286,6 +4279,7 @@ export function registerTaskModeRoute({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
+  workspaceMutationAdmission,
   repositoryWorkspaceDb,
   requestStore,
   startModeWorkerTurn,
@@ -4297,6 +4291,7 @@ export function registerTaskModeRoute({
     action: string
   ) => void;
   readonly coreDb: CoreDb | undefined;
+  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
@@ -4432,7 +4427,7 @@ export function registerTaskModeRoute({
           requestId: taskInput.requestId,
           requestInputHash,
           reviewRequired: false,
-          prepare: () => {
+          prepare: async () => {
             const dataRoot = store.getDataRoot();
             if (!dataRoot) {
               throw directTaskModeRecoveryError(
@@ -4442,23 +4437,26 @@ export function registerTaskModeRoute({
 
             let knowledgeSelectionInput: { readonly retrievalTraceId: string };
             try {
-              knowledgeSelectionInput = prepareTaskKnowledgeContext({
-                dataRoot,
-                workspaceId,
-                query: taskInput.input,
-                referenceProofs: resolveWorkspaceKnowledgeReferenceProofs({
-                  coreDb,
-                  store,
-                  workspaceDb,
-                  workspaceId,
-                }),
-                traceId: directTaskKnowledgeRetrievalTraceId(
-                  actorId,
-                  workspaceId,
-                  threadId,
-                  taskInput.requestId
-                ),
-              });
+              knowledgeSelectionInput = await createOperationInvocation({
+                coreDb,
+                store,
+                inflightCommands,
+                repositoryWorkspaceDb,
+                workspaceMutationAdmission,
+              })(
+                'knowledge.context.prepare',
+                { workspaceId, query: taskInput.input },
+                {
+                  kind: 'task',
+                  actor: c.get('actor'),
+                  traceId: directTaskKnowledgeRetrievalTraceId(
+                    actorId,
+                    workspaceId,
+                    threadId,
+                    taskInput.requestId
+                  ),
+                }
+              );
             } catch (error) {
               throw directTaskModeRecoveryError(
                 error instanceof Error &&

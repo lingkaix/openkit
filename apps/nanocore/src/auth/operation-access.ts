@@ -398,54 +398,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(
-  catalog,
-  [
-    'answerKnowledgeManager',
-    'listKnowledgeSources',
-    'listKnowledgeObservations',
-    'listKnowledgeClaims',
-    'listKnowledgeConflicts',
-    'readKnowledgeIndexes',
-    'suggestKnowledgeRepairs',
-    'checkKnowledgeHealth',
-    'GET /api/workspaces/:workspaceId/knowledge',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'knowledge.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['retrieveKnowledge', 'prepareKnowledgeContext'], {
-  mutating: true,
-  policyOperation: 'knowledge.read',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  [
-    'registerKnowledgeSource',
-    'recordKnowledgeObservation',
-    'recordKnowledgeClaim',
-    'recordKnowledgeConflict',
-    'POST /api/workspaces/:workspaceId/knowledge',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'knowledge.write',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['draftKnowledgeProposal'], {
-  mutating: true,
-  policyOperation: 'knowledge.propose',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['importWorkspaceArtifact'], {
   mutating: true,
   policyOperation: 'artifact.write',
@@ -679,7 +631,6 @@ registerOperations(
   [
     'approveThreadGoalPlan',
     'submitArtifactReviewDecision',
-    'submitKnowledgeProposalDecision',
     'submitGoalReviewDecision',
     'submitWorkspaceSyncReviewDecision',
     'submitWorkspaceRecoveryDecision',
@@ -687,27 +638,6 @@ registerOperations(
   {
     mutating: true,
     policyOperation: 'review.apply',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['readKnowledgeSource'], {
-  mutating: false,
-  policyOperation: 'knowledge.read',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  [
-    'reverseKnowledgeProposal',
-    'resolveKnowledgeConflict',
-    'PATCH /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
-    'DELETE /api/workspaces/:workspaceId/knowledge/:knowledgeEntryId',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'knowledge.write',
     resolver: 'workspace-child-lineage',
     scope: 'workspace',
   }
