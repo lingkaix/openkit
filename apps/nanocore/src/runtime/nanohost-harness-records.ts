@@ -5,6 +5,7 @@ import {
   HarnessQueuedCommandBodySchemas,
   NativeEnvironmentRecordSchema,
   WorkerStartupFailureSchema,
+  WorkspaceGitBaselineSchema,
 } from '@openkit/worker-protocol';
 
 import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
@@ -1543,6 +1544,10 @@ function requireHarnessResult(
   const optionalChildState =
     (operation === 'turn.interrupt' || operation === 'session.close') &&
     result.body.childState !== undefined;
+  if (operation === 'session.open' && result.body.workspaceGitBaseline !== undefined) {
+    WorkspaceGitBaselineSchema.parse(result.body.workspaceGitBaseline);
+    fields[operation] = [...fields[operation], 'workspaceGitBaseline'];
+  }
   requireExactFields(
     result.body,
     optionalChildState ? [...fields[operation], 'childState'] : fields[operation],

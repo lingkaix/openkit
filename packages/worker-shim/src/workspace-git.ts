@@ -39,19 +39,19 @@ export interface WorkspaceGitInput {
  * @param inputs Validated remote Git inputs selected for this Turn.
  * @param workspaceRoot Worker-visible root that contains every target.
  * @param sessionDir Worker session directory used for the scrubbed Git environment.
- * @returns Once the initial checkout or retained-source verification completes.
+ * @returns Measured HEAD and tree for a new checkout, or null for absent inputs or retained slots.
  * @throws When a target escapes the workspace root or Git cannot produce the exact commit.
  */
 export async function materializeWorkspaceGitInputs(
   inputs: readonly WorkspaceGitInput[],
   workspaceRoot: string,
   sessionDir: string
-): Promise<void> {
+): Promise<{ commit: string; tree: string } | null> {
   if (inputs.length > 1) {
     throw new Error('Only one writable Git workspace input is supported per worker session.');
   }
   if (inputs.length === 0) {
-    return;
+    return null;
   }
 
   const root = resolve(workspaceRoot);
@@ -75,7 +75,7 @@ export async function materializeWorkspaceGitInputs(
       await assertPlainDirectory(target);
       if ((await readdir(target)).length > 0) {
         await assertRetainedWorkspaceSource(input, sessionDir);
-        return;
+        return null;
       }
     } else {
       await mkdir(target);
@@ -125,10 +125,26 @@ export async function materializeWorkspaceGitInputs(
     ) {
       throw new Error('Git workspace must be clean before the worker starts.');
     }
-    return;
+    const commit = await requireGitCommit(
+      target,
+      sessionDir,
+      'HEAD',
+      'Remote Git workspace HEAD is unavailable.'
+    );
+    const tree = (
+      await requireGitText(
+        target,
+        sessionDir,
+        ['rev-parse', '--verify', 'HEAD^{tree}'],
+        {},
+        'Remote Git workspace tree is unavailable.'
+      )
+    ).trim();
+    if (!GIT_OBJECT_ID_PATTERN.test(tree)) throw new Error('Remote Git workspace tree is invalid.');
+    return { commit, tree };
   }
 
-  return;
+  return null;
 }
 
 /** Creates a source-less slot without following links or replacing retained bytes. */

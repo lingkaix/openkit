@@ -4268,6 +4268,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
     },
   ];
 
+  it('retains Git-source output as evidence without a host repository or apply review', async () => {
+    const fixture = createWorkspaceChangeIngressFixture('vendor_git_evidence', 'git', 'missing');
+    fixture.environmentPackage.workspace = {
+      inputs: [{ id: 'repo', access: 'read-write', source: { kind: 'git' } }],
+    } as AgentEnvironmentPackage['workspace'];
+    try {
+      await ingestWorkspaceChangeFixture(fixture, fixture.record);
+      expect(
+        fixture.store
+          .listArtifacts(fixture.workspaceId)
+          .find((artifact) => artifact.id === fixture.artifactId)
+      ).toMatchObject({ kind: 'diff', title: 'Git work evidence' });
+      expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
+      expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
+      expect(testGitRefExists(fixture.repositoryPath, fixture.reviewBranchRef)).toBe(false);
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
   it('reports a non-secret workspace review actionability reason', async () => {
     const fixture = createWorkspaceChangeIngressFixture(
       'actionability_reason',

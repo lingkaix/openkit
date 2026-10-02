@@ -89,7 +89,7 @@ function createSignedInAuthStub(): BetterAuthServer {
 }
 
 describe('vault admin app API', () => {
-  it('creates, rotates and revokes workspace secrets and host-push grants without exposing material', async () => {
+  it('creates, rotates and revokes workspace secrets and gateway-only grants without exposing material', async () => {
     const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const workspaceResponse = await app.request('/api/workspaces', {
@@ -130,7 +130,7 @@ describe('vault admin app API', () => {
       const grant = await grantResponse.json();
       expect(grant).toMatchObject({
         allowedInjectionPaths: ['gateway-only'],
-        targetCapabilityId: 'workspace.git.push',
+        targetCapabilityId: null,
         lifetime: 'workspace',
       });
       const workerGrantResponse = await request('/grants', {

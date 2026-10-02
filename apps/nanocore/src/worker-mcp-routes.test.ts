@@ -22,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
+import type { AuthVariables } from './auth/middleware.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -84,6 +85,7 @@ import { admitTestNativeEnvironment } from './test-support/native-environment.js
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
+import { registerVaultSecretRoutes } from './vault/vault-secret-routes.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -957,6 +959,9 @@ describe('worker MCP routes', () => {
 
   it.each([
     'unchanged',
+    'deny',
+    'revoke',
+    'schema-drift',
     'tool-removed',
     'agent-removed',
     'known-error',
@@ -998,23 +1003,28 @@ describe('worker MCP routes', () => {
     });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://workspace/vault_pending_echo',
+      backendLocator: 'encrypted-file://workspace/ws_demo/vault/vault_pending_echo',
       displayName: 'Pending echo credential',
       ownerScope: 'workspace',
       referenceId: 'vault_pending_echo',
       secretKind: 'api-key',
       workspaceId: 'ws_demo',
     });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['gateway-only'],
-      grantId: 'grant_pending_echo',
-      lifetime: 'agent-session',
-      ownerScope: 'workspace',
-      targetAgentSessionId: 'as_pending_echo',
-      targetCapabilityId: 'mcp',
-      vaultReferenceId: 'vault_pending_echo',
-      workspaceId: 'ws_demo',
+    const issuer = new Hono<{ Variables: AuthVariables }>();
+    issuer.use('*', async (context, next) => {
+      context.set('actor', { kind: 'local', userId: 'user_local' });
+      await next();
     });
+    registerVaultSecretRoutes({ app: issuer, coreDb, vaultUnlockState });
+    const grantResponse = await issuer.request('/api/app/workspaces/ws_demo/vault/grants', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ referenceId: 'vault_pending_echo', injectionPath: 'gateway-only' }),
+    });
+    expect(grantResponse.status).toBe(200);
+    const publicGrant = await grantResponse.json();
+    expect(publicGrant.allowedInjectionPaths).toEqual(['gateway-only']);
+    expect(JSON.stringify(publicGrant)).not.toContain('pending-secret-canary');
     const catalog = {
       schemaVersion: 1 as const,
       servers: [
@@ -1028,7 +1038,7 @@ describe('worker MCP routes', () => {
             {
               sink: { kind: 'env' as const, name: 'PENDING_ECHO_SECRET' },
               slot: 'auth',
-              vaultGrantId: 'grant_pending_echo',
+              vaultGrantId: publicGrant.grantId,
             },
           ],
           pinnedSchemaSnapshotId: null,
@@ -1056,6 +1066,7 @@ describe('worker MCP routes', () => {
       workspaceRoots: [],
       workspaceMcpServerCatalog: catalog,
     });
+    expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
     recordMcpWorkerLineage(coreDb, environmentPackage);
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       gatewayConfig: createTestGatewayConfig(),
@@ -1181,6 +1192,23 @@ describe('worker MCP routes', () => {
       if (!approvalItem || approvalItem.type !== 'approval-request')
         throw new Error('Missing approval request.');
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+      if (change === 'schema-drift') {
+        const schemaDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          recordMcpToolSchemaSnapshot({
+            environmentPackage,
+            serverId: 'echo',
+            source: 'live',
+            schemaSnapshotId: 'mcpsnap_changed_before_grant',
+            tools: [{ name: 'echo', inputSchema: { type: 'object', required: ['newField'] } }],
+            workspaceDb: schemaDb,
+            workspaceId: 'ws_demo',
+          });
+        } finally {
+          schemaDb.sqlite.close();
+        }
+      }
       const currentSnapshot = {
         ...snapshot,
         agentManifests:
@@ -1242,7 +1270,10 @@ describe('worker MCP routes', () => {
       const executed =
         change !== 'tool-removed' &&
         change !== 'agent-removed' &&
-        change !== 'credential-before-claim';
+        change !== 'credential-before-claim' &&
+        change !== 'deny' &&
+        change !== 'revoke' &&
+        change !== 'schema-drift';
       const disposition =
         change === 'unknown-effect'
           ? 'outcome-unknown'
@@ -1259,7 +1290,7 @@ describe('worker MCP routes', () => {
             threadId: 'th_demo',
             turnId: turn.id,
             requestId: '00000000-0000-4000-8000-000000000117',
-            decision: 'granted',
+            decision: change === 'deny' ? 'denied' : 'granted',
           }),
         }
       );
@@ -1270,6 +1301,7 @@ describe('worker MCP routes', () => {
         expect(upstream.mock.calls[0]?.[0]).toMatchObject({
           toolName: 'echo',
           arguments: { message: 'captured effect' },
+          credentials: { environment: { PENDING_ECHO_SECRET: 'pending-secret-canary' } },
         });
       }
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -1315,15 +1347,22 @@ describe('worker MCP routes', () => {
             ? { state: 'ended', resolution: null }
             : {
                 state: 'resolved',
-                resolution: 'granted',
-                disposition: change === 'tool-removed' ? 'denied-not-executed' : disposition,
+                resolution: change === 'deny' ? 'denied' : 'granted',
+                disposition: ['tool-removed', 'deny', 'revoke', 'schema-drift'].includes(change)
+                  ? 'denied-not-executed'
+                  : disposition,
               }
         );
         expect(
           workspaceDb.sqlite
             .prepare('SELECT source, catalog_entry_id FROM mcp_tool_schema_snapshots')
             .all()
-        ).toEqual([{ catalog_entry_id: 'echo', source: 'live' }]);
+        ).toEqual(
+          Array.from({ length: change === 'schema-drift' ? 2 : 1 }, () => ({
+            catalog_entry_id: 'echo',
+            source: 'live',
+          }))
+        );
         const fixedNow = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-03T01:00:00Z'));
         try {
           for (const label of ['a', 'b', 'a']) {

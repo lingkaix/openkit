@@ -304,8 +304,9 @@ export class WorkerHarness {
         recursive: true,
       });
       await mkdir(this.mapSandboxPath(inputPaths.contextRoot), { mode: 0o700, recursive: true });
+      let workspaceGitBaseline: { commit: string; tree: string } | null;
       try {
-        await initializeSessionWorkspace(
+        workspaceGitBaseline = await initializeSessionWorkspace(
           this.mapSandboxPath(inputPaths.packagePath),
           sessionDirectory,
           body
@@ -380,6 +381,7 @@ export class WorkerHarness {
       };
       void resident.exited.then(onExit, onExit);
       return {
+        ...(workspaceGitBaseline ? { workspaceGitBaseline } : {}),
         maxActiveTurns: 1,
         nativeHandleDigest: handle.nativeHandleDigest,
         nativeHandleState: handle.nativeHandleState,

@@ -77,7 +77,7 @@ const StoredCollectionResultSchema = z
         collectedAt: TimestampSchema.pipe(z.iso.datetime({ offset: true })),
         acceptedCommit: z
           .string()
-          .regex(/^[0-9a-f]{40}$/)
+          .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
           .nullable(),
         pendingEarlierLinks: z.array(z.string().min(1)),
       })
@@ -107,7 +107,7 @@ export function readWorkspaceSnapshotCursor(
         head: WorkspaceSnapshotPairSchema.parse(JSON.parse(row.head_json)),
         acceptedCommit: z
           .string()
-          .regex(/^[0-9a-f]{40}$/)
+          .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
           .nullable()
           .parse(row.accepted_commit),
       }
@@ -221,21 +221,29 @@ export function requireWorkspaceBaselineInitialization(
       cause: 'accepted_base_unknown',
     });
 }
-/** Verifies the independently derived expected tree and atomically initializes base and cursor. */
+/**
+ * Atomically initializes base and cursor after Git pin verification, or verifies the independently derived non-Git tree.
+ * @param expectedTree Independently supplied non-Git tree, or null after the caller verifies a Git commit pin.
+ * @param acceptedCommit Verified Git source pin, or null for non-Git initialization.
+ */
 export function acceptWorkspaceBaseline(
   db: WorkspaceDb,
   identity: WorkspaceCollectionIdentity,
   head: WorkspaceSnapshotPair,
-  expectedTree: string,
+  expectedTree: string | null,
   acceptedCommit: string | null = null
 ): void {
   const pair = WorkspaceSnapshotPairSchema.parse(head);
-  if (!/^[0-9a-f]{40}$/.test(expectedTree))
+  if (
+    expectedTree === null
+      ? acceptedCommit === null || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(acceptedCommit)
+      : !/^[0-9a-f]{40}$/.test(expectedTree)
+  )
     throw new WorkspaceCollectionError({
       outcome: 'recovery_required',
       cause: 'baseline_source_unavailable',
     });
-  if (pair.tree !== expectedTree)
+  if (expectedTree !== null && pair.tree !== expectedTree)
     throw new WorkspaceCollectionError({
       outcome: 'recovery_required',
       cause: 'baseline_mismatch',

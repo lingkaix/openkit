@@ -351,6 +351,14 @@ function readyHasDigest(body: {
 
 const ChildStateSchema = z.enum(['absent', 'running', 'stopping', 'unknown']);
 
+/** Sandbox Git client's new-checkout evidence; retained slots never establish another baseline. */
+export const WorkspaceGitBaselineSchema = z
+  .object({
+    commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+    tree: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+  })
+  .strict();
+
 /** Closed success-body schema for each operation. */
 export const HarnessSuccessBodySchemas = {
   'harness.drain': z
@@ -380,6 +388,7 @@ export const HarnessSuccessBodySchemas = {
   'session.open': z
     .object({
       ...NativeHandleShape,
+      workspaceGitBaseline: WorkspaceGitBaselineSchema.optional(),
       maxActiveTurns: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
       nativeHandleState: z.enum(['pending', 'ready']),
       state: z.literal('open'),

@@ -148,9 +148,9 @@ export function registerVaultSecretRoutes({
           ownerScope: 'workspace',
           workspaceId,
           allowedInjectionPaths: [grantInput.data.injectionPath ?? 'gateway-only'],
-          targetCapabilityId: workerVisible ? null : 'workspace.git.push',
+          targetCapabilityId: null,
           lifetime: 'workspace',
-          subjectSummary: workerVisible ? 'Worker GitHub CLI' : 'Approved host Git push',
+          subjectSummary: workerVisible ? 'Worker GitHub CLI' : 'Gateway-only credential',
           expiresAt: grantInput.data.expiresAt ?? null,
         });
         audit('succeeded');

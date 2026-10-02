@@ -2322,7 +2322,8 @@ export const operationCatalog = [
     appOperationId: 'createWorkspaceVaultSecret',
     clientMethod: 'app.createWorkspaceVaultSecret',
     group: 'vault',
-    summary: 'Secret create for a workspace; grants authorize approved host Git push.',
+    summary:
+      'Secret create for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.CreateWorkspaceVaultSecretRequestSchema, {
       ...workspaceScope,
@@ -2338,7 +2339,8 @@ export const operationCatalog = [
     appOperationId: 'rotateWorkspaceVaultSecret',
     clientMethod: 'app.rotateWorkspaceVaultSecret',
     group: 'vault',
-    summary: 'Secret rotate for a workspace; grants authorize approved host Git push.',
+    summary:
+      'Secret rotate for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.RotateWorkspaceVaultSecretRequestSchema, {
       ...workspaceScope,
@@ -2359,7 +2361,8 @@ export const operationCatalog = [
     appOperationId: 'revokeWorkspaceVaultSecret',
     clientMethod: 'app.revokeWorkspaceVaultSecret',
     group: 'vault',
-    summary: 'Secret revoke for a workspace; grants authorize approved host Git push.',
+    summary:
+      'Secret revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
     mutating: true,
     inputSchema: strictScope({ ...workspaceScope, referenceId: IDENTIFIER }),
     handler: ({ client }, input) =>
@@ -2373,7 +2376,8 @@ export const operationCatalog = [
     appOperationId: 'createWorkspaceVaultGrant',
     clientMethod: 'app.createWorkspaceVaultGrant',
     group: 'vault',
-    summary: 'Create a separate host-push or worker-visible GitHub token grant for a workspace.',
+    summary:
+      'Create an ordinary gateway-only workspace grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.CreateWorkspaceVaultGrantRequestSchema, {
       ...workspaceScope,
@@ -2389,7 +2393,8 @@ export const operationCatalog = [
     appOperationId: 'revokeWorkspaceVaultGrant',
     clientMethod: 'app.revokeWorkspaceVaultGrant',
     group: 'vault',
-    summary: 'Grant revoke for a workspace; grants authorize approved host Git push.',
+    summary:
+      'Grant revoke for a workspace; gateway-only grants have no capability target and serve selected MCP under existing authority; runtime-env github-token is the separate user-space path.',
     mutating: true,
     inputSchema: strictScope({ ...workspaceScope, grantId: IDENTIFIER }),
     handler: ({ client }, input) =>

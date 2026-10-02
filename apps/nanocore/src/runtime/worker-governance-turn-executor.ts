@@ -2576,13 +2576,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
       const timestamp = recordedAt;
       const artifactId = `ar_workspace_changes_${environmentPackage.scope.turnId}_${record.review.id}`;
-      const repository = workspaceDb
-        ? getWorkspaceRepositoryResource(
-            workspaceDb,
-            environmentPackage.scope.workspaceId,
-            record.changeSet.resourceId
-          )
-        : null;
+      // Git sources publish through selected vendor MCP; retained output is evidence, never an apply prerequisite.
+      const gitSource =
+        environmentPackage.workspace?.inputs.some(
+          (input) => input.id === record.changeSet.resourceId && input.source.kind === 'git'
+        ) ?? false;
+      const repository =
+        workspaceDb && !gitSource
+          ? getWorkspaceRepositoryResource(
+              workspaceDb,
+              environmentPackage.scope.workspaceId,
+              record.changeSet.resourceId
+            )
+          : null;
       const patchBytes = record.patchPayload
         ? workspaceSyncReviewPatchBytes(record.patchPayload)
         : null;
@@ -2612,7 +2618,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         record.changeSet.strategy === 'git' && record.review.staging.strategy !== 'git_worktree'
           ? 'git_staging_invalid'
           : null,
-        record.changeSet.strategy === 'git' && workspaceDb && !repository
+        record.changeSet.strategy === 'git' && !gitSource && workspaceDb && !repository
           ? 'git_repository_missing'
           : null,
         record.changeSet.strategy === 'git' && record.filesystemApply !== null
@@ -2675,7 +2681,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           {
             changeSet: stagedItem.changeSet,
             patchPayload: stagedItem.patchPayload,
-            review: stagedItem.review,
+            ...(gitSource ? {} : { review: stagedItem.review }),
           },
           null,
           2
@@ -2689,7 +2695,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           threadId: environmentPackage.scope.threadId,
           turnId: environmentPackage.scope.turnId,
           kind: 'diff',
-          title: 'Workspace changes ready for review',
+          title: gitSource ? 'Git work evidence' : 'Workspace changes ready for review',
           status: 'ready',
           summary: stagedItem.review.riskSummary,
           version: 1,
@@ -2717,7 +2723,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               workspaceId: stagedItem.review.workspaceId,
             });
           }
-          if (workspaceDb) {
+          if (workspaceDb && !gitSource) {
             recordWorkspaceSyncReview(workspaceDb, { item: stagedItem });
           }
           if (existingArtifact) {

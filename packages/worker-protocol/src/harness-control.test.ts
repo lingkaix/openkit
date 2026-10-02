@@ -190,6 +190,39 @@ describe('private Harness results', () => {
     expect(HarnessResultEnvelopeSchema.safeParse({ ...envelope, extra: true }).success).toBe(false);
   });
 
+  it('admits measured Sandbox HEAD and tree only on session.open', () => {
+    const body = {
+      maxActiveTurns: 1,
+      nativeHandleDigest: null,
+      nativeHandleState: 'pending',
+      state: 'open',
+      workspaceGitBaseline: { commit: 'a'.repeat(40), tree: 'b'.repeat(40) },
+    };
+    expect(isHarnessResultBodyValid('session.open', { disposition: 'succeeded', body })).toBe(true);
+    for (const report of [
+      { commit: 'invalid', tree: 'b'.repeat(40) },
+      { commit: 'a'.repeat(40) },
+      { commit: 'a'.repeat(40), tree: 'b'.repeat(40), hostPath: '/host' },
+    ])
+      expect(
+        isHarnessResultBodyValid('session.open', {
+          disposition: 'succeeded',
+          body: { ...body, workspaceGitBaseline: report },
+        })
+      ).toBe(false);
+    expect(
+      isHarnessResultBodyValid('turn.start', {
+        disposition: 'succeeded',
+        body: {
+          state: 'started',
+          nativeHandleState: 'pending',
+          nativeHandleDigest: null,
+          workspaceGitBaseline: body.workspaceGitBaseline,
+        },
+      })
+    ).toBe(false);
+  });
+
   it('validates each success body exactly', () => {
     const valid: Array<[Parameters<typeof isHarnessResultBodyValid>[0], Record<string, unknown>]> =
       [

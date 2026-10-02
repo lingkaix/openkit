@@ -1,6 +1,4 @@
-import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { realpathSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import {
@@ -17,6 +15,7 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
+  WorkspaceGitBaselineSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
@@ -2614,6 +2613,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session.environmentPackage.scope.agentSessionId
     );
     const opensNewBinding = !binding;
+    let workspaceGitBaseline: unknown;
     if (!binding) {
       // A resumed open must accept a ready proof, so the recorder is required before that dispatch; a new conversation may stay pending and is checked only once a ready digest is accepted.
       if (session.nativeResume !== null && !session.recordNativeHandleDigest) {
@@ -2676,6 +2676,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       ) {
         throw new Error('NanoHost Harness session.open result is incompatible.');
       }
+      workspaceGitBaseline = opened.workspaceGitBaseline;
       binding = {
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -2710,7 +2711,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         throw new Error('NanoHost resident AgentSession is not ready for its next Turn.');
       }
     }
-    await this.ensureWorkspaceBaseline(session, opensNewBinding);
+    await this.ensureWorkspaceBaseline(session, opensNewBinding, workspaceGitBaseline);
     const inputPaths = workerSessionInputPaths(session.environmentPackage.scope.agentSessionId);
     const lease = this.coreDb.sqlite
       .prepare(
@@ -3089,15 +3090,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
   /**
    * Accepts the first verified snapshot before any Turn; retained slots never fall back to baseline.
-   * Git expected-tree reads trust only the admitted linked root's canonical path for each command, without changing host configuration.
+   * A new Git checkout is proved by the Sandbox client's HEAD and tree, without a host repository read.
    *
    * @param session Admitted native session and immutable source package.
    * @param opensNewBinding Whether launch opened a new native binding.
+   * @param gitBaseline Sandbox Git evidence returned by this binding's session.open.
    * @throws WorkspaceCollectionError when the source tree or collected baseline cannot be accepted.
    */
   private async ensureWorkspaceBaseline(
     session: NanoHostBackendTurnSession,
-    opensNewBinding: boolean
+    opensNewBinding: boolean,
+    gitBaseline?: unknown
   ): Promise<void> {
     const identity = this.workspaceCollectionIdentity(session, 'baseline');
     const db = openWorkspaceDb(this.coreDb.dataRoot, identity.workspaceId);
@@ -3139,49 +3142,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const sources = session.environmentPackage.workspace.inputs.filter(
         (input) => input.access === 'read-write'
       );
-      let expected = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+      let expected: string | null = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
       if (sources.length) {
         const source = sources[0]!;
-        const repository = getWorkspaceRepositoryResource(db, identity.workspaceId, source.id);
+        const reported = WorkspaceGitBaselineSchema.safeParse(gitBaseline);
         if (
           sources.length !== 1 ||
           source.source.kind !== 'git' ||
-          !repository ||
           typeof source.source.commit !== 'string' ||
-          !/^[0-9a-f]{40}$/.test(source.source.commit)
+          !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.source.commit) ||
+          !reported.success
         )
           throw new WorkspaceCollectionError({
             outcome: 'recovery_required',
             cause: 'baseline_source_unavailable',
           });
-        try {
-          const gitEnvironment = {
-            GIT_CONFIG_COUNT: '1',
-            GIT_CONFIG_KEY_0: 'safe.directory',
-            GIT_CONFIG_VALUE_0: realpathSync(repository.localPath),
-            PATH: process.env.PATH,
-            LC_ALL: 'C',
-            GIT_CONFIG_NOSYSTEM: '1',
-            GIT_CONFIG_GLOBAL: '/dev/null',
-          };
-          const objectFormat = execFileSync(
-            'git',
-            ['-C', repository.localPath, 'rev-parse', '--show-object-format'],
-            { encoding: 'utf8', env: gitEnvironment }
-          ).trim();
-          if (objectFormat !== 'sha1') throw new Error('Incomparable object format.');
-          expected = execFileSync(
-            'git',
-            ['-C', repository.localPath, 'rev-parse', '--verify', `${source.source.commit}^{tree}`],
-            { encoding: 'utf8', env: gitEnvironment }
-          ).trim();
-          if (!/^[0-9a-f]{40}$/.test(expected)) throw new Error('Unavailable expected tree.');
-        } catch {
+        if (reported.data.commit !== source.source.commit)
           throw new WorkspaceCollectionError({
             outcome: 'recovery_required',
-            cause: 'baseline_source_unavailable',
+            cause: 'baseline_mismatch',
           });
-        }
+        // Git identity is the source pin; its object format need not match the private SHA-1 scan store.
+        expected = null;
       }
       const result = await this.effect(session.identity, session.leaseId, 'workspace.collect', {
         ...this.workspaceCollectionCommand(session, identity, 'baseline', null),
@@ -3249,6 +3231,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       if (
         sources.length !== 1 ||
+        sources[0]!.source.kind === 'git' ||
         !getWorkspaceRepositoryResource(db, identity.workspaceId, sources[0]!.id)
       )
         return [];

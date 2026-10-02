@@ -34,3 +34,5 @@ Protected public names follow the actual adapter bindings: DeepSeek owns `DSH_HO
 ## Outside Workspace Collection
 
 Workspace snapshots are collected outside the Sandbox through NanoHost; this package defines no worker-written workspace manifest or publisher schema.
+
+The optional `session.open.workspaceGitBaseline` success field carries the Sandbox Git client’s exact commit and tree for a new checkout. It is absent for source-less or retained slots; NanoCore alone compares its commit to the source pin before accepting the outside scan baseline.

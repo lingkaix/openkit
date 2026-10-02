@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
@@ -97,20 +97,10 @@ import {
 } from './worker-storage-bindings.js';
 import { WorkspaceCollectionRecoveryCauseSchema } from './workspace-collect-wire.js';
 import {
-  buildWorkspaceInputSnapshots,
-  buildWorkspaceMaterializationRecords,
-} from './workspace-materializer.js';
-import {
   acceptWorkspaceBaseline,
   authorizeWorkspaceBaselineInitialization,
   readWorkspaceSnapshotCursor,
 } from './workspace-snapshot-chain.js';
-import {
-  getWorkspaceSyncReview,
-  recordWorkspaceInputSnapshots,
-  recordWorkspaceMaterializationRecords,
-  recordWorkspaceSyncReview,
-} from './workspace-sync-records.js';
 
 const packageFixtureDb = createTestNativeEnvironmentDb();
 function preparedInput<T extends Parameters<typeof resolveMetadata>[0]>(
@@ -2114,6 +2104,7 @@ describe('createConfiguredTurnExecutor', () => {
   async function admitIdleSupplyResident(
     label: string,
     options: {
+      gitBaseline?: { commit: string; tree: string };
       nativeValues?: Record<string, string>;
       inspection?: 'unavailable' | 'stale';
       effects?: NanoHostSessionEffectRequest[];
@@ -2301,6 +2292,7 @@ describe('createConfiguredTurnExecutor', () => {
     };
     const launch = backend.launch(materialization);
     const initialOpen = await settleNext('session.open', {
+      ...(options.gitBaseline ? { workspaceGitBaseline: options.gitBaseline } : {}),
       maxActiveTurns: 1,
       nativeHandleDigest: null,
       nativeHandleState: 'pending',
@@ -2435,217 +2427,127 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
-  it.skipIf(process.platform === 'win32')(
-    'accepts a different-owner linked baseline before dispatching the first Turn without trusting a sibling',
-    async () => {
-      const root = mkdtempSync(join(tmpdir(), 'openkit-baseline-owner-'));
-      const repositoryPath = join(root, 'repository');
-      const linkedPath = join(root, 'linked');
-      const siblingPath = join(root, 'sibling');
-      const wrapperPath = join(root, 'bin');
-      const probePath = join(root, 'blocked-sibling');
-      const gitBinary = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-      const git = (cwd: string, ...args: string[]) =>
-        execFileSync(gitBinary, ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
-      const savedPath = process.env.PATH;
-      try {
-        for (const path of [repositoryPath, siblingPath]) {
-          mkdirSync(path);
-          git(path, 'init', '--object-format=sha1');
-          git(
-            path,
-            '-c',
-            'user.name=Fixture',
-            '-c',
-            'user.email=fixture@example.invalid',
-            'commit',
-            '--allow-empty',
-            '-m',
-            'initial'
-          );
-        }
-        symlinkSync(repositoryPath, linkedPath, 'dir');
-        const commit = git(repositoryPath, 'rev-parse', 'HEAD');
-        const tree = git(repositoryPath, 'rev-parse', `${commit}^{tree}`);
-        mkdirSync(wrapperPath);
-        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-        writeFileSync(
-          join(wrapperPath, 'git'),
-          `#!/bin/sh\nif GIT_TEST_ASSUME_DIFFERENT_OWNER=1 ${quote(gitBinary)} -C ${quote(siblingPath)} rev-parse HEAD >/dev/null 2>&1; then echo 'Unexpected trust of sibling repository' >&2; exit 70; fi\necho blocked >> ${quote(probePath)}\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${quote(gitBinary)} "$@"\n`,
-          { mode: 0o755 }
-        );
-        process.env.PATH = `${wrapperPath}${delimiter}${savedPath ?? ''}`;
-        const f = await admitIdleSupplyResident('baseline_owner', {
-          configurePackage: (env, coreDb) => {
-            env.workspace.inputs = [
-              {
-                id: 'repo',
-                kind: 'repository',
-                access: 'read-write',
-                target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
-                source: {
-                  kind: 'git',
-                  sourceId: 'source-repo',
-                  url: 'https://example.invalid/repository.git',
-                  commit,
-                },
-              },
-            ];
-            (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
-              planSessionWorkspaceMaterialization({ environmentPackage: env });
-            const db = openWorkspaceDb(coreDb.dataRoot, env.scope.workspaceId);
-            try {
-              applyScopedMigrations(db);
-              upsertWorkspaceRepositoryResource(db, {
-                workspaceId: env.scope.workspaceId,
-                resourceId: 'repo',
-                displayName: 'Linked source',
-                localPath: linkedPath,
-                workspaceExists: () => true,
-              });
-            } finally {
-              db.sqlite.close();
-            }
-          },
-          onCollection: async () => ({
-            outcome: 'baseline',
-            head: { tree, manifest: '2'.repeat(40) },
-          }),
-        });
-        try {
-          const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
-          try {
-            const row = db.sqlite
-              .prepare('SELECT accepted_base_json, head_json FROM workspace_snapshot_cursors')
-              .get() as { accepted_base_json: string; head_json: string };
-            expect(JSON.parse(row.accepted_base_json)).toEqual({ tree, manifest: '2'.repeat(40) });
-            expect(row.head_json).toBe(row.accepted_base_json);
-          } finally {
-            db.sqlite.close();
-          }
-          // The fixture settles turn.start only after observing its queued native command.
-          expect(readFileSync(probePath, 'utf8').trim().split('\n')).toEqual([
-            'blocked',
-            'blocked',
-          ]);
-        } finally {
-          f.coreDb.sqlite.close();
-        }
-      } finally {
-        if (savedPath === undefined) delete process.env.PATH;
-        else process.env.PATH = savedPath;
-        rmSync(root, { recursive: true, force: true });
-      }
-    }
-  );
-  it('derives the baseline from the exact Core commit rather than HEAD or dirty bytes and refuses unavailable sources', async () => {
-    let measuredTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-    const f = await admitIdleSupplyResident('expected_tree', {
-      onCollection: async () => ({
-        outcome: 'baseline',
-        head: { tree: measuredTree, manifest: '2'.repeat(40) },
-      }),
-    });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'n6-expected-source-'));
-    const git = (...args: string[]) =>
-      execFileSync('git', ['-C', repositoryPath, ...args], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
-    git('init', '--object-format=sha1');
-    git('config', 'user.email', 'fixture@example.invalid');
-    git('config', 'user.name', 'Fixture');
-    writeFileSync(join(repositoryPath, 'file.txt'), 'accepted source');
-    git('add', '.');
-    git('commit', '-m', 'accepted');
-    const commit = git('rev-parse', 'HEAD');
-    measuredTree = git('rev-parse', `${commit}^{tree}`);
-    writeFileSync(join(repositoryPath, 'file.txt'), 'later commit');
-    git('add', '.');
-    git('commit', '-m', 'later');
-    writeFileSync(join(repositoryPath, 'file.txt'), 'dirty current bytes');
-    const collector = f.backend as unknown as {
-      ensureWorkspaceBaseline(session: unknown, opensNewBinding: boolean): Promise<void>;
-      workspaceCollectionIdentity(
-        session: unknown,
-        id: string
-      ): import('./workspace-snapshot-chain.js').WorkspaceCollectionIdentity;
-    };
-    const real = f.session as { environmentPackage: AgentEnvironmentPackage };
+  it('compares a Git report to the pin without reading a host repository', async () => {
+    const commit = 'a'.repeat(64);
+    const f = await admitIdleSupplyResident('remote_git_report');
+    const original = f.session as { environmentPackage: AgentEnvironmentPackage };
     const session = {
-      ...real,
+      ...original,
       environmentPackage: {
-        ...real.environmentPackage,
+        ...original.environmentPackage,
         workspace: {
-          ...real.environmentPackage.workspace,
+          ...original.environmentPackage.workspace,
           inputs: [
             {
               id: 'repo',
               access: 'read-write',
-              source: { kind: 'git', commit, url: 'https://example.invalid/repository.git' },
+              source: { kind: 'git', commit, url: 'https://example.invalid/repo.git' },
             },
           ],
         },
       },
     };
+    const collector = f.backend as unknown as {
+      ensureWorkspaceBaseline(
+        session: unknown,
+        opensNewBinding: boolean,
+        gitBaseline?: { commit: string; tree: string }
+      ): Promise<void>;
+      workspaceCollectionIdentity(
+        session: unknown,
+        id: string
+      ): import('./workspace-snapshot-chain.js').WorkspaceCollectionIdentity;
+    };
     const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
-    const initialize = () => {
+    try {
       db.sqlite.exec(
         'DELETE FROM workspace_snapshot_collections; DELETE FROM workspace_snapshot_cursors;'
       );
-      authorizeWorkspaceBaselineInitialization(
-        db,
-        collector.workspaceCollectionIdentity(session, 'baseline')
-      );
-    };
-    try {
-      upsertWorkspaceRepositoryResource(db, {
-        workspaceId: f.environmentPackage.scope.workspaceId,
-        resourceId: 'repo',
-        displayName: 'Initial source',
-        localPath: repositoryPath,
-        workspaceExists: () => true,
-      });
-      initialize();
-      await collector.ensureWorkspaceBaseline(session, true);
-      expect(
-        readWorkspaceSnapshotCursor(db, collector.workspaceCollectionIdentity(session, 'baseline'))
-          ?.acceptedBase.tree
-      ).toBe(measuredTree);
-      expect(git('rev-parse', 'HEAD')).not.toBe(commit);
-      expect(readFileSync(join(repositoryPath, 'file.txt'), 'utf8')).toBe('dirty current bytes');
-      for (const source of [
-        { kind: 'git', commit: 'f'.repeat(40) },
-        { kind: 'git', commit: 'f'.repeat(64) },
-        { kind: 'filesystem', commit },
-      ]) {
-        initialize();
-        const invalid = {
-          ...session,
-          environmentPackage: {
-            ...session.environmentPackage,
-            workspace: {
-              ...session.environmentPackage.workspace,
-              inputs: [{ ...session.environmentPackage.workspace.inputs[0], source }],
+      const identity = collector.workspaceCollectionIdentity(session, 'baseline');
+      authorizeWorkspaceBaselineInitialization(db, identity);
+      await collector.ensureWorkspaceBaseline(session, true, { commit, tree: 'b'.repeat(64) });
+      expect(readWorkspaceSnapshotCursor(db, identity)?.acceptedCommit).toBe(commit);
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+  it('accepts a Sandbox-pinned Git baseline and closes with no host repository', async () => {
+    const commit = 'a'.repeat(40);
+    const tree = 'b'.repeat(40);
+    const f = await admitIdleSupplyResident('remote_git_baseline', {
+      gitBaseline: { commit, tree },
+      configurePackage: (env) => {
+        env.workspace.inputs = [
+          {
+            id: 'repo',
+            kind: 'repository',
+            access: 'read-write',
+            target: `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(env.scope.workspaceId, env.scope.threadId)}`,
+            source: {
+              kind: 'git',
+              sourceId: 'source-repo',
+              url: 'https://example.invalid/repository.git',
+              commit,
             },
           },
-        };
-        const scans = f.effects.filter((effect) => effect.kind === 'workspace.collect').length;
-        await expect(collector.ensureWorkspaceBaseline(invalid, true)).rejects.toThrow(
-          'baseline_source_unavailable'
-        );
-        expect(f.effects.filter((effect) => effect.kind === 'workspace.collect').length).toBe(
-          scans
-        );
-      }
-      initialize();
-      measuredTree = 'e'.repeat(40);
-      await expect(collector.ensureWorkspaceBaseline(session, true)).rejects.toThrow(
-        'baseline_mismatch'
-      );
+        ];
+        (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
+          planSessionWorkspaceMaterialization({ environmentPackage: env });
+      },
+      onCollection: async (request) =>
+        request.input.mode === 'baseline'
+          ? { outcome: 'baseline', head: { tree, manifest: '2'.repeat(40) } }
+          : { outcome: 'no_new_head', unstable: false },
+    });
+    const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
       expect(
-        readWorkspaceSnapshotCursor(db, collector.workspaceCollectionIdentity(session, 'baseline'))
-      ).toBeNull();
+        db.sqlite.prepare('SELECT count(*) AS count FROM workspace_repository_resources').get()
+      ).toEqual({ count: 0 });
+      const collector = f.backend as unknown as {
+        ensureWorkspaceBaseline(
+          session: unknown,
+          opensNewBinding: boolean,
+          gitBaseline?: { commit: string; tree: string }
+        ): Promise<void>;
+        workspaceCollectionIdentity(
+          session: unknown,
+          id: string
+        ): import('./workspace-snapshot-chain.js').WorkspaceCollectionIdentity;
+      };
+      const identity = collector.workspaceCollectionIdentity(f.session, 'baseline');
+      expect(readWorkspaceSnapshotCursor(db, identity)).toEqual({
+        acceptedBase: { tree, manifest: '2'.repeat(40) },
+        head: { tree, manifest: '2'.repeat(40) },
+        acceptedCommit: commit,
+      });
+      expect(
+        f.effects.filter(
+          (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
+        )
+      ).toHaveLength(1);
+      // A retained slot must not acquire another baseline, even if the later report is missing.
+      await collector.ensureWorkspaceBaseline(f.session, true);
+      expect(
+        f.effects.filter(
+          (effect) => effect.kind === 'workspace.collect' && effect.input.mode === 'baseline'
+        )
+      ).toHaveLength(1);
+      db.sqlite.exec(
+        'DELETE FROM workspace_snapshot_collections; DELETE FROM workspace_snapshot_cursors;'
+      );
+      authorizeWorkspaceBaselineInitialization(db, identity);
+      for (const report of [
+        undefined,
+        { commit: 'f'.repeat(40), tree },
+        { commit, tree: 'invalid' },
+      ]) {
+        await expect(collector.ensureWorkspaceBaseline(f.session, true, report)).rejects.toThrow(
+          report?.commit === 'f'.repeat(40) ? 'baseline_mismatch' : 'baseline_source_unavailable'
+        );
+        expect(readWorkspaceSnapshotCursor(db, identity)).toBeNull();
+      }
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -2733,7 +2635,7 @@ describe('createConfiguredTurnExecutor', () => {
     { destination: true, format: 'text' },
     { destination: true, format: 'binary' },
     { destination: true, format: 'invalid-utf8' },
-  ])('retains exact cumulative candidate bytes with destination=$destination format=$format and independent review head', async ({
+  ])('retains exact cumulative candidate bytes with destination=$destination format=$format without a Git apply review', async ({
     destination,
     format,
   }) => {
@@ -2780,6 +2682,7 @@ describe('createConfiguredTurnExecutor', () => {
     let serial = 1;
     let captureEmpty = false;
     const f = await admitIdleSupplyResident(`candidate_${destination}_${format}`, {
+      ...(destination ? { gitBaseline: { commit, tree: expectedTree } } : {}),
       ...(destination
         ? {
             configurePackage: (
@@ -2859,7 +2762,7 @@ describe('createConfiguredTurnExecutor', () => {
     const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
     try {
       const firstCollection = collector.collectWorkspaceSnapshot(f.session, 'turn-end');
-      await expect(firstCollection).resolves.toHaveLength(destination ? 1 : 0);
+      await expect(firstCollection).resolves.toHaveLength(0);
       const first = await firstCollection;
       const row = db.sqlite
         .prepare('SELECT candidate, result_json FROM workspace_snapshot_collections')
@@ -2872,93 +2775,14 @@ describe('createConfiguredTurnExecutor', () => {
       const scans = f.effects.length;
       expect(await collector.collectWorkspaceSnapshot(f.session, 'turn-end')).toEqual(first);
       expect(f.effects).toHaveLength(scans);
-      if (destination) {
-        expect(first[0]!.changeSet.base.commit).toBe(commit);
-        expect(first[0]!.changeSet.createdAt).toBe(JSON.parse(row.result_json).collectedAt);
-        expect(first[0]!.changeSet.createdAt).not.toBe(f.environmentPackage.createdAt);
-        expect(first[0]!.changeSet.head.commit).toBeNull();
-        const inputs = recordWorkspaceInputSnapshots(
-          db,
-          buildWorkspaceInputSnapshots({
-            backendKind: 'openshell',
-            backendCapabilities: [],
-            createdAt: f.environmentPackage.createdAt,
-            environmentPackage: f.environmentPackage,
-          })
-        );
-        recordWorkspaceMaterializationRecords(
-          db,
-          buildWorkspaceMaterializationRecords({
-            createdAt: f.environmentPackage.createdAt,
-            inputSnapshots: inputs,
-            materialization: {
-              backendKind: 'openshell',
-              packageSnapshotId: f.environmentPackage.snapshotId,
-              requiredCapabilities: [],
-              workspaceInputs: f.environmentPackage.workspace.inputs.map((input) => ({
-                id: input.id,
-                target: input.target!,
-              })),
-            },
-          })
-        );
-        recordWorkspaceSyncReview(db, {
-          item: {
-            changeSet: first[0]!.changeSet,
-            patchPayload: first[0]!.patchPayload,
-            review: first[0]!.review,
-            artifactId: `ar_${format}`,
-          },
-        });
-        const stored = getWorkspaceSyncReview(
-          db,
-          f.environmentPackage.scope.workspaceId,
-          first[0]!.review.id
-        )!;
-        if (format === 'binary') {
-          expect(stored.changeSet.changedPaths[0]!.binaryReview).toMatchObject({
-            mode: 'artifact-only',
-            digest: stored.changeSet.patch!.digest,
-            bytes: bytes.length,
-            mediaType: 'application/octet-stream',
-          });
-          expect(stored.changeSet.changedPaths[0]!.binaryReview!.summary).toContain(
-            'candidate artifact'
-          );
-          expect(stored.review.validation).toContainEqual({
-            command: 'workspace.binary_artifact_only',
-            ref: 'workspace-path:file.txt',
-            status: 'skipped',
-          });
-          expect(stored.review.validation).toContainEqual({
-            command: 'workspace-snapshot-apply',
-            ref: null,
-            status: 'failed',
-          });
-          expect(stored.review.staging.branch).toBeNull();
-        } else expect(stored.review.staging.branch).not.toBeNull();
-
-        first[0]!.changeSet.head.commit = 'd'.repeat(40);
-        const retained = db.sqlite
-          .prepare('SELECT head_json AS head FROM workspace_snapshot_cursors')
-          .get() as { head: string };
-        expect(JSON.parse(retained.head)).toEqual({
-          tree: '3'.repeat(40),
-          manifest: '4'.repeat(40),
-        });
-      }
+      expect(
+        db.sqlite.prepare('SELECT count(*) AS count FROM staged_workspace_reviews').get()
+      ).toEqual({ count: 0 });
+      expect(JSON.parse(row.result_json).acceptedCommit).toBe(destination ? commit : null);
       bytes = Buffer.from('openkit-full-mode-delta\n0644 0600 8 file.txt\n');
       const unsupported = await collector.collectWorkspaceSnapshot(f.session, 'release');
-      if (destination) {
-        expect(unsupported[0]!.changeSet.base.commit).toBe(commit);
-        expect(unsupported[0]!.review.staging.branch).toBeNull();
-        expect(unsupported[0]!.review.validation).toContainEqual({
-          command: 'workspace-snapshot-apply',
-          status: 'failed',
-          ref: null,
-        });
-        expect(published).toHaveBeenCalledOnce();
-      } else expect(unsupported).toEqual([]);
+      expect(unsupported).toEqual([]);
+      expect(published).not.toHaveBeenCalled();
       const cursor = db.sqlite
         .prepare('SELECT head_json AS head FROM workspace_snapshot_cursors')
         .get() as { head: string };
@@ -2968,24 +2792,13 @@ describe('createConfiguredTurnExecutor', () => {
       const manifests = db.sqlite
         .prepare('SELECT payload_json FROM worker_output_manifests')
         .all() as { payload_json: string }[];
-      expect(manifests).toHaveLength(destination ? 2 : 0);
-      if (destination)
-        expect(
-          manifests
-            .map((row) => JSON.parse(row.payload_json))
-            .find((manifest) => manifest.changedPaths.length === 0)
-        ).toMatchObject({
-          changedPaths: [],
-          inputSnapshotId: `wis_${f.environmentPackage.snapshotId}_repo`,
-          materializationRecordId: `wmr_${f.environmentPackage.snapshotId}_repo`,
-          strategy: 'git',
-        });
+      expect(manifests).toHaveLength(0);
       const emptyScans = f.effects.length;
       await expect(collector.collectWorkspaceSnapshot(f.session, 'successor')).resolves.toEqual([]);
       expect(f.effects).toHaveLength(emptyScans);
       expect(
         db.sqlite.prepare('SELECT COUNT(*) AS count FROM worker_output_manifests').get()
-      ).toEqual({ count: destination ? 2 : 0 });
+      ).toEqual({ count: 0 });
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -6244,6 +6057,14 @@ describe('createConfiguredTurnExecutor', () => {
 
       const launch = backend.launch(materialization);
       await settleNext('session.open', {
+        ...(fixtureRepositoryPath
+          ? {
+              workspaceGitBaseline: {
+                commit: environmentPackage.workspace.inputs[0]!.source.commit,
+                tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+              },
+            }
+          : {}),
         maxActiveTurns: 1,
         nativeHandleDigest: null,
         nativeHandleState: 'pending',

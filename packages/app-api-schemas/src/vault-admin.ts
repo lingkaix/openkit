@@ -193,7 +193,7 @@ export const RotateWorkspaceVaultSecretRequestSchema = z
   })
   .strict();
 
-/** Create an explicit host-push or worker runtime-env workspace grant. */
+/** Create an ordinary gateway-only grant with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant. */
 export const CreateWorkspaceVaultGrantRequestSchema = z
   .object({
     referenceId: z.string().regex(/^vault_[A-Za-z0-9_-]+$/),
@@ -210,7 +210,7 @@ export type CreateWorkspaceVaultSecretRequest = z.infer<
 export type RotateWorkspaceVaultSecretRequest = z.infer<
   typeof RotateWorkspaceVaultSecretRequestSchema
 >;
-/** Workspace host-push or worker runtime-env grant input. */
+/** Ordinary gateway-only grant input with no capability target for selected MCP under existing authority, or a separate user-space runtime-env github-token grant. */
 export type CreateWorkspaceVaultGrantRequest = z.infer<
   typeof CreateWorkspaceVaultGrantRequestSchema
 >;

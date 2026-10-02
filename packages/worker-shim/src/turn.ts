@@ -715,12 +715,12 @@ async function waitForWorkerControlReadiness<T>(
   }
 }
 
-/** Initializes the admitted session workspace before the resident native runtime opens. */
+/** Initializes the admitted session workspace and reports a new Git checkout before the resident runtime opens. */
 export async function initializeSessionWorkspace(
   packagePath: string,
   sessionDir: string,
   identity: { agentSessionId: string; threadId: string; workspaceId: string }
-): Promise<void> {
+): Promise<{ commit: string; tree: string } | null> {
   const manifest = await readWorkerShimPackage(packagePath);
   for (const key of ['agentSessionId', 'threadId', 'workspaceId'] as const) {
     if (manifest.scope?.[key] !== identity[key])
@@ -732,7 +732,7 @@ export async function initializeSessionWorkspace(
   if (typeof root !== 'string' || !root) throw new Error('Initial workspace root is unavailable.');
   const slots = manifest.extensions?.openkit?.sessionWorkspace?.layout?.slots;
   if (!Array.isArray(slots)) throw new Error('Initial workspace slots are unavailable.');
-  await materializeWorkspaceGitInputs(inputs, root, sessionDir);
+  const gitBaseline = await materializeWorkspaceGitInputs(inputs, root, sessionDir);
   for (const slot of slots) {
     if (
       isRecord(slot) &&
@@ -744,6 +744,7 @@ export async function initializeSessionWorkspace(
       await initializeEmptyWorkspaceSlot(root, slot.path);
     }
   }
+  return gitBaseline;
 }
 
 /**

@@ -114,7 +114,10 @@ describe('workspace Git materialization', () => {
 
     await expect(
       materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      commit: remote.commit,
+      tree: gitText(remote.path, ['rev-parse', `${remote.commit}^{tree}`]),
+    });
 
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
     expect(gitText(target, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
@@ -134,7 +137,10 @@ describe('workspace Git materialization', () => {
 
     await expect(
       materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      commit: remote.commit,
+      tree: gitText(remote.path, ['rev-parse', `${remote.commit}^{tree}`]),
+    });
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
     expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Exact remote source\n');
   });
@@ -226,7 +232,10 @@ describe('workspace Git materialization', () => {
 
         await expect(
           materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
-        ).resolves.toBeUndefined();
+        ).resolves.toEqual({
+          commit: remote.commit,
+          tree: gitText(remote.path, ['rev-parse', `${remote.commit}^{tree}`]),
+        });
 
         const observedEnvironment = JSON.parse(
           readFileSync(observedEnvironmentPath, 'utf8')
@@ -272,7 +281,7 @@ describe('workspace Git materialization', () => {
 
     await expect(
       materializeWorkspaceGitInputs([input], workspaceRoot, sessionDir)
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
 
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(remote.commit);
     expect(gitText(target, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('HEAD');
@@ -346,7 +355,7 @@ describe('workspace Git materialization', () => {
         workspaceRoot,
         sessionDir
       )
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
 
     expect(gitText(target, ['rev-parse', 'HEAD'])).toBe(workerCommit);
     expect(readFileSync(join(target, 'unknown.bin'))).toEqual(Buffer.from([6, 5, 4]));
