@@ -18,7 +18,7 @@ This spec does not own NanoCore workflow state, App API routes, Core protocol re
 
 It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, MCP catalog management in `docs/specs/20260907-mcp_catalog_management.md`, Agent Plugin packaging and worker supply in `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
-It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`. It does not own the operator CLI. It does not own the remote MCP endpoint. It does not own credential eligibility for session-only operations; those amendments are pending in their credential owners.
+It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`. It does not own the operator CLI. It does not own the remote MCP endpoint. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns that endpoint. It does not own credential eligibility for session-only operations; those amendments are pending in their credential owners.
 
 It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
 
@@ -43,7 +43,7 @@ Related specs:
 
 ## Summary
 
-OpenKit exposes one AI-native public-product interface: a single Skill named `openkit` with a bundled CLI. The accepted `20260910-agent_operator_skill.md` defines a separate `openkit-ops` package for installation, host operations and offline recovery; that package does not add another product client or a developer mode to this interface.
+OpenKit's user-facing Skill interface is a single Skill named `openkit` with a bundled CLI, and it remains until the remote MCP endpoint covers it. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns that endpoint. The accepted `20260910-agent_operator_skill.md` defines a separate `openkit-ops` package for installation, host operations and offline recovery; that package does not add another product client or a developer mode to this interface.
 
 The Skill teaches an agent how to connect to NanoCore, discover available capabilities, select Chat Mode, Task Mode, or Goal Mode, operate bounded loops, surface Action Center decisions, inspect artifacts and evidence, use knowledge, recover interrupted work, and perform explicitly authorized operator actions.
 
@@ -53,7 +53,7 @@ The interface exposes every supported public end-user and operator capability. P
 
 NanoCore remains the source of truth. The Skill recommends how to work, the CLI validates and transports calls, and NanoCore decides what is valid, authorized, durable, reviewable, and executable.
 
-The accepted change removes the user-facing `@openkit/mcp` package and the four Skills `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev` without compatibility adapters or aliases. Worker-side MCP capability supply is a different plane and remains unchanged.
+The accepted change removes the former user-facing `@openkit/mcp` package and the four Skills `openkit-setup`, `openkit-setup-dev`, `openkit-loop`, and `openkit-loop-dev` without compatibility adapters or aliases. That removal is the former stdio channel. It does not forbid the remote MCP endpoint. Worker-side MCP capability supply is a different plane and remains unchanged.
 
 ## Goals / Non-goals
 
@@ -67,13 +67,13 @@ The accepted change removes the user-facing `@openkit/mcp` package and the four 
 - Keep workflow truth, authorization, approval, idempotency, audit, recovery, and execution in NanoCore.
 - Make capability coverage mechanically auditable as the App API and public Core projections grow.
 - Keep credentials and one-time secret material out of command arguments, normal output, logs, Skill context, artifacts, and knowledge.
-- Replace the user-facing MCP channel, MCP resources, and MCP prompts completely.
+- Replace the former user-facing stdio MCP channel, its MCP resources, and its MCP prompts completely. The remote MCP endpoint is a separate owner and is not that channel.
 - Preserve the distinction between the end-user Agent Skill Interface and worker-side capability supply.
 
 ### Non-goals
 
 - Do not support an OpenKit repository developer Skill, self-improvement Skill, or development-only setup path.
-- Do not retain MCP for clients that cannot execute Skill scripts; those clients are outside this interface contract.
+- Do not retain the former stdio MCP channel for clients that cannot execute Skill scripts. Those clients use the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
 - Do not expose private NanoCore modules, internal routes, raw SQLite, `DATA_ROOT`, raw worker checkpoints, process handles, provider secrets, or runtime credentials.
 - Do not provide a generic HTTP client, arbitrary route caller, arbitrary shell, arbitrary filesystem access, or unrestricted admin escape hatch.
 - Do not move workflow decisions or durable state into Skill text or CLI code.
@@ -89,15 +89,15 @@ The former AI Interface combined four Skills with a user-facing stdio MCP server
 
 The transport remained thin, but every tool schema was advertised as one eager surface, the four Skills repeated setup and loop guidance across audience variants, MCP prompts overlapped Skill guidance, and package documentation had to remain synchronized with all of them.
 
-The underlying architecture does not require MCP. The former `OpenKitNanoCoreClient` already called `@openkit/core-client`, and NanoCore already owned validation, authorization, state transitions, approvals, audit, evidence, recovery, and execution.
+The underlying architecture of that former channel did not require a stdio MCP server. The former `OpenKitNanoCoreClient` already called `@openkit/core-client`, and NanoCore already owned validation, authorization, state transitions, approvals, audit, evidence, recovery, and execution.
 
-The clean design therefore removes the eager transport and retains the valuable layers: a guided agent workflow, typed public operations, Core Client reuse, credential mediation, redaction, and NanoCore-owned product semantics.
+The clean design therefore removes that eager transport and retains the valuable layers: a guided agent workflow, typed public operations, Core Client reuse, credential mediation, redaction, and NanoCore-owned product semantics. That removal does not forbid the remote MCP endpoint. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns it.
 
 ## Live Product Use And Acceptance
 
-The Skill is the primary Agent-facing public product interface and is not limited to capabilities currently exposed by Web UI. Existing supported public reads and commands remain discoverable and composable through the checked catalog. Real-use acceptance and Agent task/benchmark workloads are admitted product use: the caller operates the deployed product through normal public contracts and reads its results. This does not introduce a repository-developer mode inside the Skill; source editing, building, installation, SSH and private host diagnosis remain the Agent host's separately authorized tools and repository/deployment guidance.
+The Skill remains an Agent-facing public product interface until the remote MCP endpoint covers it, and it is not limited to capabilities currently exposed by Web UI. Existing supported public reads and commands remain discoverable and composable through the checked catalog. Real-use acceptance and Agent task/benchmark workloads are admitted product use: the caller operates the deployed product through normal public contracts and reads its results. This does not introduce a repository-developer mode inside the Skill; source editing, building, installation, SSH and private host diagnosis remain the Agent host's separately authorized tools and repository/deployment guidance.
 
-The existing public NanoHost runtime-target observation must be exposed as `nanohost.runtime-target` through Core Client, with its deployment-admin authorization and exact response unchanged. App search and Workspace/Thread dashboard reads are mapped as `app.search`, `workspace.dashboard`, and `thread.dashboard` through the existing Core Client methods. Their handlers enforce the accepted private-thread visibility owner before dependent discovery; Workspace access or an administrator credential alone does not grant another user's private audience. A Web presentation origin is not grounds for excluding these public reads. Session-only account operations and secret-returning operations without a secure named destination remain explicitly excluded. The existing coverage test must continue proving every public operation has one mapping or justified exclusion; this change does not introduce another coverage registry.
+The existing public NanoHost runtime-target observation must be exposed as `nanohost.runtime-target` through Core Client, with its deployment-admin authorization and exact response unchanged. App search and Workspace/Thread dashboard reads are mapped as `app.search`, `workspace.dashboard`, and `thread.dashboard` through the existing Core Client methods. Their handlers enforce the accepted private-thread visibility owner before dependent discovery; Workspace access alone does not grant another user's private audience, and an administrator credential is eligible for that audience under Administrator Eligibility in [Permissions Model](../core/permissions.md), with truthful attribution. A Web presentation origin is not grounds for excluding these public reads. Session-only account operations and secret-returning operations without a secure named destination remain explicitly excluded. The existing coverage test must continue proving every public operation has one mapping or justified exclusion; this change does not introduce another coverage registry.
 
 A direct `references/acceptance.md` explains persistent-instance reuse, selecting scenario state, locating public result and diagnostic records, recording incomplete evidence, and handing a repair back to authorized engineering work. It carries no story answers, fixed call trajectory, schema copies, hidden seeding or new test runner. Product calls continue to use search, describe and call. Audit, Usage and Evidence are read from their existing public owners; optional telemetry is diagnostic support rather than a success oracle.
 
@@ -131,13 +131,13 @@ The CLI calls only public NanoCore behavior through `@openkit/core-client` and s
 
 The CLI operation catalog is a curated agent-facing projection, not a second route catalog. Each operation has exactly one source: `app-api` references an existing App API `operationId`, one existing public Core Client method, and its shared App API schema; `core-projection` references an existing typed `client.core` method and `@openkit/protocol` schema; and `local-only` states why no NanoCore call exists. The catalog must not copy HTTP methods, paths, or payload schemas.
 
-### No user-facing MCP
+### Former user-facing stdio MCP
 
-The `@openkit/mcp` package, `openkit-mcp` binary, stdio JSON-RPC transport, MCP tools, MCP resources, MCP prompts, and MCP-specific configuration are deleted.
+The former `@openkit/mcp` package, `openkit-mcp` binary, stdio JSON-RPC transport, MCP tools, MCP resources, MCP prompts, and MCP-specific configuration of that channel are deleted.
 
-No compatibility server, proxy, alias, redirect, deprecated package, or second operation surface is retained.
+No compatibility server, proxy, alias, redirect, or deprecated package is retained for that stdio channel. The remote MCP endpoint is not that channel and is not a compatibility alias for it. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns the endpoint.
 
-The separately authenticated worker-side MCP capability plane remains governed by `docs/specs/20260704-worker_mcp_tool_supply.md` and is unaffected. Selected Codex Worker AEPs may expose its exact three private capability operations, but they do not recreate a user-facing MCP server, CLI operation family, or compatibility surface.
+The separately authenticated worker-side MCP capability plane remains governed by `docs/specs/20260704-worker_mcp_tool_supply.md` and is unaffected. Selected Codex Worker AEPs may expose its exact three private capability operations, but they do not recreate the former stdio MCP server, a CLI operation family, or a compatibility surface.
 
 ## Contract / Expected Behavior
 
@@ -152,7 +152,7 @@ An AI application is supported by this interface only when it can:
 - provide stdin and read stdout, stderr, and process exit status
 - protect local credential storage and environment state according to the host's security model
 
-MCP-only hosts without Skill script execution are intentionally unsupported.
+A client that cannot execute Skill scripts is outside this Skill contract. It uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
 
 ### Skill package contract
 
@@ -416,7 +416,7 @@ All ten provider-subscription operations are present in the existing literal `ap
 
 The seven NanoHost transport operations map through that same generic path to `client.app` methods and shared App API schemas. They write secrets only to named execution-host slots and return redacted inventory; they add no CLI credential destination, alias, or second delivery path.
 
-Repository checks enforce public-operation coverage and reject a reachable user-facing MCP package, binary, import, script, release step, Skill metadata entry, active-guide projection, or one of the four former Skill directories. The former user-facing MCP implementation and its dedicated acceptance platform are deleted without an alias or compatibility path.
+Repository checks enforce public-operation coverage and reject a reachable former user-facing stdio MCP package, binary, import, script, release step, Skill metadata entry, active-guide projection, or one of the four former Skill directories. That check does not apply to the remote MCP endpoint. The former user-facing MCP implementation and its dedicated acceptance platform are deleted without an alias or compatibility path.
 
 `scripts/package-release-assets.mjs` now archives the complete Skill and repository license from the tagged Git revision, preserves the executable bit of `skills/openkit/scripts/openkit`, and writes `SHA256SUMS`; the tag workflow publishes and independently verifies those two portable assets.
 
@@ -424,13 +424,13 @@ NanoCore remains authoritative for validation, authorization, idempotency, state
 
 ## Alternatives Considered
 
-### Split the MCP server into capability-specific servers
+### Split the former stdio MCP server into capability-specific servers
 
-Rejected. It moves the eager catalog into multiple configuration units and adds server selection, installation, and release coordination without simplifying the canonical user interface.
+Rejected for that server. It would have moved the eager catalog into multiple configuration units and added server selection, installation, and release coordination without simplifying the Skill interface.
 
-### Keep MCP and add one Skill as a router
+### Keep the former stdio MCP server and add one Skill as a router
 
-Rejected. It preserves two release artifacts, continues MCP schema advertisement and host configuration, and retains duplicated MCP prompts and Skill guidance.
+Rejected for that server. It would have preserved the stdio release artifact, continued its schema advertisement and host configuration, and retained duplicated MCP prompts and Skill guidance. The remote MCP endpoint is a separate owner.
 
 ### Keep the four Skills and replace only MCP with CLI
 
@@ -444,16 +444,16 @@ Rejected. It bypasses product operation curation, duplicates endpoint knowledge 
 
 Rejected for the first implementation. Search, describe, and typed call provide the smallest complete agent interface; convenience commands must be earned by observed failures.
 
-### Keep MCP for hosts without shell execution
+### Keep the former stdio MCP channel for hosts without shell execution
 
-Rejected. The chosen product interface explicitly requires a Skill-capable host that can execute bundled scripts, and OpenKit does not preserve an additional channel without a current product requirement.
+Rejected for that channel. This Skill interface requires a Skill-capable host that can execute bundled scripts. A client that cannot do so uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md). That endpoint is a separate accepted binding and is not a compatibility revival of the deleted stdio package.
 
 ## Consequences
 
 - Initial agent context becomes small even as public capability count grows.
 - Setup, loop methodology, recovery guidance, and capability use ship in one end-user package.
-- Agent hosts need Skill installation and bundled script execution instead of MCP configuration.
-- User-facing MCP-only clients stop being supported.
+- Agent hosts of this Skill need Skill installation and bundled script execution.
+- A client that cannot execute Skill scripts uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md) instead of this Skill.
 - CLI and Skill releases must remain aligned with NanoCore public contracts.
 - All public end-user/operator capabilities gain an explicit coverage decision.
 - The repository deletes a package, four Skill folders, MCP protocol code, resources, prompts, tests, and release wiring.
@@ -466,10 +466,10 @@ Rejected. The chosen product interface explicitly requires a Skill-capable host 
 3. Add tests for CLI discovery, description, invocation, envelopes, redaction, auth, and capability coverage.
 4. Extract a transport-neutral operation catalog from the existing tested mappings and implement the bundled CLI.
 5. Create and validate the single `openkit` Skill with only end-user guidance and progressively loaded references.
-6. Replace MCP acceptance with lower-layer coverage, one representative local Skill-plus-CLI story, existing auth-owned server evidence, and one real progressive-discovery story.
-7. Delete `mcp/`, all MCP-only wiring, and the four legacy Skill directories in the same implementation change sequence.
+6. Replace former stdio MCP acceptance with lower-layer coverage, one representative local Skill-plus-CLI story, existing auth-owned server evidence, and one real progressive-discovery story.
+7. Delete `mcp/`, all former stdio MCP wiring, and the four legacy Skill directories in the same implementation change sequence.
 8. Update every active implementation projection, command, package inventory, release gate, and current guide after deletion.
-9. Close the change record only when repository searches and release verification show no reachable user-facing MCP or legacy Skill surface.
+9. Close the change record only when repository searches and release verification show no reachable former user-facing stdio MCP package or legacy Skill surface.
 
 No compatibility period, alias, dual transport, or migration shim is permitted.
 
@@ -483,7 +483,7 @@ Coverage is proportional: complete capability mapping is static and contract-tes
 - `SKILL.md` contains only the permitted frontmatter fields, stays below 500 lines, links every reference directly, and contains no developer-only mode.
 - Operation coverage fails when a public end-user/operator App API operation or typed Core projection has neither a CLI mapping nor an accepted exclusion.
 - Operation coverage reads the checked App API OpenAPI catalog and rejects CLI-owned copies of route methods, paths, request schemas, or response schemas.
-- Repository checks reject reachable user-facing MCP and legacy Skill surfaces after deletion by scanning current package directories, workspace dependencies, imports, binaries, scripts, release wiring, Skill metadata, and active guides. Canonical removal rules, historical records, and worker-side MCP design may retain those names.
+- Repository checks reject a reachable former user-facing stdio MCP package and legacy Skill surfaces after deletion by scanning current package directories, workspace dependencies, imports, binaries, scripts, release wiring, Skill metadata, and active guides. That check does not apply to the remote MCP endpoint. Canonical removal rules, historical records, and worker-side MCP design may retain those names.
 
 ### L1
 
@@ -506,13 +506,13 @@ Coverage is proportional: complete capability mapping is static and contract-tes
 ### L5
 
 - The packaged Skill artifact can execute its bundled CLI from a clean supported host setup.
-- Build and smoke tests run without the MCP package or MCP configuration.
+- Build and smoke tests run without the former MCP package or its configuration.
 
 ### L6
 
 - One real-agent story starts with only Skill metadata, loads `SKILL.md` and one relevant reference, discovers an operation not named in `SKILL.md`, describes and calls it, and completes a bounded loop without loading the complete catalog.
 - Legacy stories remain only when they prove a distinct risk not covered at L0-L3; confirmed defects are reduced to the lowest sufficient deterministic regression.
-- L6 may use the ordinary Skill for deployed-product acceptance. It must not depend on a separate developer Skill, private repository manipulation inside the CLI, user-facing MCP tool, MCP resource, or MCP prompt.
+- L6 may use the ordinary Skill for deployed-product acceptance. It must not depend on a separate developer Skill, private repository manipulation inside the CLI, a former user-facing stdio MCP tool, MCP resource, or MCP prompt.
 
 ## Risks & Mitigations
 
@@ -534,7 +534,7 @@ Mitigation: reuse Core Client and shared schemas and enforce public-operation co
 
 ### Risk: Unsupported hosts lose access
 
-Mitigation: state the Skill-plus-command host requirement explicitly. Do not reintroduce MCP without a new accepted product decision.
+Mitigation: state the Skill-plus-command host requirement explicitly. Do not revive the former stdio MCP package. The remote MCP endpoint is owned by [Remote MCP Interface](20261002-remote_mcp_interface.md) and is not a compatibility revival of that package.
 
 ### Risk: Progressive references still duplicate operation schemas
 
@@ -553,7 +553,7 @@ None. The clean replacement, audience, package shape, command families, capabili
 - Human-oriented formatted CLI output, interactive prompts, and shell completion may be added only after the agent-first JSON interface is stable.
 - Convenience subcommands may be added when real operation traces show repeated search/describe/call errors.
 - Additional Agent host distributions may package the same canonical Skill artifact without changing its contract.
-- A future product decision may add another user channel, but it must not revive MCP as a compatibility measure.
+- A future product decision may add another user channel. It must not revive the former stdio MCP package as a compatibility measure. The remote MCP endpoint is already an accepted owner and is not that revival.
 
 ## Links
 
@@ -563,4 +563,5 @@ None. The clean replacement, audience, package shape, command families, capabili
 - `docs/specs/20260704-remote_auth_credential_bootstrap.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/20260704-worker_mcp_tool_supply.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `skills/README.md`

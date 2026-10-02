@@ -366,7 +366,7 @@ Minimum facts:
 
 If any required membership fact is unavailable to the ordinary centralized Workspace resolver, it denies the request. `defer` is available only to an already accepted governed workflow whose owning specification defines how the missing fact becomes available; it is not a request-authorization fallback. Server mode must not silently fall back to local implicit-owner assumptions for Workspace policy.
 
-Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential proves deployment-administration authority only; it does not synthesize Workspace membership or an owner/editor/viewer role. Any future break-glass content path requires a separate accepted design, an explicit reason, a bounded grant, and durable audit.
+Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential does not synthesize Workspace membership or an owner/editor/viewer role. A currently usable administrator credential is eligible for Workspace content operations under the Administrator Eligibility rule in `docs/core/permissions.md`, which records the administrator as the actor.
 
 The active-member association is adapter vocabulary; fixed owner/editor/viewer ceilings remain only in the pre-cutover runtime. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
 
@@ -381,7 +381,7 @@ The active-member association is adapter vocabulary; fixed owner/editor/viewer c
 - Policy changes during an active worker session should update future gateway checks, including the re-evaluation of a captured call before it executes; mark the session stale when setup or resource assumptions changed, so a successor applies them at the next Turn; and interrupt or recycle the session only when a newly denied high-risk external action would otherwise remain possible. A change to in-Sandbox tools is not a reason to interrupt a Turn.
 - Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
 - Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
-- Deployment-administrator authority and Workspace content authority are separate; `server-admin` has no implicit content bypass. This registry does not treat `server-admin` as a content right. Credential eligibility is not decided here. [Operation Definition](20261002-operation_definition.md) names that authorizer rule and the owning documents whose amendments are pending.
+- Deployment-administrator authority and Workspace content authority are separate rights in this registry, and this registry does not treat `server-admin` as a content right. Credential eligibility is not decided here; an administrator's eligibility for content operations comes from the Administrator Eligibility rule in `docs/core/permissions.md`, not from this registry.
 
 ## Deferred / Future Work
 

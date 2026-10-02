@@ -98,6 +98,7 @@ Kernel, protocol, and product surfaces:
 
 - [`20260715-contract_stability_baseline.md`](./20260715-contract_stability_baseline.md)
 - [Operation Definition](20261002-operation_definition.md): one browser-safe declarative definition per operation, the typed implementation join, trusted invocation, and derived projections.
+- [Remote MCP Interface](20261002-remote_mcp_interface.md): the remote MCP endpoint on the configured public origin, its Streamable HTTP posture, and static-bearer admission.
 - [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - [`20260628-nanocore_config_identity_contract.md`](./20260628-nanocore_config_identity_contract.md)
 - [`20260704-nanocore_bootstrap_readiness.md`](./20260704-nanocore_bootstrap_readiness.md)

@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-02
+updated: "2026-10-02"
 ---
 # Remote Auth Credential Bootstrap
 
@@ -16,6 +16,7 @@ updated: 2026-09-02
 - Human remote-access token rotation, revocation, and the independence of human-owned `Token` and `AuthSession` revocation.
 - The actor-context resolution and audit-label binding for human remote-access token-authenticated requests.
 - The stopped-server local operator procedure for discovering active Users and recovering one new `server-admin` credential after every usable administrator credential is unavailable.
+- The remote MCP static bearer, which is an ordinary human remote-access Token, and the accepted browser OAuth design. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns endpoint admission.
 
 ## Does Not Own
 
@@ -26,7 +27,8 @@ updated: 2026-09-02
 - Better Auth implementation details, table layout, or session-cookie mechanics beyond their appearance in the Current Implementation Projection.
 - Worker sandbox session tokens and lease-bound worker authentication, owned by the scheduler and worker control protocol specs.
 - The NanoHost transport token family owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`: its tokens belong to a configured NanoHost `IntegrationIdentity`, use the distinct `nanohost-transport` token type and scope, authenticate only the NanoCore-to-NanoHost transport, and follow that specification's lifecycle. Reuse is limited to the `okt_` opaque-secret format, CSPRNG generation, hashing, constant-time verification, and redaction primitives; that reuse transfers no authority to this specification.
-- Workspace membership recovery. The local operator procedure does not make its target a Workspace member; a recovered server-admin Token, when presented, has the ordinary cross-Workspace bearer authority defined by the Permissions Model, with private audience isolation preserved.
+- Workspace membership recovery. The local operator procedure does not make its target a Workspace member. Presented use of the recovered Token follows the administrator-credential rules in Scopes.
+- The remote MCP endpoint, its transport, and its authentication admission. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns them.
 
 ## Core References
 
@@ -39,7 +41,7 @@ updated: 2026-09-02
 
 This spec fills the remote-auth gap deferred by `docs/specs/20260628-nanocore_config_identity_contract.md`: how a server-mode NanoCore deployment mints its first credential, how the bundled CLI and remote coordinators authenticate afterward, how Skill-capable clients store credential material safely, and how an operator with exclusive stopped-server control recovers one administrator credential without reopening bootstrap.
 
-The clean target for human remote access is a single credential family: server-issued opaque access tokens owned by a responsible human `User` and realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to the small closed human remote-access scope set below. Server mode mints a one-time owner bootstrap token on first boot and delivers it only through the secure operator mechanism defined below; local mode keeps its implicit local-user posture unchanged. The bundled CLI authenticates with `OPENKIT_NANOCORE_TOKEN` as an explicit ephemeral bearer-token override or resolves a persistent token from supported credential storage. Clients prefer a secret-safe OS credential-store writer and otherwise use the permitted encrypted fallback, never plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP.
+The clean target for human remote access is a single credential family: server-issued opaque access tokens owned by a responsible human `User` and realizing the `Token` identity concept. Tokens carry a `okt_` prefix for leak scanning, are stored hashed, are shown exactly once at issuance, and belong to the small closed human remote-access scope set below. Server mode mints a one-time owner bootstrap token on first boot and delivers it only through the secure operator mechanism defined below; local mode keeps its implicit local-user posture unchanged. The bundled CLI authenticates with `OPENKIT_NANOCORE_TOKEN` as an explicit ephemeral bearer-token override or resolves a persistent token from supported credential storage. Clients prefer a secret-safe OS credential-store writer and otherwise use the permitted encrypted fallback, never plaintext config. Bearer tokens are refused over non-loopback plaintext HTTP. The remote MCP static bearer is an ordinary Token of this family. Browser OAuth is accepted design and is not implemented.
 
 ## Goals
 
@@ -48,11 +50,11 @@ The clean target for human remote access is a single credential family: server-i
 - Give the bundled CLI a first-class, scoped, revocable credential instead of forwarded raw headers.
 - Bind every token-authenticated request to an explicit actor context that flows into audit labels.
 - Keep client machines free of plaintext token material at rest.
-- Intersect every Workspace-addressed bearer request with current credential and policy facts, and require active membership except for the explicit presented server-admin bearer exception.
+- Intersect every Workspace-addressed request with current credential and policy facts, and apply the membership requirements and administrator-credential exception defined in Scopes.
 
 ## Non-goals
 
-- Do not design OAuth flows, device pairing, browser login UX, or federated identity for v1.
+- Do not implement browser OAuth in this release. The accepted design is recorded in Browser OAuth and is not implemented. Do not design Dynamic Client Registration, rotating refresh tokens, an external identity provider, SSO, OIDC ID tokens, userinfo, JWKS, device flow, the client-credentials grant, remembered consent, or an RFC 7009 revocation endpoint. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
 - Do not change local-mode loopback trust or the implicit local user posture.
 - Do not define permission policy semantics; scopes here are authentication-layer coarse gates, not the policy model.
 - Do not preserve the raw cookie/authorization env-var passthrough as a compatibility alias.
@@ -90,7 +92,7 @@ NanoCore owns opaque access-token issuance and verification as the remote channe
 
 Human remote-access token scopes are a small closed set in v1:
 
-- `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations; when presented as a usable bearer it also grants cross-Workspace operation eligibility, including Task execution, while preserving private conversation isolation and effect-specific checks.
+- `server-admin`: deployment-administration authority, including token issuance and revocation, user administration, server config, backup, recovery, and data-root operations. A currently usable administrator credential, the administrator's Web session or a presented `server-admin` bearer, also grants cross-Workspace operation eligibility, including Task execution and operations on another user's resources. This scope does not exclude that credential from another user's private conversation or from another user's Tokens. Effect-specific checks stay. Attribution stays truthful: the administrator is the recorded actor and does not impersonate the affected user. The ruling is recorded in [Administrator Authority](../decisions/20261002-administrator_authority.md).
 - `workspace`: read and write product operations bound to an explicit list of workspace ids recorded on the token.
 - `workspace-readonly`: read-only product operations bound to an explicit list of workspace ids.
 
@@ -101,7 +103,7 @@ Rules:
 - A human remote-access token MUST carry exactly one scope. Human remote-access `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; human remote-access `server-admin` tokens MUST NOT carry workspace bindings.
 - Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
-- Every Workspace-addressed product request MUST check the current canonical User, credential usability, target and policy. Better Auth sessions and Workspace-scoped bearer Tokens require active membership; Workspace-scoped Tokens additionally require matching bindings. A presented usable `server-admin` bearer grants cross-Workspace eligibility without membership or Workspace bindings, including Task execution; it never bypasses private audience checks. Missing required authority verification fails closed.
+- Every Workspace-addressed product request MUST check the current canonical User, credential usability, target and policy. Better Auth sessions and Workspace-scoped bearer Tokens require active membership; Workspace-scoped Tokens additionally require matching bindings. A presented usable administrator credential, the administrator's Web session or a `server-admin` bearer, grants cross-Workspace eligibility without membership or Workspace bindings, including Task execution. This specification does not exclude that credential from another user's private audience or from another user's Tokens. Attribution stays truthful: the administrator is the recorded actor and does not impersonate the affected user. Effect-specific checks stay. A `workspace-readonly` credential stays read-only. Missing required authority verification fails closed. The ruling is recorded in [Administrator Authority](../decisions/20261002-administrator_authority.md).
 - Membership tombstones, implicit-revival prohibition, and explicit reactivation follow `docs/core/identity.md`. Workspace creation and workspace import MUST record the owner membership transactionally and MUST NOT replace the first workspace registry owner.
 - Global App Search requests made by `workspace` or `workspace-readonly` tokens MUST search only token-bound workspaces with active membership. The same visible workspace set MUST constrain workspace, thread, knowledge, artifact, and item results; removing active membership MUST remove that workspace from subsequent search results and the removal MUST survive NanoCore restart.
 - Deployment-wide administration routes MUST accept the implicit local actor in local mode, a presented `server-admin` token actor, or a Better Auth session actor whose active canonical User owns at least one currently usable `server-admin` Token. A Better Auth session alone, a `workspace` token, or a `workspace-readonly` token MUST NOT confer deployment administration authority.
@@ -125,6 +127,10 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 - Token verification failures MUST be indistinguishable between unknown, expired, revoked, and malformed tokens in the response body, and MUST NOT echo the presented value.
 - Tokens MUST NOT be accepted from query strings, request bodies, or cookies. The bearer header is the only token transport.
 - Better Auth session cookies remain a valid authentication path for browser product surfaces; this spec adds token authentication beside it, and both resolve to the same actor-context shape.
+
+### Remote MCP static bearer
+
+The remote MCP static bearer is an ordinary human remote-access Token. It uses the existing kinds `server-admin`, `workspace`, and `workspace-readonly`, the existing administrator-only issuance, the existing expiration, and the existing revocation. No refresh token is issued. Listing and revocation stay with the administrator. The user places the Token in the client header configuration. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns admission of that header at the endpoint. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
 
 ### Client credential storage
 
@@ -170,6 +176,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 - `server-admin` authority MUST be able to list, issue, rotate, and revoke Tokens through public App API routes; those routes are the only Token administration surface, and bundled CLI Token-administration operations MUST be facades over them. Issuance MAY name another exact active canonical `ownerUserId`; Workspace-scoped issuance MUST validate the target owner's active membership in every bound Workspace rather than the administrator's membership.
 - NanoCore MAY derive deployment-admin authority for a Better Auth session from the active canonical User's currently usable owned `server-admin` Tokens. The session remains the authenticating credential and `kind=session`; a distinct non-secret derived-authority Token ID MAY be attached for attribution, MUST NOT be represented as a presented bearer `tokenId`, and MUST NOT update that Token's `last_used_*` fields.
 - A User MAY own multiple `server-admin` Tokens and MAY select one usable owned Token as the attribution default. NanoCore stores only that non-secret Token ID, validates ownership, scope, and usability on every read, and otherwise deterministically selects a usable owned Token; the default pointer never creates authority, a sole usable Token is automatically effective, and a dangling or unusable pointer falls back or denies without repair. A Token rotated within its existing grace period remains usable under the same Token lifecycle rules.
+- A currently usable administrator credential is eligible for the public Token administration routes, including Tokens owned by another user, and for the acting administrator's own server-admin Token metadata and default selection. The administrator's Web session and an administrator bearer are both eligible for that metadata and default selection. A bearer that is not a currently usable administrator credential remains ineligible for it. Attribution records the administrator as the actor and does not impersonate the Token's owner. A read-only credential stays read-only. Revocation and expiry apply. The ruling is recorded in [Administrator Authority](../decisions/20261002-administrator_authority.md).
 - A durable human access-token row whose scope is outside the closed set above is not a historical read-model variant and MUST NOT be projected, authenticated, rewritten into a current scope, or retained behind a compatibility filter. The one accepted retirement is a one-way Core migration that deletes an exact `workspace-readwrite` row only when its durable status is already `revoked` and no surviving Token row names it as `predecessorTokenId`. The same transaction MUST append one redacted server-owned system `AuditEvent` for each retired Token, preserve every pre-existing audit row, delete the candidate, prove no unsupported scope remains, and publish the migration ledger entry. Any unproved lineage, audit-publication failure, non-revoked `workspace-readwrite` row, or other unsupported scope MUST roll back Token deletion, new audit rows, and ledger publication and block product startup without deleting, reissuing, rotating, or repairing a Token. A later retry is a new boot after explicit operator correction through a separately accepted recovery owner; normal boot invents no recovery authority.
 
 ## Accepted Design
@@ -189,17 +196,18 @@ The NanoCore token, bootstrap, authorization, audit, `@openkit/core-client`, bun
 - Server mode uses Better Auth for session authentication; `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode auth for protected APIs. Token verification lands beside it in the same middleware layer.
 - Local mode resolves the implicit local user via `LOCAL_USER_ID`; this spec does not change that path.
 - NanoCore implements `okt_` opaque secret generation with at least 256 bits of entropy, versioned SHA-256 token hashing, constant-time verification, closed v1 scope-shape validation, active / expired / revoked / rotated usability checks, durable server-scope `openkit_access_tokens` records, and server-mode bearer verification in `apps/nanocore/src/auth/middleware.ts`. Current token records are owned by a human `User`; no `AutomationIdentity` token owner or membership path is implemented. Protected routes resolve token actors without exposing token material, and NanoCore refuses bearer tokens over non-loopback plaintext HTTP before verification.
-- NanoCore exposes `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`; presented `server-admin` token actors and session actors with Token-derived deployment-admin authority can administer Tokens, list/revoke/rotate responses expose only redacted records, and create/rotate return plaintext once. Canonical-user self-service routes accept an implicit local actor or a server-mode session, reject OpenKit bearer actors, and expose the acting User's redacted `server-admin` Token metadata and effective default ID and accept an owned usable default selection; they never expose a hash or plaintext. `@openkit/core-client` exposes the same routes, while the bundled CLI exposes `token.list` and `token.revoke`, exposes `token.my-admin-list` and `token.my-admin-default` only through implicit local identity, and machine-checks create/rotate as explicit exclusions until a safe named destination exists. Successful CLI-authenticated requests send stable `openkit-cli` / `agent-skill` channel metadata for the redacted last-used summary.
+- NanoCore exposes `GET /api/app/auth/tokens`, `POST /api/app/auth/tokens`, `POST /api/app/auth/tokens/:tokenId/revoke`, and `POST /api/app/auth/tokens/:tokenId/rotate`; presented `server-admin` token actors and session actors with Token-derived deployment-admin authority can administer Tokens, list/revoke/rotate responses expose only redacted records, and create/rotate return plaintext once. Canonical-user self-service routes accept an implicit local actor or a server-mode session and expose the acting User's redacted `server-admin` Token metadata and effective default ID and accept an owned usable default selection. Current handlers still reject every OpenKit bearer actor, including a currently usable administrator bearer, so the accepted eligibility of that bearer on these routes is not yet implemented. They never expose a hash or plaintext. `@openkit/core-client` exposes the same routes, while the bundled CLI exposes `token.list` and `token.revoke`, exposes `token.my-admin-list` and `token.my-admin-default` only through implicit local identity, and machine-checks create/rotate as explicit exclusions until a safe named destination exists. Successful CLI-authenticated requests send stable `openkit-cli` / `agent-skill` channel metadata for the redacted last-used summary.
 - The closed-scope write and response schemas and the one-way Core migration are implemented. The migration removes only exact unreferenced revoked `workspace-readwrite` history, appends one redacted server system audit event per removal, rejects every other unsupported durable scope, and publishes its ledger entry in the same transaction; the token-list route and exact presented-secret authentication remain unchanged.
-- Better Auth session actors and every bearer-token actor, including `server-admin`, require active membership for workspace-addressed requests; a missing membership verifier fails closed, workspace-scoped tokens additionally enforce route-level workspace bindings, and workspace-readonly tokens reject mutating methods with non-echoing `core.auth.scope_forbidden` failures. Server-mode first boot issues a distinct one-time bootstrap token when the OpenKit `users` table is empty, writes the plaintext only to an owner-readable data-root emission file, and exposes `POST /api/app/auth/bootstrap/consume` as the public one-shot route that atomically creates the owner `User`, its email/password credential, and the first `server-admin` access token once.
+- Workspace-scoped bearer tokens require active membership for workspace-addressed requests, and a missing membership verifier fails closed. Those tokens additionally enforce route-level workspace bindings, and workspace-readonly tokens reject mutating methods with non-echoing `core.auth.scope_forbidden` failures. A presented usable `server-admin` bearer does not require membership. Current private-audience checks still compare the actor with the private owner and do not yet apply the accepted rule that this specification does not exclude a currently usable administrator credential from another user's private audience. Server-mode first boot issues a distinct one-time bootstrap token when the OpenKit `users` table is empty, writes the plaintext only to an owner-readable data-root emission file, and exposes `POST /api/app/auth/bootstrap/consume` as the public one-shot route that atomically creates the owner `User`, its email/password credential, and the first `server-admin` access token once.
 - Successful bootstrap consumption, access-token issuance, token revocation, and token rotation now emit server-owned general `AuditEvent` rows through the existing audit recorder. The rows use stable token lifecycle action names and redacted token ids, scopes, owners, and authenticated actor ids when present; they do not store bootstrap token values, plaintext `okt_` secrets, token hashes, keychain material, fallback encrypted-file contents, or authorization headers.
 - Token records target the server-scope database in the layout owned by `docs/specs/20260703-storage_layout_record_ownership.md`.
-- Current middleware preserves deployment administration while keeping Token-derived session authority distinct from the authenticating credential and requiring the active session User to pass the same Workspace membership and policy checks as every other session actor before accessing Workspace content.
+- Current middleware preserves deployment administration while keeping Token-derived session authority distinct from the authenticating credential. The active session User still passes the same Workspace membership and policy checks as every other session actor before accessing Workspace content, so the accepted eligibility of an administrator's Web session for another user's resources is not yet implemented in that check. The session user remains the recorded actor.
+- Browser OAuth is not implemented. NanoCore does not serve protected-resource metadata, authorization-server metadata, an authorization-code grant, or a refresh token. Remote MCP endpoint admission is not implemented in this tree. [Remote MCP Interface](20261002-remote_mcp_interface.md) records the saved prototype.
 
 ## Alternatives Considered
 
 - JWT or other stateless self-verifying tokens. Rejected: immediate revocation requires a server-side denylist anyway, which erases the statelessness benefit; opaque server-checked tokens are simpler, keep no claims to version, and match the single-NanoCore deployment shape. Revocation and simplicity win.
-- OAuth 2.0 device authorization flow for desktop pairing. Deferred: it is the right long-term UX for pairing an AI application with a remote NanoCore, but it needs a browser surface, client registration, and consent UI that do not exist yet. The token contract here is the substrate a device flow would mint into.
+- OAuth 2.0 device authorization flow. Not designed. Browser OAuth, recorded below, is the accepted and unimplemented design for a client that has no per-user static header. Device flow is in the cut list of that section.
 - Keeping the raw cookie/authorization env-var passthrough beside tokens. Rejected: two parallel channel-auth contracts guarantee drift, and the passthrough has no scoping, rotation, or audit identity.
 - Better Auth API-key plugin as the token implementation. Not rejected as an implementation choice — it MAY satisfy this contract — but the contract is owned here in OpenKit terms so the provider remains swappable, consistent with the Better Auth posture in the config identity contract.
 - mTLS client certificates for channel auth. Rejected for v1: certificate provisioning and renewal on end-user desktops is heavier than the problem requires; TLS remains a transport requirement, not an identity mechanism.
@@ -260,9 +268,27 @@ The separate owning specification required for scheduled automation responsibili
 
 Previously open questions are resolved by accepted V1 defaults: the encrypted fallback file uses a machine-scoped key when no secret-safe OS credential writer is available; `workspace` tokens bind to an explicit Workspace list only, and wildcard Workspace binding is deferred until its audit and revocation semantics are designed.
 
+## Browser OAuth
+
+This design is accepted and is not implemented. The first release authenticates a remote MCP client only with the static bearer defined above. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
+
+Both connection methods end in the same existing opaque `okt_` Token owned by the User, checked by the existing verifier and the existing central authorization. There is no second login, no new identity record, no JWT, and no external identity provider.
+
+Browser OAuth is the authorization code grant with PKCE S256. Client identity is a Client ID Metadata Document. The user adds the endpoint URL in the client. The browser opens the existing OpenKit login. A consent page names the client identity URL, the callback host, the exact User, the Workspace bindings, the capability kind, and the expiry. The capability kind is read-only or read-write, and administrator only for a current administrator. OpenKit then issues an ordinary Token whose audience is the MCP resource. No refresh token is issued. When that Token expires, the user authorizes again. Authorization codes are short-lived process state. A restart fails closed, and the user authorizes again. No durable workflow is added for them.
+
+The static bearer remains the ordinary Token the user places in the client header configuration.
+
+The OAuth profile cannot be claimed without protected-resource metadata (RFC 9728), a Bearer 401 challenge, authorization-server metadata (RFC 8414) that advertises only what is implemented, PKCE S256, resource and audience binding, exact redirect matching with the native loopback port exception, `iss` in the authorization response, and single-use codes. A code is bound to the client, the User, the redirect, the resource, the kind, the bindings, and the challenge. The grant uses HTTPS through the one configured public origin. [Remote MCP Interface](20261002-remote_mcp_interface.md) serves the protected-resource metadata and carries the challenge pointer, and only once this design is implemented. This section does not name endpoint paths.
+
+The following are not designed.
+
+- Dynamic Client Registration. It is deprecated in the current MCP authorization revision, and it would add a public registration endpoint, persisted client records, and an abuse surface. Clients that need it already support a static header. Revisit when a user needs URL-only OAuth from a client without a Client ID Metadata Document.
+- Rotating refresh tokens. They would add a refresh family, single-use rotation, replay invalidation, and lost-response handling. An OAuth-issued Token has a configurable default lifetime, and the user authorizes again through the browser when it expires; no refresh token is issued. An opaque Token is revocable on the next request. Revisit when reconnect frequency becomes a user complaint or a security requirement asks for short-lived tokens.
+- An external identity provider, SSO, OIDC ID tokens, userinfo, JWKS, device flow, the client-credentials grant, remembered consent, and an RFC 7009 revocation endpoint.
+
 ## Deferred / Future Work
 
-- OAuth-style device-flow pairing so a Skill-capable AI application can acquire a token through a browser consent step instead of manual issuance.
+- Browser OAuth above is accepted design and is not implemented. The cut list in that section is not deferred design.
 - Dedicated `AutomationIdentity` token issuance, administration, and independent Workspace-membership rules remain deferred. The bounded recurring responsible-user binding is owned separately by the recurring specification and grants none of those capabilities.
 - Fine-grained token scopes (per-capability, per-thread, time-boxed step tokens) beyond the closed v1 set.
 - Web UI token administration surfaces projecting the token read models.
@@ -275,6 +301,9 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 - `docs/core/audit.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
+- `docs/decisions/20261002-remote_mcp_authentication.md`
+- `docs/decisions/20261002-administrator_authority.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260703-policy_enforcement_mapping.md`
 - `docs/specs/20260703-vault_secret_injection.md`
