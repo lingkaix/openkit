@@ -54,7 +54,7 @@ The clean target for human remote access is a single credential family: server-i
 
 ## Non-goals
 
-- Do not implement browser OAuth in this release. The accepted design is recorded in Browser OAuth and is not implemented. Do not design Dynamic Client Registration, rotating refresh tokens, an external identity provider, SSO, OIDC ID tokens, userinfo, JWKS, device flow, the client-credentials grant, remembered consent, or an RFC 7009 revocation endpoint. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
+- Do not implement browser OAuth in this release. The accepted design is recorded in Browser OAuth and is not implemented. Do not design Dynamic Client Registration, rotating refresh tokens, an external identity provider, SSO, OIDC ID tokens, userinfo, JWKS, device flow, the client-credentials grant, remembered consent, or an RFC 7009 revocation endpoint. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 - Do not change local-mode loopback trust or the implicit local user posture.
 - Do not define permission policy semantics; scopes here are authentication-layer coarse gates, not the policy model.
 - Do not preserve the raw cookie/authorization env-var passthrough as a compatibility alias.
@@ -130,7 +130,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 
 ### Remote MCP static bearer
 
-The remote MCP static bearer is an ordinary human remote-access Token. It uses the existing kinds `server-admin`, `workspace`, and `workspace-readonly`, the existing administrator-only issuance, the existing expiration, and the existing revocation. No refresh token is issued. Listing and revocation stay with the administrator. The user places the Token in the client header configuration. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns admission of that header at the endpoint. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
+The remote MCP static bearer is an ordinary human remote-access Token. It uses the existing kinds `server-admin`, `workspace`, and `workspace-readonly`, the existing administrator-only issuance, the existing expiration, and the existing revocation. No refresh token is issued. Listing and revocation stay with the administrator. The user places the Token in the client header configuration. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns admission of that header at the endpoint. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 
 ### Client credential storage
 
@@ -270,7 +270,7 @@ Previously open questions are resolved by accepted V1 defaults: the encrypted fa
 
 ## Browser OAuth
 
-This design is accepted and is not implemented. The first release authenticates a remote MCP client only with the static bearer defined above. The ruling is recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
+This design is accepted and is not implemented. The first release authenticates a remote MCP client only with the static bearer defined above. The ruling is recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 
 Both connection methods end in the same existing opaque `okt_` Token owned by the User, checked by the existing verifier and the existing central authorization. There is no second login, no new identity record, no JWT, and no external identity provider.
 
@@ -282,8 +282,8 @@ The OAuth profile cannot be claimed without protected-resource metadata (RFC 972
 
 The following are not designed.
 
-- Dynamic Client Registration. It is deprecated in the current MCP authorization revision, and it would add a public registration endpoint, persisted client records, and an abuse surface. Clients that need it already support a static header. Revisit when a user needs URL-only OAuth from a client without a Client ID Metadata Document.
-- Rotating refresh tokens. They would add a refresh family, single-use rotation, replay invalidation, and lost-response handling. An OAuth-issued Token has a configurable default lifetime, and the user authorizes again through the browser when it expires; no refresh token is issued. An opaque Token is revocable on the next request. Revisit when reconnect frequency becomes a user complaint or a security requirement asks for short-lived tokens.
+- Dynamic Client Registration. It is deprecated in the current MCP authorization revision, and it would add a public registration endpoint, persisted client records, and an abuse surface. Clients that need it already support a static header.
+- Rotating refresh tokens. They would add a refresh family, single-use rotation, replay invalidation, and lost-response handling. An OAuth-issued Token has a configurable default lifetime, and the user authorizes again through the browser when it expires; no refresh token is issued. An opaque Token is revocable on the next request.
 - An external identity provider, SSO, OIDC ID tokens, userinfo, JWKS, device flow, the client-credentials grant, remembered consent, and an RFC 7009 revocation endpoint.
 
 ## Deferred / Future Work
@@ -302,7 +302,7 @@ The following are not designed.
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20261002-remote_mcp_interface.md`
-- `docs/decisions/20261002-remote_mcp_authentication.md`
+- `docs/decisions/20261002-remote_mcp_static_bearer_first.md`
 - `docs/decisions/20261002-administrator_authority.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260703-policy_enforcement_mapping.md`

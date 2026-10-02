@@ -1,14 +1,14 @@
 ---
-status: Superseded
-superseded-by: docs/decisions/20261002-remote_mcp_static_bearer_first.md
+status: Accepted
 date: "2026-10-02"
 decider: Engineer, on the coordinator's recommendation
+supersedes: docs/decisions/20261002-remote_mcp_authentication.md
 ---
-# Remote MCP Authentication
+# Remote MCP Ships With A Static Bearer First
 
 ## Decision
 
-The engineer ruled on 2026-10-02 on how users authenticate to NanoCore's remote MCP endpoint.
+The engineer ruled on 2026-10-02 on how users authenticate to NanoCore's remote MCP endpoint, and later the same day gave the reason that the superseded record lacked.
 
 1. The first remote MCP release authenticates only with a static bearer. The credential is an ordinary existing human remote-access Token, issued by the administrator through the existing administrator-only issuance and placed by the user in the client's header configuration. No refresh token is issued. Token listing and revocation stay with the administrator; no self-service connection management is added in this release.
 2. Browser OAuth is written into the owning specification as accepted design and is not implemented now. The design is the authorization code grant with PKCE S256, client identity through Client ID Metadata Documents, consent backed by the existing OpenKit login, and an ordinary Token bound to the MCP resource with a configurable default lifetime after which the user authorizes again through the browser, so that both connection methods end in the same Token, verifier and authorization.
@@ -18,11 +18,13 @@ The engineer ruled on 2026-10-02 on how users authenticate to NanoCore's remote 
 
 ## Reason
 
-Translated from Chinese. The engineer: "Write the browser OAuth design into the specification, but do not implement it now. I agree with all three items you suggested removing. For now we only do static tokens and do not issue refresh tokens. Static tokens are issued by the administrator."
+Translated from Chinese. The engineer, on the ruling: "Write the browser OAuth design into the specification, but do not implement it now. I agree with all three items you suggested removing. For now we only do static tokens and do not issue refresh tokens. Static tokens are issued by the administrator."
+
+Translated from Chinese. The engineer, on why browser OAuth is deferred: "There is no special reason for the OAuth one. I only want to simplify the implementation and push development forward quickly, because our time is very tight and the first version is about to be released."
 
 The three removals follow the coordinator's draft, which the engineer accepted. Dynamic Client Registration is deprecated in the current MCP authorization revision and adds a public registration endpoint, persisted client records and an abuse surface, while every client that needs it already supports a static header. Rotating refresh tokens add a durable lifecycle of refresh families, single-use rotation, replay invalidation and lost-response handling, while an opaque Token is already revocable on the next request. No current requirement asks for organization SSO or an external identity provider. The accepted draft deliberately declines MCP's recommendation for short-lived access tokens in favor of a configurable default lifetime and browser reconnection, because opaque Tokens remain revocable on the next request.
 
-The engineer did not state a separate reason for deferring the OAuth implementation. The coordinator notes that the static bearer path reuses what exists: the saved prototype already connected Claude Code and Codex with an ordinary Token, and every named coding client accepts a header.
+The coordinator notes that the static bearer path reuses what exists: the saved prototype already connected Claude Code and Codex with an ordinary Token, and every named coding client accepts a header.
 
 Consequence accepted with the ruling: until browser OAuth is implemented, a client without per-user static headers, such as claude.ai or Claude Desktop custom connectors, cannot connect as an individual user, and every user's connection depends on the administrator issuing a Token. Not issuing refresh tokens means an expired Token is replaced by the administrator.
 
@@ -30,7 +32,7 @@ Source: change record 202610020440000000-interface_unification, `temp/interface-
 
 ## Rejected Alternatives
 
-- Browser OAuth implemented in the first release. Deferred by the engineer; the design is kept as accepted.
+- Browser OAuth implemented in the first release. Deferred by the engineer to keep the first release simple; the design is kept as accepted.
 - Dynamic Client Registration as a fallback for clients without Client ID Metadata Document support. Rejected; those clients use the static bearer.
 - Rotating refresh tokens for saved connections. Rejected; the Token's configured lifetime applies.
 - An external identity provider as authorization server, or upstream login federation. Rejected; no SSO requirement exists.
@@ -38,10 +40,7 @@ Source: change record 202610020440000000-interface_unification, `temp/interface-
 
 ## Revisit When
 
-- A teammate needs to connect from a hosted or desktop client that has no per-user static header, which is the trigger to implement the accepted browser OAuth design.
-- A user needs URL-only OAuth from a client that lacks Client ID Metadata Document support, which reopens Dynamic Client Registration.
-- Reconnect frequency becomes a user complaint, or a security requirement asks for short-lived access tokens, which reopens refresh tokens.
-- Independent agent identities are designed, which may give an external agent its own credential.
+The engineer schedules the browser OAuth implementation and any reopening of the other items directly; the engineer asked that no trigger be recorded.
 
 ## Affected Owners
 

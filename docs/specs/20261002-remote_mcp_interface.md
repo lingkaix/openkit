@@ -57,7 +57,7 @@ NanoCore serves one remote MCP endpoint so a user's own agent client can call th
 
 ## Background
 
-Users connect their own agent clients to NanoCore over MCP. The interface-unification rulings require that endpoint, with a plain MCP call where a client does not yet support a newer mechanism such as loading Skills over MCP. The remote-MCP authentication ruling requires a static bearer for the first release and records browser OAuth as accepted design that is not implemented now. Those rulings are [Interface Unification](../decisions/20261002-interface_unification_rulings.md) and [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md).
+Users connect their own agent clients to NanoCore over MCP. The interface-unification rulings require that endpoint, with a plain MCP call where a client does not yet support a newer mechanism such as loading Skills over MCP. The remote-MCP authentication ruling requires a static bearer for the first release and records browser OAuth as accepted design that is not implemented now. Those rulings are [Interface Unification](../decisions/20261002-interface_unification_rulings.md) and [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md).
 
 ## Decision
 
@@ -141,7 +141,7 @@ The saved prototype is not production. It is `temp/worktrees/mcp-probe/apps/nano
 
 ## Alternatives Considered
 
-Rejected alternatives for authentication and for retiring the Skill before the endpoint covers it are recorded in [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md) and [Interface Unification](../decisions/20261002-interface_unification_rulings.md). This specification does not restate them.
+Rejected alternatives for authentication and for retiring the Skill before the endpoint covers it are recorded in [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md) and [Interface Unification](../decisions/20261002-interface_unification_rulings.md). This specification does not restate them.
 
 ## Consequences
 
@@ -186,7 +186,7 @@ Peers are listed in Related Docs.
 
 ## Related Docs
 
-- [Remote MCP Authentication](../decisions/20261002-remote_mcp_authentication.md)
+- [Remote MCP Ships With A Static Bearer First](../decisions/20261002-remote_mcp_static_bearer_first.md)
 - [Interface Unification](../decisions/20261002-interface_unification_rulings.md)
 - [Administrator Authority](../decisions/20261002-administrator_authority.md)
 - [Operation Definition](20261002-operation_definition.md)
