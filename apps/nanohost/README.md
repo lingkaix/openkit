@@ -62,6 +62,8 @@ The readiness witness is the SHA-256 of the actual fresh `EpochPlan` name, retai
 
 On an authoritative successor without a delivered retained result, loss before the complete first effect-poll response is terminal because NanoCore may already have committed poll-first unknown. Completing that response or delivering the retained result closes this window for the rest of the physical session; later round-robin cycles never reopen it. Operation-specific uncertainty rules still apply.
 
+Terminal outer-session failures preserve the specification's exact classification line and add one `nanohost outer session cause` journal record with the fixed redacted reason as a machine-readable `kind` (spaces replaced by underscores) and quoted `message`. This record distinguishes request/response failures, protocol bounds and member failure without emitting raw upstream errors, command values or credentials. `operation=sandbox.create` at `stage=poll` identifies the command endpoint being polled, not a local OpenShell create; `status=none` alone cannot distinguish a request failure, loss before response headers or concurrent member failure. A failure while collecting a response body preserves the already-received HTTP status, including an oversized body or flow-control error. Reconnectable failures remain silent.
+
 ## Distribution
 
 Tagged releases include `openkit-nanohost-<tag>-linux-arm64.tar.gz` and the shared `SHA256SUMS`. The archive contains the NanoHost binary, the exact pinned stock OpenShell Gateway and license files, the service unit, generated manifest, inner checksums, and `install.sh`.

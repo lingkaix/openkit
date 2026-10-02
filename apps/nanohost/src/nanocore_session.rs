@@ -1605,15 +1605,15 @@ pub async fn poll_effect_command(
     }
     let (status, body) = match send_effect_request(authority, sender, path, b"{}").await {
         Ok(response) => response,
-        Err(_) if kind == RuntimeEffectKind::OpenBridge && !live_bridge => {
+        Err((status, _)) if kind == RuntimeEffectKind::OpenBridge && !live_bridge => {
             return Err(OuterSessionFailure::terminal(
                 OuterSessionStage::Poll,
                 operation,
-                None,
+                status.map(|status| status.as_u16()),
                 "bridge.open command delivery unknown",
             ));
         }
-        Err(error) => {
+        Err((status, error)) => {
             let physical_close = matches!(
                 error,
                 "effect connection closed"
@@ -1634,12 +1634,17 @@ pub async fn poll_effect_command(
                 OuterSessionFailure::reconnect(
                     OuterSessionStage::Poll,
                     operation,
-                    None,
+                    status.map(|status| status.as_u16()),
                     error,
                     None,
                 )
             } else {
-                OuterSessionFailure::terminal(OuterSessionStage::Poll, operation, None, error)
+                OuterSessionFailure::terminal(
+                    OuterSessionStage::Poll,
+                    operation,
+                    status.map(|status| status.as_u16()),
+                    error,
+                )
             });
         }
     };
@@ -2047,7 +2052,7 @@ pub async fn submit_effect_result(
     loop {
         let (status, response) = match send_effect_request(authority, sender, path, &body).await {
             Ok(response) => response,
-            Err(error) => {
+            Err((status, error)) => {
                 let delivery_uncertain = matches!(
                     error,
                     "effect connection closed"
@@ -2059,12 +2064,17 @@ pub async fn submit_effect_result(
                     OuterSessionFailure::reconnect(
                         OuterSessionStage::Result,
                         operation,
-                        None,
+                        status.map(|status| status.as_u16()),
                         error,
                         None,
                     )
                 } else {
-                    terminal_without_status(error)
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Result,
+                        operation,
+                        status.map(|status| status.as_u16()),
+                        error,
+                    )
                 });
             }
         };
@@ -2462,42 +2472,47 @@ fn decode_hex(byte: u8) -> Result<u8, &'static str> {
 }
 
 /// Sends one ordinary fixed-path JSON request and collects its bounded response.
+///
+/// Failures carry the received status, if any, and a fixed non-secret reason;
+/// response-body failure must not erase headers already received.
 async fn send_effect_request(
     authority: &str,
     sender: &mut h2::client::SendRequest<Bytes>,
     path: &str,
     body: &[u8],
-) -> Result<(StatusCode, BytesMut), &'static str> {
+) -> Result<(StatusCode, BytesMut), (Option<StatusCode>, &'static str)> {
     let request = Request::builder()
         .method(Method::POST)
         .uri(format!("{}{}", authority.trim_end_matches('/'), path))
         .header("content-type", "application/json")
         .body(())
-        .map_err(|_| "effect request invalid")?;
+        .map_err(|_| (None, "effect request invalid"))?;
     let mut ready = sender
         .clone()
         .ready()
         .await
-        .map_err(|_| "effect connection closed")?;
+        .map_err(|_| (None, "effect connection closed"))?;
     let (response, mut request_body) = ready
         .send_request(request, false)
-        .map_err(|_| "effect request send failed")?;
+        .map_err(|_| (None, "effect request send failed"))?;
     request_body
         .send_data(Bytes::copy_from_slice(body), true)
-        .map_err(|_| "effect request body send failed")?;
-    let response = response.await.map_err(|_| "effect response failed")?;
+        .map_err(|_| (None, "effect request body send failed"))?;
+    let response = response
+        .await
+        .map_err(|_| (None, "effect response failed"))?;
     let status = response.status();
     let mut response_body = response.into_body();
     let mut bytes = BytesMut::new();
     while let Some(chunk) = response_body.data().await {
-        let chunk = chunk.map_err(|_| "effect response failed")?;
+        let chunk = chunk.map_err(|_| (Some(status), "effect response failed"))?;
         if bytes.len() + chunk.len() > crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES {
-            return Err("effect response exceeded bound");
+            return Err((Some(status), "effect response exceeded bound"));
         }
         response_body
             .flow_control()
             .release_capacity(chunk.len())
-            .map_err(|_| "effect response flow control failed")?;
+            .map_err(|_| (Some(status), "effect response flow control failed"))?;
         bytes.extend_from_slice(&chunk);
     }
     Ok((status, bytes))
@@ -3448,6 +3463,7 @@ mod tests {
     enum TestEffectResponse {
         NoContent,
         PhysicalClose,
+        OversizedBody,
     }
 
     #[derive(Clone, Copy)]
@@ -3574,6 +3590,23 @@ mod tests {
                             .expect("empty effect response send");
                     }
                     TestEffectResponse::PhysicalClose => return,
+                    TestEffectResponse::OversizedBody => {
+                        let mut body = respond
+                            .send_response(
+                                Response::builder().status(StatusCode::OK).body(()).unwrap(),
+                                false,
+                            )
+                            .unwrap();
+                        body.send_data(
+                            Bytes::from(vec![
+                                b'x';
+                                crate::sandbox_bridge::NANOHOST_CONTROL_IN_FLIGHT_BYTES
+                                    + 1
+                            ]),
+                            true,
+                        )
+                        .unwrap();
+                    }
                 }
             }
             assert!(
@@ -3586,6 +3619,43 @@ mod tests {
             );
         });
         (client_io, server)
+    }
+
+    #[tokio::test]
+    async fn terminal_poll_body_failure_preserves_received_http_status() {
+        let (io, server) = scripted_outer_server(
+            1,
+            TestReadinessResponse::Status(StatusCode::NO_CONTENT),
+            None,
+            vec![(
+                "/api/nanohost/transport/effects/sandbox.create",
+                TestEffectResponse::OversizedBody,
+            )],
+        );
+        let (context, presentation) = test_outer_credentials();
+        let failure = run_outer_session(
+            io,
+            "http://nanocore:80",
+            &context,
+            &presentation,
+            None,
+            (TEST_PHYSICAL_EPOCH, || Ok(None)),
+            |_, mut sender| async move {
+                let mut cursor = 0;
+                poll_effect_command("http://nanocore:80", &mut sender, &mut cursor, false)
+                    .await
+                    .map(|_| ())
+            },
+        )
+        .await
+        .expect_err("response over the control bound must remain terminal");
+        assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+        assert_eq!(failure.reason(), "effect response exceeded bound");
+        assert_eq!(
+            failure.to_string(),
+            "nanohost outer session failure: disposition=terminal stage=poll operation=sandbox.create status=200"
+        );
+        server.await.expect("scripted server");
     }
 
     fn test_outer_credentials() -> (CredentialSelectionContext, CredentialPresentationOutcome) {

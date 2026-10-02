@@ -442,7 +442,7 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
     })
 }
 
-/// One bounded process-exit diagnostic from startup or the outer session.
+/// Bounded process-exit diagnostics from startup or the outer session.
 enum NanoHostRunFailure {
     /// Existing fixed startup or Runtime Epoch message.
     Bounded(&'static str),
@@ -465,11 +465,23 @@ impl From<OuterSessionFailure> for NanoHostRunFailure {
 }
 
 impl std::fmt::Display for NanoHostRunFailure {
-    /// Formats only an existing fixed message or the closed outer-session display.
+    /// Preserves the closed classification and adds its already-redacted static cause.
+    ///
+    /// Raw upstream errors may contain credentials or request values, so the cause
+    /// uses only the session owner's fixed reason, never an upstream Display.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bounded(message) => formatter.write_str(message),
-            Self::OuterSession(failure) => std::fmt::Display::fmt(failure, formatter),
+            Self::OuterSession(failure) => {
+                std::fmt::Display::fmt(failure, formatter).and_then(|()| {
+                    write!(
+                        formatter,
+                        "\nnanohost outer session cause: kind={} message={:?}",
+                        failure.reason().replace(' ', "_"),
+                        failure.reason(),
+                    )
+                })
+            }
         }
     }
 }
@@ -2148,7 +2160,7 @@ mod tests {
             .0;
         assert!(
             run_failure_display.contains(
-                "Self::OuterSession(failure) => std::fmt::Display::fmt(failure, formatter)"
+                "Self::OuterSession(failure) => {\n                std::fmt::Display::fmt(failure, formatter)"
             )
         );
 
@@ -2217,6 +2229,47 @@ mod tests {
             .0;
         assert!(retained.contains("failure_result"));
         assert!(!retained.contains("dockerfile"));
+    }
+
+    #[test]
+    fn terminal_outer_failure_reports_safe_kind_and_message_without_changing_classification() {
+        for (reason, kind) in [
+            (
+                "effect response exceeded bound",
+                "effect_response_exceeded_bound",
+            ),
+            (
+                "effect response flow control failed",
+                "effect_response_flow_control_failed",
+            ),
+            (
+                "first effect poll response lost",
+                "first_effect_poll_response_lost",
+            ),
+            (
+                "nanohost epoch member failed",
+                "nanohost_epoch_member_failed",
+            ),
+        ] {
+            let failure = OuterSessionFailure::terminal(
+                OuterSessionStage::Poll,
+                OuterSessionOperation::CreateSandbox,
+                None,
+                reason,
+            );
+            let classification = failure.to_string();
+            let diagnostic = super::NanoHostRunFailure::from(failure).to_string();
+            assert_eq!(
+                classification,
+                "nanohost outer session failure: disposition=terminal stage=poll operation=sandbox.create status=none"
+            );
+            assert_eq!(
+                diagnostic,
+                format!(
+                    "{classification}\nnanohost outer session cause: kind={kind} message={reason:?}"
+                )
+            );
+        }
     }
 
     #[test]
