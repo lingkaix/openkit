@@ -3705,49 +3705,58 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workspaceDb.sqlite.close();
     }
     this.restoreSession(environmentPackage, latest.leaseId);
-    await this.collectWorkspaceSnapshot(this.requireSession(latest.packageSnapshotId), 'successor');
-    return new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
-      const pending: PendingNanoHostHarnessOperation = {
-        operation: 'session.close',
-        operationId: null,
-        reject,
-        resolve,
-        timeout: null,
-      };
-      const owner: NanoHostAgentSessionCloseOwner = {
-        inspection,
-        pending,
-      };
-      this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, owner);
-      try {
-        queueNanoHostHarnessOperation(this.coreDb, {
-          body: {
-            agentSessionId: inspection.agentSessionId,
-            agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
-          },
-          harnessInstanceId: inspection.harnessInstanceId,
+    try {
+      await this.collectWorkspaceSnapshot(
+        this.requireSession(latest.packageSnapshotId),
+        'successor'
+      );
+      await new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
+        const pending: PendingNanoHostHarnessOperation = {
           operation: 'session.close',
-          timestamp: new Date().toISOString(),
-        });
-        this.armHarnessOperationTimeout(
+          operationId: null,
+          reject,
+          resolve,
+          timeout: null,
+        };
+        const owner: NanoHostAgentSessionCloseOwner = {
+          inspection,
           pending,
-          inspection.harnessBindingRef,
-          () => owner.pending === pending,
-          () => {
-            owner.pending = null;
-            this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
-          }
-        );
-      } catch (error) {
-        this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
-        owner.pending = null;
-        reject(error);
-      }
-    }).then((closed) => {
-      if (closed.state !== 'closed' || closed.privateState !== 'absent') {
-        throw new Error('NanoHost Harness session.close result is incompatible.');
-      }
-    });
+        };
+        this.agentSessionCloseOwners.set(inspection.agentSessionRuntimeBindingId, owner);
+        try {
+          queueNanoHostHarnessOperation(this.coreDb, {
+            body: {
+              agentSessionId: inspection.agentSessionId,
+              agentSessionRuntimeBindingId: inspection.agentSessionRuntimeBindingId,
+            },
+            harnessInstanceId: inspection.harnessInstanceId,
+            operation: 'session.close',
+            timestamp: new Date().toISOString(),
+          });
+          this.armHarnessOperationTimeout(
+            pending,
+            inspection.harnessBindingRef,
+            () => owner.pending === pending,
+            () => {
+              owner.pending = null;
+              this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
+            }
+          );
+        } catch (error) {
+          this.agentSessionCloseOwners.delete(inspection.agentSessionRuntimeBindingId);
+          owner.pending = null;
+          reject(error);
+        }
+      }).then((closed) => {
+        if (closed.state !== 'closed' || closed.privateState !== 'absent') {
+          throw new Error('NanoHost Harness session.close result is incompatible.');
+        }
+      });
+    } finally {
+      // Idle close restores a Turn handle only for collection and close, not active occupancy.
+      // Sandbox identities repeat on later compatible creation, so retaining it can block admission.
+      this.sessions.delete(latest.packageSnapshotId);
+    }
   }
 
   /** Queues one typed Harness operation and awaits only its exact settled result. */

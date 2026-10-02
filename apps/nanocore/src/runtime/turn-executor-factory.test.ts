@@ -69,6 +69,7 @@ import type {
 } from './nanohost-session-dispatch.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
+import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import {
   createConfiguredTurnExecutor,
   createConfiguredWorkerLifecycleRuntime,
@@ -8583,6 +8584,354 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const sessionDispatch: NanoHostSessionDispatch = {
+      async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+        const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+        effects.push(request);
+        switch (request.kind) {
+          case 'image.acquire':
+            return { digest: request.input.imageReference };
+          case 'image.inspect':
+            return nanoHostImageInspection(request);
+          case 'sandbox.create':
+            return nanoHostSandboxCreated(request);
+          case 'bridge.open':
+            return { accepted: true, integrationReady: true, state: 'open' };
+          case 'reference.import':
+            return { state: 'imported' };
+          case 'workspace.collect':
+            return request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: {
+                    tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                    manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                  },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+          case 'bridge.close':
+          case 'sandbox.delete':
+            return { state: 'deleted' };
+          default:
+            throw new Error(`Unexpected admission regression effect: ${request.kind}`);
+        }
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected semantic route.');
+      },
+    };
+    try {
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO nanohost_runtime_targets (
+           target_id, identity_id, deployment_id, connection_generation,
+           predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
+         ) VALUES ('target_admission_stall', 'identity_admission_stall',
+                   'deployment_admission_stall', 1, 1, 1, 1, ?, ?, 1)`
+        )
+        .run('a'.repeat(64), '2026-09-06T00:00:00.000Z');
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: sessionDispatch,
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (
+        runtime.turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            inspectTerminalHarnessSession(session: unknown): Promise<void>;
+            readonly sessions: Map<
+              string,
+              {
+                readonly sharedHarness: {
+                  readonly sandbox: { readonly sandboxRuntimeId: string };
+                };
+              }
+            >;
+          };
+        }
+      ).backend;
+      /** Uses real package resolution so returning OpenCode selects its original static identity. */
+      const packageFor = (adapter: string, number: number) => {
+        const setup = createTestAgentSetup({ adapter, agentId: `agent_${adapter}` });
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        return resolveAgentEnvironmentPackage({
+          coreDb,
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSessionId: `as_admission_stall_${number}`,
+          agentSetup: setup,
+          backend: { kind: 'openshell' },
+          createdAt: '2026-09-06T00:00:00.000Z',
+          requestId: `request_admission_stall_${number}`,
+          triggerActor: { kind: 'user', id: 'user-factory' },
+          turn: {
+            completedAt: null,
+            configVersion: null,
+            durationMs: null,
+            error: null,
+            id: `turn_admission_stall_${number}`,
+            items: [],
+            startedAt: '2026-09-06T00:00:00.000Z',
+            status: 'running',
+            threadId: `thread_admission_stall_${number}`,
+            triggerActor: { kind: 'user', id: 'user-factory' },
+            workspaceId: 'workspace_admission_stall',
+          },
+          turnInput: 'Complete a reusable Turn',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        });
+      };
+      const packages = [
+        packageFor('opencode', 23),
+        packageFor('deepseek', 24),
+        packageFor('opencode', 25),
+        packageFor('deepseek', 26),
+      ];
+      /** Delivers the actual queued Harness command through its durable settlement owner. */
+      const settleNext = async (operation: string, body: Readonly<Record<string, unknown>>) => {
+        let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+        let integrationRef = '';
+        for (let attempt = 0; attempt < 200 && !command; attempt += 1) {
+          const integration = coreDb.sqlite
+            .prepare(
+              'SELECT sandbox_integration_binding_ref AS integrationRef FROM sandbox_runtime_records'
+            )
+            .get() as { readonly integrationRef: string } | undefined;
+          integrationRef = integration?.integrationRef ?? '';
+          if (integration)
+            command = dispatchNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: integrationRef,
+            });
+          if (!command) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        }
+        if (!command || command.operation !== operation)
+          throw new Error(`Expected queued ${operation} Harness command.`);
+        runtime.acceptNanoHostHarnessCommand(command);
+        const result = {
+          body,
+          disposition: 'succeeded' as const,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integrationRef,
+          timestamp: '2026-09-06T00:00:01.000Z',
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+      };
+      upsertSchedulerWorkerPool(coreDb, {
+        allowedBackendKinds: ['openshell'],
+        allowedPlacements: ['local'],
+        allowedWorkspaceScopes: ['local'],
+        budgetClass: 'interactive',
+        currentAdmittedSessionCount: 0,
+        currentQueueDepth: 0,
+        defaultTimeoutMs: 900_000,
+        healthSummary: 'ready',
+        maxConcurrentSessions: 1,
+        poolId: 'pool_admission_stall',
+        queueLimit: 20,
+        status: 'active',
+      });
+      upsertSchedulerCapacityRecord(coreDb, {
+        capacityClass: 'local',
+        concurrencyCeiling: 1,
+        inUseCount: 0,
+        observationSource: 'configured',
+        observedAt: '2026-09-06T00:00:00.000Z',
+        poolId: 'pool_admission_stall',
+        queueDepth: 0,
+        targetId: 'target_admission_stall',
+      });
+      upsertSchedulerTargetHealthRecord(coreDb, {
+        checkResults: [],
+        consecutiveFailureCount: 0,
+        consecutiveSuccessCount: 1,
+        healthState: 'healthy',
+        lastProbeAt: '2026-09-06T00:00:00.000Z',
+        nextProbeAt: '2999-01-01T00:00:00.000Z',
+        targetId: 'target_admission_stall',
+      });
+      /** Enqueues product lineage before the same capacity probe and lease insertion as dispatch. */
+      const enqueue = (environmentPackage: AgentEnvironmentPackage) =>
+        createSchedulerAdmissionEntry(coreDb, {
+          priorityClass: 'interactive',
+          queueEntryId: `queue:${environmentPackage.snapshotId}`,
+          requestId: environmentPackage.scope.requestId,
+          requestedAgentId: environmentPackage.agent.agentId,
+          requiredPoolConstraints: ['openshell.local'],
+          ...environmentPackage.scope,
+          turnInput: 'Complete a reusable Turn',
+        });
+      /** Inserts the real scheduler grant and its capacity accounting before backend effects. */
+      const dispatch = (environmentPackage: AgentEnvironmentPackage) => {
+        expect(backend.inspectMaterializationCapacity?.(environmentPackage)).toBe('available');
+        const result = dispatchNextSchedulerEntry(coreDb, {
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          expectedControlMode: 'poll',
+          expectedDataPlaneMode: 'openshell-files',
+          heartbeatIntervalMs: 10_000,
+          heartbeatTimeoutMs: 30_000,
+          leaseDurationMs: 900_000,
+          startupTimeoutMs: 120_000,
+          leaseId: `lease:${environmentPackage.snapshotId}`,
+          planId: `plan:${environmentPackage.snapshotId}`,
+          sandboxBindingRef: `lease-binding:${environmentPackage.snapshotId}`,
+          schedulerEpoch: 1,
+        });
+        expect(result.status).toBe('dispatched');
+        anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      };
+      let originalOpenCodeSandboxId: string | undefined;
+      for (const [index, environmentPackage] of packages.slice(0, 3).entries()) {
+        authorizeNanoHostPackage(coreDb, environmentPackage);
+        enqueue(environmentPackage);
+        dispatch(environmentPackage);
+        const materializing = backend.materialize(environmentPackage, { workspaceRoots: [] });
+        if (index > 0)
+          await settleNext('session.close', {
+            state: 'closed',
+            privateState: 'absent',
+            childState: 'absent',
+          });
+        const materialized = await materializing;
+        const sandboxId = backend.sessions.get(environmentPackage.snapshotId)!.sharedHarness.sandbox
+          .sandboxRuntimeId;
+        if (index === 0) originalOpenCodeSandboxId = sandboxId;
+        if (index === 2) expect(sandboxId).toBe(originalOpenCodeSandboxId);
+        backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {});
+        const launch = backend.launch(materialized);
+        await settleNext('session.open', {
+          maxActiveTurns: 1,
+          state: 'open',
+          nativeHandleState: 'pending',
+          nativeHandleDigest: null,
+        });
+        await settleNext('turn.start', {
+          state: 'started',
+          nativeHandleState: 'pending',
+          nativeHandleDigest: null,
+        });
+        await launch;
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt: '2026-09-06T00:00:01.000Z',
+          lineage: {
+            ...environmentPackage.scope,
+            packageSnapshotId: environmentPackage.snapshotId,
+          },
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sequence: 1,
+        });
+        const inspection = backend.inspectTerminalHarnessSession(
+          backend.sessions.get(environmentPackage.snapshotId)
+        );
+        await settleNext('session.inspect', {
+          state: 'open',
+          childState: 'absent',
+          cleanupState: 'clean',
+          nativeHandleState: 'ready',
+          nativeHandleDigest: 'a'.repeat(64),
+        });
+        await inspection;
+        const lease = coreDb.sqlite
+          .prepare(
+            'SELECT lease_id AS leaseId FROM scheduler_session_leases WHERE package_snapshot_id = ?'
+          )
+          .get(environmentPackage.snapshotId) as { readonly leaseId: string };
+        coreDb.sqlite
+          .prepare(
+            `UPDATE worker_backend_sessions SET workspace_handoff_state = 'complete' WHERE lease_id = ?`
+          )
+          .run(lease.leaseId);
+        transitionWorkerBackendSessionState(coreDb, {
+          fromState: 'materializing',
+          toState: 'cleanup-pending',
+          leaseId: lease.leaseId,
+        });
+        await runtime.cleanupBackendSession(backend.planSession(environmentPackage));
+        expect(backend.sessions.has(environmentPackage.snapshotId)).toBe(false);
+        transitionWorkerBackendSessionState(coreDb, {
+          fromState: 'cleanup-pending',
+          toState: 'physical-cleaned',
+          leaseId: lease.leaseId,
+        });
+        coreDb.sqlite
+          .prepare(
+            `UPDATE scheduler_session_leases SET status = 'releasing', release_reason = 'worker-final-status',
+             backend_anchor_state = 'anchored' WHERE lease_id = ?`
+          )
+          .run(lease.leaseId);
+        await runSchedulerRecoveryMaintenance(coreDb, 1, {
+          cleanupBackendSession: runtime.cleanupBackendSession,
+          restoreBackendSession: runtime.restoreBackendSession,
+          projectRecoveredTurn: async () => ({ status: 'completed' }),
+        });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT status, release_reason AS releaseReason FROM scheduler_session_leases WHERE lease_id = ?'
+            )
+            .get(lease.leaseId)
+        ).toEqual({ status: 'released', releaseReason: 'scheduler-restart-turn-completed' });
+      }
+      const desired = packages[3]!;
+      authorizeNanoHostPackage(coreDb, desired);
+      enqueue(desired);
+      const effectsBeforeRetry = effects.length;
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT lifecycle_state AS state, cleanup_state AS cleanupState,
+                current_turn_id AS turnId, current_lease_id AS leaseId FROM agent_session_runtime_bindings`
+          )
+          .all()
+      ).toEqual([{ state: 'open', cleanupState: 'clean', turnId: null, leaseId: null }]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            `SELECT active_turn_count AS activeTurns, operation_state AS operationState FROM harness_instance_records`
+          )
+          .all()
+      ).toEqual([{ activeTurns: 0, operationState: 'settled' }]);
+      expect(backend.inspectMaterializationCapacity?.(desired)).toBe('available');
+      expect(effects).toHaveLength(effectsBeforeRetry);
+      dispatch(desired);
+      expect(backend.sessions.size).toBe(0);
+      const replacement = backend.materialize(desired, { workspaceRoots: [] });
+      await settleNext('session.close', {
+        state: 'closed',
+        privateState: 'absent',
+        childState: 'absent',
+      });
+      await replacement;
+      expect(effects.slice(effectsBeforeRetry).map((effect) => effect.kind)).toEqual([
+        'workspace.collect',
+        'bridge.close',
+        'sandbox.delete',
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     null,
     'eviction-cleanup-required',
@@ -9037,6 +9386,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(await observedReplacement).toMatchObject({
           message: 'NanoHost Harness session.close refused: conflict.',
         });
+        expect(backend.sessions.has(firstPackage.snapshotId)).toBe(false);
         const effectsBeforeCleanup = effects.length;
         await runtime.cleanupBackendSession(backend.planSession(secondPackage));
         expect(expectResultOnly).not.toHaveBeenCalled();
@@ -9063,6 +9413,7 @@ describe('createConfiguredTurnExecutor', () => {
         return;
       }
       await replacement;
+      expect(backend.sessions.has(firstPackage.snapshotId)).toBe(false);
       expect(expectResultOnly).not.toHaveBeenCalled();
 
       const reattachedBinding = getWorkerStorageBindingForSandbox(coreDb, {
