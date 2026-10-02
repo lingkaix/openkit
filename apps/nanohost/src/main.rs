@@ -16,6 +16,7 @@ mod openshell_client;
 mod openshell_release;
 mod persistent_volume;
 mod sandbox_bridge;
+mod start_barrier;
 mod workspace_collect;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -442,6 +443,16 @@ fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'st
     })
 }
 
+/// Exit status for a terminal credential hold.
+///
+/// `RestartPreventExitStatus=` in the service unit uses this same value so
+/// systemd leaves the service stopped. The hold is credential unavailability
+/// or an admission HTTP 401 that rejected the presented credential. The safe
+/// cause keeps the existing fixed reason, so authentication causes stay
+/// indistinguishable. Every other admission rejection, including HTTP 409,
+/// and every pre-admission connection failure stays restartable.
+const CREDENTIAL_HELD_EXIT_STATUS: i32 = 78;
+
 /// Bounded process-exit diagnostics from startup or the outer session.
 enum NanoHostRunFailure {
     /// Existing fixed startup or Runtime Epoch message.
@@ -461,6 +472,23 @@ impl From<OuterSessionFailure> for NanoHostRunFailure {
     /// Preserves one exact terminal outer-session classification.
     fn from(failure: OuterSessionFailure) -> Self {
         Self::OuterSession(failure)
+    }
+}
+
+impl NanoHostRunFailure {
+    /// Maps the two credential holds to status 78 and every other failure to 1.
+    fn process_exit_status(&self) -> i32 {
+        match self {
+            Self::OuterSession(failure)
+                if failure.disposition() == OuterSessionDisposition::Terminal
+                    && (failure.reason() == "outer-session credential unavailable"
+                        || (failure.reason() == "outer-session admission rejected"
+                            && failure.status() == Some(401))) =>
+            {
+                CREDENTIAL_HELD_EXIT_STATUS
+            }
+            Self::Bounded(_) | Self::OuterSession(_) => 1,
+        }
     }
 }
 
@@ -946,6 +974,11 @@ fn clear_pending_after_failure(
 async fn run() -> Result<(), NanoHostRunFailure> {
     let environment = std::env::vars().collect::<BTreeMap<_, _>>();
     let session_inputs = parse_nanohost_session_inputs(&environment)?;
+    start_barrier::require_previous_failure_group_gone(
+        Path::new("/sys/fs/cgroup"),
+        Path::new("/proc/self/cgroup"),
+        std::process::id(),
+    )?;
     if configured_backend("docker") != Ok(RuntimeBackend::Docker) {
         return Err("nanohost runtime backend rejected".into());
     }
@@ -1479,7 +1512,7 @@ fn main() {
         tokio::runtime::Runtime::new().expect("nanohost Tokio runtime construction failed");
     if let Err(message) = runtime.block_on(run()) {
         eprintln!("{message}");
-        std::process::exit(1);
+        std::process::exit(message.process_exit_status());
     }
 }
 
@@ -1492,8 +1525,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        image_store_cli_error_message, parse_nanohost_session_inputs, parse_sandbox_environment,
-        parse_sandbox_policy, parse_storage_attachment, storage_targets_allowed,
+        CREDENTIAL_HELD_EXIT_STATUS, NanoHostRunFailure, image_store_cli_error_message,
+        parse_nanohost_session_inputs, parse_sandbox_environment, parse_sandbox_policy,
+        parse_storage_attachment, storage_targets_allowed,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
@@ -1943,6 +1977,9 @@ mod tests {
             .find(';')
             .map(|offset| binding_start + offset + 1)
             .expect("complete session input binding");
+        let barrier = run
+            .find("start_barrier::require_previous_failure_group_gone(")
+            .expect("failure-group start barrier");
         let evidence = run
             .find("EpochEvidenceWriter::new")
             .expect("private evidence writer");
@@ -1970,6 +2007,10 @@ mod tests {
                 "session parsing occurs after {owner}"
             );
         }
+        assert!(
+            binding_end < barrier && barrier < evidence,
+            "start barrier is outside validation-to-evidence"
+        );
         assert!(!run.contains("required_deployment"));
         assert!(!production.contains("OPENKIT_NANOHOST_REQUIRED_IMAGE_DIGESTS"));
         assert!(start < session_activation);
@@ -2097,6 +2138,41 @@ mod tests {
 
         assert_eq!(run.matches("/run/systemd/resolve/resolv.conf").count(), 1);
         assert!(resolver_source < resolver_validation && resolver_validation < epoch_plan);
+    }
+
+    #[test]
+    fn credential_unavailable_exit_is_held_and_other_terminals_stay_restartable() {
+        let held = NanoHostRunFailure::from(OuterSessionFailure::terminal(
+            OuterSessionStage::Connect,
+            OuterSessionOperation::None,
+            None,
+            "outer-session credential unavailable",
+        ));
+        assert_eq!(held.process_exit_status(), CREDENTIAL_HELD_EXIT_STATUS);
+        assert_eq!(CREDENTIAL_HELD_EXIT_STATUS, 78);
+        let rejected = NanoHostRunFailure::from(OuterSessionFailure::terminal(
+            OuterSessionStage::Admission,
+            OuterSessionOperation::None,
+            Some(401),
+            "outer-session admission rejected",
+        ));
+        assert_eq!(rejected.process_exit_status(), CREDENTIAL_HELD_EXIT_STATUS);
+        let conflict = NanoHostRunFailure::from(OuterSessionFailure::terminal(
+            OuterSessionStage::Admission,
+            OuterSessionOperation::None,
+            Some(409),
+            "outer-session admission rejected",
+        ));
+        assert_eq!(conflict.process_exit_status(), 1);
+        let connect = NanoHostRunFailure::from(OuterSessionFailure::terminal(
+            OuterSessionStage::Connect,
+            OuterSessionOperation::None,
+            None,
+            "nanohost NanoCore rendezvous failed",
+        ));
+        assert_eq!(connect.process_exit_status(), 1);
+        let startup = NanoHostRunFailure::from("nanohost epoch startup failed");
+        assert_eq!(startup.process_exit_status(), 1);
     }
 
     #[test]
@@ -2351,7 +2427,9 @@ mod tests {
             .expect("one runtime failure exit path")
             .1;
         assert_eq!(main.matches("eprintln!(").count(), 1);
-        assert_eq!(main.matches("std::process::exit(1)").count(), 1);
+        assert_eq!(main.matches("std::process::exit(").count(), 1);
+        assert!(main.contains("std::process::exit(message.process_exit_status())"));
+        assert_eq!(main.matches("std::process::exit(1)").count(), 0);
         for forbidden in [
             "requestId",
             "leaseId",

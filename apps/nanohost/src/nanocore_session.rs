@@ -1147,6 +1147,11 @@ impl OuterSessionFailure {
         self.reason
     }
 
+    /// Returns the retained HTTP status without interpreting why verification failed.
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+
     /// Returns the allocated generation that a replacement connection must exceed.
     pub fn reconnect_after(&self) -> Option<u64> {
         self.reconnect_after
