@@ -1557,6 +1557,14 @@ impl EpochCoordinator {
         )
     }
 
+    /// Keeps synthetic epoch members supervised until the test injects their terminal event.
+    #[cfg(test)]
+    pub(crate) fn fixture_member_events(&mut self) -> mpsc::SyncSender<EpochFault> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.monitor.member_failure = receiver;
+        sender
+    }
+
     /// Proves live-epoch identity before the storage owner opens worker-controlled children.
     pub fn resolve_collection(
         &self,

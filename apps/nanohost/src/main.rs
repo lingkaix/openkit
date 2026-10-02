@@ -62,19 +62,11 @@ struct NanoHostSessionInputs {
     transport: VerifiedSessionTransport,
 }
 
-/// Hard bound for restoring one successor outer-session connection.
-const OUTER_SESSION_RECONNECT_BOUND: Duration = Duration::from_secs(300);
-
 /// Delay between failed successor connection attempts.
 const OUTER_SESSION_RECONNECT_DELAY: Duration = Duration::from_millis(250);
 
 /// Delay after one complete fair cycle returns no pending effect.
 const EFFECT_POLL_IDLE_DELAY: Duration = Duration::from_millis(100);
-
-/// Returns the time left for one already-observed outer-session outage.
-fn successor_connect_remaining(started_at: Option<Instant>) -> Option<Duration> {
-    started_at.map(|started_at| OUTER_SESSION_RECONNECT_BOUND.saturating_sub(started_at.elapsed()))
-}
 
 /// Parses and validates the sole `/etc/openkit/nanohost.env` projection.
 ///
@@ -1024,7 +1016,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         plan.gateway_endpoint(),
         plan.gateway_auth_path().to_path_buf(),
     );
-    let mut coordinator = EpochCoordinator::start(
+    let coordinator = EpochCoordinator::start(
         &plan,
         client,
         evidence,
@@ -1033,10 +1025,22 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         &mut persistent_volumes,
     )
     .map_err(|_| "nanohost epoch startup failed")?;
+    run_sessions(session_inputs, coordinator, fence_started).await
+}
+
+/// Maintains the admitted epoch's authoritative session without recreating local resources.
+///
+/// # Errors
+///
+/// Returns the existing terminal session or supervised member failure.
+async fn run_sessions(
+    session_inputs: NanoHostSessionInputs,
+    mut coordinator: EpochCoordinator,
+    mut fence_started: Option<SystemTime>,
+) -> Result<(), NanoHostRunFailure> {
     let selection_context = session_inputs.selection_context.clone();
     let route_projection = coordinator.outer_route_projection();
     let mut reconnect_after = None;
-    let mut reconnect_started_at = None;
     let mut pending_result: Option<(PolledEffectCommand, ExecutedEffectResult)> = None;
     loop {
         let presentation = nanocore_session::select_and_present_credential(
@@ -1053,39 +1057,17 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             .with_reconnect_after(reconnect_after)
         };
         let io = loop {
-            let connection = nanocore_session::connect_verified_session_transport(
+            let connected = nanocore_session::connect_verified_session_transport(
                 &session_inputs.rendezvous_url,
                 &session_inputs.transport,
-            );
-            let connected = match successor_connect_remaining(reconnect_started_at) {
-                Some(remaining) if remaining.is_zero() => {
-                    return Err(terminal_connect(
-                        "outer-session successor connection deadline expired",
-                    )
-                    .into());
-                }
-                Some(remaining) => {
-                    tokio::time::timeout(remaining, connection)
-                        .await
-                        .map_err(|_| {
-                            terminal_connect("outer-session successor connection deadline expired")
-                        })?
-                }
-                None => connection.await,
-            };
+            )
+            .await;
             match connected {
                 Ok(io) => break io,
                 Err(_reason) if reconnect_after.is_some() => {
-                    let remaining =
-                        successor_connect_remaining(reconnect_started_at).unwrap_or_default();
-                    if remaining.is_zero() {
-                        return Err(terminal_connect(
-                            "outer-session successor connection deadline expired",
-                        )
-                        .into());
-                    }
+                    // Core unavailability cannot invalidate an already-admitted healthy epoch.
                     tokio::select! {
-                        () = tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY.min(remaining)) => {}
+                        () = tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY) => {}
                         _ = coordinator.wait() => {
                             return Err(terminal_connect("nanohost epoch member failed").into());
                         }
@@ -1145,13 +1127,11 @@ async fn run() -> Result<(), NanoHostRunFailure> {
                 }
                 let coordinator = &mut coordinator;
                 let pending_result = &mut pending_result;
-                let reconnect_started_at = &mut reconnect_started_at;
                 let authority = session_inputs.rendezvous_url.as_str();
                 let route_projection = route_projection.clone();
                 async move {
                     readiness_commit?;
                     route_projection.bind(authority, sender.clone()).await;
-                    *reconnect_started_at = None;
                     let mut cursor =
                         nanocore_session::effect_cursor_start(pending_result.is_some());
                     let mut empty_effect_polls = 0;
@@ -1427,7 +1407,6 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             Err(failure) => match failure.disposition() {
                 OuterSessionDisposition::Reconnect => {
                     reconnect_after = failure.reconnect_after();
-                    reconnect_started_at.get_or_insert_with(Instant::now);
                 }
                 OuterSessionDisposition::Terminal => {
                     if matches!(
@@ -1498,13 +1477,11 @@ mod openshell_upgrade_tests;
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::{
-        OUTER_SESSION_RECONNECT_BOUND, OUTER_SESSION_RECONNECT_DELAY,
         image_store_cli_error_message, parse_nanohost_session_inputs, parse_sandbox_environment,
         parse_sandbox_policy, parse_storage_attachment, storage_targets_allowed,
-        successor_connect_remaining,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
@@ -1666,23 +1643,214 @@ mod tests {
         assert!(!storage_targets_allowed(&policy, &outside_policy));
     }
 
-    #[test]
-    fn nhc_imp_5q_successor_connect_retries_are_bounded() {
-        assert_eq!(OUTER_SESSION_RECONNECT_BOUND, Duration::from_secs(300));
-        assert_eq!(successor_connect_remaining(None), None);
+    /// Drives production admission, reconnect, readiness, and member supervision over loopback.
+    #[tokio::test]
+    async fn post_admission_core_outage_over_300s_preserves_nanohost_epoch() {
+        use crate::credential_slots::{
+            CredentialSlot, SlotPairPaths, SlotWriteMaterial, write_credential_slot,
+        };
+        use crate::epoch_coordinator::{EpochCoordinator, EpochFault};
+        use crate::nanocore_session::{
+            OuterSessionDisposition, TlsTrustMaterial, prepare_verified_session_transport,
+        };
+        use tokio::net::{TcpListener, TcpStream};
 
-        let remaining =
-            successor_connect_remaining(Some(Instant::now())).expect("successor reconnect budget");
-        assert!(remaining <= OUTER_SESSION_RECONNECT_BOUND);
-        assert!(remaining > OUTER_SESSION_RECONNECT_BOUND - OUTER_SESSION_RECONNECT_DELAY);
-
-        let expired = Instant::now()
-            .checked_sub(OUTER_SESSION_RECONNECT_BOUND + Duration::from_secs(1))
-            .expect("expired reconnect instant");
-        assert_eq!(
-            successor_connect_remaining(Some(expired)),
-            Some(Duration::ZERO)
+        // Only synthetic fixture files and loopback sockets are used; no deployed backend starts.
+        struct FixtureRoot(std::path::PathBuf);
+        impl Drop for FixtureRoot {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let root = FixtureRoot(std::env::temp_dir().join(format!(
+            "nanohost-outage-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        )));
+        std::fs::create_dir_all(&root.0).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{address}");
+        let mut environment = valid_nanohost_environment();
+        environment.insert(
+            "OPENKIT_NANOHOST_NANOCORE_RENDEZVOUS_URL".into(),
+            url.clone(),
         );
+        let slot_paths = SlotPairPaths {
+            slot_a_secret: root.0.join("token-a"),
+            slot_a_companion: root.0.join("token-a-meta"),
+            slot_b_secret: root.0.join("token-b"),
+            slot_b_companion: root.0.join("token-b-meta"),
+        };
+        let selection_context = super::CredentialSelectionContext {
+            identity_id: environment["OPENKIT_NANOHOST_IDENTITY_ID"].clone(),
+            deployment_id: environment["OPENKIT_NANOHOST_DEPLOYMENT_ID"].clone(),
+        };
+        write_credential_slot(
+            &slot_paths,
+            CredentialSlot::A,
+            &SlotWriteMaterial {
+                token_id: "outage-fixture".into(),
+                issuance_generation: 1,
+                identity_id: selection_context.identity_id.clone(),
+                deployment_id: selection_context.deployment_id.clone(),
+                secret: "okt_synthetic_outage_fixture".into(),
+            },
+        )
+        .unwrap();
+        let inputs = super::NanoHostSessionInputs {
+            transport: prepare_verified_session_transport(&url, &TlsTrustMaterial::Platform)
+                .unwrap(),
+            rendezvous_url: url,
+            slot_paths,
+            selection_context,
+        };
+        let (mut coordinator, _) = EpochCoordinator::collection_fixture(&root.0);
+        let physical_epoch = coordinator.physical_epoch().to_string();
+        let members = coordinator.fixture_member_events();
+        let (observations, mut observed) = tokio::sync::mpsc::unbounded_channel();
+
+        /// Acts as Core authority: each physical connection gets one admission and readiness.
+        async fn core_peer(
+            socket: TcpStream,
+            generation: u64,
+            observations: tokio::sync::mpsc::UnboundedSender<(u64, String)>,
+        ) {
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let mut epoch = None;
+            let mut admitted = false;
+            let mut ready_reported = false;
+            while let Some(request) = connection.accept().await {
+                let (request, mut respond) = request.unwrap();
+                let path = request.uri().path().to_string();
+                let mut body = request.into_body();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                if path == "/api/nanohost/transport/session/admit" {
+                    assert!(!admitted, "exactly one admission per physical connection");
+                    admitted = true;
+                    assert_eq!(bytes, b"{}");
+                    let body = serde_json::json!({
+                        "connectionGeneration": generation, "deploymentId": "deployment-main",
+                        "identityId": "integration_nanohost_main", "mayCarryWork": true, "role": "authoritative"
+                    });
+                    let mut response = respond
+                        .send_response(
+                            http::Response::builder().status(200).body(()).unwrap(),
+                            false,
+                        )
+                        .unwrap();
+                    response
+                        .send_data(bytes::Bytes::from(serde_json::to_vec(&body).unwrap()), true)
+                        .unwrap();
+                } else {
+                    assert!(admitted);
+                    if path == "/api/nanohost/transport/session/readiness" {
+                        assert!(epoch.is_none(), "exactly one readiness per generation");
+                        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                        assert_eq!(body.as_object().unwrap().len(), 1);
+                        epoch = Some(body["physicalEpoch"].as_str().unwrap().to_string());
+                    } else {
+                        // No command or result is supplied: reconnect must not create a Sandbox or launch a worker.
+                        assert!(
+                            path.starts_with("/api/nanohost/transport/effects/")
+                                && !path.ends_with("/result"),
+                            "unexpected effect: {path}"
+                        );
+                        if !ready_reported {
+                            observations
+                                .send((generation, epoch.clone().expect("readiness before work")))
+                                .unwrap();
+                            ready_reported = true;
+                        }
+                    }
+                    respond
+                        .send_response(
+                            http::Response::builder().status(204).body(()).unwrap(),
+                            true,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+
+        let host = super::run_sessions(inputs, coordinator, None);
+        tokio::pin!(host);
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before admission: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => accepted.unwrap().unwrap(),
+        };
+        let peer = tokio::spawn(core_peer(socket, 1, observations.clone()));
+        let first = tokio::select! {
+            result = &mut host => panic!("Host ended before readiness: {}", result.unwrap_err()),
+            observation = tokio::time::timeout(Duration::from_secs(5), observed.recv()) => observation.unwrap().unwrap(),
+        };
+        assert_eq!(first, (1, physical_epoch.clone()));
+        drop(listener);
+        peer.abort();
+        assert!(peer.await.unwrap_err().is_cancelled());
+        assert!(
+            TcpStream::connect(address).await.is_err(),
+            "Core endpoint must refuse connections"
+        );
+
+        tokio::time::pause();
+        // Yield while polling the real loop so it observes close/refusal and installs its retry timer.
+        for _ in 0..200 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended during outage: {}", result.unwrap_err()),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        tokio::time::advance(Duration::from_secs(301)).await;
+        for _ in 0..200 {
+            tokio::select! {
+                biased;
+                result = &mut host => panic!("Host ended beyond the aggregate deadline: {}", result.unwrap_err()),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        assert!(
+            observed.try_recv().is_err(),
+            "Host must stay non-ready during refusal"
+        );
+        tokio::time::resume();
+
+        let listener = TcpListener::bind(address).await.unwrap();
+        let (socket, _) = tokio::select! {
+            result = &mut host => panic!("Host ended before successor: {}", result.unwrap_err()),
+            accepted = tokio::time::timeout(Duration::from_secs(5), listener.accept()) => accepted.unwrap().unwrap(),
+        };
+        let peer = tokio::spawn(core_peer(socket, 2, observations));
+        let successor = tokio::select! {
+            result = &mut host => panic!("Host ended before successor readiness: {}", result.unwrap_err()),
+            observation = tokio::time::timeout(Duration::from_secs(5), observed.recv()) => observation.unwrap().unwrap(),
+        };
+        assert_eq!(successor, (2, physical_epoch));
+        assert!(
+            observed.try_recv().is_err(),
+            "only one successor becomes ready"
+        );
+        tokio::select! {
+            result = &mut host => panic!("Host ended after successor readiness: {}", result.unwrap_err()),
+            extra = tokio::time::timeout(Duration::from_millis(20), listener.accept()) => assert!(extra.is_err(), "only one physical successor connection"),
+        }
+        members.send(EpochFault::MemberExited).unwrap();
+        let terminal = tokio::time::timeout(Duration::from_secs(5), &mut host)
+            .await
+            .unwrap()
+            .unwrap_err();
+        let super::NanoHostRunFailure::OuterSession(terminal) = terminal else {
+            panic!("expected classified member failure")
+        };
+        assert_eq!(terminal.disposition(), OuterSessionDisposition::Terminal);
+        assert_eq!(terminal.reason(), "nanohost epoch member failed");
+        peer.abort();
+        assert!(peer.await.unwrap_err().is_cancelled());
     }
 
     #[test]
@@ -1945,7 +2113,7 @@ mod tests {
             .expect("end of NanoHost run path")
             .0;
         let coordinator = run
-            .find("let mut coordinator = EpochCoordinator::start(")
+            .find("let coordinator = EpochCoordinator::start(")
             .expect("Runtime Epoch coordinator creation");
         let session = run
             .find("nanocore_session::run_outer_session(")
@@ -2087,12 +2255,8 @@ mod tests {
             .expect("end of rendezvous connect handling")
             .0;
         assert!(connect.contains("connect_verified_session_transport("));
-        assert!(connect.contains("successor_connect_remaining(reconnect_started_at)"));
-        assert!(connect.contains("tokio::time::timeout(remaining, connection)"));
         assert!(connect.contains("Err(_reason) if reconnect_after.is_some()"));
-        assert!(
-            connect.contains("tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY.min(remaining))")
-        );
+        assert!(connect.contains("tokio::time::sleep(OUTER_SESSION_RECONNECT_DELAY)"));
         assert!(connect.contains("Err(reason) =>"));
         assert!(connect.contains("OuterSessionFailure::terminal("));
         assert!(connect.contains("OuterSessionStage::Connect"));
