@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { serve } from '@hono/node-server';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,7 @@ import {
   convertResponsesRequestToChatCompletionRequest,
   GatewayUnsupportedFeatureError,
 } from './llm/gateway-converters.js';
+import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleProviderError,
@@ -289,7 +290,7 @@ afterEach(() => {
  * @param durableStorage Whether the app receives durable storage.
  * @param includeWorkerProvider Whether the AEP-selected provider is available.
  * @param runtimeProvenance Whether the AEP requires runtime provenance.
- * @param options Optional provider family, admitted admin bearer, and authored failover selection.
+ * @param options Optional provider family, admitted authority and logical model, and current Gateway supply.
  * @returns Route fixture.
  */
 function createWorkerInferenceRouteFixture(
@@ -307,6 +308,9 @@ function createWorkerInferenceRouteFixture(
     readonly reasoningEffort?: ReasoningEffort;
     readonly dispatcher?: LLMGatewayProviderDispatcher;
     readonly missingApiKey?: boolean;
+    readonly admittedLogicalModel?: ResolvedLogicalModel;
+    readonly gatewayConfig?: GatewayConfig;
+    readonly providerRegistry?: ProviderRegistry;
   } = {}
 ): WorkerInferenceRouteFixture {
   const providerProfileId =
@@ -369,6 +373,9 @@ function createWorkerInferenceRouteFixture(
         ]
       : ['backend-local-inference'],
   });
+  if (options.admittedLogicalModel) {
+    agentSetup.logicalModels.allowed = [options.admittedLogicalModel];
+  }
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
@@ -474,7 +481,7 @@ function createWorkerInferenceRouteFixture(
   return {
     app: createApp({
       ...(appCoreDb ? { coreDb: appCoreDb } : {}),
-      gatewayConfig: {
+      gatewayConfig: options.gatewayConfig ?? {
         schemaVersion: 1,
         enabled: true,
         defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
@@ -523,49 +530,51 @@ function createWorkerInferenceRouteFixture(
       // Successful fake dispatch still requires configured supply under the Gateway owner.
       providerCredentialResolver: (ref) =>
         !options.missingApiKey && ref === 'test:worker-api-key' ? 'synthetic-worker-key' : null,
-      providerRegistry: new ProviderRegistry([
-        ...(includeWorkerProvider
-          ? [
-              options.subscriptionFamily === 'openai-codex'
-                ? {
-                    defaultModel: providerModel,
-                    displayName: 'OpenAI Codex',
-                    id: providerProfileId,
-                    kind: options.subscriptionCheckUnavailable
-                      ? ('oauth' as const)
-                      : ('gateway' as const),
-                    ...(options.subscriptionCheckUnavailable
-                      ? {
-                          extensions: {
-                            openkit: {
-                              subscriptionAccount: { accountSlotId: 'private-account-slot' },
+      providerRegistry:
+        options.providerRegistry ??
+        new ProviderRegistry([
+          ...(includeWorkerProvider
+            ? [
+                options.subscriptionFamily === 'openai-codex'
+                  ? {
+                      defaultModel: providerModel,
+                      displayName: 'OpenAI Codex',
+                      id: providerProfileId,
+                      kind: options.subscriptionCheckUnavailable
+                        ? ('oauth' as const)
+                        : ('gateway' as const),
+                      ...(options.subscriptionCheckUnavailable
+                        ? {
+                            extensions: {
+                              openkit: {
+                                subscriptionAccount: { accountSlotId: 'private-account-slot' },
+                              },
                             },
-                          },
-                        }
-                      : { secretRef: 'test:worker-api-key' }),
-                    models: [providerModel],
-                    vendor: 'openai-codex' as const,
-                  }
-                : {
-                    defaultModel: providerModel,
-                    displayName: 'Agent OpenRouter',
-                    id: providerProfileId,
-                    kind: 'gateway' as const,
-                    secretRef: 'test:worker-api-key',
-                    models: [providerModel],
-                    vendor: 'openrouter' as const,
-                  },
-            ]
-          : []),
-        {
-          defaultModel: 'public-model',
-          displayName: 'Public Default',
-          id: 'public-default',
-          kind: 'local',
-          models: ['public-model'],
-          vendor: 'ollama',
-        },
-      ]),
+                          }
+                        : { secretRef: 'test:worker-api-key' }),
+                      models: [providerModel],
+                      vendor: 'openai-codex' as const,
+                    }
+                  : {
+                      defaultModel: providerModel,
+                      displayName: 'Agent OpenRouter',
+                      id: providerProfileId,
+                      kind: 'gateway' as const,
+                      secretRef: 'test:worker-api-key',
+                      models: [providerModel],
+                      vendor: 'openrouter' as const,
+                    },
+              ]
+            : []),
+          {
+            defaultModel: 'public-model',
+            displayName: 'Public Default',
+            id: 'public-default',
+            kind: 'local',
+            models: ['public-model'],
+            vendor: 'ollama',
+          },
+        ]),
       store,
       workerControlGateway,
     }),
@@ -2593,4 +2602,177 @@ it('Worker inference skips missing API-key supply without a Provider callback', 
   expect(body).toMatchObject({ error: { code: 'gateway_logical_model_unavailable' } });
   expect(body.error).not.toHaveProperty('cause');
   expect(fixture.dispatcher.responseCalls).toEqual([]);
+});
+
+describe('Worker Turn admitted limits', () => {
+  for (const endpoint of ['responses', 'chat/completions'] as const) {
+    it.each([
+      'new smaller primary',
+      'all members shrunk',
+      'absent modelParameters',
+    ] as const)(`${endpoint}: %s`, async (scenario) => {
+      const originalProfiles = [
+        { id: 'original-primary', context: 240_000, output: 16_000 },
+        { id: 'original-backup', context: 200_000, output: 8_000 },
+      ].map(({ id, context, output }) => ({
+        id,
+        displayName: id,
+        kind: 'gateway' as const,
+        vendor: 'openrouter' as const,
+        secretRef: 'test:worker-api-key',
+        models: [WORKER_PROVIDER_MODEL],
+        modelMetadata: {
+          [WORKER_PROVIDER_MODEL]: {
+            limit: { context, output },
+            modalities: { input: ['text'], output: ['text'] },
+          },
+        },
+      }));
+      const admittedConfig: GatewayConfig = {
+        schemaVersion: 1,
+        enabled: true,
+        defaultLogicalModelId: WORKER_LOGICAL_MODEL_ID,
+        requiredFeatures: [],
+        logicalModels: [
+          {
+            id: WORKER_LOGICAL_MODEL_ID,
+            displayName: 'Worker reasoning',
+            routing: { autoFailover: true },
+            contextManagement: [{ type: 'compaction', compactThreshold: 8_000 }],
+            routes: originalProfiles.map((profile) => ({
+              id: profile.id,
+              providerProfileId: profile.id,
+              providerModel: WORKER_PROVIDER_MODEL,
+            })),
+          },
+        ],
+      };
+      const admittedModel = resolveLogicalModel(
+        admittedConfig,
+        new ProviderRegistry(originalProfiles),
+        WORKER_LOGICAL_MODEL_ID
+      )!;
+      expect(admittedModel.modelParameters).toMatchObject({
+        contextWindow: 200_000,
+        maxOutputTokens: 8_000,
+      });
+      const { modelParameters: _admittedParameters, ...modelWithoutParameters } = admittedModel;
+      const currentProfiles =
+        scenario === 'all members shrunk'
+          ? originalProfiles.map((profile) => ({
+              ...profile,
+              modelMetadata: {
+                [WORKER_PROVIDER_MODEL]: {
+                  ...profile.modelMetadata[WORKER_PROVIDER_MODEL],
+                  limit: { context: 20_000, output: 1_000 },
+                },
+              },
+            }))
+          : [
+              {
+                ...originalProfiles[0]!,
+                id: 'new-smaller-primary',
+                displayName: 'New smaller primary',
+                modelMetadata: {
+                  [WORKER_PROVIDER_MODEL]: {
+                    ...originalProfiles[0]!.modelMetadata[WORKER_PROVIDER_MODEL],
+                    limit: { context: 20_000, output: 1_000 },
+                  },
+                },
+              },
+              ...originalProfiles,
+            ];
+      const currentConfig = structuredClone(admittedConfig);
+      currentConfig.logicalModels[0]!.routes = currentProfiles.map((profile) => ({
+        id: profile.id,
+        providerProfileId: profile.id,
+        providerModel: WORKER_PROVIDER_MODEL,
+      }));
+      const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+        persistedTurn: true,
+        admittedLogicalModel:
+          scenario === 'absent modelParameters' ? modelWithoutParameters : admittedModel,
+        gatewayConfig: currentConfig,
+        providerRegistry: new ProviderRegistry(currentProfiles),
+      });
+      const admittedPackage = structuredClone(f.environmentPackage);
+      if (scenario === 'absent modelParameters') {
+        expect(f.environmentPackage.llm.routes[0]).not.toHaveProperty('modelParameters');
+      } else {
+        expect(f.environmentPackage.llm.routes[0]?.modelParameters).toMatchObject({
+          contextWindow: 200_000,
+          maxOutputTokens: 8_000,
+        });
+      }
+      const response = await f.app.request(`/api/worker-inference/v1/${endpoint}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${f.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: WORKER_LOGICAL_MODEL_ID,
+          ...(endpoint === 'responses'
+            ? { input: 'Hello' }
+            : { messages: [{ role: 'user', content: 'Hello' }] }),
+        }),
+      });
+      const failed = scenario === 'all members shrunk';
+      expect(response.status).toBe(failed ? 503 : 200);
+      if (failed) {
+        const body = await response.json();
+        expect(body).toMatchObject({ error: { code: 'gateway_logical_model_unavailable' } });
+        expect(body.error).not.toHaveProperty('cause');
+      } else {
+        await response.json();
+      }
+      const providerCalls = [...f.dispatcher.responseCalls, ...f.dispatcher.chatCalls];
+      expect(providerCalls.map((call) => call.provider.id)).toEqual(
+        failed
+          ? []
+          : [scenario === 'absent modelParameters' ? 'new-smaller-primary' : 'original-primary']
+      );
+      const db = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+      try {
+        const calls = listWorkspaceCapabilityCalls(db, f.environmentPackage.scope.workspaceId);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({
+          status: failed ? 'failed' : 'succeeded',
+          errorCode: failed ? 'gateway_logical_model_unavailable' : null,
+          providerRef: null,
+          turnId: f.environmentPackage.scope.turnId,
+          agentSessionId: f.environmentPackage.scope.agentSessionId,
+          packageSnapshotId: f.environmentPackage.snapshotId,
+        });
+        const entries = calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries;
+        const excluded = (routeMemberId: string) => ({
+          kind: 'unavailable',
+          routeMemberId,
+          selectionReason: 'pinned_capability_unavailable',
+          unavailableReason: 'pinned_capability_unavailable',
+          failureKind: 'unsupported',
+        });
+        expect(entries).toMatchObject(
+          failed
+            ? originalProfiles.map((profile) => excluded(profile.id))
+            : scenario === 'absent modelParameters'
+              ? [{ kind: 'attempt', routeMemberId: 'new-smaller-primary' }]
+              : [
+                  excluded('new-smaller-primary'),
+                  { kind: 'attempt', routeMemberId: 'original-primary' },
+                ]
+        );
+        expect(entries).toHaveLength(failed ? 2 : scenario === 'absent modelParameters' ? 1 : 2);
+        if (failed) {
+          expect(listWorkspaceUsageRecords(db, f.environmentPackage.scope.workspaceId)).toEqual([]);
+          expect(
+            readWorkObservations(db, {
+              threadId: f.environmentPackage.scope.threadId,
+              turnId: f.environmentPackage.scope.turnId,
+            }).filter((row) => row.type === 'model.observed')
+          ).toEqual([]);
+        }
+      } finally {
+        db.sqlite.close();
+      }
+      expect(f.environmentPackage).toEqual(admittedPackage);
+    });
+  }
 });

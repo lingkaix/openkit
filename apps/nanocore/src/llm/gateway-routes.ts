@@ -1670,7 +1670,7 @@ function gatewayProviderFailureMessage(code: string): string {
 }
 
 /**
- * Registers token-only worker inference routes backed by AEP authority.
+ * Registers token-only worker inference routes backed by AEP authority, with current candidates constrained by the owning Turn's admitted model limits.
  *
  * @param dependencies Hono app, worker identity gateway, dispatcher, and durable storage.
  */
@@ -1813,6 +1813,14 @@ export function registerWorkerInferenceRoutes({
             ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
           },
           logicalModel,
+          ...(route.modelParameters
+            ? {
+                pinnedLimits: {
+                  context: route.modelParameters.contextWindow,
+                  output: route.modelParameters.maxOutputTokens,
+                },
+              }
+            : {}),
           requiredCapabilities: endpoint === 'responses' ? ['responses'] : ['chat-completions'],
           ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
           resolveGatewayProvider,
