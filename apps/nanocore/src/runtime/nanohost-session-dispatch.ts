@@ -359,6 +359,8 @@ export function createNanoHostSessionDispatch(
       readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
     }
   >();
+  // A completed poll distinguishes a live connection from a poll-first successor.
+  const completedEffectPollConnections = new WeakSet<object>();
   let currentReadiness: {
     readonly connectionGeneration: number;
     readonly physicalEpoch: string;
@@ -575,7 +577,7 @@ export function createNanoHostSessionDispatch(
       }
       const priorConnectionEffects = [...pendingEffects.entries()].filter(
         ([, candidate]) =>
-          candidate.resultOnlyGroup ||
+          (candidate.resultOnlyGroup && !completedEffectPollConnections.has(physicalConnection)) ||
           (candidate.accepted && candidate.acceptedConnection !== physicalConnection)
       );
       if (priorConnectionEffects.length > 0) {
@@ -610,6 +612,7 @@ export function createNanoHostSessionDispatch(
       }
       const pending = pendingEffects.get(operation);
       if (!pending) {
+        completedEffectPollConnections.add(physicalConnection);
         return null;
       }
       if (
@@ -621,17 +624,17 @@ export function createNanoHostSessionDispatch(
         pending.reject(
           new Error('NanoHost queued effect origin physical Epoch is no longer current.')
         );
+        completedEffectPollConnections.add(physicalConnection);
         return null;
       }
-      if (pending.accepted) {
+      if (pending.accepted || !pending.command) {
+        completedEffectPollConnections.add(physicalConnection);
         return null;
-      }
-      if (!pending.command) {
-        throw new Error('NanoHost effect command is unavailable.');
       }
       pending.accepted = true;
       pending.acceptedConnection = physicalConnection;
       const command = { ...pending.command };
+      completedEffectPollConnections.add(physicalConnection);
       if (operation === 'image.build') {
         const { dockerfile: _dockerfile, ...metadata } = command;
         return metadata;

@@ -28,6 +28,105 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it('keeps current-epoch result-only cleanup pending after a live connection completed a poll', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-cleanup-poll-')));
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = { deploymentId: 'live-cleanup', identityId: 'live-cleanup' };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      targetId: target.identityId,
+      observedAt: new Date().toISOString(),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let physicalConnection: object | undefined;
+    const server = createHttp2Server((request, response) => {
+      if (!physicalConnection) {
+        physicalConnection = readNanoHostPhysicalConnectionContext(request)!;
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection,
+        });
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing live cleanup test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+        });
+        const response = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await response;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { status: headers[':status'], body: Buffer.concat(chunks).toString() };
+      };
+      const readinessPath = '/api/nanohost/transport/session/readiness';
+      const epoch = 'a'.repeat(64);
+      expect((await post(readinessPath, { physicalEpoch: epoch })).status).toBe(204);
+      expect(await post('/api/nanohost/transport/effects/sandbox.create', {})).toEqual({
+        status: 204,
+        body: '',
+      });
+      const retained = dispatch.expectResultOnly!([
+        { kind: 'bridge.close', originPhysicalEpoch: epoch, requestId: 'b'.repeat(64) },
+        { kind: 'sandbox.delete', originPhysicalEpoch: epoch, requestId: 'c'.repeat(64) },
+      ]);
+      let settled = false;
+      void retained.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      // Repeated readiness on the same connection must not invent another first poll.
+      expect((await post(readinessPath, { physicalEpoch: epoch })).status).toBe(204);
+      expect(await post('/api/nanohost/transport/effects/sandbox.create', {})).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(await post('/api/nanohost/transport/effects/bridge.close', {})).toEqual({
+        status: 204,
+        body: '',
+      });
+      expect(settled).toBe(false);
+      expect(authority.mayCarryWork(physicalConnection!)).toBe(true);
+      expect(
+        await post('/api/nanohost/transport/effects/bridge.close/result', {
+          requestId: 'b'.repeat(64),
+          state: 'deleted',
+        })
+      ).toEqual({ status: 204, body: '' });
+      await expect(retained).resolves.toEqual({
+        kind: 'bridge.close',
+        result: { state: 'deleted' },
+      });
+      expect(authority.mayCarryWork(physicalConnection!)).toBe(true);
+    } finally {
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+    }
+  });
+
   it('pairs every Rust effect route with empty idle polls and admits additive baseline results', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);
@@ -702,14 +801,24 @@ describe('authoritative NanoHost session dispatch', () => {
         status: 409,
       });
 
-      const unknownImageOutcome = restarted.expectResultOnly!([
+      // A new dispatcher models another Core restart; this recovery has not completed a poll.
+      const unresolvedRestart = createNanoHostSessionDispatch({
+        coreDb,
+        sessionAuthority: authority,
+      });
+      await unresolvedRestart.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        target
+      );
+      const unknownImageOutcome = unresolvedRestart.expectResultOnly!([
         {
           kind: 'image.build',
           imageSettlement,
           requestId: 'f'.repeat(64),
         },
       ]).catch((error: unknown) => error);
-      await expect(restarted.poll(physical, 'image.inspect')).rejects.toMatchObject({
+      await expect(unresolvedRestart.poll(physical, 'image.inspect')).rejects.toMatchObject({
         status: 409,
       });
       expect(authority.mayCarryWork(physical)).toBe(false);

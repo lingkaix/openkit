@@ -8585,6 +8585,9 @@ describe('createConfiguredTurnExecutor', () => {
 
   it.each([
     null,
+    'eviction-cleanup-required',
+    'eviction-delete-failed',
+    'eviction-live-cleanup',
     'retained_baseline_unavailable',
     'retained_baseline_conflict',
     'git_fetch_commit_unavailable',
@@ -8594,10 +8597,23 @@ describe('createConfiguredTurnExecutor', () => {
   ])('reattaches selected storage or surfaces startup failure: %s', async (startupRefused) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
+    const expectResultOnly = vi.fn(async () => {
+      throw new Error('Unexpected live result-only cleanup registration.');
+    });
     const sessionDispatch: NanoHostSessionDispatch = {
       async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
         const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT cleanup_state AS state FROM sandbox_runtime_records')
+              .get()
+          ).toEqual({ state: 'clean' });
+          if (request.kind === 'sandbox.delete' && startupRefused === 'eviction-delete-failed') {
+            throw new Error('Eviction Sandbox delete failed.');
+          }
+        }
         if (request.kind === 'image.acquire') {
           return { digest: request.input.imageReference };
         }
@@ -8622,6 +8638,7 @@ describe('createConfiguredTurnExecutor', () => {
         if (request.kind === 'reference.import') return { state: 'imported' };
         return { state: 'deleted' };
       },
+      expectResultOnly,
       async poll() {
         return null;
       },
@@ -8791,7 +8808,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const launch = backend.launch(firstMaterialization);
 
-      if (startupRefused) {
+      if (startupRefused && !startupRefused.startsWith('eviction-')) {
         const observedFailure =
           startupRefused === 'git_fetch_http_refused'
             ? ({
@@ -8999,12 +9016,54 @@ describe('createConfiguredTurnExecutor', () => {
         workerStorageChoice: selectedChoice,
         workspaceRoots: [],
       });
-      await settleNext('session.close', {
-        childState: 'absent',
-        privateState: 'absent',
-        state: 'closed',
-      });
+      const observedReplacement = replacement.catch((error: unknown) => error);
+      if (startupRefused?.startsWith('eviction-')) {
+        await settleNext(
+          'session.close',
+          {
+            reasonCode:
+              startupRefused === 'eviction-live-cleanup' ? 'conflict' : 'cleanup_required',
+          },
+          'refused'
+        );
+      } else {
+        await settleNext('session.close', {
+          childState: 'absent',
+          privateState: 'absent',
+          state: 'closed',
+        });
+      }
+      if (startupRefused === 'eviction-live-cleanup') {
+        expect(await observedReplacement).toMatchObject({
+          message: 'NanoHost Harness session.close refused: conflict.',
+        });
+        const effectsBeforeCleanup = effects.length;
+        await runtime.cleanupBackendSession(backend.planSession(secondPackage));
+        expect(expectResultOnly).not.toHaveBeenCalled();
+        expect(effects).toHaveLength(effectsBeforeCleanup);
+        expect(
+          coreDb.sqlite.prepare('SELECT cleanup_state AS state FROM sandbox_runtime_records').get()
+        ).toEqual({ state: 'unknown' });
+        return;
+      }
+      if (startupRefused === 'eviction-delete-failed') {
+        expect(await observedReplacement).toMatchObject({
+          message: 'Eviction Sandbox delete failed.',
+        });
+        expect(effects.slice(-2).map((effect) => effect.kind)).toEqual([
+          'bridge.close',
+          'sandbox.delete',
+        ]);
+        expect(
+          coreDb.sqlite.prepare('SELECT cleanup_state AS state FROM sandbox_runtime_records').get()
+        ).toEqual({ state: 'unknown' });
+        expect(
+          getWorkerStorageBinding(coreDb, { storageRef: selectedBinding.storageRef })
+        ).toMatchObject({ state: 'unknown' });
+        return;
+      }
       await replacement;
+      expect(expectResultOnly).not.toHaveBeenCalled();
 
       const reattachedBinding = getWorkerStorageBindingForSandbox(coreDb, {
         sandboxBindingRef: (

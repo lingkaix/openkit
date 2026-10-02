@@ -1491,20 +1491,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               );
             }
           } else {
-            if (!session || session.sharedHarness.sandbox.bridgeOpen) {
-              await this.effect(
-                identity,
-                leaseId,
-                'bridge.close',
-                cleanupInput,
-                durableSandbox?.originPhysicalEpoch
-              );
-            }
-            await this.effect(
+            await this.deleteSandbox(
               identity,
-              leaseId,
-              'sandbox.delete',
               cleanupInput,
+              !session || session.sharedHarness.sandbox.bridgeOpen,
               durableSandbox?.originPhysicalEpoch
             );
           }
@@ -1550,6 +1540,31 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       this.failedPreSandboxPreparations.delete(identity.packageSnapshotId);
     }
+  }
+
+  /** Widens live cleanup through the bridge and Sandbox without returning capacity early. */
+  private async deleteSandbox(
+    identity: WorkerGovernanceBackendSessionIdentity,
+    cleanupInput: { readonly leaseId: string; readonly sandboxId: string },
+    bridgeOpen: boolean,
+    retiringSandboxOrigin?: string
+  ): Promise<void> {
+    if (bridgeOpen) {
+      await this.effect(
+        identity,
+        cleanupInput.leaseId,
+        'bridge.close',
+        cleanupInput,
+        retiringSandboxOrigin
+      );
+    }
+    await this.effect(
+      identity,
+      cleanupInput.leaseId,
+      'sandbox.delete',
+      cleanupInput,
+      retiringSandboxOrigin
+    );
   }
 
   /** Drops process-local projections after the physical Sandbox was deleted or fenced. */
@@ -1968,7 +1983,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       if (eviction.closeAgentSessions) {
         for (const binding of eviction.bindings) {
-          await this.closeDurableAgentSession(binding);
+          try {
+            await this.closeDurableAgentSession(binding);
+          } catch (error) {
+            if (!isCleanupRequiredRefusal(error)) throw error;
+            // Admission is drained; whole-Sandbox deletion also retires the remaining bindings.
+            break;
+          }
           for (const sharedHarness of this.sharedHarnesses.values()) {
             if (sharedHarness.harnessInstanceId === binding.harnessInstanceId) {
               sharedHarness.bindings.delete(binding.agentSessionId);
@@ -1977,21 +1998,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       }
       if (!eviction.physicalAbsent) {
-        const cleanupInput = { leaseId, sandboxId: eviction.sandboxId };
-        if (eviction.bridgeOpen) {
-          await this.effect(
-            identity,
-            leaseId,
-            'bridge.close',
-            cleanupInput,
-            eviction.originPhysicalEpoch
-          );
-        }
-        await this.effect(
+        await this.deleteSandbox(
           identity,
-          leaseId,
-          'sandbox.delete',
-          cleanupInput,
+          { leaseId, sandboxId: eviction.sandboxId },
+          eviction.bridgeOpen,
           eviction.originPhysicalEpoch
         );
       }
@@ -2095,13 +2105,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated') {
       throw new Error('NanoHost one-Sandbox capacity is occupied or unproved.');
     }
-    let releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
-      environmentPackage,
-      identity,
-      leaseId,
-      false,
-      replacementSelection
-    );
+    let releasedSelectedBinding: WorkerStorageBinding | null;
+    try {
+      releasedSelectedBinding = await this.evictIncompatibleIdleSandbox(
+        environmentPackage,
+        identity,
+        leaseId,
+        false,
+        replacementSelection
+      );
+    } catch (error) {
+      // Eviction owns the resident's fence; this incoming attempt created no Sandbox or bridge.
+      this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
+      throw error;
+    }
     let sharedHarness = this.restoreSharedHarness(
       sandboxCompatibilityKey,
       harnessCompatibilityKey,
