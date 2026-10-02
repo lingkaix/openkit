@@ -47,6 +47,8 @@ Deprecated flat aliases are not exported.
 
 `client.app.prepareAppUpdate`, `startAppUpdate` and `getAppUpdateStatus` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
 
+`client.catalog.updateMcpBinding` sends optional Vault credential bindings through the existing Workspace binding operation. A supplied array replaces those bindings, including an empty array to clear them; omission preserves current credentials for policy-only updates. Input and response types remain derived from the shared App API schemas.
+
 ## Commands
 
 - `pnpm --filter @openkit/core-client test`

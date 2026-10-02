@@ -31,7 +31,9 @@ import {
   type SkillVersionRecord,
   type WorkspaceMcpServer,
   type WorkspaceMcpServerCatalog,
+  WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
+import type { ZodError } from 'zod';
 
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 
@@ -40,6 +42,18 @@ export class CatalogConflictError extends Error {
   public constructor(message = 'Resource catalog revision conflict.') {
     super(message);
     this.name = 'CatalogConflictError';
+  }
+}
+
+/** Structural validation failure for a proposed MCP binding, excluding retained-record reads. */
+export class McpBindingValidationError extends Error {
+  /** Request-derived effective-entry validation detail for the update-binding route. */
+  public readonly validationError: ZodError;
+
+  public constructor(validationError: ZodError) {
+    super('Invalid MCP binding.', { cause: validationError });
+    this.name = 'McpBindingValidationError';
+    this.validationError = validationError;
   }
 }
 
@@ -479,7 +493,7 @@ export function createWorkspaceMcpConfig(input: {
   return { catalog, version };
 }
 
-/** Updates one MCP binding using compare-and-set binding revision. */
+/** Validates one MCP binding against its current transport before compare-and-set publication. */
 export function updateWorkspaceMcpBinding(input: {
   readonly binding: Omit<McpBindingRecord, 'entryId' | 'packageDataKey'> & {
     readonly packageDataKey?: string;
@@ -491,6 +505,9 @@ export function updateWorkspaceMcpBinding(input: {
 }): ResourceCatalogDocument {
   const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const existing = current.mcp.bindings.find((item) => item.entryId === input.entryId);
+  if (current.revision !== input.expectedRevision) {
+    throw new CatalogConflictError();
+  }
   if (existing && existing.revision !== input.binding.revision) {
     throw new CatalogConflictError('MCP binding revision conflict.');
   }
@@ -504,6 +521,18 @@ export function updateWorkspaceMcpBinding(input: {
     packageDataKey,
     revision: (existing?.revision ?? 0) + 1,
   };
+  const currentDigest = current.mcp.entries.find(
+    (entry) => entry.id === input.entryId
+  )?.currentVersionDigest;
+  const version = current.mcp.versions.find(
+    (candidate) => candidate.entryId === input.entryId && candidate.digest === currentDigest
+  );
+  if (version) {
+    const parsed = WorkspaceMcpServerSchema.safeParse(effectiveMcpServer(nextBinding, version));
+    if (!parsed.success) {
+      throw new McpBindingValidationError(parsed.error);
+    }
+  }
   return publishWorkspaceResourceCatalog({
     catalog: {
       ...current,

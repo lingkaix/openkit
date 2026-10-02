@@ -5074,7 +5074,7 @@ export function createAppOpenApiDocument() {
           requestSchema: 'UpdateMcpBindingRequest',
           responseSchema: 'CatalogMutationResponse',
           responseStatus: '200',
-          summary: 'Update MCP enablement, tool policy, and timeout.',
+          summary: 'Update MCP enablement, credential bindings, tool policy, and timeout.',
           tag: 'catalog',
         }),
       },

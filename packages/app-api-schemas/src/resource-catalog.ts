@@ -1,3 +1,4 @@
+import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
 import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
@@ -229,12 +230,13 @@ export const SelectMcpVersionRequestSchema = z
   })
   .strict();
 
-/** Update an MCP binding. */
+/** Update an MCP binding; omitted credentials preserve the current bindings and a supplied array replaces them. */
 export const UpdateMcpBindingRequestSchema = z
   .object({
     allowedTools: z.array(z.string().min(1)).min(1),
     approvalRequiredTools: z.array(z.string().min(1)).default([]),
     bindingRevision: z.number().int().nonnegative(),
+    credentialBindings: z.array(WorkspaceMcpCredentialBindingSchema).optional(),
     deniedTools: z.array(z.string().min(1)).default([]),
     enabled: z.boolean(),
     expectedRevision: z.number().int().nonnegative(),

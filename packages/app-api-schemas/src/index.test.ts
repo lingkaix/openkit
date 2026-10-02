@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
 
 import {
   SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
@@ -253,6 +254,7 @@ const rawSecretShapes = [
 ] as const;
 const schemaSourceRoot = new URL('.', import.meta.url);
 const allowedRuntimeNeutralImports = new Set([
+  '@openkit/config-schema/mcp-credentials',
   '@openkit/config-schema/native-environment',
   '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
@@ -286,6 +288,12 @@ function isRuntimeNeutralSchemaImport(specifier: string): boolean {
 }
 
 describe('app api schema package boundary', () => {
+  it('reuses the browser-safe MCP credential binding schema without defaulting omitted updates', () => {
+    const credentials = appApiSchemas.UpdateMcpBindingRequestSchema.shape.credentialBindings;
+    expect(credentials.unwrap().element).toBe(WorkspaceMcpCredentialBindingSchema);
+    expect(credentials.parse(undefined)).toBeUndefined();
+    expect(credentials.parse([])).toEqual([]);
+  });
   it('depends only on runtime-neutral schema dependencies', () => {
     const offenders = listSchemaSourceFiles(schemaSourceRoot.pathname).flatMap((path) => {
       const disallowedImports = staticImportSpecifiers(readFileSync(path, 'utf8')).filter(

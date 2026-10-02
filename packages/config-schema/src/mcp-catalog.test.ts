@@ -8,7 +8,10 @@ import {
   resolveWorkspaceMcpServer,
   WorkspaceMcpServerCatalogSchema,
 } from './index.js';
-import { WorkspaceMcpCredentialBindingSchema } from './mcp-catalog.js';
+import {
+  WorkspaceMcpCredentialBindingSchema,
+  WorkspaceMcpHttpTransportSchema,
+} from './mcp-catalog.js';
 import { McpBindingRecordSchema } from './resource-catalog.js';
 
 describe('MCP credential presentation admission', () => {
@@ -108,6 +111,21 @@ describe('MCP credential presentation admission', () => {
 });
 
 describe('workspace MCP server catalog', () => {
+  it('preserves authored endpoint query strings while rejecting URL credentials and fragments', () => {
+    const endpoint = 'https://mcp.example.test/mcp?read-only=true';
+    expect(WorkspaceMcpHttpTransportSchema.parse({ kind: 'http', endpoint }).endpoint).toBe(
+      endpoint
+    );
+    for (const invalid of [
+      'https://user:password@mcp.example.test/mcp',
+      'https://mcp.example.test/mcp#fragment',
+    ]) {
+      expect(
+        WorkspaceMcpHttpTransportSchema.safeParse({ kind: 'http', endpoint: invalid }).success
+      ).toBe(false);
+    }
+  });
+
   it('bounds timeouts to the Node timer range', () => {
     const input = (timeoutMs: number) => ({
       schemaVersion: 1,

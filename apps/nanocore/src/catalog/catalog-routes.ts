@@ -37,6 +37,7 @@ import {
   importWorkspacePlugin,
   importWorkspaceSkill,
   loadWorkspaceResourceCatalog,
+  McpBindingValidationError,
   materializeCatalogTree,
   selectWorkspaceMcpVersion,
   selectWorkspaceSkillDefault,
@@ -292,7 +293,8 @@ export function registerResourceCatalogRoutes({
         binding: {
           allowedTools: parsed.data.allowedTools,
           approvalRequiredTools: parsed.data.approvalRequiredTools,
-          credentialBindings: existingBinding?.credentialBindings ?? [],
+          credentialBindings:
+            parsed.data.credentialBindings ?? existingBinding?.credentialBindings ?? [],
           deniedTools: parsed.data.deniedTools,
           enabled: parsed.data.enabled,
           pinnedSchemaSnapshotId: existingBinding?.pinnedSchemaSnapshotId ?? null,
@@ -308,6 +310,9 @@ export function registerResourceCatalogRoutes({
       afterMutation?.(c.req.param('workspaceId'));
       return c.json(CatalogMutationResponseSchema.parse({ revision: next.revision }));
     } catch (error) {
+      if (error instanceof McpBindingValidationError) {
+        return asInvalidRequestError(error.validationError);
+      }
       return catalogError(error, 'mcp_binding_failed');
     }
   });
@@ -464,7 +469,7 @@ function pluginEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatalog>)
 /** Maps catalog errors onto the App API envelope. */
 function catalogError(error: unknown, code: string) {
   if (error instanceof CatalogConflictError) {
-    return asCommandError(error, code, 409);
+    return asApiError(error.message, 'conflict', 409);
   }
   if (error instanceof CatalogNotFoundError) {
     return asApiError(error.message, code, 404);

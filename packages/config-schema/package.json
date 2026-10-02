@@ -8,6 +8,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./mcp-credentials": {
+      "types": "./dist/mcp-credentials.d.ts",
+      "default": "./dist/mcp-credentials.js"
+    },
     "./native-environment": {
       "types": "./dist/native-environment.d.ts",
       "default": "./dist/native-environment.js"

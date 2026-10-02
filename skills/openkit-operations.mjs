@@ -2416,7 +2416,7 @@ export const operationCatalog = [
     appOperationId: 'updateMcpBinding',
     clientMethod: 'catalog.updateMcpBinding',
     group: 'catalog',
-    summary: 'Update MCP enablement, tool policy, and timeout.',
+    summary: 'Update MCP enablement, credential bindings, tool policy, and timeout.',
     mutating: true,
     inputSchema: flatRequest(appSchemas.UpdateMcpBindingRequestSchema, {
       ...workspaceScope,

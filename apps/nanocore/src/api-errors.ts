@@ -84,12 +84,17 @@ export function asCommandError(error: unknown, code: string, status = 404): Resp
 /**
  * Converts validation failures into a shared protocol API error response.
  *
- * @param error Validation error to expose as a product-safe message.
+ * @param error Validation error or string to expose as a product-safe message.
  * @param code Stable API error code.
  * @returns JSON API error response.
  */
 export function asInvalidRequestError(error: unknown, code = 'invalid_request'): Response {
-  const message = error instanceof z.ZodError ? z.prettifyError(error) : (error as Error).message;
+  const message =
+    typeof error === 'string'
+      ? error
+      : error instanceof z.ZodError
+        ? z.prettifyError(error)
+        : (error as Error).message;
 
   return asApiError(message, code, 400);
 }

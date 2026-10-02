@@ -12495,7 +12495,7 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Update MCP enablement, tool policy, and timeout.",
+        "summary": "Update MCP enablement, credential bindings, tool policy, and timeout.",
         "security": [
           {
             "bearerAuth": []
@@ -12535,7 +12535,7 @@
         },
         "responses": {
           "200": {
-            "description": "Update MCP enablement, tool policy, and timeout.",
+            "description": "Update MCP enablement, credential bindings, tool policy, and timeout.",
             "content": {
               "application/json": {
                 "schema": {
@@ -73377,6 +73377,94 @@
             "minimum": 0,
             "maximum": 9007199254740991
           },
+          "credentialBindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "slot": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "vaultGrantId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sink": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "env"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "header"
+                        },
+                        "name": {
+                          "type": "string",
+                          "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "query"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "presentation": {
+                  "type": "string",
+                  "enum": [
+                    "raw",
+                    "bearer"
+                  ]
+                }
+              },
+              "required": [
+                "slot",
+                "vaultGrantId",
+                "sink"
+              ],
+              "additionalProperties": false
+            }
+          },
           "deniedTools": {
             "default": [],
             "type": "array",
@@ -75762,5 +75850,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:34f60f81a64c81d87a3680c2bff5271e49c92052290d832e2b7d4ca02247974d"
+  "x-openkit-source-digest": "sha256:515e27656a403deac21277403772e2ffab407e338ec5beb034e0f7214d99a189"
 }

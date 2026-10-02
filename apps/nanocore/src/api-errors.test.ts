@@ -6,6 +6,17 @@ import type { AuthVariables } from './auth/middleware.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { registerThreadRoutes } from './thread-routes.js';
 
+it.each([
+  'string',
+  'error',
+] as const)('preserves %s validation messages in a JSON 400', async (kind) => {
+  const message = 'Invalid MCP binding request.';
+  const response = asInvalidRequestError(kind === 'string' ? message : new Error(message));
+  expect(response.status).toBe(400);
+  expect(response.headers.get('content-type')).toContain('application/json');
+  expect(await response.json()).toMatchObject({ code: 'invalid_request', message });
+});
+
 it('walks cyclic causes and aggregate entries before reading the baked message', () => {
   const parser = new SyntaxError('ROW_SECRET_X9');
   const aggregate = new AggregateError([], 'Baked private message');
