@@ -2283,7 +2283,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         importResult.rejectedEventSequences.length > 0 ||
         importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
       ) {
-        throw new Error('Worker transcript event reconciliation failed.');
+        // Diagnostics supply owned codes only; parser messages and transcript payloads stay private.
+        const codes = [
+          ...new Set(
+            importResult.diagnostics
+              .filter((diagnostic) => diagnostic.path.startsWith('$.events'))
+              .map((diagnostic) => diagnostic.code)
+          ),
+        ].slice(0, 8);
+        const sequences = [...new Set(importResult.rejectedEventSequences)].sort(
+          (left, right) => left - right
+        );
+        const omitted = sequences.length > 32 ? `; omittedSequences=${sequences.length - 32}` : '';
+        const message = `Worker transcript event reconciliation failed. diagnosticCodes=${codes.join(',')}; rejectedEventSequences=${JSON.stringify(sequences.slice(0, 32))}${omitted}`;
+        console.error(message);
+        throw new Error(message);
       }
       await this.createWorkspaceChangeArtifacts(
         store,

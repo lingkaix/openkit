@@ -61,6 +61,8 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 
 Real-pin regressions use the adapters' owned native request bounds, including OpenCode's eight-second RPC bound, so setup completes before a deliberately missing tool-registry proof is examined. Codex home checks preserve opaque native staging bytes and scan all surviving files, including `.tmp/`, SQLite, WAL and logs; only `ENOENT` for a vanished child is tolerated, while a missing scan root and unreadable bytes fail the check. Deterministic disappearance and unreadability cases qualify that scan without relying on native cleanup timing.
 
+Successful Turn closeout stops periodic heartbeat scheduling and waits for any in-flight lease heartbeat and its transcript event's live acceptance before writing `turn.settled` and draining loopback requests. The heartbeat timer's cancellation signal is separate from control delivery, so barrier shutdown cannot cancel an immutable heartbeat request or a transcript event's append. Live rejection still fails the Turn, and the separate local transcript queue can seal a failed terminal record under the existing control-outage rules.
+
 ## File Map
 
 - `src/harness.ts`: the poll loop, one Harness per instance id, the six operations over resident bindings, resume references, and the resident environment.

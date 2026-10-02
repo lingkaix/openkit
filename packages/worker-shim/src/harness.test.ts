@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -22,6 +23,7 @@ import type {
   WorkerResidentOpenInput,
   WorkerResidentTurnInput,
 } from './adapter-registry.js';
+import type { WorkerControlFetch } from './control-client.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { WorkerTranscriptWriter } from './transcript.js';
@@ -1139,6 +1141,43 @@ describe('Worker Harness resident AgentSessions', () => {
     expect(await f.send('harness.drain', {})).toMatchObject({
       body: { activeTurns: 0, openSessions: 1, state: 'draining' },
     });
+  });
+
+  it('does not cancel live heartbeat append during the successful Turn barrier', async () => {
+    const integration = fakeIntegration();
+    const fetch = integration.client.workerControlFetch;
+    const acceptedSequences: number[] = [];
+    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/events/append')) {
+        const record = body.record;
+        // Force a heartbeat written during drain to outlive the drain's completion.
+        if (record.event.data.status === 'running') {
+          await delay(300, undefined, { signal: init.signal });
+        }
+        acceptedSequences.push(record.sequence);
+      }
+      return fetch(url, init);
+    }) satisfies WorkerControlFetch);
+    vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
+      // The periodic heartbeat starts at 1000 ms while the native Turn is already settled.
+      await delay(1100);
+      return 0;
+    });
+    const f = harnessFixture({ integration });
+    await f.open('as-a');
+    expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
+    await f.settle('as-a');
+    const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(integration.finalStatuses.at(-1)?.body.status).toBe('completed');
+    expect(
+      events
+        .filter((record) => record.event.type !== 'turn.completed')
+        .map((record) => record.sequence)
+    ).toEqual(acceptedSequences);
   });
 
   it('keeps a Turn whose native stop was not proved and fences its binding', async () => {

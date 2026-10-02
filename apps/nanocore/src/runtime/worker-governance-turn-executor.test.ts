@@ -1739,12 +1739,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     { expectedStatus: 'completed', mode: 'exact' },
     { expectedStatus: 'failed', mode: 'missing' },
+    { expectedStatus: 'failed', mode: 'many-missing' },
+    { expectedStatus: 'failed', mode: 'invalid-json' },
     { expectedStatus: 'failed', mode: 'conflict' },
     { expectedStatus: 'failed', mode: 'artifact-invalid' },
   ] as const)('reconciles $mode transcript events against durable live acceptance', async ({
     expectedStatus,
     mode,
   }) => {
+    const appLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const coreDb = openCoreDb(
       mkdtempSync(join(tmpdir(), `openkit-governance-live-events-${mode}-`))
     );
@@ -1754,6 +1757,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     backend.artifactCollectionInvalid = mode === 'artifact-invalid';
     backend.eventsJsonlFactory = (environmentPackage) => {
+      if (mode === 'invalid-json') {
+        return '{private-transcript-payload\n';
+      }
       const lineage: WorkerLineage = {
         agentSessionId: environmentPackage.scope.agentSessionId,
         packageSnapshotId: environmentPackage.snapshotId,
@@ -1763,14 +1769,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceId: environmentPackage.scope.workspaceId,
       };
       const transcriptRecord = WorkerCanonicalEventRecordSchema.parse({
-        event: { data: { status: 'running' }, type: 'worker.heartbeat' },
+        event: { data: { status: 'private-transcript-payload' }, type: 'worker.heartbeat' },
         kind: 'event',
         lineage,
         schemaVersion: 1,
         sequence: 0,
       });
 
-      if (mode !== 'missing') {
+      if (mode !== 'missing' && mode !== 'many-missing') {
         const acceptedRecord: WorkerCanonicalEventRecord =
           mode === 'conflict'
             ? WorkerCanonicalEventRecordSchema.parse({
@@ -1788,7 +1794,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         });
       }
 
-      return `${JSON.stringify(transcriptRecord)}\n`;
+      return mode === 'many-missing'
+        ? Array.from({ length: 40 }, (_, sequence) =>
+            JSON.stringify({ ...transcriptRecord, sequence })
+          ).join('\n')
+        : `${JSON.stringify(transcriptRecord)}\n`;
     };
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
@@ -1803,6 +1813,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       conflict: '00000000-0000-4000-8000-000000000233',
       exact: '00000000-0000-4000-8000-000000000231',
       missing: '00000000-0000-4000-8000-000000000232',
+      'many-missing': '00000000-0000-4000-8000-000000000235',
+      'invalid-json': '00000000-0000-4000-8000-000000000236',
       'artifact-invalid': '00000000-0000-4000-8000-000000000234',
     }[mode];
     const run = startWithExecutorLease(
@@ -1828,8 +1840,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(backend.calls.at(-1)).toBe('cleanupSession');
     } else {
       await expect(run).rejects.toThrow('Worker transcript event reconciliation failed');
+      const diagnosticCode =
+        mode === 'conflict'
+          ? 'worker_transcript_live_event_conflict'
+          : mode === 'invalid-json'
+            ? 'worker_transcript_invalid_json'
+            : 'worker_transcript_live_event_missing';
+      const sequences =
+        mode === 'many-missing'
+          ? `${JSON.stringify(Array.from({ length: 32 }, (_, sequence) => sequence))}; omittedSequences=8`
+          : mode === 'invalid-json'
+            ? '[]'
+            : '[0]';
+      const detail = `${diagnosticCode}; rejectedEventSequences=${sequences}`;
+      expect(store.getTurnById(turn.id).error).toMatchObject({
+        code: 'worker_governance_turn_failed',
+        message: expect.stringContaining(detail),
+      });
+      expect(appLog).toHaveBeenCalledWith(expect.stringContaining(detail));
+      expect(createDemoStore({ dataRoot: coreDb.dataRoot }).getTurnById(turn.id).error).toEqual(
+        store.getTurnById(turn.id).error
+      );
+      expect(appLog.mock.calls.flat().join(' ')).not.toContain('private-transcript-payload');
+      expect(store.getTurnById(turn.id).error?.message).not.toContain('private-transcript-payload');
     }
     expect(store.getTurnById(turn.id).status).toBe(expectedStatus);
+    appLog.mockRestore();
     coreDb.sqlite.close();
   });
 

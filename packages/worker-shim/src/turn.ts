@@ -216,6 +216,7 @@ async function runResidentTurnImplementation(
 
   let controlSession: WorkerControlClient | null = null;
   const controlAbortController = new AbortController();
+  const heartbeatAbortController = new AbortController();
   const writer = new WorkerTranscriptWriter({
     appendEvent: async (record) => {
       if (!controlSession) {
@@ -334,7 +335,12 @@ async function runResidentTurnImplementation(
     }
     options.onStarted();
     session.enablePostLaunchRecovery();
-    const heartbeat = runWorkerHeartbeatLoop(session, writer, controlAbortController.signal);
+    const heartbeat = runWorkerHeartbeatLoop(
+      session,
+      writer,
+      heartbeatAbortController.signal,
+      controlAbortController.signal
+    );
     let adapterResult: Awaited<WorkerResidentTurn['settled']>;
     // A resident host that ends on its own fails the Turn; it is not an interrupt, and the ended
     // host is the proof that its native work stopped.
@@ -366,6 +372,10 @@ async function runResidentTurnImplementation(
       throw error;
     }
 
+    // Stop scheduling heartbeats, then finish any already-written live event before sealing.
+    // Cancelling its control request during drain would leave transcript-only evidence.
+    heartbeatAbortController.abort();
+    await heartbeat;
     await writer.writeAndAppendEvent({
       data: { adapter: options.adapterId, status: 'turn.settled' },
       type: 'worker.heartbeat',
@@ -373,7 +383,6 @@ async function runResidentTurnImplementation(
     // Turn barrier: loopback requests still in flight are drained, then cut, before collection.
     await options.integration.drainTurn(options.lineage.agentSessionId);
     controlAbortController.abort();
-    await heartbeat.catch(() => undefined);
     options.signal.removeEventListener('abort', onInterrupt);
     options.onTurnBarrier?.();
     const assistantOutputRejected = containsExactCredentialValue(
@@ -434,6 +443,7 @@ async function runResidentTurnImplementation(
   } finally {
     options.signal.removeEventListener('abort', onInterrupt);
     controlSession?.disablePostLaunchRecovery();
+    heartbeatAbortController.abort();
     controlAbortController.abort();
     options.integration.clearTurnRouteTokens(options.lineage.agentSessionId);
     await rm(options.turnDirectory, { force: true, recursive: true }).catch(() => undefined);
@@ -1405,17 +1415,18 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
     );
 }
 
-/** Keeps the live worker lease heartbeat on its independent periodic schedule. */
+/** Keeps periodic heartbeats; scheduling cancellation lets an in-flight lease heartbeat and its transcript event finish on the separate control signal. */
 async function runWorkerHeartbeatLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
-  signal: AbortSignal
+  signal: AbortSignal,
+  deliverySignal: AbortSignal
 ): Promise<void> {
   while (!signal.aborted) {
     try {
       await delay(1000, undefined, { signal });
       if (!signal.aborted) {
-        await recordWorkerHeartbeat(client, transcript, 'running', signal);
+        await recordWorkerHeartbeat(client, transcript, 'running', deliverySignal);
       }
     } catch (error) {
       if (isSupervisorAbort(error, signal)) {
