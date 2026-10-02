@@ -200,7 +200,7 @@ function assertLaunchEnvironment(
   }
 }
 
-/** Projects supplied credentials in memory; idle identities are disabled regardless of transport. */
+/** Projects supplied credentials and MCP approval defaults in memory; idle identities stay disabled. */
 function sessionConfig(
   input: WorkerResidentOpenInput,
   mcpServerIds: readonly string[],
@@ -214,6 +214,7 @@ function sessionConfig(
     if (!MCP_SERVER_ID.test(id)) throw new Error('Codex rejected an MCP server id.');
     servers[id] = {
       enabled: true,
+      default_tools_approval_mode: 'approve',
       url: `${capabilityBase}/mcp/${id}`,
       http_headers: { Authorization: `Bearer ${input.loopback.capabilityCredential}` },
     };

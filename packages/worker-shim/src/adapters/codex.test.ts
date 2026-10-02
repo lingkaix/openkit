@@ -485,7 +485,7 @@ describe('Codex App Server adapter', () => {
       host: '127.0.0.1',
       credential: 'authored-local-token',
     });
-    const authored = `[mcp_servers.alpha]\nenabled = ${!disabled}\nurl = "http://127.0.0.1:${authoredServer.port}/authored-mcp"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-token"\n`;
+    const authored = `[mcp_servers.alpha]\nenabled = ${!disabled}\ndefault_tools_approval_mode = "prompt"\nurl = "http://127.0.0.1:${authoredServer.port}/authored-mcp"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-token"\n`;
     await writeFile(join(roots.state, 'config.toml'), authored);
     const session = await testAdapter.openSession(
       openInput(roots, {
@@ -494,16 +494,31 @@ describe('Codex App Server adapter', () => {
       })
     );
     sessions.push(session);
-    const result = await (await session.startTurn(turnInput(roots, ['alpha'], 'invoke alpha tool')))
-      .settled;
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const nativeRpc = vi.spyOn(rpc, 'request');
+    const suppliedIds = ['alpha', 'external'];
+    const result = await (
+      await session.startTurn(turnInput(roots, suppliedIds, 'invoke alpha tool'))
+    ).settled;
     expect(result.status).toBe('completed');
+    const threadStart = nativeRpc.mock.calls.find(([method]) => method === 'thread/start')?.[1] as {
+      config: { mcp_servers: Record<string, unknown> };
+    };
+    expect(Object.keys(threadStart.config.mcp_servers).sort()).toEqual(suppliedIds);
+    for (const id of suppliedIds) {
+      expect(threadStart.config.mcp_servers[id]).toMatchObject({
+        default_tools_approval_mode: 'approve',
+      });
+    }
+    expect(rpc.permissionRecords).toEqual([]);
     expect(result.diagnostics?.nativeConfiguration).toBe(
       'Warning: managed MCP entry "alpha" overrides authored HTTP entry.'
     );
     expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE_SECRET);
     expect(JSON.stringify(result.diagnostics)).not.toContain(CAPABILITY_SECRET);
-    expect(inference.bodies.at(-1)).toContain('tool-done');
-    expect(gateway.requestCount).toBeGreaterThan(0);
+    expect(inference.bodies[1]).toContain('function_call_output');
+    expect(inference.bodies[1]).toContain('tool-done');
+    expect(gateway.requests.filter((request) => request.method === 'tools/call')).toHaveLength(1);
     expect(
       gateway.requests.every((request) => request.authorization === `Bearer ${CAPABILITY_SECRET}`)
     ).toBe(true);
@@ -511,7 +526,7 @@ describe('Codex App Server adapter', () => {
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
     expect(session.childState()).toBe('running');
-    const later = await (await session.startTurn(turnInput(roots, ['alpha'], 'Say other.')))
+    const later = await (await session.startTurn(turnInput(roots, suppliedIds, 'Say other.')))
       .settled;
     expect(later.status).toBe('completed');
     expect(later.diagnostics?.nativeConfiguration).toBe(result.diagnostics?.nativeConfiguration);
@@ -2930,13 +2945,18 @@ async function responsesServer(
   };
 }
 
+/** Serves unannotated tools declared destructive and open-world, recording native MCP requests. */
 async function mcpServer(
   binding = { port: 0, host: '127.0.0.1', credential: CAPABILITY_SECRET }
 ): Promise<{
   port: number;
   idle: boolean;
   readonly requestCount: number;
-  readonly requests: ReadonlyArray<{ path: string | undefined; authorization: string | undefined }>;
+  readonly requests: ReadonlyArray<{
+    path: string | undefined;
+    authorization: string | undefined;
+    method?: string;
+  }>;
   holdCalls: boolean;
   untilHeld: () => Promise<void>;
   releaseCalls: () => void;
@@ -2944,7 +2964,11 @@ async function mcpServer(
   let holdCalls = false;
   let idle = false;
   let requestCount = 0;
-  const requests: Array<{ path: string | undefined; authorization: string | undefined }> = [];
+  const requests: Array<{
+    path: string | undefined;
+    authorization: string | undefined;
+    method?: string;
+  }> = [];
   let resolveHeld = () => undefined;
   const held = new Promise<void>((resolve) => {
     resolveHeld = resolve;
@@ -2952,7 +2976,11 @@ async function mcpServer(
   const waiting: Array<{ end: () => void }> = [];
   const server = createServer(async (request, response) => {
     requestCount += 1;
-    requests.push({ path: request.url, authorization: request.headers.authorization });
+    const recorded: (typeof requests)[number] = {
+      path: request.url,
+      authorization: request.headers.authorization,
+    };
+    requests.push(recorded);
     if (idle) {
       response.writeHead(403);
       response.end();
@@ -2967,6 +2995,7 @@ async function mcpServer(
       response.end();
       return;
     }
+    recorded.method = message.method;
     if (message.id == null) {
       response.writeHead(202);
       response.end();
@@ -3009,7 +3038,11 @@ async function mcpServer(
       message.method === 'tools/list'
         ? {
             tools: [
-              { name: tool, description: 't', inputSchema: { type: 'object', properties: {} } },
+              {
+                name: tool,
+                description: 'Destructive, open-world test tool.',
+                inputSchema: { type: 'object', properties: {} },
+              },
             ],
           }
         : message.method === 'tools/call'
