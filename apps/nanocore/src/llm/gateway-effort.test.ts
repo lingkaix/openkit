@@ -509,35 +509,37 @@ describe('Gateway reasoning effort admission and fitting', () => {
     expect(f.fauxOptionProjections[0]).not.toContain('metadata');
   });
 
-  it('refuses malformed public metadata identically on native and bridged admission before Provider effects', async () => {
-    for (const metadata of [null, [], false, 'not-an-object', 9]) {
-      const envelopes: unknown[] = [];
-      for (const nativeResponses of [false, true]) {
-        const f = fixture({ levels: ['low', 'high'], nativeResponses });
-        const response = await f.app.request('/v1/responses', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            model: 'tier',
-            input: 'Hello',
-            metadata,
-            ...(nativeResponses
-              ? {}
-              : {
-                  tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }],
-                }),
-          }),
-        });
-        // Public authority rejects malformed unscoped metadata before adapter admission.
-        expect(response.status, await response.clone().text()).toBe(403);
-        envelopes.push(await response.json());
-        expect(f.primary.state.callCount).toBe(0);
-        expect(f.fauxOptionProjections).toEqual([]);
-        expect(f.entries()).toEqual([]);
-      }
-      expect(envelopes[0]).toEqual(envelopes[1]);
-      expect(envelopes[0]).toMatchObject({ code: 'workspace_access_denied' });
+  it.each(
+    [null, [], false, 'not-an-object', 9].map((metadata) => ({ metadata }))
+  )('refuses malformed public metadata identically on native and bridged admission before Provider effects; metadata=$metadata', async ({
+    metadata,
+  }) => {
+    const envelopes: unknown[] = [];
+    for (const nativeResponses of [false, true]) {
+      const f = fixture({ levels: ['low', 'high'], nativeResponses });
+      const response = await f.app.request('/v1/responses', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'tier',
+          input: 'Hello',
+          metadata,
+          ...(nativeResponses
+            ? {}
+            : {
+                tools: [{ type: 'function', name: 'declared', parameters: { type: 'object' } }],
+              }),
+        }),
+      });
+      // Public authority rejects malformed unscoped metadata before adapter admission.
+      expect(response.status, await response.clone().text()).toBe(403);
+      envelopes.push(await response.json());
+      expect(f.primary.state.callCount).toBe(0);
+      expect(f.fauxOptionProjections).toEqual([]);
+      expect(f.entries()).toEqual([]);
     }
+    expect(envelopes[0]).toEqual(envelopes[1]);
+    expect(envelopes[0]).toMatchObject({ code: 'workspace_access_denied' });
   });
 
   it.each([
