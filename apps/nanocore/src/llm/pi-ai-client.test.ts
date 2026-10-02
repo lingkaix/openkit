@@ -1695,7 +1695,7 @@ describe('PiAiGatewayClient', () => {
     });
   });
 
-  it('preserves the Codex 0.153.4 canonical prefix and namespaced custom-tool semantics', async () => {
+  it('preserves the Codex canonical prefix and namespaced custom-tool semantics', async () => {
     let seenContext: TranscriptContext | undefined;
     let seenPayload: unknown;
     const faux = fauxProvider({

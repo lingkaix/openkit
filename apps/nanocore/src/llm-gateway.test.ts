@@ -178,10 +178,11 @@ function runtimeProviderRegistry(): ProviderRegistry {
 /**
  * Registers one direct Gateway app without activating production startup composition.
  *
- * @param input Runtime profiles, dispatcher, and pair-handle seam used by one test.
+ * @param input Runtime profiles, dispatcher, pair-handle seam, and optional Core database for attribution.
  * @returns Local-authenticated Hono app with only the direct Gateway routes registered.
  */
 function createDirectGatewayApp(input: {
+  readonly coreDb?: ReturnType<typeof openCoreDb>;
   readonly defaultProviderId: string;
   readonly dispatcher: LLMGatewayProviderDispatcher;
   readonly getPairHandle: unknown;
@@ -218,6 +219,7 @@ function createDirectGatewayApp(input: {
   app.use('*', createAuthMiddleware('local'));
   (registerLlmGatewayRoutes as unknown as (dependencies: Record<string, unknown>) => void)({
     app,
+    ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     llmGatewayDispatcher: input.dispatcher,
     providerSubscriptionAccountManager: {
       getPairHandle: input.getPairHandle,
@@ -2551,6 +2553,94 @@ describe('OpenAI-compatible agent gateway', () => {
         stream: true,
       }),
     ]);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('admits public native Codex Responses metadata without forwarding it to Provider options; stream=%s', async (stream) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-codex-responses-metadata-'));
+    const coreDb = openCoreDb(dataRoot);
+    const workspaceId = 'ws_codex_metadata';
+    const requestId = '55555555-5555-4555-8555-555555555555';
+    const profile: ProviderProfile = {
+      defaultModel: 'openai-codex/gpt-5.6-sol',
+      displayName: 'OpenAI Codex',
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'team' } } },
+      id: 'openai-codex',
+      kind: 'oauth',
+      models: ['openai-codex/gpt-5.6-sol'],
+    };
+    const faux = fauxProvider({
+      api: 'openai-codex-responses',
+      provider: 'openai-codex',
+      models: [{ id: 'gpt-5.6-sol', reasoning: true }],
+      tokenSize: { min: 1000, max: 1000 },
+    });
+    const providerStream = vi.spyOn(faux.provider, 'stream');
+    const models = createModels();
+    models.setProvider(faux.provider);
+    vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
+    faux.setResponses([fauxAssistantMessage('Codex metadata admitted')]);
+
+    try {
+      applyMigrations(coreDb);
+      recordLocalGatewayAuthority(coreDb, workspaceId);
+      const app = createDirectGatewayApp({
+        coreDb,
+        defaultProviderId: profile.id,
+        dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() }),
+        getPairHandle: async () => ({ credentials: {} as never, models }),
+        profiles: [profile],
+      });
+      const res = await app.request('/v1/responses', {
+        method: 'POST',
+        body: JSON.stringify({
+          input: 'Hello',
+          metadata: { label: 'public-metadata-marker', openkit: { requestId, workspaceId } },
+          model: profile.defaultModel,
+          stream,
+        }),
+        headers: { 'content-type': 'application/json' },
+      });
+      const body = await res.text();
+
+      expect(res.status, body).toBe(200);
+      if (stream) {
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
+        expect(body).toContain('response.completed');
+        expect(body).toContain('Codex metadata admitted');
+        expect(body).toContain('data: [DONE]');
+      } else {
+        expect(JSON.parse(body)).toMatchObject({
+          model: profile.defaultModel,
+          status: 'completed',
+          output: [{ content: [{ text: 'Codex metadata admitted' }] }],
+        });
+      }
+      expect(providerStream).toHaveBeenCalledTimes(1);
+      expect(providerStream.mock.calls[0]?.[0]).toMatchObject({
+        api: 'openai-codex-responses',
+        id: 'gpt-5.6-sol',
+      });
+      const nativeOptions = providerStream.mock.calls[0]?.[2];
+      expect(nativeOptions).toBeDefined();
+      expect(nativeOptions).not.toHaveProperty('metadata');
+      expect(JSON.stringify(nativeOptions)).not.toContain('public-metadata-marker');
+
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        expect(
+          workspaceDb.sqlite
+            .prepare('SELECT capability_id, request_id, status FROM capability_calls')
+            .all()
+        ).toEqual([{ capability_id: 'llm.responses', request_id: requestId, status: 'succeeded' }]);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 
   it('normalizes Codex HTTP 200 terminal error events before public SSE projection', async () => {

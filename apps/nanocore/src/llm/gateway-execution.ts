@@ -8,12 +8,10 @@ export const GATEWAY_RETRY_AFTER_CEILING_MS = 10_000;
 /** Maximum private lifecycle bytes before a live attempt commits. */
 export const GATEWAY_PRECOMMIT_BUFFER_BYTES = 32 * 1024;
 /**
- * Absolute pre-commit budget, never a transport timeout. Codex 0.153.4 and the
- * DeepSeek client's default stream idle limits are 300s; OpenCode's transport uses
- * 30 minutes and pi-ai's SSE paths impose no shorter default idle fuse. 120s leaves
- * room for the fixed 1/2/4s waits and 10s Retry-After while committing before those
- * idle limits. The worker heartbeat introduced in 0d754628 keeps committed idle
- * inference streams live; it must not expose private attempts to achieve that.
+ * Absolute pre-commit budget, never a transport timeout.
+ * The pinned Codex runtime (see containers/worker-runtimes/versions.json) and the DeepSeek client's default stream idle limits are 300s; OpenCode's transport uses 30 minutes and pi-ai's SSE paths impose no shorter default idle fuse.
+ * 120s leaves room for the fixed 1/2/4s waits and 10s Retry-After while committing before those idle limits.
+ * The worker heartbeat introduced in 0d754628 keeps committed idle inference streams live; it must not expose private attempts to achieve that.
  */
 export const GATEWAY_PRECOMMIT_DEADLINE_MS = 120_000;
 
