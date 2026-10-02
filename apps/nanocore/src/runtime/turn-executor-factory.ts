@@ -1708,7 +1708,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       : 'available';
   }
 
-  /** Finds an idle replacement, including fenced failed residents proved absent in a fresh Epoch. */
+  /** Finds an idle replacement or a fenced predecessor resident proved absent in a fresh Epoch. */
   private inspectIncompatibleIdleSandbox(
     environmentPackage: AgentEnvironmentPackagePreview,
     forceRetirement = false
@@ -1752,18 +1752,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandbox.originPhysicalEpoch
     );
     const physicalAbsent = sandboxOriginPhysicalEpoch !== currentPhysicalEpoch;
-    const failedSandboxRetirement =
-      physicalAbsent &&
-      sandbox.lifecycleState === 'failed' &&
-      sandbox.healthState === 'unknown' &&
-      sandbox.drainState === 'draining' &&
-      sandbox.cleanupState === 'unknown';
     const processLocalSandbox =
       !physicalAbsent &&
       this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.sandboxRuntimeId ===
         sandbox.sandboxRuntimeId;
     if (
-      !failedSandboxRetirement &&
+      !physicalAbsent &&
       (sandbox.lifecycleState !== 'open' ||
         sandbox.healthState !== 'ready' ||
         sandbox.drainState !== 'accepting' ||
@@ -1790,14 +1784,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly operationState: string;
     }>;
     if (
+      !physicalAbsent &&
       harnesses.some(
-        (harness) =>
-          !(harness.lifecycleState === 'open' && harness.drainState === 'accepting') &&
-          !(
-            failedSandboxRetirement &&
-            harness.lifecycleState === 'failed' &&
-            harness.drainState === 'draining'
-          )
+        (harness) => harness.lifecycleState !== 'open' || harness.drainState !== 'accepting'
       )
     ) {
       return 'capacity-saturated';
@@ -1811,18 +1800,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         [...this.sessions.values()].some(
           (session) => session.sharedHarness.sandbox.sandboxRuntimeId === sandbox.sandboxRuntimeId
         )) ||
-      (harnesses.length === 0 && !failedSandboxRetirement) ||
+      (harnesses.length === 0 && !physicalAbsent) ||
       harnesses.some(
         (harness) =>
           harness.activeTurnCount !== 0 ||
-          (!['idle', 'settled'].includes(harness.operationState) &&
-            !(failedSandboxRetirement && harness.operationState === 'unknown'))
+          (!physicalAbsent && !['idle', 'settled'].includes(harness.operationState))
       )
     ) {
       return 'capacity-saturated';
     }
     if (
-      failedSandboxRetirement &&
+      physicalAbsent &&
       this.coreDb.sqlite
         .prepare(
           `SELECT 1 FROM scheduler_session_leases
@@ -1864,12 +1852,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (
       bindings.some(
         (binding) =>
-          binding.lifecycleState !== 'open' ||
           binding.currentTurnId !== null ||
           binding.currentLeaseId !== null ||
-          binding.cleanupState !== 'clean' ||
           (!physicalAbsent &&
-            this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId))
+            (binding.lifecycleState !== 'open' ||
+              binding.cleanupState !== 'clean' ||
+              this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId)))
       )
     ) {
       return 'capacity-saturated';
@@ -1911,7 +1899,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
-  /** Claims and cleanly deletes one proved-idle resident after replacement dispatch. */
+  /** Claims and retires one idle or physically absent resident after replacement dispatch. */
   private async evictIncompatibleIdleSandbox(
     environmentPackage: AgentEnvironmentPackagePreview,
     identity: WorkerGovernanceBackendSessionIdentity,
@@ -1948,10 +1936,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             `UPDATE sandbox_runtime_records
              SET drain_state = 'draining', updated_at = ?
              WHERE sandbox_runtime_id = ? AND pinned_goal_id IS NULL
-               AND ((lifecycle_state = 'open' AND health_state = 'ready'
-                     AND drain_state = 'accepting' AND cleanup_state = 'clean')
-                 OR (? = 1 AND lifecycle_state = 'failed' AND health_state = 'unknown'
-                     AND drain_state = 'draining' AND cleanup_state = 'unknown'))`
+               AND (? = 1 OR (lifecycle_state = 'open' AND health_state = 'ready'
+                     AND drain_state = 'accepting' AND cleanup_state = 'clean'))`
           )
           .run(timestamp, eviction.sandboxRuntimeId, physicalAbsentFlag);
         const harnessUpdate = this.coreDb.sqlite
@@ -1961,10 +1947,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
              WHERE sandbox_runtime_id = ? AND active_turn_count = 0
                AND (
                  operation_state IN ('idle', 'settled')
-                 OR (? = 1 AND operation_state = 'unknown')
+                 OR ? = 1
                )
-               AND ((lifecycle_state = 'open' AND drain_state = 'accepting')
-                 OR (? = 1 AND lifecycle_state = 'failed' AND drain_state = 'draining'))`
+               AND (? = 1 OR (lifecycle_state = 'open' AND drain_state = 'accepting'))`
           )
           .run(timestamp, eviction.sandboxRuntimeId, physicalAbsentFlag, physicalAbsentFlag);
         if (
@@ -2032,10 +2017,37 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   }
 
-  /** Rejects process-local waiters after a different fresh Epoch proves their Sandbox absent. */
+  /** Settles old commands as unknown and rejects waiters after fresh Epoch absence proof. */
   private async invalidatePhysicallyAbsentSandbox(
     eviction: NanoHostIdleSandboxEviction
   ): Promise<void> {
+    // Absence proves cleanup, not the outcome of an old command; preserve truthful uncertainty.
+    const operations = this.coreDb.sqlite
+      .prepare(
+        `SELECT harness_binding_ref AS harnessBindingRef, operation_state AS operationState,
+                operation_id AS operationId
+         FROM harness_instance_records WHERE sandbox_runtime_id = ?`
+      )
+      .all(eviction.sandboxRuntimeId) as Array<{
+      readonly harnessBindingRef: string;
+      readonly operationId: string | null;
+      readonly operationState: string;
+    }>;
+    const timestamp = new Date().toISOString();
+    for (const operation of operations) {
+      if (operation.operationState === 'queued') {
+        expireNanoHostHarnessQueuedOperation(this.coreDb, {
+          harnessBindingRef: operation.harnessBindingRef,
+          timestamp,
+        });
+      } else if (operation.operationState === 'dispatched') {
+        markNanoHostHarnessOperationUnknown(this.coreDb, {
+          harnessBindingRef: operation.harnessBindingRef,
+          operationId: operation.operationId!,
+          timestamp,
+        });
+      }
+    }
     const error = new Error('NanoHost physical Sandbox belongs to a fenced predecessor Epoch.');
     for (const [snapshotId, session] of this.sessions) {
       if (session.sharedHarness.sandbox.sandboxRuntimeId !== eviction.sandboxRuntimeId) continue;
