@@ -44,8 +44,22 @@ export const WorkspaceMcpCredentialBindingSchema = z
     slot: z.string().regex(MCP_SLOT_ID),
     vaultGrantId: z.string().min(1),
     sink: WorkspaceMcpCredentialSinkSchema,
+    // Omission preserves retained raw bytes and their effective digest.
+    presentation: z.enum(['raw', 'bearer']).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((binding, context) => {
+    if (
+      binding.presentation === 'bearer' &&
+      (binding.sink.kind !== 'header' || binding.sink.name.toLowerCase() !== 'authorization')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Bearer presentation requires an Authorization header sink.',
+        path: ['presentation'],
+      });
+    }
+  });
 
 /** NanoCore-spawned stdio MCP transport. */
 export const WorkspaceMcpStdioTransportSchema = z

@@ -30,3 +30,5 @@ See [NanoCore README](../../README.md) for the package test model.
 Simulated and metadata-only consumers may explicitly install `withTestPreparedNativeEnvironment` in their test module. It runs the production resolver with fixture-owned confirmed evidence and preserves capture, credential and scheduler checks. Fixture-only databases are removed after the test module; real production paths retain no automatic admission or empty-default fallback.
 
 `artifact-operation.ts` projects explicit operation selectors and caller-supplied request bytes onto the derived HTTP path. It adds no authority, fixture data, request identity or admission default and leaves malformed bodies malformed.
+
+The HTTP MCP fixture exposes server-observed header snapshots for exact bearer and raw-header replacement assertions. These observations contain only synthetic test canaries and stay fixture-local.

@@ -3026,7 +3026,10 @@ describe('worker MCP routes', () => {
     }
   });
 
-  it('injects an HTTP Vault grant at the gateway and rejects the next call after revoke', async () => {
+  it.each([
+    'raw',
+    'bearer',
+  ] as const)('injects an HTTP %s Vault grant at the gateway and rejects the next call after revoke', async (presentation) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
     const upstream = await createMcpHttpStub(upstreamOptions);
@@ -3044,7 +3047,7 @@ describe('worker MCP routes', () => {
       storeDir: join(dataRoot, 'server', 'vault'),
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    const vaultCanary = 'Bearer vault-"quoted\\slash';
+    const vaultCanary = 'vault-"quoted\\slash';
     vaultUnlockState.backend().store({
       material: vaultCanary,
       metadata: { ownerScope: 'workspace', workspaceId: 'ws_demo' },
@@ -3077,6 +3080,7 @@ describe('worker MCP routes', () => {
           approvalRequiredTools: [],
           credentialBindings: [
             {
+              presentation,
               sink: { kind: 'header' as const, name: 'authorization' },
               slot: 'auth',
               vaultGrantId: 'grant_mcp_http',
@@ -3159,9 +3163,11 @@ describe('worker MCP routes', () => {
       expect(upstream.observed.filter((request) => request.endsWith('|DELETE|'))).toHaveLength(
         terminationsBeforeCall + 1
       );
-      expect(upstream.observed.some((request) => request.startsWith(`${vaultCanary}||`))).toBe(
-        true
-      );
+      expect(
+        upstream.observed.some((request) =>
+          request.startsWith(`${presentation === 'bearer' ? 'Bearer ' : ''}${vaultCanary}||`)
+        )
+      ).toBe(true);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_injection_plans').get()
       ).toEqual({ count: 1 });

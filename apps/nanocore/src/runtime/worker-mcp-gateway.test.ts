@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,212 @@ import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
+  it('sends exactly one SDK bearer Authorization value over a mixed-case fixed header', async () => {
+    const upstream = await createMcpHttpStub();
+    const { coreDb, gateway } = createAuditedGateway();
+    const server = httpTestServer(upstream.url, 2_000);
+    server.transport = {
+      kind: 'http',
+      endpoint: upstream.url,
+      headers: { authorization: 'ordinary-placeholder' },
+    };
+    try {
+      await gateway.callTool({
+        arguments: { message: 'safe' },
+        credentials: { bearer: 'synthetic-bearer-canary' },
+        server,
+        toolName: 'echo',
+        workspaceId: 'ws_demo',
+      });
+      expect(upstream.observedHeaders.length).toBeGreaterThan(0);
+      expect(
+        upstream.observedHeaders.every(
+          (headers) => headers.get('authorization') === 'Bearer synthetic-bearer-canary'
+        )
+      ).toBe(true);
+      expect(gateway.getServerHealth({ server, workspaceId: 'ws_demo' })).toBe('inactive');
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    'Authorization',
+    'X-API-Key',
+  ])('replaces a mixed-case ordinary %s header with exact raw Vault bytes', async (name) => {
+    const upstream = await createMcpHttpStub();
+    const { coreDb, gateway } = createAuditedGateway();
+    const server = httpTestServer(upstream.url, 2_000);
+    server.transport = {
+      kind: 'http',
+      endpoint: upstream.url,
+      headers: { [name.toLowerCase()]: 'ordinary-placeholder' },
+    };
+    try {
+      await gateway.listTools({
+        credentials: { headers: { [name]: 'raw-"quoted\\slash-canary' } },
+        server,
+        workspaceId: 'ws_demo',
+      });
+      expect(upstream.observedHeaders.length).toBeGreaterThan(0);
+      expect(
+        upstream.observedHeaders.every(
+          (headers) => headers.get(name) === 'raw-"quoted\\slash-canary'
+        )
+      ).toBe(true);
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    'raw',
+    'complete',
+    'query-encoded',
+  ] as const)('refuses a tool list echoing the %s credential value', async (form) => {
+    const canary = 'synthetic-canary/with+encoding=';
+    const encoded = new URLSearchParams({ token: canary }).toString().slice('token='.length);
+    const echo = form === 'raw' ? canary : form === 'complete' ? `Bearer ${canary}` : encoded;
+    const upstream = await createMcpHttpStub({ credentialListEcho: echo });
+    const { coreDb, gateway } = createAuditedGateway();
+    try {
+      await expect(
+        gateway.listTools({
+          credentials: {
+            bearer: canary,
+            ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
+          },
+          server: httpTestServer(upstream.url, 2_000),
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    'raw',
+    'complete',
+    'query-encoded',
+  ] as const)('refuses result text and keys echoing the %s credential value', async (form) => {
+    const canary = 'synthetic-canary/with+encoding=';
+    const echo =
+      form === 'raw'
+        ? canary
+        : form === 'complete'
+          ? `Bearer ${canary}`
+          : new URLSearchParams({ token: canary }).toString().slice('token='.length);
+    const upstream = await createMcpHttpStub({ credentialEcho: echo });
+    const { coreDb, gateway } = createAuditedGateway();
+    try {
+      for (const message of ['leak', 'key-leak']) {
+        await expect(
+          gateway.callTool({
+            arguments: { message },
+            credentials: {
+              bearer: canary,
+              ...(form === 'query-encoded' ? { query: { token: canary } } : {}),
+            },
+            server: httpTestServer(upstream.url, 2_000),
+            toolName: 'echo',
+            workspaceId: 'ws_demo',
+          })
+        ).rejects.toMatchObject({
+          code: 'mcp-call-failed',
+          upstreamEffect: 'contacted',
+          credentialsMaterialized: true,
+        });
+      }
+      expect(
+        upstream.observedHeaders.every(
+          (headers) => headers.get('authorization') === `Bearer ${canary}`
+        )
+      ).toBe(true);
+      if (form === 'query-encoded')
+        expect(upstream.observed.every((request) => request.split('|')[1] === canary)).toBe(true);
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    '',
+    'canary\r\ninvalid',
+    'canary\0invalid',
+    'canary\u0100invalid',
+    'canary ',
+  ])('refuses invalid bearer material %j before upstream contact', async (bearer) => {
+    const upstream = await createMcpHttpStub();
+    const { coreDb, gateway } = createAuditedGateway();
+    try {
+      await expect(
+        gateway.listTools({
+          credentials: { bearer },
+          server: httpTestServer(upstream.url, 2_000),
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
+      expect(upstream.observed).toEqual([]);
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    401, 403,
+  ])('makes one request and no metadata request after static bearer HTTP %s', async (status) => {
+    const requests: Array<{ authorization: string | undefined; url: string | undefined }> = [];
+    const http = createServer((request, response) => {
+      requests.push({ authorization: request.headers.authorization, url: request.url });
+      response.writeHead(status, {
+        'www-authenticate': `Bearer error="${status === 403 ? 'insufficient_scope' : 'invalid_token'}", resource_metadata="http://${request.headers.host}/metadata", scope="extra"`,
+      });
+      response.end('Synthetic static authentication refusal.');
+    });
+    http.listen(0, '127.0.0.1');
+    await once(http, 'listening');
+    const address = http.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Synthetic HTTP server did not bind.');
+    const { coreDb, gateway } = createAuditedGateway();
+    try {
+      await expect(
+        gateway.listTools({
+          credentials: { bearer: 'static-auth-canary' },
+          server: httpTestServer(`http://127.0.0.1:${address.port}/mcp`, 2_000),
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({
+        code: 'mcp-server-unavailable',
+        message: 'MCP server is unavailable.',
+      });
+      expect(requests).toEqual([{ authorization: 'Bearer static-auth-canary', url: '/mcp' }]);
+    } finally {
+      await gateway.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await new Promise<void>((resolve, reject) =>
+        http.close((error) => (error ? reject(error) : resolve()))
+      );
+    }
+  });
+
   it('canonicalizes tool order and nested schema keys for snapshot identity', () => {
     const first = [
       { name: 'é', inputSchema: { é: true, é: false } },
@@ -428,11 +635,11 @@ describe('worker MCP gateway', () => {
     }
   });
 
-  it('closes a credential-bearing HTTP session instead of health-pinging it', async () => {
+  it('closes a bearer HTTP session instead of health-pinging it', async () => {
     const upstream = await createMcpHttpStub();
     const { coreDb, gateway } = createAuditedGateway();
     const input = {
-      credentials: { headers: { authorization: 'revoked-private-value' } },
+      credentials: { bearer: 'revoked-private-value' },
       server: httpTestServer(upstream.url, 2_000),
       workspaceId: 'ws_demo',
     };

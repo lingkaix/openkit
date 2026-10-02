@@ -67,6 +67,8 @@ export class WorkerMcpGatewayCallError extends WorkerControlGatewayError {
 
 /** Gateway-private credentials resolved for one MCP server connection. */
 export interface WorkerMcpGatewayCredentials {
+  /** Unchanged HTTP bearer material; serializable for private session identity, never a provider. */
+  readonly bearer?: string;
   /** Environment variables visible only to a gateway-owned stdio process. */
   readonly environment?: Readonly<Record<string, string>>;
   /** HTTP headers visible only to a gateway-owned HTTP transport. */
@@ -452,6 +454,18 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
 
   /** Connects one catalog-declared transport through the official MCP SDK. */
   private async connect(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpSession> {
+    if (
+      (input.credentials?.bearer !== undefined && input.server.transport.kind !== 'http') ||
+      Object.values(input.credentials?.environment ?? {}).some((value) => value.includes('\0'))
+    ) {
+      throw new WorkerMcpGatewayCallError(
+        'mcp-server-unavailable',
+        'MCP credential material was rejected.',
+        503,
+        'not-contacted'
+      );
+    }
+    const headers = input.server.transport.kind === 'http' ? httpHeaders(input) : undefined;
     this.transition(input, 'starting');
     const client = new Client(
       { name: 'openkit-nanocore', version: '1.0.0' },
@@ -531,11 +545,12 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     } else {
       transport = new StreamableHTTPClientTransport(httpEndpoint(input), {
         fetch: boundedMcpFetch(input.server.timeoutMs, hasCredentials(input)),
+        ...(input.credentials?.bearer !== undefined
+          ? { authProvider: { token: async () => input.credentials!.bearer } }
+          : {}),
+        onInsufficientScope: 'throw',
         requestInit: {
-          headers: {
-            ...(input.server.transport.kind === 'http' ? input.server.transport.headers : {}),
-            ...input.credentials?.headers,
-          },
+          headers: headers!,
         },
       });
     }
@@ -849,6 +864,41 @@ function httpEndpoint(input: WorkerMcpGatewayServerInput): URL {
   return endpoint;
 }
 
+/** Replaces ordinary headers case-insensitively and refuses credential bytes the HTTP sink would alter or reject. */
+function httpHeaders(input: WorkerMcpGatewayServerInput): Headers {
+  if (input.server.transport.kind !== 'http') throw new Error('Expected HTTP MCP transport.');
+  const headers = new Headers(input.server.transport.headers);
+  const injected = Object.entries(input.credentials?.headers ?? {});
+  const bearer = input.credentials?.bearer;
+  if (bearer !== undefined) {
+    if (bearer.length === 0) {
+      throw new WorkerMcpGatewayCallError(
+        'mcp-server-unavailable',
+        'MCP credential material was rejected.',
+        503,
+        'not-contacted'
+      );
+    }
+    // Validate the complete value here; the SDK alone constructs and sends this header.
+    injected.push(['Authorization', `Bearer ${bearer}`]);
+  }
+  for (const [name, value] of injected) {
+    try {
+      if (new Headers([[name, value]]).get(name) !== value) throw new Error();
+    } catch {
+      throw new WorkerMcpGatewayCallError(
+        'mcp-server-unavailable',
+        'MCP credential material was rejected.',
+        503,
+        'not-contacted'
+      );
+    }
+    if (bearer === undefined || name.toLowerCase() !== 'authorization') headers.set(name, value);
+  }
+  if (bearer !== undefined) headers.delete('authorization');
+  return headers;
+}
+
 /** Internal marker for an upstream HTTP body that crossed the response byte bound. */
 class McpHttpResponseTooLargeError extends Error {
   public constructor(public readonly credentialsMaterialized: boolean) {
@@ -905,20 +955,28 @@ function boundMcpHttpResponse(response: Response, credentialsMaterialized: boole
 function containsCredential(result: unknown, credentials?: WorkerMcpGatewayCredentials): boolean {
   if (!credentials) return false;
   const queryValues = Object.values(credentials.query ?? {});
-  const credentialValues = [
-    ...Object.values(credentials.environment ?? {}),
-    ...Object.values(credentials.headers ?? {}),
-    ...queryValues,
-    ...queryValues.map((value) =>
-      new URLSearchParams({ credential: value }).toString().slice('credential='.length)
-    ),
-  ].filter(Boolean);
+  // This set is Gateway-private live memory, never a catalog field or evidence payload.
+  const credentialValues = new Set(
+    [
+      ...(credentials.bearer !== undefined
+        ? [credentials.bearer, `Bearer ${credentials.bearer}`]
+        : []),
+      ...Object.values(credentials.environment ?? {}),
+      ...Object.values(credentials.headers ?? {}),
+      ...queryValues,
+      ...queryValues.map((value) =>
+        new URLSearchParams({ credential: value }).toString().slice('credential='.length)
+      ),
+    ].filter(Boolean)
+  );
   const pending: unknown[] = [result];
   const seen = new Set<object>();
   while (pending.length > 0) {
     const value = pending.pop();
     if (typeof value === 'string') {
-      if (credentialValues.some((credential) => value.includes(credential))) return true;
+      for (const credential of credentialValues) {
+        if (value.includes(credential)) return true;
+      }
     } else if (value && typeof value === 'object' && !seen.has(value)) {
       seen.add(value);
       pending.push(...Object.keys(value), ...Object.values(value));
@@ -972,6 +1030,7 @@ function expandPluginPlaceholders(
 /** Returns true when one server operation carries gateway-only credential material. */
 function hasCredentials(input: WorkerMcpGatewayServerInput): boolean {
   return (
+    input.credentials?.bearer !== undefined ||
     Object.keys(input.credentials?.environment ?? {}).length > 0 ||
     Object.keys(input.credentials?.headers ?? {}).length > 0 ||
     Object.keys(input.credentials?.query ?? {}).length > 0

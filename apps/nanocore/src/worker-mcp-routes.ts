@@ -1758,6 +1758,7 @@ export async function resolveWorkerMcpCredentials(input: {
   const environment: Record<string, string> = {};
   const headers: Record<string, string> = {};
   const query: Record<string, string> = {};
+  let bearer: string | undefined;
   const injections: PendingMcpVaultInjection[] = [];
 
   try {
@@ -1799,8 +1800,14 @@ export async function resolveWorkerMcpCredentials(input: {
         version: reference!.currentVersion,
       });
       const value = vaultSecretMaterialToString(material);
+      if (binding.presentation === 'bearer') {
+        if (value.length === 0) throw new Error('Empty MCP bearer credential.');
+        bearer = value;
+      }
       if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
-      if (binding.sink.kind === 'header') headers[binding.sink.name] = value;
+      if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
+        headers[binding.sink.name] = value;
+      }
       if (binding.sink.kind === 'query') query[binding.sink.name] = value;
       injections.push({
         backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
@@ -1828,6 +1835,7 @@ export async function resolveWorkerMcpCredentials(input: {
 
   return {
     credentials: {
+      ...(bearer !== undefined ? { bearer } : {}),
       ...(Object.keys(environment).length ? { environment } : {}),
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(Object.keys(query).length ? { query } : {}),

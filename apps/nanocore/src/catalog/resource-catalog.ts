@@ -1008,6 +1008,14 @@ function parsePluginPackage(root: string): {
 /** Maps a public MCP declaration into the local validated transport. */
 function pluginMcpDeclaration(server: Record<string, unknown>): McpValidatedDeclaration {
   if (typeof server.url === 'string' || typeof server.endpoint === 'string') {
+    if (Object.hasOwn(server, 'auth')) {
+      throw new Error(
+        'Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented'
+      );
+    }
+    if (Object.hasOwn(server, 'query')) {
+      throw new Error('MCP HTTP query options are unsupported.');
+    }
     return McpValidatedDeclarationSchema.parse({
       endpoint: String(server.url ?? server.endpoint),
       headers: asStringRecord(server.headers),

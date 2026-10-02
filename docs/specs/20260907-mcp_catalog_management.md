@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-09-08
+updated: "2026-10-03"
 ---
 # MCP Catalog Management
 
@@ -54,6 +54,8 @@ Use `digestFormat: openkit-mcp-config-v1` and SHA-256 over ASCII `openkit-mcp-co
 
 The Workspace binding carries current enablement, credential references and injection destinations, allowed/denied/approval-required tools, timeout, and schema pin/tracking policy under the Gateway owner. Binding changes have an expected revision and affect the effective `catalogDigest`; they do not rewrite the imported configuration or publisher label. The effective Gateway entry also carries the selected configuration version's `packageRootDigest`, so a plugin-tree change that keeps the same command and arguments still changes `catalogDigest` and invalidates a stale AEP. The existing tool-schema snapshot digest and optional server-reported software version remain separate observations. A pinned schema is not proof of immutable remote software.
 
+The existing immutable MCP configuration version and mutable Workspace binding are the Gateway's connection configuration format; no separate proxy configuration file or credential store is introduced. Each credential binding MAY declare `presentation`, with closed values `raw` and `bearer`; omission retains exact raw injection without rewriting retained records or changing their existing effective digest. Presentation belongs to the binding, follows its expected-revision and effective-digest rules, and never changes the immutable transport declaration's digest. The credential binding is an authority-bearing section: a present `presentation` field is required semantics, and every reader MUST understand its value or reject admission before resolution or upstream contact; dropping it or falling back to raw is forbidden. Strict admission of this section is the equivalent contract gate, including retained binding and effective-entry readers. Unsupported values fail closed; unrelated safely additive content remains subject to Contract Evolution's tolerant-reader rules. Current producers and consumers MUST preserve the recognized field through management, storage, and execution projections. The engineer's ruling on this credential model is recorded in [a decision record](../decisions/20261003-mcp_credential_presentation.md).
+
 ### Portable declarations and gateway-side resources
 
 The importer validates the declared public format version and maps its supported transport to the existing stdio or Streamable HTTP owner. Unsupported legacy SSE or client-specific fields remain unavailable with a component-specific reason; no guessed transport fallback exists. Format parsing uses locally supported schemas and does not fetch a schema from package-controlled input.
@@ -82,6 +84,8 @@ No catalog operation hot-rewrites an admitted AEP or runtime-native configuratio
 
 Missing configurations, unsupported declarations, absent binaries, authentication failures, unavailable endpoints, schema drift, and integrity errors remain distinguishable in authorized management diagnostics. Worker-visible failures use the existing normalized Gateway errors. Failed connection is not invalid package syntax and must not invalidate unrelated components. No background importer, repair daemon, or alternate connection path is introduced.
 
+NanoCore-owned upstream OAuth discovery, registration, consent, callbacks, token acquisition, refresh, and scope escalation remain deferred. An integration known to require that lifecycle is unavailable for activation with the management reason “Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented,” unless a separately documented and explicitly configured static alternative is supported. Import remains inert; missing authentication fields do not establish unauthenticated access, and a 401 alone does not establish OAuth-only support. A configured static credential that is rejected produces an authentication-failure diagnostic, not an invented OAuth diagnosis; workers retain normalized Gateway errors. This release adds no non-secret HTTP query map; requested query options remain explicitly unsupported and MUST NOT be silently discarded or stored as Vault secrets. Foreign plugin placeholders require explicit configuration and Vault rebinding, never ambient interpolation.
+
 ### Storage, idempotency, and deletion
 
 Scope-owned catalog files are canonical for configurations, versions, current pointers, and bindings; immutable package roots use ordinary bounded installed-resource storage under Storage Core and the shared tree contract in the Skill specification. The old writable runtime-config entry and the new catalog must not remain competing authorities after implementation. A generated effective-entry projection is never accepted as a source mutation.
@@ -98,7 +102,7 @@ Extend the existing MCP catalog resolver and management surface, keeping the Gat
 
 ## Current Implementation Projection
 
-Workspace MCP configuration versions and bindings live in `workspaces/<id>/catalog/catalog.json`. NanoCore projects enabled bindings into the Gateway's existing effective catalog; `mcp-servers.jsonc` is not a competing authority. Stdio declarations carry non-secret environment values and optional `cwd`; HTTP declarations carry non-secret headers. Ordinary-user catalog create/select/binding operations are on the App API, CLI, and Web Catalog screen. Stdio enablement still requires deployment-admin authority. Immutable configuration history is implemented; raw restricted package inspection and original-package export remain deferred.
+Workspace MCP configuration versions and bindings live in `workspaces/<id>/catalog/catalog.json`. NanoCore projects enabled bindings into the Gateway's existing effective catalog; `mcp-servers.jsonc` is not a competing authority. Stdio declarations carry non-secret environment values and optional `cwd`; HTTP declarations carry non-secret headers. Ordinary-user catalog create/select/binding operations are on the App API, CLI, and Web Catalog screen. Stdio enablement still requires deployment-admin authority. Credential bindings preserve optional raw/bearer presentation through management, storage, and the effective projection. The foreign HTTP plugin importer rejects an explicit `auth` object and a `query` field with fixed management reasons, and accepts a query string already part of the endpoint URL. Immutable configuration history is implemented; raw restricted package inspection and original-package export remain deferred.
 
 ## Alternatives Considered
 
@@ -127,7 +131,7 @@ Mutable third-party behavior limits reproducibility, so tool-schema and software
 
 ## Deferred / Future Work
 
-MCP process sandboxing, automatic dependency provisioning, OAuth onboarding, legacy SSE, remote software pinning beyond publisher support, automatic upgrades, and concurrent stateful session isolation require separate accepted scope.
+MCP process sandboxing, automatic dependency provisioning, OAuth onboarding, legacy SSE, remote software pinning beyond publisher support, automatic upgrades, and concurrent stateful session isolation require separate accepted scope. See [Runtime selection, invalidation, and failure](#runtime-selection-invalidation-and-failure) for the upstream OAuth and query-option deferral rules.
 
 ## Related Specifications
 

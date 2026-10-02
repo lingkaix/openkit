@@ -17,6 +17,8 @@ export interface McpHttpStub {
   close(): Promise<void>;
   /** Redacted-or-test-only request observations captured by the fixture. */
   readonly observed: string[];
+  /** Exact HTTP headers observed at the local server boundary for sink assertions. */
+  readonly observedHeaders: Headers[];
   /** Makes later `server/discover` requests fail without answering. */
   stopAnswering(): void;
   /** Loopback endpoint exposed by the fixture. */
@@ -48,6 +50,7 @@ export async function createMcpHttpStub(
   } = {}
 ): Promise<McpHttpStub> {
   const observed: string[] = [];
+  const observedHeaders: Headers[] = [];
   let answering = true;
   const sessions = new Map<
     string,
@@ -134,6 +137,7 @@ export async function createMcpHttpStub(
       : null;
   const app = new Hono();
   app.all('/mcp', async (context) => {
+    observedHeaders.push(new Headers(context.req.raw.headers));
     const url = new URL(context.req.url);
     const body =
       context.req.method === 'POST'
@@ -226,6 +230,7 @@ export async function createMcpHttpStub(
       );
     },
     observed,
+    observedHeaders,
     stopAnswering: () => {
       answering = false;
     },

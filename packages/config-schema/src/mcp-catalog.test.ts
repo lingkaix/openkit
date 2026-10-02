@@ -8,6 +8,104 @@ import {
   resolveWorkspaceMcpServer,
   WorkspaceMcpServerCatalogSchema,
 } from './index.js';
+import { WorkspaceMcpCredentialBindingSchema } from './mcp-catalog.js';
+import { McpBindingRecordSchema } from './resource-catalog.js';
+
+describe('MCP credential presentation admission', () => {
+  const binding = {
+    slot: 'token',
+    vaultGrantId: 'grant_canary',
+    sink: { kind: 'header', name: 'Authorization' },
+  };
+  const server = {
+    allowedTools: ['echo'],
+    credentialBindings: [binding],
+    enabled: true,
+    id: 'echo',
+    schemaPolicy: 'tracking',
+    transport: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+  };
+
+  it('keeps omitted presentation absent and retains the raw effective digest', () => {
+    const catalog = parseWorkspaceMcpServerCatalog({ schemaVersion: 1, servers: [server] });
+    expect(catalog.servers[0]!.credentialBindings).toEqual([binding]);
+    expect(resolveWorkspaceMcpServer({ catalog, serverId: 'echo' }).catalogDigest).toBe(
+      'sha256:ece03620450bfab5be716543f17a1e8f7846e24d9cd612a245f8bcd6a2cd5df5'
+    );
+    expect(JSON.stringify(WorkspaceMcpCredentialBindingSchema.parse(binding))).toBe(
+      JSON.stringify(binding)
+    );
+  });
+
+  it.each([
+    'raw',
+    'bearer',
+  ] as const)('preserves recognized %s presentation in canonical and effective bindings', (presentation) => {
+    const credential = { ...binding, presentation };
+    const canonical = McpBindingRecordSchema.parse({
+      allowedTools: ['echo'],
+      credentialBindings: [credential],
+      enabled: true,
+      entryId: 'echo',
+      packageDataKey: 'mcp_echo',
+      revision: 1,
+      schemaPolicy: 'tracking',
+    });
+    const effective = parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [{ ...server, credentialBindings: [credential] }],
+    });
+    expect(canonical.credentialBindings).toEqual([credential]);
+    expect(effective.servers[0]!.credentialBindings).toEqual([credential]);
+  });
+
+  it('rejects an unknown presentation in canonical and effective readers', () => {
+    const credential = { ...binding, presentation: 'basic' };
+    expect(WorkspaceMcpCredentialBindingSchema.safeParse(credential).success).toBe(false);
+    expect(
+      WorkspaceMcpServerCatalogSchema.safeParse({
+        schemaVersion: 1,
+        servers: [{ ...server, credentialBindings: [credential] }],
+      }).success
+    ).toBe(false);
+  });
+
+  it.each([
+    { kind: 'header', name: 'X-API-Key' },
+    { kind: 'query', name: 'Authorization' },
+    { kind: 'env', name: 'Authorization' },
+  ])('rejects bearer presentation on $kind sink $name', (sink) => {
+    expect(() =>
+      WorkspaceMcpCredentialBindingSchema.parse({ ...binding, presentation: 'bearer', sink })
+    ).toThrow(/Bearer presentation requires an Authorization header sink/);
+  });
+
+  it('admits mixed-case Authorization bearer only on HTTP', () => {
+    const credential = {
+      ...binding,
+      presentation: 'bearer',
+      sink: { kind: 'header', name: 'aUtHoRiZaTiOn' },
+    };
+    expect(() =>
+      parseWorkspaceMcpServerCatalog({
+        schemaVersion: 1,
+        servers: [{ ...server, credentialBindings: [credential] }],
+      })
+    ).not.toThrow();
+    expect(() =>
+      parseWorkspaceMcpServerCatalog({
+        schemaVersion: 1,
+        servers: [
+          {
+            ...server,
+            credentialBindings: [credential],
+            transport: { command: 'node', kind: 'stdio' },
+          },
+        ],
+      })
+    ).toThrow(/does not match/);
+  });
+});
 
 describe('workspace MCP server catalog', () => {
   it('bounds timeouts to the Node timer range', () => {

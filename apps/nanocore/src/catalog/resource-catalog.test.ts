@@ -180,6 +180,178 @@ describe('workspace resource catalog', () => {
     }
   });
 
+  it.each([
+    'raw',
+    'bearer',
+  ] as const)('round-trips %s presentation through management, storage and the effective digest', (presentation) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-presentation-'));
+    try {
+      const created = createWorkspaceMcpConfig({
+        createdAt: '2026-10-03T00:00:00.000Z',
+        dataRoot,
+        declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+        displayName: 'Echo',
+        expectedRevision: 0,
+        selectCurrent: true,
+        workspaceId: 'ws_demo',
+      });
+      const credential = {
+        presentation,
+        slot: 'token',
+        vaultGrantId: 'grant_canary',
+        sink: { kind: 'header' as const, name: 'Authorization' },
+      };
+      const raw = updateWorkspaceMcpBinding({
+        binding: {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [
+            { slot: credential.slot, vaultGrantId: credential.vaultGrantId, sink: credential.sink },
+          ],
+          deniedTools: [],
+          enabled: true,
+          revision: 0,
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+        },
+        dataRoot,
+        entryId: 'echo',
+        expectedRevision: created.catalog.revision,
+        workspaceId: 'ws_demo',
+      });
+      const before = resolveWorkspaceMcpServer({
+        catalog: projectEffectiveWorkspaceMcpCatalog(raw),
+        serverId: 'echo',
+      });
+      const bound = updateWorkspaceMcpBinding({
+        binding: { ...raw.mcp.bindings[0]!, credentialBindings: [credential] },
+        dataRoot,
+        entryId: 'echo',
+        expectedRevision: raw.revision,
+        workspaceId: 'ws_demo',
+      });
+      const retained = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(retained.mcp.bindings[0]!.credentialBindings).toEqual([credential]);
+      const after = resolveWorkspaceMcpServer({
+        catalog: projectEffectiveWorkspaceMcpCatalog(retained),
+        serverId: 'echo',
+      });
+      expect(after.credentialBindings).toEqual([credential]);
+      expect(after.catalogDigest).not.toBe(before.catalogDigest);
+      expect(retained.mcp.versions[0]!.digest).toBe(created.version.digest);
+      expect(bound.mcp.bindings[0]!.revision).toBe(raw.mcp.bindings[0]!.revision + 1);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    {
+      field: 'auth',
+      value: { CLIENT_ID: 'synthetic-client' },
+      reason:
+        'Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented',
+    },
+    {
+      field: 'query',
+      value: { 'read-only': 'true' },
+      reason: 'MCP HTTP query options are unsupported.',
+    },
+  ])('refuses foreign HTTP $field configuration before inert import publication', ({
+    field,
+    value,
+    reason,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-deferred-'));
+    const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
+    try {
+      writeFileSync(join(treeRoot, 'plugin.json'), JSON.stringify({ name: 'deferred' }));
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({
+          mcpServers: { echo: { url: 'https://mcp.example.test/mcp', [field]: value } },
+        })
+      );
+      expect(() =>
+        importWorkspacePlugin({
+          createdAt: '2026-10-03T00:00:00.000Z',
+          dataRoot,
+          expectedRevision: 0,
+          workspaceId: 'ws_demo',
+          install: false,
+          producer: { id: 'user_local', kind: 'user' },
+          treeRoot,
+        })
+      ).toThrow(reason);
+      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo').mcp.entries).toEqual([]);
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+      rmSync(treeRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('imports a foreign HTTP endpoint query string unchanged into the stored declaration and effective transport', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-query-'));
+    const treeRoot = mkdtempSync(join(tmpdir(), 'openkit-plugin-source-'));
+    const endpoint = 'https://mcp.example.test/mcp?read-only=true';
+    try {
+      writeFileSync(join(treeRoot, 'plugin.json'), JSON.stringify({ name: 'query-endpoint' }));
+      writeFileSync(
+        join(treeRoot, 'mcp.json'),
+        JSON.stringify({ mcpServers: { echo: { url: endpoint } } })
+      );
+      importWorkspacePlugin({
+        createdAt: '2026-10-03T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        workspaceId: 'ws_demo',
+        install: false,
+        producer: { id: 'user_local', kind: 'user' },
+        treeRoot,
+      });
+      const retained = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(retained.mcp.entries).toHaveLength(1);
+      expect(retained.mcp.entries[0]!.id).toBe('echo');
+      expect(retained.mcp.versions).toHaveLength(1);
+      expect(retained.mcp.versions[0]!.declaration).toEqual({
+        endpoint,
+        headers: {},
+        kind: 'http',
+      });
+      const selected = selectWorkspaceMcpVersion({
+        dataRoot,
+        digest: retained.mcp.versions[0]!.digest,
+        entryId: 'echo',
+        expectedRevision: retained.revision,
+        workspaceId: 'ws_demo',
+      });
+      updateWorkspaceMcpBinding({
+        binding: {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [],
+          deniedTools: [],
+          enabled: true,
+          revision: 0,
+          schemaPolicy: 'tracking',
+          timeoutMs: 60_000,
+        },
+        dataRoot,
+        entryId: 'echo',
+        expectedRevision: selected.revision,
+        workspaceId: 'ws_demo',
+      });
+      const effective = projectEffectiveWorkspaceMcpCatalog(
+        loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')
+      );
+      expect(effective.servers).toHaveLength(1);
+      expect(effective.servers[0]!.transport).toEqual({ endpoint, headers: {}, kind: 'http' });
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+      rmSync(treeRoot, { force: true, recursive: true });
+    }
+  });
+
   it('creates an inactive MCP config and projects an effective Gateway entry only after enablement', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-'));
     try {
