@@ -6,7 +6,7 @@ Both build stages use the exact digest-pinned Node base declared for `app` in `c
 
 The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-token compaction threshold for its default logical model. This is a context-management policy, not model capacity metadata; normal provider model/context admission still applies, and existing configuration files are preserved.
 
-The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes and does not publish or connect to the separate private NanoHost HTTP/2 listener.
+The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes, including exact `/mcp` before the Web catch-all, and does not publish or connect to the separate private NanoHost HTTP/2 listener.
 
 `scripts/docker/smoke-image.sh app` checks packaged tools and recovery commands, then starts the ordinary entrypoint with a disposable Data Root. It requires public `/api/health` within 60 seconds and checks the SPA root before stopping the server and removing its temporary data. This exercises schema conversion using the production dependency layout created by `pnpm deploy`.
 

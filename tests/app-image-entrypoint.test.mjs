@@ -21,10 +21,24 @@ test('uses the App HTTP upstream without publishing NanoHost transport', async (
   assert.match(source.slice(privateTransport, publicApi), /respond 404/u);
   assert.equal(
     [...source.matchAll(/reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}/gu)].length,
-    3,
+    4,
     source
   );
   assert.doesNotMatch(source, /h2c:\/\//u);
+});
+
+test('proxies the exact remote MCP path to the App before the Web catch-all', async () => {
+  const source = await readFile(caddyfile, 'utf8');
+  const remoteMcp = source.indexOf('handle /mcp {');
+  const webCatchAll = source.indexOf('handle {');
+
+  assert.ok(remoteMcp >= 0 && remoteMcp < webCatchAll, source);
+  assert.match(
+    source.slice(remoteMcp, webCatchAll),
+    /^handle \/mcp \{\s+reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}\s+\}/u
+  );
+  assert.doesNotMatch(source, /handle \/mcp\*/u);
+  assert.doesNotMatch(source, /handle \/mcp\//u);
 });
 
 test('routes container signals through the supervising entrypoint exactly once', async () => {
