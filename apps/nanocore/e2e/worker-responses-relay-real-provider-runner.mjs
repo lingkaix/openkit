@@ -449,8 +449,12 @@ async function runSelectedAgentRelay(client, input) {
   assert(typeof threadId === 'string' && threadId.length > 0, 'Thread id was not returned.');
 
   const task = await awaitRelayDeadline(
-    client.app.startTaskMode(input.workspaceId, threadId, {
-      input: RELAY_TASK_INPUT,
+    client.operations['task.start']({
+      workspaceId: input.workspaceId,
+      threadId: threadId,
+      ...{
+        input: RELAY_TASK_INPUT,
+      },
     }),
     input.timeoutMs,
     input.effectfulTimeout

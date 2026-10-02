@@ -28,9 +28,9 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
-import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -78,7 +78,7 @@ function postJson(
   };
   return typeof path === 'string'
     ? app.request(path, options)
-    : app.request(...artifactOperationRequest(path[0], path[1], options));
+    : app.request(...operationRequest(path[0], path[1], options));
 }
 
 /**
@@ -168,10 +168,10 @@ describe('Core artifact routes', () => {
     const app = createApp({ store });
 
     const listRes = await app.request(
-      ...artifactOperationRequest('artifact.list', { workspaceId: 'ws_demo' })
+      ...operationRequest('artifact.list', { workspaceId: 'ws_demo' })
     );
     const getRes = await app.request(
-      ...artifactOperationRequest('artifact.read', {
+      ...operationRequest('artifact.read', {
         workspaceId: 'ws_demo',
         artifactId: 'ar_markdown',
       })
@@ -248,13 +248,13 @@ describe('Core artifact routes', () => {
     const app = createApp({ store });
 
     const textRes = await app.request(
-      ...artifactOperationRequest('artifact.read', {
+      ...operationRequest('artifact.read', {
         workspaceId: 'ws_demo',
         artifactId: 'ar_text',
       })
     );
     const jsonRes = await app.request(
-      ...artifactOperationRequest('artifact.read', {
+      ...operationRequest('artifact.read', {
         workspaceId: 'ws_demo',
         artifactId: 'ar_json',
       })
@@ -294,7 +294,7 @@ describe('Core artifact routes', () => {
 
     try {
       const importedRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.import',
           { workspaceId: workspace.id },
           {
@@ -328,7 +328,7 @@ describe('Core artifact routes', () => {
       });
 
       const importReplayRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.import',
           { workspaceId: workspace.id },
           {
@@ -344,7 +344,7 @@ describe('Core artifact routes', () => {
       );
 
       const digestMismatchRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.import',
           { workspaceId: workspace.id },
           {
@@ -360,7 +360,7 @@ describe('Core artifact routes', () => {
       });
 
       const changedImportRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.import',
           { workspaceId: workspace.id },
           {
@@ -380,7 +380,7 @@ describe('Core artifact routes', () => {
         expectedArtifactVersion: 1,
       } as const;
       const introducedRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.introduce',
           { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
           {
@@ -411,7 +411,7 @@ describe('Core artifact routes', () => {
       expect(store.getArtifact(workspace.id, imported.artifactId)).toEqual(artifact);
 
       const changedArtifactRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.introduce',
           { workspaceId: workspace.id, threadId: thread.id, artifactId: 'ar_other' },
           {
@@ -431,7 +431,7 @@ describe('Core artifact routes', () => {
         id: 'user_local',
       });
       const introductionReplayRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.introduce',
           { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
           {
@@ -449,7 +449,7 @@ describe('Core artifact routes', () => {
       const turnCount = store.listThreadTurns(workspace.id, thread.id).length;
       const itemCount = store.listThreadItems(workspace.id, thread.id).length;
       const busyRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.introduce',
           { workspaceId: workspace.id, threadId: thread.id, artifactId: imported.artifactId },
           {
@@ -469,7 +469,7 @@ describe('Core artifact routes', () => {
 
       artifact.content.body = `${content}!`;
       const corruptReplayRes = await app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           'artifact.import',
           { workspaceId: workspace.id },
           {
@@ -536,7 +536,7 @@ describe('Core artifact routes', () => {
 
     try {
       const listRes = await app.request(
-        ...artifactOperationRequest('artifact.review-list', {
+        ...operationRequest('artifact.review-list', {
           workspaceId: 'ws_demo',
           artifactId: 'ar_review_first',
         })
@@ -654,14 +654,14 @@ describe('Core artifact routes', () => {
 
         // An explicitly submitted output with the same presentation remains a deliverable.
         const catalog = await app.request(
-          ...artifactOperationRequest('artifact.list', { workspaceId: 'ws_demo' })
+          ...operationRequest('artifact.list', { workspaceId: 'ws_demo' })
         );
         expect(catalog.status).toBe(200);
         expect(
           ListArtifactsResponseSchema.parse(await catalog.json()).items.map((item) => item.id)
         ).toEqual(['ar_deliverable_same_title']);
         const historical = await app.request(
-          ...artifactOperationRequest('artifact.read', {
+          ...operationRequest('artifact.read', {
             workspaceId: 'ws_demo',
             artifactId: 'ar_review_first',
           })
@@ -703,15 +703,21 @@ describe('Core artifact routes', () => {
         ).toEqual(['ar_deliverable_same_title']);
 
         const receivingThread = store.createThread('ws_demo', 'Reference internal evidence');
-        const attached = await postJson(
-          app,
-          `/api/app/workspaces/ws_demo/threads/${receivingThread.id}/conversation-turns`,
-          {
-            requestId: 'reject-review-evidence-attachment',
-            input: 'Use this output',
-            targetRef: 'internal-role:assistant',
-            artifactRefs: [{ artifactId: 'ar_review_second', artifactVersion: 1 }],
-          }
+        const attached = await app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_demo', threadId: receivingThread.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: 'reject-review-evidence-attachment',
+                input: 'Use this output',
+                targetRef: 'internal-role:assistant',
+                artifactRefs: [{ artifactId: 'ar_review_second', artifactVersion: 1 }],
+              }),
+            }
+          )
         );
         expect(attached.status).toBe(409);
         expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });

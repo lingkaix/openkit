@@ -173,6 +173,7 @@ import {
 } from './test-support/app.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
@@ -4780,20 +4781,23 @@ describe('nanocore server', () => {
       });
 
       const forgedLineageRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000300',
-            input,
-            workerStorageChoice: {
-              ...workerStorageChoice,
-              goalId: 'goal_forged',
-              taskId: 'task_forged',
-            },
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000300',
+              input,
+              workerStorageChoice: {
+                ...workerStorageChoice,
+                goalId: 'goal_forged',
+                taskId: 'task_forged',
+              },
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       expect(forgedLineageRes.status).toBe(400);
       await expect(forgedLineageRes.json()).resolves.toMatchObject({ code: 'invalid_request' });
@@ -4804,11 +4808,17 @@ describe('nanocore server', () => {
         })
       ).toEqual([]);
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input, workerStorageChoice }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input, workerStorageChoice }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       const responseBody = await res.json();
       expect(res.status, JSON.stringify(responseBody)).toBe(202);
@@ -4888,24 +4898,42 @@ describe('nanocore server', () => {
       expect(launchedContextAssembly).toMatchObject({
         knowledgeSelectionInput: { retrievalTraceId: retrievalTrace.traceId },
       });
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input, workerStorageChoice }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const storageConflictRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId, input, workerStorageChoice: { kind: 'fresh' } }),
-          headers: { 'content-type': 'application/json' },
-        }
+      const replayRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input, workerStorageChoice }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
-      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input: 'Implement a different focused Task Mode fix.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const storageConflictRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input, workerStorageChoice: { kind: 'fresh' } }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
+      const conflictRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId,
+              input: 'Implement a different focused Task Mode fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(replayRes.status).toBe(202);
       expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toEqual(parsed);
@@ -4943,13 +4971,13 @@ describe('nanocore server', () => {
   it.each([
     {
       entry: 'direct Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+      path: '/api/app/operations/task.start',
       requestId: '0190f4c8-0000-7000-8000-000000000321',
       responseKind: 'task' as const,
     },
     {
       entry: 'Chat-to-Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      path: '/api/app/operations/conversation.submit',
       requestId: '0190f4c8-0000-7000-8000-000000000322',
       responseKind: 'chat' as const,
     },
@@ -5035,14 +5063,20 @@ describe('nanocore server', () => {
         workspaceDb.sqlite.close();
       }
 
-      const response = await app.request(path, {
-        method: 'POST',
-        body:
-          responseKind === 'chat'
-            ? conversationRequest({ input, requestId })
-            : JSON.stringify({ input, requestId }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body:
+              responseKind === 'chat'
+                ? conversationRequest({ input, requestId })
+                : JSON.stringify({ input, requestId }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const responseBody = await response.json();
 
       expect(response.status, JSON.stringify(responseBody)).toBe(202);
@@ -5089,12 +5123,12 @@ describe('nanocore server', () => {
   it.each([
     {
       entry: 'direct Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
+      path: '/api/app/operations/task.start',
       requestId: '0190f4c8-0000-7000-8000-000000000323',
     },
     {
       entry: 'Chat-to-Task',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      path: '/api/app/operations/conversation.submit',
       requestId: '0190f4c8-0000-7000-8000-000000000324',
     },
   ])('records the product-safe $entry failure in RuntimeEvidence', async ({
@@ -5163,20 +5197,26 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
-      const response = await app.request(path, {
-        method: 'POST',
-        body:
-          entry === 'Chat-to-Task'
-            ? conversationRequest({
-                input: 'Implement the focused Task Mode fix.',
-                requestId,
-              })
-            : JSON.stringify({
-                input: 'Implement the focused Task Mode fix.',
-                requestId,
-              }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          path.endsWith('task.start') ? 'task.start' : 'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body:
+              entry === 'Chat-to-Task'
+                ? conversationRequest({
+                    input: 'Implement the focused Task Mode fix.',
+                    requestId,
+                  })
+                : JSON.stringify({
+                    input: 'Implement the focused Task Mode fix.',
+                    requestId,
+                  }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       expect(response.status, await response.clone().text()).toBe(202);
       if (entry === 'direct Task') {
         const result = StartTaskModeResponseSchema.parse(await response.clone().json());
@@ -5310,12 +5350,15 @@ describe('nanocore server', () => {
 
     try {
       const response = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: requestBody,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: requestBody,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(response.status, await response.clone().text()).toBe(202);
       const result = SubmitConversationResponseSchema.parse(await response.json());
@@ -5335,12 +5378,15 @@ describe('nanocore server', () => {
       expect(JSON.stringify(result.item)).not.toContain(error.message);
       expect(result.explanation).not.toContain(error.message);
       const replay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: requestBody,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: requestBody,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
@@ -5377,11 +5423,17 @@ describe('nanocore server', () => {
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Task receipt write failure');
       });
-      const firstRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const firstRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       receiptWrite.mockRestore();
 
       expect(firstRes.status).toBe(409);
@@ -5425,22 +5477,34 @@ describe('nanocore server', () => {
         checkpointDb.sqlite.close();
       }
 
-      const conflictRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input: 'Implement a different Task result.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const conflictRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input: 'Implement a different Task result.' }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       expect(conflictRes.status).toBe(409);
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
       expect(executor.startContexts).toHaveLength(1);
 
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replayRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(replayRes.status).toBe(202);
       expect(StartTaskModeResponseSchema.parse(await replayRes.json())).toMatchObject({
@@ -6101,14 +6165,20 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
-      const res = await app.request(`/api/app/workspaces/ws_quick_chat/threads/${thread.id}/task`, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000319',
-          input: 'Implement a focused fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000319',
+              input: 'Implement a focused fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -6229,14 +6299,20 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000311',
-          input: 'Implement the focused Task Mode fix.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000311',
+              input: 'Implement the focused Task Mode fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status, await res.clone().text()).toBe(202);
       const parsed = StartTaskModeResponseSchema.parse(await res.json());
@@ -6270,12 +6346,15 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -6286,29 +6365,41 @@ describe('nanocore server', () => {
         .sort();
 
       const replayRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const conflictRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId,
-            input: 'Implement a different focused Task Mode fix.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId,
+              input: 'Implement a different focused Task Mode fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
-      const directTaskRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const directTaskRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(parsed).toMatchObject({
         outcome: 'task-handoff',
@@ -6367,12 +6458,15 @@ describe('nanocore server', () => {
         throw new Error('simulated Chat receipt write failure');
       });
       const first = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       receiptWrite.mockRestore();
       const firstBody = await first.json();
@@ -6411,12 +6505,15 @@ describe('nanocore server', () => {
       expect(executor.startContexts).toHaveLength(1);
 
       const retry = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const retryBody = await retry.json();
 
@@ -6473,11 +6570,17 @@ describe('nanocore server', () => {
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
-      await app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
-        method: 'POST',
-        body: conversationRequest({ requestId, input: taskInput }),
-        headers: { 'content-type': 'application/json' },
-      });
+      await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input: taskInput }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       receiptWrite.mockRestore();
       const workerTurn = store
         .listThreadTurns('ws_demo', 'th_demo')
@@ -6502,12 +6605,15 @@ describe('nanocore server', () => {
       expect(executor.startContexts).toHaveLength(1);
 
       const reroute = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId, input: changedInput }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId, input: changedInput }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const rerouteBody = await reroute.json();
 
@@ -6560,12 +6666,15 @@ describe('nanocore server', () => {
         throw new Error('simulated Chat receipt write failure');
       });
       const gapResponse = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId: forgedRequestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId: forgedRequestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       receiptWrite.mockRestore();
       const gapBody = await gapResponse.json();
@@ -6579,12 +6688,15 @@ describe('nanocore server', () => {
         throw new Error('The exact-request outer Chat Turn was not created.');
       }
       const directTaskResponse = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId: forgedRequestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId: forgedRequestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       expect(directTaskResponse.status, await directTaskResponse.clone().text()).toBe(202);
       const directTask = StartTaskModeResponseSchema.parse(await directTaskResponse.json());
@@ -6622,12 +6734,15 @@ describe('nanocore server', () => {
       const turnsBeforeReplay = store.listThreadTurns('ws_demo', 'th_demo').map((turn) => turn.id);
 
       const replay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({ requestId: forgedRequestId, input }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({ requestId: forgedRequestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const replayBody = await replay.json();
 
@@ -6649,15 +6764,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000306',
-            input: 'Plan a multi-step release goal for NanoCore.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000306',
+              input: 'Plan a multi-step release goal for NanoCore.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -6679,15 +6797,18 @@ describe('nanocore server', () => {
     try {
       for (const [index, input] of ['Can you help with this?', 'What should I do?'].entries()) {
         const res = await app.request(
-          '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: `0190f4c8-0000-7000-8000-00000000031${index}`,
-              input,
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              body: conversationRequest({
+                requestId: `0190f4c8-0000-7000-8000-00000000031${index}`,
+                input,
+              }),
+              headers: { 'content-type': 'application/json' },
+            }
+          )
         );
 
         expect(res.status).toBe(202);
@@ -6714,15 +6835,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000321',
-            input: 'Can you help with this?',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000321',
+              input: 'Can you help with this?',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -6748,15 +6872,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000322',
-            input: 'Implement the focused worker fix.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000322',
+              input: 'Implement the focused worker fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(400);
@@ -6777,15 +6904,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000320',
-            input: 'Search the web for NanoCore release notes.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000320',
+              input: 'Search the web for NanoCore release notes.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(200);
@@ -6824,16 +6954,19 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000401',
-            input: LIVE_GOAL_WEB_CHAT_PROMPT,
-            artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000401',
+              input: LIVE_GOAL_WEB_CHAT_PROMPT,
+              artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status, await res.clone().text()).toBe(200);
@@ -6876,15 +7009,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        `/api/app/workspaces/ws_quick_chat/threads/${thread.id}/conversation-turns`,
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: `0190f4c8-0000-7000-8000-0000000004${String(input.length).padStart(2, '0')}`,
-            input,
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_quick_chat', threadId: thread.id },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: `0190f4c8-0000-7000-8000-0000000004${String(input.length).padStart(2, '0')}`,
+              input,
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status, await res.clone().text()).toBe(200);
@@ -6923,16 +7059,19 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: `0190f4c8-0000-7000-8000-0000000005${String(input.length).padStart(2, '0')}`,
-            input,
-            artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: `0190f4c8-0000-7000-8000-0000000005${String(input.length).padStart(2, '0')}`,
+              input,
+              artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(200);
@@ -6969,15 +7108,18 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000309',
-            input: 'List repository files.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000309',
+              input: 'List repository files.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -7064,15 +7206,18 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000312',
-            input: 'List repository files.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000312',
+              input: 'List repository files.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status, await res.clone().text()).toBe(202);
@@ -7144,26 +7289,32 @@ describe('nanocore server', () => {
       });
 
       const listRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000313',
-            input: 'List repository files.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000313',
+              input: 'List repository files.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const readRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000314',
-            input: 'Read repository file docs/guide.md.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000314',
+              input: 'Read repository file docs/guide.md.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(listRes.status, await listRes.clone().text()).toBe(202);
@@ -7211,15 +7362,18 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000310',
-            input: 'List repository files in docs.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000310',
+              input: 'List repository files in docs.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -7280,15 +7434,18 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000311',
-            input: 'Read repository file docs/guide.md.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000311',
+              input: 'Read repository file docs/guide.md.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -7346,15 +7503,18 @@ describe('nanocore server', () => {
       });
 
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000315',
-            input: 'Delete repository file README.md.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000315',
+              input: 'Delete repository file README.md.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(202);
@@ -7400,15 +7560,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000316',
-            input: 'Implement the focused worker fix.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000316',
+              input: 'Implement the focused worker fix.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(200);
@@ -7432,15 +7595,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000317',
-            input: 'Retry the previous worker turn.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000317',
+              input: 'Retry the previous worker turn.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(200);
@@ -7477,15 +7643,18 @@ describe('nanocore server', () => {
 
     try {
       const res = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          body: conversationRequest({
-            requestId: '0190f4c8-0000-7000-8000-000000000319',
-            input,
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000319',
+              input,
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status).toBe(200);
@@ -7521,14 +7690,20 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, turnExecutor: executor });
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000302',
-        input: 'What is OpenKit?',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'task.start',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000302',
+            input: 'What is OpenKit?',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     try {
       expect(res.status).toBe(409);
@@ -7545,14 +7720,20 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, turnExecutor: executor });
-    const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000318',
-        input: 'Help.',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'task.start',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000318',
+            input: 'Help.',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     try {
       expect(res.status).toBe(409);
@@ -7575,11 +7756,17 @@ describe('nanocore server', () => {
     const input = 'Plan a multi-step release goal for NanoCore.';
 
     try {
-      const res = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(202);
       const accepted = await res.json();
@@ -7588,11 +7775,17 @@ describe('nanocore server', () => {
         escalation: { targetMode: 'goal' },
       });
       expect(executor.startContexts).toHaveLength(0);
-      const replayRes = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({ requestId, input }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replayRes = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ requestId, input }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(replayRes.status).toBe(202);
       expect(await replayRes.json()).toEqual(accepted);
@@ -8278,30 +8471,48 @@ describe('nanocore server', () => {
         }),
         headers: jsonHeaders(),
       }),
-      app.request('/api/user-input-requests/ui_missing_request/answer', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          answers: { question: ['Missing request id'] },
-        }),
-        headers: jsonHeaders(),
-      }),
-      app.request('/api/pending-requests/ui_missing_request/withdraw', {
-        method: 'POST',
-        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
-        headers: jsonHeaders(),
-      }),
-      app.request('/api/approvals/ap_missing_request/respond', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: turn.id,
-          decision: 'granted',
-        }),
-        headers: jsonHeaders(),
-      }),
+      app.request(
+        ...operationRequest(
+          'question.answer',
+          { userInputRequestId: 'ui_missing_request' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              answers: { question: ['Missing request id'] },
+            }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
+      app.request(
+        ...operationRequest(
+          'pending-request.withdraw',
+          { pendingRequestId: 'ui_missing_request' },
+          {
+            method: 'POST',
+            body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
+      app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: 'ap_missing_request' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: turn.id,
+              decision: 'granted',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
     ];
 
     for (const responsePromise of cases) {
@@ -8825,7 +9036,7 @@ describe('nanocore server', () => {
         }
       );
       const actionCenterRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
       const persistedDb = openTestWorkspaceDb(coreDb, workspace.id);
       let persistedStatus: string;
@@ -8994,7 +9205,7 @@ describe('nanocore server', () => {
         headers: { 'content-type': 'application/json' },
       });
       const actionCenterRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
 
       const firstPayload = await firstRes.json();
@@ -11221,7 +11432,7 @@ describe('nanocore server', () => {
       await expect(replayAfterModeChange.json()).resolves.toEqual(approvalPayload);
 
       const actionCenterRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
       expect(actionCenterRes.status).toBe(200);
       await expect(actionCenterRes.json()).resolves.toMatchObject({
@@ -11309,18 +11520,21 @@ describe('nanocore server', () => {
 
       if (mode !== 'auto_allow') {
         const decisionRes = await app.request(
-          `/api/approvals/${approvalPayload.approval.id}/respond`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000025',
-              workspaceId: workspace.id,
-              threadId: thread.id,
-              turnId: turn.id,
-              decision: 'granted',
-            }),
-          }
+          ...operationRequest(
+            'approval.respond',
+            { approvalRequestId: approvalPayload.approval.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000025',
+                workspaceId: workspace.id,
+                threadId: thread.id,
+                turnId: turn.id,
+                decision: 'granted',
+              }),
+            }
+          )
         );
 
         expect(decisionRes.status).toBe(200);
@@ -11659,18 +11873,21 @@ describe('nanocore server', () => {
 
       if (mode === 'require_human_approval') {
         const decisionRes = await app.request(
-          `/api/approvals/${approvalPayload.approval.id}/respond`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000028',
-              workspaceId: workspace.id,
-              threadId: thread.id,
-              turnId: turn.id,
-              decision: 'granted',
-            }),
-          }
+          ...operationRequest(
+            'approval.respond',
+            { approvalRequestId: approvalPayload.approval.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000028',
+                workspaceId: workspace.id,
+                threadId: thread.id,
+                turnId: turn.id,
+                decision: 'granted',
+              }),
+            }
+          )
         );
         expect(decisionRes.status).toBe(200);
       }
@@ -11940,18 +12157,21 @@ describe('nanocore server', () => {
         const scenarioApprovalPayload = await scenarioApproval.json();
         if (mode === 'require_human_approval') {
           const scenarioDecision = await app.request(
-            `/api/approvals/${scenarioApprovalPayload.approval.id}/respond`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
-                workspaceId: workspace.id,
-                threadId: thread.id,
-                turnId: scenarioTurn.id,
-                decision: 'granted',
-              }),
-            }
+            ...operationRequest(
+              'approval.respond',
+              { approvalRequestId: scenarioApprovalPayload.approval.id },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
+                  workspaceId: workspace.id,
+                  threadId: thread.id,
+                  turnId: scenarioTurn.id,
+                  decision: 'granted',
+                }),
+              }
+            )
           );
           expect(scenarioDecision.status).toBe(200);
         }

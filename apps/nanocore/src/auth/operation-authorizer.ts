@@ -6,10 +6,8 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
-  AnswerUserInputRequestSchema,
   responsibleUserIdForActor,
   SubmitTurnInputRequestSchema,
-  WithdrawPendingRequestSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -741,7 +739,7 @@ async function denyIfThreadInaccessible(
 }
 
 /**
- * Resolves the existing Thread addressed by path, query, body, or opaque child owner.
+ * Resolves the existing Thread addressed by path, body, or opaque child owner.
  *
  * @param context Authenticated request context.
  * @param actor Authenticated request actor.
@@ -760,10 +758,6 @@ async function requestedThreadId(
   const pathThreadId = nonempty(context.req.param('threadId'));
   if (pathThreadId) {
     return pathThreadId;
-  }
-  if (route.operationKey === 'getConversationTargets') {
-    const queryThreadId = context.req.query('threadId')?.trim();
-    return queryThreadId && queryThreadId.length > 0 ? queryThreadId : null;
   }
   if (route.operationKey === 'POST /api/turns') {
     const parsed = SubmitTurnInputRequestSchema.safeParse(
@@ -838,14 +832,6 @@ async function bodyWorkspaceId(
     const parsed = SubmitTurnInputRequestSchema.safeParse(body);
     return parsed.success ? parsed.data.workspaceId : null;
   }
-  if (operationKey === 'POST /api/user-input-requests/:userInputRequestId/answer') {
-    const parsed = AnswerUserInputRequestSchema.safeParse(body);
-    return parsed.success ? parsed.data.workspaceId : null;
-  }
-  if (operationKey === 'POST /api/pending-requests/:pendingRequestId/withdraw') {
-    const parsed = WithdrawPendingRequestSchema.safeParse(body);
-    return parsed.success ? parsed.data.workspaceId : null;
-  }
   return null;
 }
 
@@ -895,14 +881,6 @@ function opaqueChildOwner(
     }
     const turn = input.store.getTurnById(turnId);
     return { threadId: turn.threadId, workspaceId: turn.workspaceId };
-  }
-  if (operationKey === 'POST /api/approvals/:approvalRequestId/respond') {
-    const approvalRequestId = nonempty(context.req.param('approvalRequestId'));
-    if (!approvalRequestId) {
-      return null;
-    }
-    const approval = input.store.getApproval(approvalRequestId);
-    return { threadId: approval.threadId, workspaceId: approval.workspaceId };
   }
   return null;
 }

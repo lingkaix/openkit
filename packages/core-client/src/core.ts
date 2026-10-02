@@ -1,7 +1,5 @@
 import type { OperationOutput } from '@openkit/app-api-schemas';
 import {
-  type AnswerUserInputRequestSchema,
-  ApprovalRequestSchema,
   type ArchiveThreadRequestSchema,
   type CreateKnowledgeEntryRequestSchema,
   type CreateWorkspaceRequestSchema,
@@ -11,15 +9,12 @@ import {
   type ListKnowledgeEntriesResponseSchema,
   ListThreadsResponseSchema,
   MetaResponseSchema,
-  PendingRequestOutcomeSchema,
   ProductTurnSchema,
-  type RespondToApprovalRequestSchema,
   type SubmitTurnInputRequestSchema,
   ThreadSchema,
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
   type UpdateWorkspaceRequestSchema,
-  type WithdrawPendingRequestSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -66,26 +61,6 @@ export type Turn = z.infer<typeof ProductTurnSchema>;
 export type StartTurnInput = OptionalRequestId<z.infer<typeof SubmitTurnInputRequestSchema>>;
 /** Turn interrupt input. */
 export type InterruptTurnInput = OptionalRequestId<z.infer<typeof InterruptTurnRequestSchema>>;
-/** Approval request record. */
-export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
-/** Approval response input. */
-export type RespondApprovalInput = OptionalRequestId<
-  z.infer<typeof RespondToApprovalRequestSchema>
->;
-/** Approval response body passed with the approval id in the URL. */
-export type RespondApprovalRequestBody = Omit<RespondApprovalInput, 'approvalRequestId'>;
-/** User-input answer input. */
-export type AnswerUserInputInput = OptionalRequestId<z.infer<typeof AnswerUserInputRequestSchema>>;
-/** User-input answer body passed with the request id in the URL. */
-export type AnswerUserInputRequestBody = Omit<AnswerUserInputInput, 'userInputRequestId'>;
-/** Pending-request withdrawal input. */
-export type WithdrawPendingRequestInput = OptionalRequestId<
-  z.infer<typeof WithdrawPendingRequestSchema>
->;
-/** Pending-request withdrawal body passed with the request id in the URL. */
-export type WithdrawPendingRequestBody = Omit<WithdrawPendingRequestInput, 'pendingRequestId'>;
-/** Pending-request command outcome. */
-export type PendingRequestOutcome = z.infer<typeof PendingRequestOutcomeSchema>;
 /** Definition-derived Artifact inventory result. */
 export type ListArtifactsResponse = OperationOutput<'artifact.list'>;
 /** Definition-derived exact Artifact read result. */
@@ -112,21 +87,6 @@ export interface CoreProjectionClient {
   startTurn(input: StartTurnInput): Promise<Turn>;
   /** Interrupts one turn. */
   interruptTurn(input: InterruptTurnInput): Promise<Turn>;
-  /** Responds to one approval request. */
-  respondApproval(
-    approvalRequestId: string,
-    input: RespondApprovalRequestBody
-  ): Promise<ApprovalRequest>;
-  /** Answers one pending user-input request. */
-  answerUserInput(
-    userInputRequestId: string,
-    input: AnswerUserInputRequestBody
-  ): Promise<PendingRequestOutcome>;
-  /** Withdraws one pending request. */
-  withdrawPendingRequest(
-    pendingRequestId: string,
-    input: WithdrawPendingRequestBody
-  ): Promise<PendingRequestOutcome>;
   /** Subscribes to one validated turn event stream. */
   subscribeTurnEvents(options: {
     workspaceId: string;
@@ -180,24 +140,6 @@ export function createCoreProjectionClient(
         ProductTurnSchema
       );
     },
-    respondApproval: (approvalRequestId, input) =>
-      transport.postJson(
-        `/api/approvals/${approvalRequestId}/respond`,
-        withRequestId({ ...input, approvalRequestId }),
-        ApprovalRequestSchema
-      ),
-    answerUserInput: (userInputRequestId, input) =>
-      transport.postJson(
-        `/api/user-input-requests/${userInputRequestId}/answer`,
-        withRequestId({ ...input, userInputRequestId }),
-        PendingRequestOutcomeSchema
-      ),
-    withdrawPendingRequest: (pendingRequestId, input) =>
-      transport.postJson(
-        `/api/pending-requests/${pendingRequestId}/withdraw`,
-        withRequestId({ ...input, pendingRequestId }),
-        PendingRequestOutcomeSchema
-      ),
     subscribeTurnEvents: (subscribeOptions) =>
       subscribeTurnEvents({
         ...subscribeOptions,

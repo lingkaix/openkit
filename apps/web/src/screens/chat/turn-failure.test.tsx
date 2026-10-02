@@ -155,18 +155,19 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
       ...core,
     },
     app: {
-      getConversationTargets: vi.fn().mockResolvedValue({
+      ...app,
+    },
+
+    operations: {
+      'conversation.targets': vi.fn().mockResolvedValue({
         workspaceId: 'ws1',
         threadId: 'th_82',
         defaultTargetRef: 'internal-role:assistant',
         targets: [],
       }),
-      submitConversation: vi.fn(),
-      startTaskMode: vi.fn(),
-      ...app,
-    },
+      'conversation.submit': vi.fn(),
+      'task.start': vi.fn(),
 
-    operations: {
       'thread.read': vi.fn().mockResolvedValue(THREAD),
       'thread.items': vi.fn().mockResolvedValue({
         items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
@@ -324,8 +325,8 @@ describe('task turn failure (dashboard reload)', () => {
     expect(screen.getByText('Worker Turn accepted')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     await waitFor(() => expect(client.core.startTurn).not.toHaveBeenCalled());
-    expect(client.app.submitConversation).not.toHaveBeenCalled();
-    expect(client.app.startTaskMode).not.toHaveBeenCalled();
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    expect(client.operations['task.start']).not.toHaveBeenCalled();
   });
 
   it('does not treat a completed dashboard Turn with an accepted status item as failed', async () => {

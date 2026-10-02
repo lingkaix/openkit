@@ -319,7 +319,7 @@ The ordinary-user inclusion count and roadmap dispositions are stated by `docs/s
 
 ### Chat and Task outcomes
 
-Chat and Task Thread streams render non-secret pending user-input requests as accessible inline text or option controls and submit one complete answer map through `client.core.answerUserInput`. Pending submission is disabled, and a failed command retains its exact map and request identity for retry. Secret-bearing, connection-checking, or disconnected requests remain visible without a submit action. An approval request remains actionable after its raising Turn ends; authoritative pending-request state closes its inline controls immediately when resolved, ended, or inspect-only. Later-Turn decisions and answers correlate to their original request by request identity.
+Chat and Task Thread streams render non-secret pending user-input requests as accessible inline text or option controls and submit one complete answer map through `client.operations['question.answer']`. Pending submission is disabled, and a failed command retains its exact map and request identity for retry. Secret-bearing, connection-checking, or disconnected requests remain visible without a submit action. An approval request remains actionable after its raising Turn ends; authoritative pending-request state closes its inline controls immediately when resolved, ended, or inspect-only. Later-Turn decisions and answers correlate to their original request by request identity.
 
 Conversation approval requests retain their resolved outcome beside the original request. Unavailable controls explain their state; pending decisions disable repeat submission, and failed decisions retry the same request identity.
 
@@ -364,3 +364,5 @@ Workspace review diff presentation uses the shared patch byte decoder for both U
 Workspace discovery and account admission use `client.operations['workspace.list']({})`; discovery selects each summary's nested Workspace record. Workspace resources, Thread creation/read/items/dashboard and Turn details use the corresponding derived operation methods with one selector object. Account admission and switcher discovery remain separate TanStack views, so tests that control their timing provide explicit successive responses from the same operation. The event stream continues to use the existing Core Client subscription.
 
 Artifact inventory, inspection, import, introduction, Action Center Review decisions and Administration inspection use definition-derived `client.operations` with explicit selectors. Existing cache keys, request identity, byte digests and Review refetch ownership remain with their hooks.
+
+Conversation targets/navigation/submission, Task entry, attention reads, approval decisions, question answers and withdrawal use definition-derived `client.operations` with one selector object. Existing retry identities, caches and exact-effect disclosure remain with the Chat and Workspace hooks.

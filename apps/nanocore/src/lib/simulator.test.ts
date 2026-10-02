@@ -11,7 +11,6 @@ import {
 } from '@openkit/app-api-schemas';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { createApp } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -41,6 +40,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
 
@@ -381,14 +381,20 @@ describe('SimulatedTurnExecutor', () => {
 
     try {
       await linkRepository(app);
-      const firstResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000212',
-          input: 'Run the first sequential simulator Turn',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const firstResponse = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000212',
+              input: 'Run the first sequential simulator Turn',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
       const first = StartTaskModeResponseSchema.parse(firstBody);
@@ -405,14 +411,20 @@ describe('SimulatedTurnExecutor', () => {
         status: 'idle',
       });
 
-      const secondResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000214',
-          input: 'Run the second sequential simulator Turn',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const secondResponse = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000214',
+              input: 'Run the second sequential simulator Turn',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const secondBody = await secondResponse.clone().text();
       expect.soft(secondResponse.status, secondBody).toBe(202);
       const secondTurn = store
@@ -482,15 +494,18 @@ describe('SimulatedTurnExecutor', () => {
     try {
       await linkRepository(firstApp);
       const firstResponse = await firstApp.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/task',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000221',
-            input: 'Run the first incompatible-replacement simulator Turn',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000221',
+              input: 'Run the first incompatible-replacement simulator Turn',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const firstBody = await firstResponse.json();
       expect(firstResponse.status, JSON.stringify(firstBody)).toBe(202);
@@ -523,15 +538,18 @@ describe('SimulatedTurnExecutor', () => {
         });
 
         const secondResponse = await secondApp.request(
-          '/api/app/workspaces/ws_demo/threads/th_demo/task',
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              requestId: '0190f4c8-0000-7000-8000-000000000223',
-              input: 'Run the later incompatible-replacement simulator Turn',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
+          ...operationRequest(
+            'task.start',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                requestId: '0190f4c8-0000-7000-8000-000000000223',
+                input: 'Run the later incompatible-replacement simulator Turn',
+              }),
+              headers: { 'content-type': 'application/json' },
+            }
+          )
         );
         const secondBody = await secondResponse.clone().text();
         expect.soft(secondResponse.status, secondBody).toBe(202);
@@ -693,14 +711,20 @@ describe('SimulatedTurnExecutor', () => {
       expect(bindResponse.status).toBe(200);
 
       const requestId = '0190f4c8-0000-7000-8000-000000000241';
-      const turnResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/task', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId,
-          input: 'Implement the focused Material-backed Task Mode fix.',
-        }),
-      });
+      const turnResponse = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId,
+              input: 'Implement the focused Material-backed Task Mode fix.',
+            }),
+          }
+        )
+      );
       const turnBody = await turnResponse.json();
       expect(turnResponse.status, JSON.stringify(turnBody)).toBe(202);
       const task = StartTaskModeResponseSchema.parse(turnBody);

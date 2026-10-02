@@ -108,7 +108,15 @@ describe('vault admin app API', () => {
     const request = (path: string, body: unknown = {}) =>
       app.request(`${root}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(path.startsWith('/api/app/operations/') &&
+          body &&
+          typeof body === 'object' &&
+          'requestId' in body
+            ? { 'x-openkit-request-id': String(body.requestId) }
+            : {}),
+        },
         body: JSON.stringify(body),
       });
     try {
@@ -191,7 +199,15 @@ describe('vault admin app API', () => {
     const request = (path: string, body: unknown = {}) =>
       app.request(`${root}${path}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(path.startsWith('/api/app/operations/') &&
+          body &&
+          typeof body === 'object' &&
+          'requestId' in body
+            ? { 'x-openkit-request-id': String(body.requestId) }
+            : {}),
+        },
         body: JSON.stringify(body),
       });
     try {
@@ -337,7 +353,15 @@ describe('vault admin app API', () => {
     const request = (path: string, body: unknown, method = 'POST') =>
       app.request(path, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(path.startsWith('/api/app/operations/') &&
+          body &&
+          typeof body === 'object' &&
+          'requestId' in body
+            ? { 'x-openkit-request-id': String(body.requestId) }
+            : {}),
+        },
         body: JSON.stringify(body),
       });
     const root = `/api/app/workspaces/${workspace.id}`;
@@ -384,7 +408,8 @@ describe('vault admin app API', () => {
       expect(approval.status).toBe(200);
       const payload = await approval.json();
       if (mode === 'require_human_approval') {
-        const approved = await request(`/api/approvals/${payload.approval.id}/respond`, {
+        const approved = await request('/api/app/operations/approval.respond', {
+          approvalRequestId: payload.approval.id,
           requestId: randomUUID(),
           workspaceId: workspace.id,
           threadId: thread.id,

@@ -103,9 +103,6 @@ const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
   'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
   'GET /api/workspaces/:workspaceId/threads/:threadId/events',
   'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
-  'POST /api/approvals/:approvalRequestId/respond',
-  'POST /api/user-input-requests/:userInputRequestId/answer',
-  'POST /api/pending-requests/:pendingRequestId/withdraw',
   'POST /api/turns',
   'POST /v1/chat/completions',
   'POST /v1/responses',
@@ -180,10 +177,10 @@ describe('app api openapi projection', () => {
     expect(JSON.stringify(document.components.schemas['thread.dashboard.output'])).not.toContain(
       'agentSessionId'
     );
-    expect(JSON.stringify(document.components.schemas.SubmitConversationResponse)).not.toContain(
+    expect(JSON.stringify(document.components.schemas['conversation.submit.output'])).not.toContain(
       'agentSessionId'
     );
-    expect(JSON.stringify(document.components.schemas.StartTaskModeResponse)).not.toContain(
+    expect(JSON.stringify(document.components.schemas['task.start.output'])).not.toContain(
       'agentSessionId'
     );
     expect(
@@ -222,7 +219,7 @@ describe('app api openapi projection', () => {
   it('does not publish caller provider or model authority for Internal Core Role requests', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
-    for (const name of ['QuickChatRequest', 'SubmitConversationRequest'] as const) {
+    for (const name of ['QuickChatRequest', 'conversation.submit.input'] as const) {
       expect(schemas[name]).toMatchObject({ additionalProperties: false });
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
@@ -992,59 +989,33 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/conversation-turns']
-        ?.post
-    ).toMatchObject({
-      operationId: 'submitConversation',
-      tags: ['modes'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-      ],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/SubmitConversationRequest',
-            },
-          },
-        },
-      },
+    expect(document.paths['/api/app/operations/conversation.submit']?.post).toMatchObject({
+      operationId: 'conversation.submit',
+      tags: ['conversation'],
       responses: {
         '200': {
           content: {
             'application/json': {
-              schema: {
-                $ref: '#/components/schemas/SubmitConversationResponse',
-              },
+              schema: { $ref: '#/components/schemas/conversation.submit.output' },
+            },
+          },
+        },
+        '202': {
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/conversation.submit.output' },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/task']?.post
-    ).toMatchObject({
-      operationId: 'startTaskMode',
-      tags: ['modes'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/StartTaskModeRequest',
-            },
-          },
-        },
-      },
+    expect(document.paths['/api/app/operations/task.start']?.post).toMatchObject({
+      operationId: 'task.start',
+      tags: ['task'],
       responses: {
         '202': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/StartTaskModeResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/task.start.output' } },
           },
         },
       },
@@ -1125,17 +1096,13 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/action-center']?.get).toMatchObject({
-      operationId: 'listHumanAttention',
-      tags: ['dashboards'],
+    expect(document.paths['/api/app/operations/attention.list']?.post).toMatchObject({
+      operationId: 'attention.list',
+      tags: ['attention'],
       responses: {
         '200': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListHumanAttentionResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/attention.list.output' } },
           },
         },
       },
@@ -2469,14 +2436,12 @@ describe('app api openapi projection', () => {
         workspaceResolver: 'gateway-metadata-workspace',
       });
     }
-    expect(PUBLIC_OPERATION_ACCESS['POST /api/approvals/:approvalRequestId/respond']).toMatchObject(
-      {
-        mutating: true,
-        policyOperation: 'approval.respond',
-        resolver: 'opaque-child-workspace',
-        scope: 'workspace',
-      }
-    );
+    expect(PUBLIC_OPERATION_ACCESS['approval.respond']).toMatchObject({
+      mutating: true,
+      policyOperation: 'approval.respond',
+      resolver: 'opaque-child-workspace',
+      scope: 'workspace',
+    });
     expect(PUBLIC_OPERATION_ACCESS['GET /api/workspaces/:workspaceId']).toMatchObject({
       mutating: false,
       policyOperation: 'workspace.read',
@@ -2813,9 +2778,7 @@ describe('app api openapi projection', () => {
       'validateRuntimeConfig',
       'applyAdministrationConfiguration',
       'submitAdministrationConversation',
-      'getConversationTargets',
       'quickChat',
-      'submitConversation',
       'listWorkspaceMaterials',
       'createWorkspaceMaterial',
       'getWorkspaceMaterial',
@@ -2827,7 +2790,6 @@ describe('app api openapi projection', () => {
       'unbindThreadMaterial',
       'excludeThreadMaterial',
       'restoreThreadMaterial',
-      ...Object.keys(PRODUCT_OPERATION_DEFINITIONS),
       'listLightApps',
       'createLightApp',
       'updateLightAppSchema',
@@ -2869,7 +2831,6 @@ describe('app api openapi projection', () => {
       'executeGitPush',
       'getGitPushRecord',
       'setDefaultWorkspaceRepository',
-      'listHumanAttention',
       'listSchedulerAdmissions',
       'retrySchedulerAdmission',
       'cancelSchedulerAdmission',
@@ -2883,9 +2844,7 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultInjectionPlans',
       'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
-      'listConversationNavigation',
       'getWorkspaceDashboard',
-      'startTaskMode',
       'listInterruptedWorkers',
       'retryInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
@@ -2904,6 +2863,7 @@ describe('app api openapi projection', () => {
       'recoverWorkspaceAccess',
       'disableUser',
       'submitTurnFeedback',
+      ...Object.keys(PRODUCT_OPERATION_DEFINITIONS),
       'listWorkspaceSyncReviews',
       'getWorkspaceSyncReview',
       'submitWorkspaceSyncReviewDecision',

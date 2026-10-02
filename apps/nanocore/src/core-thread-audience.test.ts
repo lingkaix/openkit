@@ -420,8 +420,8 @@ describe('core Thread audience', () => {
               { workspaceId: fixture.workspace.id, threadId: thread.id },
             ],
             [
-              `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${thread.id}`,
-              null,
+              '/api/app/operations/conversation.targets',
+              { workspaceId: fixture.workspace.id, threadId: thread.id },
             ],
           ];
           for (const [path, input] of paths as Array<[string, unknown]>) {
@@ -461,8 +461,8 @@ describe('core Thread audience', () => {
             { workspaceId: fixture.workspace.id, threadId: denied.id },
           ],
           [
-            `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${denied.id}`,
-            null,
+            '/api/app/operations/conversation.targets',
+            { workspaceId: fixture.workspace.id, threadId: denied.id },
           ],
         ];
         for (const [path, input] of paths as Array<[string, unknown]>) {
@@ -594,6 +594,7 @@ describe('core Thread audience', () => {
           headers: member,
           init: {
             body: JSON.stringify({
+              approvalRequestId: fixture.gate.approvalId,
               decision: 'granted',
               requestId: '11111111-1111-4111-8111-111111111204',
               threadId: fixture.own.id,
@@ -602,7 +603,7 @@ describe('core Thread audience', () => {
             }),
             method: 'POST' as const,
           },
-          path: `/api/approvals/${fixture.gate.approvalId}/respond`,
+          path: '/api/app/operations/approval.respond',
           secrets: ['local-private needle', 'Approve private push'],
         },
       ];
@@ -610,7 +611,13 @@ describe('core Thread audience', () => {
         await expectNondisclosing404(
           await fixture.app.request(row.path, {
             ...row.init,
-            headers: { ...row.headers, 'content-type': 'application/json' },
+            headers: {
+              ...(row.path.endsWith('approval.respond')
+                ? { 'x-openkit-request-id': '11111111-1111-4111-8111-111111111204' }
+                : {}),
+              ...row.headers,
+              'content-type': 'application/json',
+            },
           }),
           row.secrets
         );
@@ -753,7 +760,13 @@ describe('core Thread audience', () => {
         await expectNondisclosing404(
           await fixture.app.request(row.path, {
             ...row.init,
-            headers: { ...row.headers, 'content-type': 'application/json' },
+            headers: {
+              ...(row.path.endsWith('approval.respond')
+                ? { 'x-openkit-request-id': '11111111-1111-4111-8111-111111111204' }
+                : {}),
+              ...row.headers,
+              'content-type': 'application/json',
+            },
           }),
           row.secrets
         );

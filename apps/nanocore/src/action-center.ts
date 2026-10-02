@@ -5,15 +5,12 @@ import {
   ListHumanAttentionResponseSchema,
   operationHttpPath,
 } from '@openkit/app-api-schemas';
-import type { Context, Hono } from 'hono';
-import { asApiError, publishedErrorMessage } from './api-errors.js';
+import { publishedErrorMessage } from './api-errors.js';
 import { listArtifactReviews } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
-import type { AuthVariables } from './auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadIdVisible, isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
-import { registerAppApiRoute } from './openapi.js';
 import { pendingRequestPresentation } from './runtime/pending-request-flow.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
@@ -42,50 +39,39 @@ interface BuildHumanAttentionRowsInput {
   workspaceDb?: WorkspaceDb | undefined;
   /** Workspace id to project. */
   workspaceId: string;
+  /** Current administrator eligibility supplied by the existing authorizer. */
+  administratorEligible?: boolean;
 }
 
-/**
- * Registers the workspace Action Center route.
- *
- * @param dependencies Hono app, request-scoped storage, and optional durable databases.
- */
-export function registerActionCenterRoutes({
-  app,
-  coreDb,
-  repositoryWorkspaceDb,
-  requestStore,
-}: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-}): void {
-  registerAppApiRoute(app, 'listHumanAttention', (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
+/** Owner-local attention read failure; invocation preserves its published message, code and status. */
+export class HumanAttentionReadError extends Error {
+  public readonly code = 'not_found';
+  public readonly status = 404;
 
-      store.getWorkspace(workspaceId);
-      const workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-      try {
-        return c.json(
-          ListHumanAttentionResponseSchema.parse({
-            items: buildHumanAttentionRows({
-              actor: c.get('actor'),
-              store,
-              coreDb,
-              workspaceDb,
-              workspaceId,
-            }),
-          })
-        );
-      } finally {
-        workspaceDb?.sqlite.close();
-      }
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
+  public constructor(message: string) {
+    super(message);
+    this.name = 'HumanAttentionReadError';
+  }
+}
+
+/** Reads unified attention through the existing projection owner after native Workspace admission. */
+export function readHumanAttention(
+  input: BuildHumanAttentionRowsInput & {
+    repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+  }
+) {
+  let workspaceDb: WorkspaceDb | undefined;
+  try {
+    input.store.getWorkspace(input.workspaceId);
+    workspaceDb = input.coreDb ? input.repositoryWorkspaceDb(input.workspaceId) : undefined;
+    return ListHumanAttentionResponseSchema.parse({
+      items: buildHumanAttentionRows({ ...input, workspaceDb }),
+    });
+  } catch (error) {
+    throw new HumanAttentionReadError(publishedErrorMessage(error));
+  } finally {
+    workspaceDb?.sqlite.close();
+  }
 }
 
 /**
@@ -133,7 +119,9 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
 function visibleThreadsForActor(input: BuildHumanAttentionRowsInput) {
   return input.store
     .listThreads(input.workspaceId)
-    .filter((thread) => isThreadVisible(input.store, thread, input.actor?.userId));
+    .filter((thread) =>
+      isThreadVisible(input.store, thread, input.actor?.userId, input.administratorEligible)
+    );
 }
 
 /**
@@ -158,7 +146,13 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
       Boolean(review.sourceThreadId && review.sourceTurnId)
     )
     .filter((review) =>
-      isThreadIdVisible(input.store, review.workspaceId, review.sourceThreadId, input.actor?.userId)
+      isThreadIdVisible(
+        input.store,
+        review.workspaceId,
+        review.sourceThreadId,
+        input.actor?.userId,
+        input.administratorEligible
+      )
     )
     .flatMap((review) => {
       let artifact: ReturnType<FsStore['getArtifact']> | undefined;
@@ -318,7 +312,7 @@ function visibleWorkspaceReviewOrigin(
   if (artifact.workspaceId !== input.workspaceId || artifact.origin.kind !== 'turn-output') {
     return null;
   }
-  if (!isArtifactVisible(input.store, artifact, input.actor?.userId)) {
+  if (!isArtifactVisible(input.store, artifact, input.actor?.userId, input.administratorEligible)) {
     return null;
   }
   return { threadId: artifact.origin.threadId, turnId: artifact.origin.turnId };
@@ -345,7 +339,12 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
     const turns = input.store.listThreadTurns(input.workspaceId, thread.id);
     for (const record of records) {
       if (record.state !== 'pending') continue;
-      if (input.actor && record.responsibleUserId !== input.actor.userId) continue;
+      if (
+        input.actor &&
+        record.responsibleUserId !== input.actor.userId &&
+        !input.administratorEligible
+      )
+        continue;
       const contradiction = validateCanonicalLoad(
         record,
         input.store
@@ -386,19 +385,19 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
                   kind: 'grant_approval',
                   label: 'Approve',
                   method: 'POST',
-                  href: `/api/approvals/${record.requestId}/respond`,
+                  href: operationHttpPath('approval.respond'),
                 },
                 {
                   kind: 'deny_approval',
                   label: 'Deny',
                   method: 'POST',
-                  href: `/api/approvals/${record.requestId}/respond`,
+                  href: operationHttpPath('approval.respond'),
                 },
                 {
                   kind: 'withdraw_request',
                   label: 'Withdraw',
                   method: 'POST',
-                  href: `/api/pending-requests/${record.requestId}/withdraw`,
+                  href: operationHttpPath('pending-request.withdraw'),
                 },
                 openThreadAction(thread.id),
               ],
@@ -435,7 +434,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
                 kind: 'answer_question',
                 label: 'Answer',
                 method: 'POST',
-                href: `/api/user-input-requests/${record.requestId}/answer`,
+                href: operationHttpPath('question.answer'),
                 ...(secret
                   ? {
                       disabled: true,
@@ -447,7 +446,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput): HumanAttention
                 kind: 'withdraw_request',
                 label: 'Withdraw',
                 method: 'POST',
-                href: `/api/pending-requests/${record.requestId}/withdraw`,
+                href: operationHttpPath('pending-request.withdraw'),
               },
               openThreadAction(thread.id),
             ],

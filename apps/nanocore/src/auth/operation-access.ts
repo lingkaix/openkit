@@ -342,25 +342,6 @@ registerOperations(catalog, ['updateAutomation', 'deleteAutomation', 'submitTurn
   resolver: 'opaque-child-workspace',
   scope: 'workspace',
 });
-registerOperations(catalog, ['POST /api/approvals/:approvalRequestId/respond'], {
-  mutating: true,
-  policyOperation: 'approval.respond',
-  resolver: 'opaque-child-workspace',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  [
-    'POST /api/user-input-requests/:userInputRequestId/answer',
-    'POST /api/pending-requests/:pendingRequestId/withdraw',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'approval.respond',
-    resolver: 'body-workspace',
-    scope: 'workspace',
-  }
-);
 
 registerOperations(catalog, ['refreshAgentHealth'], {
   mutating: true,
@@ -373,7 +354,6 @@ registerOperations(
   [
     'listSchedulerAdmissions',
     'getWorkspaceDashboard',
-    'listConversationNavigation',
     'listWorkspaceWorkers',
     'listWorkspaceMaterials',
     'listWorkspaceSyncReviews',
@@ -425,7 +405,6 @@ registerOperations(catalog, ['createLightApp', 'updateLightAppSchema'], {
 registerOperations(
   catalog,
   [
-    'listHumanAttention',
     'getCapabilityUsage',
     'listWorkspaceAuditEvents',
     'listWorkspaceEvidenceBundles',
@@ -550,7 +529,6 @@ registerOperations(
     'retryInterruptedWorkerCheckpoint',
     'retrySchedulerAdmission',
     'cancelSchedulerAdmission',
-    'startTaskMode',
     'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
   ],
   {
@@ -560,18 +538,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['submitConversation'], {
-  mutating: true,
-  policyOperation: 'turn.run',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['getConversationTargets'], {
-  mutating: false,
-  policyOperation: 'thread.read',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(
   catalog,
   ['listWorkerEnvironments', 'selectWorkerEnvironment', 'getWorkerEnvironmentStatus'],

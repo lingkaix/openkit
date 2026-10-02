@@ -13,6 +13,7 @@ import * as workObservations from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('thread dashboard app API', () => {
@@ -708,9 +709,15 @@ describe('thread dashboard app API', () => {
         },
         composer: { disabled: true },
       });
-      const navigation = await app.request('/api/app/workspaces/ws_demo/conversations', {
-        headers: { authorization: `Bearer ${readonlyToken.secret}` },
-      });
+      const navigation = await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          { workspaceId: 'ws_demo' },
+          {
+            headers: { authorization: `Bearer ${readonlyToken.secret}` },
+          }
+        )
+      );
       expect(navigation.status).toBe(200);
       const rows = (await navigation.json()).items;
       expect(

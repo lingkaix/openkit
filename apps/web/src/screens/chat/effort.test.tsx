@@ -77,17 +77,21 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
       ...core,
     },
     app: {
-      getConversationTargets: vi.fn().mockImplementation((workspaceId: string, threadId?: string) =>
-        Promise.resolve({
-          ...CONVERSATION_TARGET,
-          workspaceId,
-          threadId: threadId ?? null,
-        })
-      ),
       ...app,
     },
 
     operations: {
+      'conversation.targets': vi
+        .fn()
+        .mockImplementation(
+          ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) =>
+            Promise.resolve({
+              ...CONVERSATION_TARGET,
+              workspaceId,
+              threadId: threadId ?? null,
+            })
+        ),
+
       'thread.read': vi.fn().mockResolvedValue(THREAD),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       'thread.create': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
@@ -127,8 +131,12 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         ),
     },
   } as unknown as CoreClient;
-  if (app.listConversationNavigation == null) {
-    client.app.listConversationNavigation = vi.fn(async (workspaceId: string) => {
+  if (app['conversation.navigation'] == null) {
+    (
+      client.operations as {
+        'conversation.navigation': CoreClient['operations']['conversation.navigation'];
+      }
+    )['conversation.navigation'] = vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
       const listed = await client.core.listThreads(workspaceId);
       return {
         items: listed.items
@@ -230,7 +238,7 @@ describe.each([
     const user = userEvent.setup();
     renderApp(
       path,
-      makeClient({}, { getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()) })
+      makeClient({}, { 'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()) })
     );
     const trigger = await screen.findByRole('button', { name: /Reasoning effort/ });
     expect(trigger.closest('form')?.lastElementChild).toContainElement(trigger);
@@ -257,7 +265,7 @@ describe.each([
     const user = userEvent.setup();
     renderApp(
       path,
-      makeClient({}, { getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()) })
+      makeClient({}, { 'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()) })
     );
     await chooseEffortModel(user, model);
     expect(screen.queryByRole('button', { name: /Reasoning effort/ })).not.toBeInTheDocument();
@@ -271,7 +279,7 @@ describe.each([
       makeClient(
         {},
         {
-          getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()),
+          'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()),
           // The newer Turn has no override; it does not erase the last admitted choice.
           'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [
@@ -279,7 +287,7 @@ describe.each([
               { ...COMPLETED_TURN, id: 't2' },
             ],
           }),
-          submitConversation,
+          'conversation.submit': submitConversation,
         }
       )
     );
@@ -292,7 +300,7 @@ describe.each([
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Use the visible effort');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(submitConversation.mock.calls[0]?.[2]).toMatchObject({
+    expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
       reasoningEffort: 'high',
       logicalModelId: 'reasoner',
     });
@@ -313,11 +321,11 @@ describe.each([
       makeClient(
         {},
         {
-          getConversationTargets: vi.fn().mockResolvedValue(catalog),
+          'conversation.targets': vi.fn().mockResolvedValue(catalog),
           'thread.dashboard': vi
             .fn()
             .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort }] }),
-          submitConversation,
+          'conversation.submit': submitConversation,
         }
       )
     );
@@ -327,7 +335,7 @@ describe.each([
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'No override');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(submitConversation.mock.calls[0]?.[2]).not.toHaveProperty('reasoningEffort');
+    expect(submitConversation.mock.calls[0]?.[0]).not.toHaveProperty('reasoningEffort');
   });
 
   it('drops an incompatible choice on model change and derives preselection from this Thread', async () => {
@@ -337,7 +345,7 @@ describe.each([
       makeClient(
         {},
         {
-          getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()),
+          'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()),
           'thread.dashboard': vi
             .fn()
             .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort: 'high' }] }),
@@ -362,7 +370,10 @@ describe.each([
       path,
       makeClient(
         {},
-        { getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()), submitConversation }
+        {
+          'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()),
+          'conversation.submit': submitConversation,
+        }
       )
     );
     const trigger = await screen.findByRole('button', { name: /Reasoning effort/ });
@@ -381,7 +392,7 @@ describe.each([
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Keyboard effort');
     await user.keyboard('{Enter}');
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(submitConversation.mock.calls[0]?.[2]).toHaveProperty('reasoningEffort', 'low');
+    expect(submitConversation.mock.calls[0]?.[0]).toHaveProperty('reasoningEffort', 'low');
   });
 
   it.each([
@@ -409,7 +420,10 @@ describe.each([
             .fn()
             .mockResolvedValue({ items: [{ id: 'brief', version: 2, title: 'Brief' }] }),
         },
-        { getConversationTargets, submitConversation }
+        {
+          'conversation.targets': getConversationTargets,
+          'conversation.submit': submitConversation,
+        }
       )
     );
     await chooseEffort(user, 'High');
@@ -420,7 +434,9 @@ describe.each([
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     const first = submitConversation.mock.calls[0];
-    expect(first?.[2]).toEqual({
+    expect(first?.[0]).toEqual({
+      workspaceId: 'ws1',
+      threadId: path === '/chat' ? 'th-new' : 'th1',
       input: 'Exact draft  ',
       targetRef: 'internal-role:assistant',
       logicalModelId: 'reasoner',
@@ -458,14 +474,17 @@ describe.each([
       path,
       makeClient(
         {},
-        { getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()), submitConversation }
+        {
+          'conversation.targets': vi.fn().mockResolvedValue(effortCatalog()),
+          'conversation.submit': submitConversation,
+        }
       )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Keep omission');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     const first = submitConversation.mock.calls[0];
-    expect(first?.[2]).not.toHaveProperty('reasoningEffort');
+    expect(first?.[0]).not.toHaveProperty('reasoningEffort');
     await act(async () => {
       cache.setQueryData(chatKeys.dashboard('ws1', surface === 'starter' ? 'th-new' : 'th1'), {
         turns: [{ ...COMPLETED_TURN, reasoningEffort: 'high' }],

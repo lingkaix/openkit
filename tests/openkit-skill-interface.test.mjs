@@ -33,9 +33,13 @@ test('pending request commands forward exact path identities and bodies', async 
   const withdraw = operationCatalog.find((entry) => entry.id === 'pending-request.withdraw');
   assert.ok(answer);
   assert.ok(withdraw);
-  assert.equal(answer.protocolSchema, 'AnswerUserInputRequestSchema');
-  assert.equal(withdraw.protocolSchema, 'WithdrawPendingRequestSchema');
-  const scope = { workspaceId: 'ws_demo', threadId: 'th_demo', requestId: 'command' };
+  assert.equal(answer.clientMethod, 'operations.question.answer');
+  assert.equal(withdraw.clientMethod, 'operations.pending-request.withdraw');
+  const scope = {
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    requestId: '00000000-0000-4000-8000-000000000003',
+  };
   const answers = { choice: ['left'] };
   const answerInput = answer.inputSchema.parse({
     ...scope,
@@ -46,22 +50,24 @@ test('pending request commands forward exact path identities and bodies', async 
   const calls = [];
   const response = { state: 'resolved' };
   const client = {
-    core: {
-      answerUserInput: async (...args) => {
+    operations: {
+      'question.answer': async (...args) => {
         calls.push(['answer', ...args]);
         return response;
       },
-      withdrawPendingRequest: async (...args) => {
+      'pending-request.withdraw': async (...args) => {
         calls.push(['withdraw', ...args]);
         return response;
       },
     },
+
+    core: {},
   };
   assert.equal(await answer.handler({ client }, answerInput), response);
   assert.equal(await withdraw.handler({ client }, withdrawInput), response);
   assert.deepEqual(calls, [
-    ['answer', 'question_demo', { ...scope, answers }],
-    ['withdraw', 'pending_demo', scope],
+    ['answer', answerInput],
+    ['withdraw', withdrawInput],
   ]);
   assert.equal(answer.inputSchema.safeParse({ ...answerInput, arbitrary: true }).success, false);
   assert.equal(
@@ -194,8 +200,8 @@ test('conversation.submit forwards the exact Worker storage choice on the shared
   const { operationCatalog } = await operations();
   const operation = operationCatalog.find((entry) => entry.id === 'conversation.submit');
   assert.ok(operation);
-  assert.equal(operation.appOperationId, 'submitConversation');
-  assert.equal(operation.clientMethod, 'app.submitConversation');
+  assert.equal(operation.appOperationId, 'conversation.submit');
+  assert.equal(operation.clientMethod, 'operations.conversation.submit');
   const storageRef = `wst_${'a'.repeat(32)}`;
   const workerStorageChoice = {
     expectedRevision: 4,
@@ -224,27 +230,19 @@ test('conversation.submit forwards the exact Worker storage choice on the shared
   await operation.handler(
     {
       client: {
-        app: {
-          submitConversation: async (...args) => {
+        operations: {
+          'conversation.submit': async (...args) => {
             observed = args;
             return { outcome: 'accepted' };
           },
         },
+
+        app: {},
       },
     },
     operation.inputSchema.parse(input)
   );
-  assert.deepEqual(observed, [
-    'ws_demo',
-    'th_demo',
-    {
-      artifactRefs: [],
-      input: 'Implement the focused Task Mode fix.',
-      requestId: '11111111-1111-4111-8111-111111111111',
-      targetRef: 'new-task-worker',
-      workerStorageChoice,
-    },
-  ]);
+  assert.deepEqual(observed, [input]);
   const omitted = operation.inputSchema.parse({
     artifactRefs: [],
     input: 'Implement the focused Task Mode fix.',
@@ -664,9 +662,26 @@ test('one catalog covers the checked App API and public Core projection', async 
       assert.ok(
         Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)
           ? entry.clientMethod === `operations.${entry.id}` &&
-              entry.inputSchema === appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema
+              String(entry.handler).includes('client.operations[id]')
           : String(entry.handler).includes(`client.${entry.clientMethod}`),
         `${entry.id} handler must invoke ${entry.clientMethod}`
+      );
+    }
+    if (Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)) {
+      assert.deepEqual(
+        entry.inputSchema.shape,
+        appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema.shape,
+        `${entry.id} strict CLI view must preserve shared fields`
+      );
+      assert.equal(
+        entry.inputSchema.def.checks,
+        appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema.def.checks,
+        `${entry.id} strict CLI view must preserve shared refinements`
+      );
+      assert.equal(
+        entry.inputSchema.def.catchall?.def.type,
+        'never',
+        `${entry.id} CLI view must reject unknown fields`
       );
     }
     if (entry.source === 'app-api') {
@@ -2825,10 +2840,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
     [
       'conversation.navigation',
-      'listConversationNavigation',
-      'listConversationNavigation',
+      'conversation.navigation',
+      'conversation.navigation',
       { workspaceId: 'ws_team' },
-      ['ws_team'],
+      [{ workspaceId: 'ws_team' }],
     ],
     [
       'worker.list',
@@ -2850,7 +2865,7 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     const result = await entry.handler(
       {
         client: {
-          [id === 'thread.dashboard' ? 'operations' : 'app']: {
+          [id === 'thread.dashboard' || id === 'conversation.navigation' ? 'operations' : 'app']: {
             [method]: async (...values) => {
               observed = values;
               return { items: [] };

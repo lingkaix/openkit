@@ -1,4 +1,4 @@
-import { KnowledgeDerivedIndexesResponseSchema } from '@openkit/app-api-schemas';
+import { KnowledgeDerivedIndexesResponseSchema, operationHttpPath } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -167,9 +167,14 @@ const APPROVAL_ROW = {
       kind: 'grant_approval',
       label: 'Approve',
       method: 'POST',
-      href: '/api/approvals/ap1/respond',
+      href: operationHttpPath('approval.respond'),
     },
-    { kind: 'deny_approval', label: 'Skip', method: 'POST', href: '/api/approvals/ap1/respond' },
+    {
+      kind: 'deny_approval',
+      label: 'Skip',
+      method: 'POST',
+      href: operationHttpPath('approval.respond'),
+    },
     { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws1/threads/th1' },
   ],
 };
@@ -775,7 +780,6 @@ function makeClient(
     core?: MethodOverrides;
     app?: MethodOverrides;
     agents?: MethodOverrides;
-    actionCenter?: MethodOverrides;
     repositories?: MethodOverrides;
     catalog?: MethodOverrides;
   } = {}
@@ -794,8 +798,6 @@ function makeClient(
         createdAt: TIMESTAMP_NEW,
         updatedAt: TIMESTAMP_NEW,
       }),
-      respondApproval: vi.fn().mockResolvedValue({}),
-      withdrawPendingRequest: vi.fn().mockResolvedValue({}),
       ...overrides.core,
     },
     app: {
@@ -824,7 +826,6 @@ function makeClient(
         recentCompletions: [],
         attentionNeeded: [],
       }),
-      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listWorkspaceWorkers: vi.fn().mockImplementation(async (workspaceId: string) => ({
         workspaceId,
         items: [],
@@ -836,10 +837,6 @@ function makeClient(
       get: vi.fn().mockResolvedValue(AGENT_READY),
       refreshHealth: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.agents,
-    },
-    actionCenter: {
-      listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
-      ...overrides.actionCenter,
     },
     repositories: {
       list: vi.fn().mockResolvedValue({
@@ -877,6 +874,11 @@ function makeClient(
     },
 
     operations: {
+      'approval.respond': vi.fn().mockResolvedValue({}),
+      'pending-request.withdraw': vi.fn().mockResolvedValue({}),
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
+
       'artifact.review.decide': vi.fn().mockResolvedValue({}),
       'knowledge.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
@@ -1400,9 +1402,7 @@ beforeEach(() => {
 describe('Overview / Action Center (board 07)', () => {
   it('shows a loading skeleton while Needs-you rows load', async () => {
     const client = makeClient({
-      actionCenter: {
-        listHumanAttention: vi.fn().mockReturnValue(new Promise(() => {})),
-      },
+      operations: { 'attention.list': vi.fn().mockReturnValue(new Promise(() => {})) },
     });
     renderApp('/', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
@@ -1419,8 +1419,10 @@ describe('Overview / Action Center (board 07)', () => {
   it('waits for complete exact detail before enabling an attention grant', async () => {
     const detail = createDeferred<unknown>();
     const client = makeClient({
-      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
-      operations: { 'thread.dashboard': vi.fn().mockReturnValue(detail.promise) },
+      operations: {
+        'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+        'thread.dashboard': vi.fn().mockReturnValue(detail.promise),
+      },
     });
     renderApp('/', client);
     expect(
@@ -1449,8 +1451,8 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('keeps authorized denial available when attention detail is unavailable', async () => {
     const client = makeClient({
-      actionCenter: {
-        listHumanAttention: vi.fn().mockResolvedValue({
+      operations: {
+        'attention.list': vi.fn().mockResolvedValue({
           items: [
             {
               ...APPROVAL_ROW,
@@ -1460,14 +1462,13 @@ describe('Overview / Action Center (board 07)', () => {
                   kind: 'withdraw_request',
                   label: 'Withdraw',
                   method: 'POST',
-                  href: '/api/pending-requests/ap1/withdraw',
+                  href: operationHttpPath('pending-request.withdraw'),
                 },
               ],
             },
           ],
         }),
-      },
-      operations: {
+
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
             {
@@ -1492,9 +1493,11 @@ describe('Overview / Action Center (board 07)', () => {
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Deny' })).toBeEnabled();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Withdraw' }));
-    expect(client.core.withdrawPendingRequest).toHaveBeenCalledWith(
-      'ap1',
-      expect.objectContaining({ workspaceId: 'ws1', threadId: 'th1' })
+    expect(client.operations['pending-request.withdraw']).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingRequestId: 'ap1',
+        ...{ workspaceId: 'ws1', threadId: 'th1' },
+      })
     );
   });
 
@@ -1504,8 +1507,9 @@ describe('Overview / Action Center (board 07)', () => {
     'read-only',
   ])('keeps attention approval controls closed for %s authority/state', async (state) => {
     const client = makeClient({
-      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
       operations: {
+        'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
             {
@@ -1534,8 +1538,9 @@ describe('Overview / Action Center (board 07)', () => {
       items: [OPEN_ONLY_ROW, APPROVAL_ROW],
     });
     const client = makeClient({
-      core: { respondApproval },
-      actionCenter: { listHumanAttention },
+      operations: { 'approval.respond': respondApproval, 'attention.list': listHumanAttention },
+
+      core: {},
     });
     renderApp('/', client);
 
@@ -1551,13 +1556,15 @@ describe('Overview / Action Center (board 07)', () => {
     await user.click(await screen.findByRole('button', { name: 'Allow' }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenCalledWith(
-        'ap1',
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          turnId: 't1',
-          decision: 'granted',
-          requestId: expect.any(String),
+          approvalRequestId: 'ap1',
+          ...{
+            workspaceId: 'ws1',
+            threadId: 'th1',
+            turnId: 't1',
+            decision: 'granted',
+            requestId: expect.any(String),
+          },
         })
       )
     );
@@ -1565,9 +1572,7 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('shows an Open link when a row cannot be decided inline', async () => {
     const client = makeClient({
-      actionCenter: {
-        listHumanAttention: vi.fn().mockResolvedValue({ items: [OPEN_ONLY_ROW] }),
-      },
+      operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [OPEN_ONLY_ROW] }) },
     });
     renderApp('/', client);
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
@@ -1595,7 +1600,7 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
+        operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
       })
     );
     expect(await screen.findByText(row.title)).toBeInTheDocument();
@@ -1612,7 +1617,9 @@ describe('Overview / Action Center (board 07)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue({ items: [] });
-    const client = makeClient({ actionCenter: { listHumanAttention } });
+    const client = makeClient({
+      operations: { 'attention.list': listHumanAttention },
+    });
     renderApp('/', client);
     expect(await screen.findByText(/Couldn't load what needs you/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -1621,10 +1628,9 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('disables inline actions and marks counts stale when disconnected', async () => {
     const client = makeClient({
+      operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
+
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
-      actionCenter: {
-        listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
-      },
     });
     renderApp('/', client);
     expect(
@@ -1677,9 +1683,9 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        app: {
-          listConversationNavigation: vi.fn().mockResolvedValue({ items }),
-        },
+        operations: { 'conversation.navigation': vi.fn().mockResolvedValue({ items }) },
+
+        app: {},
       })
     );
 
@@ -1718,13 +1724,13 @@ describe('Overview / Action Center (board 07)', () => {
       '/',
       makeClient({
         core: {},
-        app: {
-          listConversationNavigation: vi.fn().mockResolvedValue({
-            items: [{ ...item, thread: { ...item.thread, workspaceId } }],
-          }),
-        },
+        app: {},
 
         operations: {
+          'conversation.navigation': vi.fn().mockResolvedValue({
+            items: [{ ...item, thread: { ...item.thread, workspaceId } }],
+          }),
+
           'workspace.list': vi.fn().mockResolvedValue({
             items: [{ ...WORKSPACE_A, id: workspaceId }].map((workspace) => ({
               workspace,
@@ -1751,11 +1757,13 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        app: {
-          listConversationNavigation: vi
+        operations: {
+          'conversation.navigation': vi
             .fn()
             .mockResolvedValue({ items: [{ ...item, thread: { ...item.thread, name: null } }] }),
         },
+
+        app: {},
       })
     );
     const main = await screen.findByRole('main', { name: 'Workspace' });
@@ -1769,12 +1777,14 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({
+        operations: {
+          'approval.respond': respondApproval,
+          'attention.list': vi.fn().mockResolvedValue({
             items: [APPROVAL_ROW, DISABLED_APPROVAL_ROW],
           }),
         },
+
+        core: {},
       })
     );
     expect(
@@ -1793,13 +1803,15 @@ describe('Overview / Action Center (board 07)', () => {
     await user.click(within(activeRow).getByRole('button', { name: 'Deny' }));
     await waitFor(() =>
       expect(respondApproval).toHaveBeenCalledWith(
-        'ap1',
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          turnId: 't1',
-          decision: 'denied',
-          requestId: expect.any(String),
+          approvalRequestId: 'ap1',
+          ...{
+            workspaceId: 'ws1',
+            threadId: 'th1',
+            turnId: 't1',
+            decision: 'denied',
+            requestId: expect.any(String),
+          },
         })
       )
     );
@@ -1814,10 +1826,12 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+        operations: {
+          'approval.respond': respondApproval,
+          'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
         },
+
+        core: {},
       })
     );
     expect(
@@ -1846,8 +1860,9 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: { listHumanAttention },
+        operations: { 'approval.respond': respondApproval, 'attention.list': listHumanAttention },
+
+        core: {},
       })
     );
     expect(
@@ -1868,10 +1883,12 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
+        operations: {
+          'approval.respond': respondApproval,
+          'attention.list': vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }),
         },
+
+        core: {},
       })
     );
     expect(
@@ -1892,18 +1909,23 @@ describe('Overview / Action Center (board 07)', () => {
           finish = resolve;
         })
     );
-    const listHumanAttention = vi.fn().mockImplementation(async (workspaceId: string) => ({
-      items: workspaceId === WORKSPACE_A.id ? [APPROVAL_ROW] : [],
-    }));
+    const listHumanAttention = vi
+      .fn()
+      .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+        items: workspaceId === WORKSPACE_A.id ? [APPROVAL_ROW] : [],
+      }));
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const queryClient = renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: { listHumanAttention },
-        app: { listConversationNavigation },
+        core: {},
+        app: {},
 
         operations: {
+          'approval.respond': respondApproval,
+          'attention.list': listHumanAttention,
+          'conversation.navigation': listConversationNavigation,
+
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,
@@ -1949,15 +1971,19 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: { respondApproval },
-        actionCenter: {
-          listHumanAttention: vi.fn().mockImplementation(async (id: string) => ({
-            items: id === WORKSPACE_A.id ? [APPROVAL_ROW, other] : [],
-          })),
-        },
-        app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+        core: {},
+        app: {},
 
         operations: {
+          'approval.respond': respondApproval,
+
+          'attention.list': vi
+            .fn()
+            .mockImplementation(async ({ workspaceId: id }: { workspaceId: string }) => ({
+              items: id === WORKSPACE_A.id ? [APPROVAL_ROW, other] : [],
+            })),
+          'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,
@@ -2008,9 +2034,11 @@ describe('Overview / Action Center (board 07)', () => {
       '/',
       makeClient({
         app: {},
-        actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
 
-        operations: { 'artifact.review.decide': submitArtifactReviewDecision },
+        operations: {
+          'attention.list': vi.fn().mockResolvedValue({ items: [row] }),
+          'artifact.review.decide': submitArtifactReviewDecision,
+        },
       })
     );
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
@@ -2031,8 +2059,8 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [ARTIFACT_INSPECTION_ROW] }),
+        operations: {
+          'attention.list': vi.fn().mockResolvedValue({ items: [ARTIFACT_INSPECTION_ROW] }),
         },
       })
     );
@@ -3825,8 +3853,9 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
+        operations: { 'attention.list': vi.fn().mockReturnValue(attentionRead.promise) },
+
         core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
-        actionCenter: { listHumanAttention: vi.fn().mockReturnValue(attentionRead.promise) },
       })
     );
 
@@ -3865,7 +3894,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        actionCenter: { listHumanAttention },
+        operations: { 'attention.list': listHumanAttention },
         app: {
           'knowledge.claim.list': listKnowledgeClaims,
           'knowledge.observation.list': listKnowledgeObservations,
@@ -3898,8 +3927,8 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        actionCenter: {
-          listHumanAttention: vi
+        operations: {
+          'attention.list': vi
             .fn()
             .mockResolvedValue({ items: [NON_KNOWLEDGE_PROPOSAL_DECOY, row] }),
         },
@@ -3945,7 +3974,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [row] }) },
+        operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
         app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
@@ -3974,7 +4003,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        actionCenter: { listHumanAttention },
+        operations: { 'attention.list': listHumanAttention },
         app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
     );
@@ -4015,8 +4044,8 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
+        operations: {
+          'attention.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
         },
         app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
       })
@@ -4048,19 +4077,22 @@ describe('Knowledge (board 14)', () => {
     const submitKnowledgeProposalDecision = vi
       .fn()
       .mockRejectedValue(operationFailed('decision failed.'));
-    const listHumanAttention = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items: workspaceId === WORKSPACE_B.id ? [proposalB] : [KNOWLEDGE_PROPOSAL_ROW],
-      })
-    );
+    const listHumanAttention = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          items: workspaceId === WORKSPACE_B.id ? [proposalB] : [KNOWLEDGE_PROPOSAL_ROW],
+        })
+      );
     renderApp(
       '/knowledge',
       makeClient({
         core: {},
-        actionCenter: { listHumanAttention },
         app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
 
         operations: {
+          'attention.list': listHumanAttention,
+
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,
@@ -4126,10 +4158,11 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { meta },
-        actionCenter: {
-          listHumanAttention: vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
+        operations: {
+          'attention.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_PROPOSAL_ROW] }),
         },
+
+        core: { meta },
       })
     );
 
@@ -5496,26 +5529,29 @@ describe('Knowledge (board 14)', () => {
     const authoritativeA = createDeferred<{ items: unknown[] }>();
     let aReads = 0;
     let bReads = 0;
-    const listHumanAttention = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE_B.id) {
-        bReads += 1;
-        return Promise.resolve({
-          items: bReads > 1 ? [] : [KNOWLEDGE_PROPOSAL_ROW_B],
-        });
-      }
-      aReads += 1;
-      if (aReads > 1) return authoritativeA.promise;
-      return Promise.resolve({ items: [KNOWLEDGE_PROPOSAL_ROW] });
-    });
+    const listHumanAttention = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE_B.id) {
+          bReads += 1;
+          return Promise.resolve({
+            items: bReads > 1 ? [] : [KNOWLEDGE_PROPOSAL_ROW_B],
+          });
+        }
+        aReads += 1;
+        if (aReads > 1) return authoritativeA.promise;
+        return Promise.resolve({ items: [KNOWLEDGE_PROPOSAL_ROW] });
+      });
     const submitKnowledgeProposalDecision = vi.fn().mockReturnValue(pendingDecision.promise);
     renderApp(
       '/knowledge',
       makeClient({
         core: {},
-        actionCenter: { listHumanAttention },
         app: { 'knowledge.proposal.decide': submitKnowledgeProposalDecision },
 
         operations: {
+          'attention.list': listHumanAttention,
+
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,

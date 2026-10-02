@@ -1,7 +1,7 @@
 import { PRODUCT_OPERATION_DEFINITIONS, type ProductOperationId } from '@openkit/app-api-schemas';
 
-/** Projects explicit Artifact test selectors and supplied request bytes without authority, data or request defaults. */
-export function artifactOperationRequest(
+/** Projects explicit operation test selectors and supplied request bytes without authority, data or request defaults. */
+export function operationRequest(
   id: ProductOperationId,
   selectors: Record<string, unknown>,
   options: RequestInit = {}

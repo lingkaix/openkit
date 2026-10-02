@@ -98,12 +98,14 @@ async function main() {
     assert.equal(repository.status, 200, await repository.text());
 
     let taskFailure = null;
-    const taskPromise = fetch(`${baseUrl}/api/app/workspaces/ws_demo/threads/th_demo/task`, {
+    const taskPromise = fetch(`${baseUrl}/api/app/operations/task.start`, {
       body: JSON.stringify({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
         input: 'Implement the MCP verification by calling the echo tool.',
         requestId: smokeRequestId,
       }),
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': smokeRequestId },
       method: 'POST',
     });
     void taskPromise.then(

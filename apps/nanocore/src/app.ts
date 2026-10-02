@@ -18,7 +18,6 @@ import { isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
-import { registerActionCenterRoutes } from './action-center.js';
 import { registerAdministrationRoutes } from './administration/administration-routes.js';
 import {
   createAdministrationEnvironmentPrepareTool,
@@ -37,7 +36,6 @@ import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
-import { registerApprovalRoutes } from './approval-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
 import {
@@ -102,8 +100,9 @@ import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-routes.js';
 import { registerMaterialRoutes } from './material-routes.js';
-import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
+import { createTaskStartOperation, registerQuickAndChatModeRoutes } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
+import type { OperationInvocationDependencies } from './operation-invocation.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -1408,18 +1407,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/v1/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
   app.use('/mcp', browserCors);
   app.use('/mcp', createAuthMiddleware(mode, auth, authMiddlewareOptions));
-  registerRemoteMcpRoutes({
-    app,
-    startModeWorkerTurn,
-    repositoryWorkspaceDb,
-    getBootReadiness,
-    coreDb: options.coreDb,
-    store: sharedStore,
-    inflightCommands,
-    workspaceMutationAdmission,
-    mode,
-    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
-  });
 
   if (options.coreDb) {
     registerOperationAccessGuards({
@@ -1744,7 +1731,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     repositoryWorkspaceDb,
-    requestStore,
     resolveGatewayProvider,
     runtimeConfig,
     startModeWorkerTurn,
@@ -1768,18 +1754,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     inflightCommands,
     openWorkspaceDb: repositoryWorkspaceDb,
     requestStore,
-  });
-
-  registerOperationJsonRoutes({
-    app,
-    startModeWorkerTurn,
-    coreDb: options.coreDb,
-    workspaceMutationAdmission,
-    inflightCommands,
-    runtimeConfigManager,
-    repositoryWorkspaceDb,
-    requestStore,
-    goalServices: goalServices(),
   });
 
   registerKernelRoutes({
@@ -1835,13 +1809,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
   });
 
-  registerActionCenterRoutes({
-    app,
-    coreDb: options.coreDb,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
-
   registerSchedulerAdmissionRoutes({
     app,
     coreDb: options.coreDb,
@@ -1857,20 +1824,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
   registerDashboardRoutes({
     app,
-    repositoryWorkspaceDb,
     coreDb: options.coreDb,
     requestStore,
     runtimeConfigManager,
   });
 
-  registerTaskModeRoute({
-    app,
+  const taskStart = createTaskStartOperation({
     assertProjectWorkspace,
     coreDb: options.coreDb,
     inflightCommands,
     workspaceMutationAdmission,
     repositoryWorkspaceDb,
-    requestStore,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,
@@ -2008,8 +1972,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         return workspaceDb;
       },
     });
-  registerApprovalRoutes({
-    app,
+  const pendingRequestServices: NonNullable<
+    OperationInvocationDependencies['pendingRequestServices']
+  > = {
     workerDelivery: pendingWorkerDelivery,
     assistantDelivery: pendingAssistantDelivery,
     coordinatorDelivery: goalCoordinator,
@@ -2088,7 +2053,39 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
     inflightCommands,
     repositoryWorkspaceDb,
+  };
+
+  registerOperationJsonRoutes({
+    app,
+    conversationService: chatService,
+    taskStart,
+    pendingRequestServices,
+    startModeWorkerTurn,
+    coreDb: options.coreDb,
+    workspaceMutationAdmission,
+    inflightCommands,
+    runtimeConfigManager,
+    repositoryWorkspaceDb,
     requestStore,
+    goalServices: goalServices(),
+  });
+
+  registerRemoteMcpRoutes({
+    app,
+    conversationService: chatService,
+    taskStart,
+    pendingRequestServices,
+    runtimeConfigManager,
+    goalServices: goalServices(),
+    startModeWorkerTurn,
+    repositoryWorkspaceDb,
+    getBootReadiness,
+    coreDb: options.coreDb,
+    store: sharedStore,
+    inflightCommands,
+    workspaceMutationAdmission,
+    mode,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
   });
 
   registerWorkspaceSyncRoutes({

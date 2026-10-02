@@ -1,4 +1,6 @@
 import {
+  type ATTENTION_OPERATION_DEFINITIONS,
+  type CONVERSATION_OPERATION_DEFINITIONS,
   type GOAL_OPERATION_DEFINITIONS,
   type KernelOperationId,
   type KernelOperationInput,
@@ -7,6 +9,7 @@ import {
   type OperationId,
   type OperationInput,
   type OperationOutput,
+  type TASK_OPERATION_DEFINITIONS,
   type THREAD_OPERATION_DEFINITIONS,
   type TURN_OPERATION_DEFINITIONS,
   type WORKSPACE_OPERATION_DEFINITIONS,
@@ -14,7 +17,12 @@ import {
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { responsibleUserIdForActor } from '@openkit/protocol';
-import { readThreadDashboard } from './app-dashboard.js';
+import { HumanAttentionReadError, readHumanAttention } from './action-center.js';
+import {
+  ConversationNavigationReadError,
+  readConversationNavigation,
+  readThreadDashboard,
+} from './app-dashboard.js';
 import {
   ArtifactOperationError,
   createArtifactOperationImplementations,
@@ -40,13 +48,24 @@ import {
   KnowledgeOperationError,
 } from './knowledge-operations.js';
 import type { FsStore } from './lib/store.js';
+import type {
+  createTaskStartOperation,
+  registerQuickAndChatModeRoutes,
+} from './mode-entry-routes.js';
+import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import {
   executeGoalOperation,
   type GoalOperationId,
   type GoalOwnerServices,
 } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from './runtime/nanohost-runtime-target.js';
+import { TurnStartValidationError } from './runtime/orchestrator.js';
+import {
+  PendingRequestCommandError,
+  readPendingRequestLineage,
+} from './runtime/pending-requests.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createThread } from './thread-routes.js';
@@ -85,6 +104,17 @@ export type KernelOperationImplementations = {
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  /** Existing conversation owner, including process-local interruption handles. */
+  readonly conversationService?: ReturnType<typeof registerQuickAndChatModeRoutes>;
+  /** Existing bounded Task admission command. */
+  readonly taskStart?: ReturnType<typeof createTaskStartOperation>;
+  /** Existing captured-call and pending outcome delivery dependencies. */
+  readonly pendingRequestServices?: Omit<
+    Parameters<typeof createPendingRequestOperationImplementations>[0],
+    'store'
+  >;
+  /** Observes the owner's dynamic success status; it is not command or replay authority. */
+  readonly observeSuccessStatus?: (status: 200 | 202) => void;
   readonly goalServices?: GoalOwnerServices;
   readonly runtimeConfigManager?: RuntimeConfigManager;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
@@ -278,6 +308,57 @@ function createGoalOperationImplementations(
   };
 }
 
+/** Joins conversation, Task and attention definitions to their existing owners without transport context. */
+function createTaskConversationOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): FamilyImplementations<
+  typeof CONVERSATION_OPERATION_DEFINITIONS &
+    typeof TASK_OPERATION_DEFINITIONS &
+    typeof ATTENTION_OPERATION_DEFINITIONS
+> {
+  const store = dependencies.store!;
+  return {
+    'conversation.targets': (input, _actor, context) =>
+      dependencies.conversationService!.targets(store, input, publicActor(context)),
+    'conversation.navigation': (input, _actor, context) =>
+      readConversationNavigation({
+        ...input,
+        store,
+        actor: publicActor(context),
+        coreDb: dependencies.coreDb,
+        runtimeConfigManager: dependencies.runtimeConfigManager!,
+        repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+        administratorEligible: isCurrentDeploymentAdministrator(
+          dependencies.coreDb!,
+          publicActor(context)
+        ),
+      }),
+    'conversation.submit': async (input, _actor, context) => {
+      const result = await dependencies.conversationService!.submit(
+        store,
+        input,
+        publicActor(context)
+      );
+      dependencies.observeSuccessStatus?.(result.status);
+      return result.body;
+    },
+    'task.start': (input, _actor, context) =>
+      dependencies.taskStart!(store, input, publicActor(context)),
+    'attention.list': (input, _actor, context) =>
+      readHumanAttention({
+        ...input,
+        store,
+        actor: publicActor(context),
+        coreDb: dependencies.coreDb,
+        repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+        administratorEligible: isCurrentDeploymentAdministrator(
+          dependencies.coreDb!,
+          publicActor(context)
+        ),
+      }),
+  };
+}
+
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 function createOperationImplementations(
   dependencies: OperationInvocationDependencies
@@ -290,6 +371,11 @@ function createOperationImplementations(
     ...createKnowledgeOperationImplementations(dependencies),
     ...createArtifactOperationImplementations(dependencies),
     ...createGoalOperationImplementations(dependencies),
+    ...createTaskConversationOperationImplementations(dependencies),
+    ...createPendingRequestOperationImplementations({
+      ...dependencies.pendingRequestServices!,
+      store: dependencies.store!,
+    }),
     'nanohost.runtime-target': () => {
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb: dependencies.coreDb,
@@ -382,7 +468,11 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         dependencies.workspaceMutationAdmission
       );
     } else {
-      if (definition.scope.kind !== 'body-workspace') throw denied();
+      if (
+        definition.scope.kind !== 'body-workspace' &&
+        definition.scope.kind !== 'opaque-child-workspace'
+      )
+        throw denied();
       const input = parsed.data as { workspaceId: string; threadId?: string; turnId?: string };
       const workspaceId = input[definition.scope.field];
       if (
@@ -403,6 +493,33 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
           : authorizeWorkspace(coreDb, context.actor, workspaceId, definition);
       if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
         throw denied();
+      if (definition.scope.kind === 'opaque-child-workspace') {
+        // This branch resolves only Pending Request lineage and fails closed for any other child family.
+        const childId = (parsed.data as Record<string, unknown>)[
+          definition.scope.childField
+        ] as string;
+        const db = dependencies.repositoryWorkspaceDb!(workspaceId);
+        let lineage: ReturnType<typeof readPendingRequestLineage>;
+        try {
+          lineage = readPendingRequestLineage(db.sqlite, childId);
+        } finally {
+          db.sqlite.close();
+        }
+        lineage ??= dependencies.store.getApprovalProjectionLineage(workspaceId, childId);
+        if (!lineage || lineage.workspaceId !== workspaceId) throw denied();
+        const administratorEligible =
+          context.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, context.actor);
+        if (
+          !isThreadIdVisible(
+            dependencies.store,
+            workspaceId,
+            lineage.threadId,
+            responsibleUserIdForActor(actor) ?? undefined,
+            administratorEligible
+          )
+        )
+          throw new OperationInvocationError('not_found', 'Thread not found.', 404);
+      }
       if (context.kind === 'worker') {
         const userId = responsibleUserIdForActor(actor);
         if (
@@ -413,7 +530,8 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       }
       if (
         definition.target.kind === 'addressed-thread' ||
-        definition.target.kind === 'addressed-turn'
+        definition.target.kind === 'addressed-turn' ||
+        (definition.target.kind === 'optional-addressed-thread' && input.threadId !== undefined)
       ) {
         const userId = responsibleUserIdForActor(actor);
         const administratorEligible =
@@ -475,7 +593,15 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         );
       return validated.data as OperationOutput<K> | PreparedTaskKnowledgeContext;
     } catch (error) {
-      if (error instanceof KnowledgeOperationError || error instanceof ArtifactOperationError)
+      if (
+        error instanceof KnowledgeOperationError ||
+        error instanceof ArtifactOperationError ||
+        error instanceof HumanAttentionReadError ||
+        error instanceof ConversationNavigationReadError ||
+        error instanceof TurnStartValidationError ||
+        error instanceof PendingRequestCommandError ||
+        error instanceof IdempotencyKeyConflictError
+      )
         throw new OperationInvocationError(error.code, error.message, error.status);
       throw error;
     } finally {

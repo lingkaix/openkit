@@ -862,10 +862,11 @@ function makeClient(
       get: vi.fn(),
       refreshHealth: vi.fn(),
     },
-    actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [] }) },
     repositories: {},
 
     operations: {
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
+
       'workspace.resources': vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
       ...overrides.operations,
       'workspace.list': vi

@@ -58,7 +58,7 @@ Acceptance covers default fresh work, explicit reuse with provenance and eligibi
 
 ## Target Catalog
 
-NanoCore exposes `GET /api/app/workspaces/:workspaceId/conversation-targets`. The response is a Workspace-authorized read model whose entries have this closed product shape:
+NanoCore exposes `POST /api/app/operations/conversation.targets`. The response is a Workspace-authorized read model whose entries have this closed product shape:
 
 ```ts
 interface ConversationTarget {
@@ -96,7 +96,7 @@ Existing Worker targets are scoped to the requested Thread, never other conversa
 
 ## Structured Submission
 
-NanoCore exposes `POST /api/app/workspaces/:workspaceId/threads/:threadId/conversation-turns` and the public command identity `conversation.submit`. The request is strict:
+NanoCore exposes `POST /api/app/operations/conversation.submit` and the public command identity `conversation.submit`. The request is strict:
 
 ```ts
 interface SubmitConversationTurnRequest {
@@ -150,9 +150,9 @@ The client retains exact text, target, model, optional effort, Artifact referenc
 
 ## Current Implementation Projection
 
-NanoCore implements `GET /api/app/workspaces/:workspaceId/conversation-targets` and `POST /api/app/workspaces/:workspaceId/threads/:threadId/conversation-turns` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Coordinator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
+NanoCore implements `POST /api/app/operations/conversation.targets` and `POST /api/app/operations/conversation.submit` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Coordinator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
 
-`@openkit/core-client` exposes `client.app.getConversationTargets` and `client.app.submitConversation`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
+`@openkit/core-client` exposes `client.operations['conversation.targets']` and `client.operations['conversation.submit']`; `StartChatMode*`, `client.app.startChatMode`, the Chat-specific App route, and `chat.start` are absent. Direct Task, Goal, and Knowledge operations remain available to non-Composer callers.
 
 The Web Composer implements the accepted two-region design with bounded auto-growth, Artifact selection and bounded text upload, context-filtered Agent targets, logical model selection, send action, accessible keyboard behavior, and exact draft plus request-identity preservation after failure. Product surfaces display only logical model and product target identities. The effort control offers only the selected logical model's advertised levels, preselects the Thread's last admitted effort only while that model advertises it, and submits and retains effort, or its omission, with the exact draft and request identity.
 

@@ -471,90 +471,12 @@ export function registerDashboardRoutes({
   coreDb,
   requestStore,
   runtimeConfigManager,
-  repositoryWorkspaceDb,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfigManager: RuntimeConfigManager;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
 }): void {
-  registerAppApiRoute(app, 'listConversationNavigation', (c) => {
-    const store = requestStore(c);
-    const workspaceId = c.req.param('workspaceId');
-    const actor = c.get('actor');
-    let workspaceDb: WorkspaceDb | undefined;
-    try {
-      store.getWorkspace(workspaceId);
-      const agents = runtimeConfigManager.current().agentManifests;
-      workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-      const authorized = (policyOperation: 'approval.respond' | 'turn.run' | 'review.apply') =>
-        coreDb === undefined ||
-        isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-          mutating: true,
-          policyOperation,
-        });
-      const approvalAllowed = authorized('approval.respond');
-      const turnAllowed = authorized('turn.run');
-      const visibleThreads = store
-        .listThreads(workspaceId)
-        .filter((thread) => isThreadVisible(store, thread, actor?.userId));
-      const rows: ConversationNavigationResponse['items'] = visibleThreads
-        .filter((thread) => thread.status === 'active')
-        .map((thread) => {
-          const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
-          const items = store.listThreadItems(workspaceId, thread.id);
-          const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
-          const latestTurn = activeTurn ?? turns.at(-1);
-          const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
-          const activeGoal = goals.findLast((goal) => goal.disposition === null);
-          const latestGoal = activeGoal ?? goals.at(-1);
-          const hasGoalContext =
-            latestGoal && (activeGoal || latestGoal.updatedAt >= (latestTurn?.startedAt ?? ''));
-          const internalChat =
-            latestTurn?.agentId === QUICK_CHAT_AGENT_ID ||
-            latestTurn?.agentId === 'knowledge-manager';
-          const worker =
-            latestTurn?.agentSessionId || agents.some((agent) => agent.id === latestTurn?.agentId);
-          const activity = hasGoalContext
-            ? 'goal'
-            : internalChat
-              ? 'chat'
-              : worker
-                ? 'task'
-                : !latestTurn
-                  ? 'chat'
-                  : 'unknown';
-          const needsYou =
-            pendingApprovalItems(store, items, approvalAllowed).length > 0 ||
-            pendingQuestionItems(store, items, turnAllowed, actor?.userId ?? null).length > 0;
-          const working = turns.some((turn) => isActiveWorkStatus(turn.status));
-          const times = [
-            ...turns.flatMap((turn) => [turn.startedAt, turn.completedAt]),
-            ...items.flatMap((item) => [item.createdAt, item.completedAt]),
-            ...goals.map((goal) => goal.updatedAt),
-          ].filter((time): time is string => time !== null);
-          return {
-            thread,
-            activity,
-            state: needsYou ? 'needs-you' : working ? 'working' : 'idle',
-            lastActivityAt: times.sort().at(-1) ?? thread.createdAt,
-          };
-        });
-      rows.sort(
-        (left, right) =>
-          Number(right.state !== 'idle') - Number(left.state !== 'idle') ||
-          right.lastActivityAt.localeCompare(left.lastActivityAt) ||
-          left.thread.id.localeCompare(right.thread.id)
-      );
-      return c.json(ConversationNavigationResponseSchema.parse({ items: rows }));
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    } finally {
-      workspaceDb?.sqlite.close();
-    }
-  });
-
   registerAppApiRoute(app, 'getWorkspaceDashboard', (c) => {
     try {
       const store = requestStore(c);
@@ -817,4 +739,105 @@ export function readThreadDashboard(input: {
     pendingRequests,
     runtimeActivity,
   });
+}
+
+/** Owner-local navigation read failure; invocation preserves its published message, code and status. */
+export class ConversationNavigationReadError extends Error {
+  public readonly code = 'not_found';
+  public readonly status = 404;
+
+  public constructor(message: string) {
+    super(message);
+    this.name = 'ConversationNavigationReadError';
+  }
+}
+
+/** Reads current conversation activity after native Workspace admission, admitting each audience before dependent reads. */
+export function readConversationNavigation({
+  store,
+  workspaceId,
+  actor,
+  coreDb,
+  runtimeConfigManager,
+  repositoryWorkspaceDb,
+  administratorEligible = false,
+}: {
+  store: FsStore;
+  workspaceId: string;
+  actor: import('./auth/identity.js').Actor;
+  coreDb: CoreDb | undefined;
+  runtimeConfigManager: RuntimeConfigManager;
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+  administratorEligible?: boolean;
+}): ConversationNavigationResponse {
+  let workspaceDb: WorkspaceDb | undefined;
+  try {
+    store.getWorkspace(workspaceId);
+    const agents = runtimeConfigManager.current().agentManifests;
+    workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
+    const authorized = (policyOperation: 'approval.respond' | 'turn.run' | 'review.apply') =>
+      coreDb === undefined ||
+      isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+        mutating: true,
+        policyOperation,
+      });
+    const approvalAllowed = authorized('approval.respond');
+    const turnAllowed = authorized('turn.run');
+    const visibleThreads = store
+      .listThreads(workspaceId)
+      .filter((thread) => isThreadVisible(store, thread, actor?.userId, administratorEligible));
+    const rows: ConversationNavigationResponse['items'] = visibleThreads
+      .filter((thread) => thread.status === 'active')
+      .map((thread) => {
+        const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
+        const items = store.listThreadItems(workspaceId, thread.id);
+        const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
+        const latestTurn = activeTurn ?? turns.at(-1);
+        const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
+        const activeGoal = goals.findLast((goal) => goal.disposition === null);
+        const latestGoal = activeGoal ?? goals.at(-1);
+        const hasGoalContext =
+          latestGoal && (activeGoal || latestGoal.updatedAt >= (latestTurn?.startedAt ?? ''));
+        const internalChat =
+          latestTurn?.agentId === QUICK_CHAT_AGENT_ID ||
+          latestTurn?.agentId === 'knowledge-manager';
+        const worker =
+          latestTurn?.agentSessionId || agents.some((agent) => agent.id === latestTurn?.agentId);
+        const activity = hasGoalContext
+          ? 'goal'
+          : internalChat
+            ? 'chat'
+            : worker
+              ? 'task'
+              : !latestTurn
+                ? 'chat'
+                : 'unknown';
+        const needsYou =
+          pendingApprovalItems(store, items, approvalAllowed).length > 0 ||
+          pendingQuestionItems(store, items, turnAllowed, actor?.userId ?? null).length > 0;
+        const working = turns.some((turn) => isActiveWorkStatus(turn.status));
+        const times = [
+          ...turns.flatMap((turn) => [turn.startedAt, turn.completedAt]),
+          ...items.flatMap((item) => [item.createdAt, item.completedAt]),
+          ...goals.map((goal) => goal.updatedAt),
+        ].filter((time): time is string => time !== null);
+        return {
+          thread,
+          activity,
+          state: needsYou ? 'needs-you' : working ? 'working' : 'idle',
+          lastActivityAt: times.sort().at(-1) ?? thread.createdAt,
+        };
+      });
+    rows.sort(
+      (left, right) =>
+        Number(right.state !== 'idle') - Number(left.state !== 'idle') ||
+        right.lastActivityAt.localeCompare(left.lastActivityAt) ||
+        left.thread.id.localeCompare(right.thread.id)
+    );
+    return ConversationNavigationResponseSchema.parse({ items: rows });
+  } catch (error) {
+    throw new ConversationNavigationReadError(publishedErrorMessage(error));
+  } finally {
+    workspaceDb?.sqlite.close();
+  }
 }

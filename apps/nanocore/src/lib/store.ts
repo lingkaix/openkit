@@ -3110,6 +3110,16 @@ export class FsStore {
     return input;
   }
 
+  /** Reads only existing Approval-map lineage under the selected Workspace; its command owner validates the canonical Pending Request. */
+  public getApprovalProjectionLineage(
+    workspaceId: string,
+    requestId: string
+  ): { workspaceId: string; threadId: string } | null {
+    const approval = this.approvals.get(requestId);
+    if (approval?.workspaceId === workspaceId) return { workspaceId, threadId: approval.threadId };
+    return null;
+  }
+
   public getApproval(approvalRequestId: string): ApprovalRequest {
     const approval = this.approvals.get(approvalRequestId);
 

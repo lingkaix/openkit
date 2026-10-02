@@ -525,7 +525,7 @@ The first implementation is tracked as an App API and product read-model slice, 
 
 The canonical target row kind for reusable knowledge proposal review is `knowledge_review`.
 
-`packages/core-client/src/action-center.ts` exposes `client.actionCenter.listHumanAttention(workspaceId)` against `GET /api/app/workspaces/:workspaceId/action-center`.
+`packages/core-client/src/operations.ts` exposes `client.operations['attention.list']({ workspaceId })` against `POST /api/app/operations/attention.list`.
 
 `packages/core-client/src/operations.ts` exposes version-owned Artifact Review listing and decisions through `client.operations['artifact.review-list']({ workspaceId, artifactId })` and `client.operations['artifact.review.decide']({ workspaceId, artifactId, artifactVersion, ...input })`, each taking one selector object. The former `client.app.listArtifactReviews` and `client.app.submitArtifactReviewDecision` methods are absent. `packages/core-client/src/app.ts` exposes durable Workspace Sync Review decisions through `client.app.submitWorkspaceSyncReviewDecision(workspaceId, reviewId, input)`. Plan approval and completion acceptance use the pending-request commands. The Core Client exposes no generic unversioned Artifact Review method or cross-owner alias.
 

@@ -642,10 +642,11 @@ export function withdrawRecordedPendingRequest(
   workspaceId: string,
   threadId: string,
   actorId: string,
-  dependencies: PendingAdmissionDependencies
+  dependencies: PendingAdmissionDependencies,
+  requestActor?: Actor
 ): PendingRequestRecord {
   const current = requireUsableRecord(store, sqlite, requestId, workspaceId, threadId);
-  assertResponsibleActor(store, current, actorId, dependencies.coreDb, undefined);
+  assertResponsibleActor(store, current, actorId, dependencies.coreDb, requestActor);
   if (current.state !== 'pending') {
     throw new PendingRequestCommandError(
       'request_not_pending',

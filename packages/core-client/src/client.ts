@@ -1,5 +1,3 @@
-import type { ActionCenterClient } from './action-center.js';
-import { createActionCenterClient } from './action-center.js';
 import type { AgentCatalogClient } from './agents.js';
 import { createAgentCatalogClient } from './agents.js';
 import type { AppApiClient } from './app.js';
@@ -52,8 +50,6 @@ export interface CoreClient {
   readonly capabilities: CapabilitiesClient;
   /** Product-facing Agent Catalog read-model client. */
   readonly agents: AgentCatalogClient;
-  /** Product-facing Action Center read-model client. */
-  readonly actionCenter: ActionCenterClient;
   /** Product-facing Workspace Skill, MCP, and Agent Plugin catalog client. */
   readonly catalog: ResourceCatalogClient;
   /** Product-facing workspace repository resource client. */
@@ -70,13 +66,11 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const email = createEmailAuthClient(transport);
   const capabilities = createCapabilitiesClient(core.meta);
   const agents = createAgentCatalogClient(transport);
-  const actionCenter = createActionCenterClient(transport);
   const catalog = createResourceCatalogClient(transport);
   const repositories = createWorkspaceRepositoryClient(transport);
 
   return {
     operations: createOperationClient(transport),
-    actionCenter,
     agents,
     app,
     auth: { email },

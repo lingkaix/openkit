@@ -6,8 +6,9 @@ import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createApp } from '../test-support/app.js';
+import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { createPolicyApprovalGate } from './approval-gates.js';
 
 describe('policy approval gates', () => {
@@ -123,8 +124,10 @@ describe('policy approval gates', () => {
         result: mode === 'auto_allow' ? 'allow' : 'require_approval',
       });
 
-      const app = createApp({ store });
-      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const app = createAppWithWorkspaceAuthority({ store });
+      const res = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
 
       expect(rows).toEqual([]);

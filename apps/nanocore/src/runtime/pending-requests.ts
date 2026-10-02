@@ -2227,3 +2227,14 @@ function parseDecisionContext(bytes: string | null): Actor | null {
     ...(typeof value.adminTokenId === 'string' ? { adminTokenId: value.adminTokenId } : {}),
   };
 }
+
+/** Reads only opaque-child lineage for admission, without loading captured arguments or changing request state. */
+export function readPendingRequestLineage(
+  sqlite: Database.Database,
+  requestId: string
+): { workspaceId: string; threadId: string } | null {
+  const row = sqlite
+    .prepare('SELECT workspace_id, thread_id FROM pending_requests WHERE request_id = ?')
+    .get(requestId) as { workspace_id: string; thread_id: string } | undefined;
+  return row ? { workspaceId: row.workspace_id, threadId: row.thread_id } : null;
+}

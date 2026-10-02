@@ -190,21 +190,25 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
       meta: vi.fn().mockResolvedValue({}),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       startTurn: vi.fn().mockResolvedValue({ id: 'turn1' }),
-      respondApproval: vi.fn().mockResolvedValue({}),
       ...core,
     },
     app: {
-      getConversationTargets: vi.fn().mockImplementation((workspaceId: string, threadId?: string) =>
-        Promise.resolve({
-          ...CONVERSATION_TARGET,
-          workspaceId,
-          threadId: threadId ?? null,
-        })
-      ),
       ...app,
     },
 
     operations: {
+      'approval.respond': vi.fn().mockResolvedValue({}),
+      'conversation.targets': vi
+        .fn()
+        .mockImplementation(
+          ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) =>
+            Promise.resolve({
+              ...CONVERSATION_TARGET,
+              workspaceId,
+              threadId: threadId ?? null,
+            })
+        ),
+
       'thread.read': vi.fn().mockResolvedValue(THREAD),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       'thread.create': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
@@ -244,8 +248,12 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         ),
     },
   } as unknown as CoreClient;
-  if (app.listConversationNavigation == null) {
-    client.app.listConversationNavigation = vi.fn(async (workspaceId: string) => {
+  if (app['conversation.navigation'] == null) {
+    (
+      client.operations as {
+        'conversation.navigation': CoreClient['operations']['conversation.navigation'];
+      }
+    )['conversation.navigation'] = vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
       const listed = await client.core.listThreads(workspaceId);
       return {
         items: listed.items
@@ -477,7 +485,7 @@ describe.each([
       path,
       makeClient(
         { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, submitConversation }
+        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
       )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Review this file');
@@ -521,11 +529,13 @@ describe.each([
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        path === '/chat' ? 'th-new' : 'th1',
         expect.objectContaining({
-          input: 'Review this file',
-          artifactRefs: [{ artifactId: 'uploaded-notes', artifactVersion: 3 }],
+          workspaceId: 'ws1',
+          threadId: path === '/chat' ? 'th-new' : 'th1',
+          ...{
+            input: 'Review this file',
+            artifactRefs: [{ artifactId: 'uploaded-notes', artifactVersion: 3 }],
+          },
         })
       )
     );
@@ -546,7 +556,7 @@ describe.each([
       path,
       makeClient(
         { 'artifact.list': listArtifacts },
-        { 'artifact.import': importWorkspaceArtifact, submitConversation }
+        { 'artifact.import': importWorkspaceArtifact, 'conversation.submit': submitConversation }
       )
     );
     const message = await screen.findByRole('textbox', { name: 'Message' });
@@ -576,11 +586,13 @@ describe.each([
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        path === '/chat' ? 'th-new' : 'th1',
         expect.objectContaining({
-          input: 'Keep this draft',
-          artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+          workspaceId: 'ws1',
+          threadId: path === '/chat' ? 'th-new' : 'th1',
+          ...{
+            input: 'Keep this draft',
+            artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
+          },
         })
       )
     );
@@ -629,8 +641,8 @@ describe.each([
           }),
         },
         {
-          submitConversation,
-          getConversationTargets: vi.fn().mockResolvedValue({
+          'conversation.submit': submitConversation,
+          'conversation.targets': vi.fn().mockResolvedValue({
             ...CONVERSATION_TARGET,
             targets: [CONVERSATION_TARGET.targets[0], selectedTarget],
           }),
@@ -647,7 +659,7 @@ describe.each([
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'First message');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    const firstDraft = submitConversation.mock.calls[0]?.[2];
+    const firstDraft = submitConversation.mock.calls[0]?.[0];
     expect(firstDraft).toMatchObject({
       targetRef: selectedTarget.targetRef,
       logicalModelId: 'orcarouter',
@@ -671,17 +683,19 @@ describe.each([
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
     expect(submitConversation.mock.calls[1]).toEqual([
-      'ws1',
-      threadId,
       {
-        input: 'Second message',
-        targetRef: selectedTarget.targetRef,
-        logicalModelId: 'orcarouter',
-        artifactRefs: [],
-        requestId: expect.any(String),
+        workspaceId: 'ws1',
+        threadId: threadId,
+        ...{
+          input: 'Second message',
+          targetRef: selectedTarget.targetRef,
+          logicalModelId: 'orcarouter',
+          artifactRefs: [],
+          requestId: expect.any(String),
+        },
       },
     ]);
-    expect(submitConversation.mock.calls[1]?.[2].requestId).not.toBe(firstDraft.requestId);
+    expect(submitConversation.mock.calls[1]?.[0].requestId).not.toBe(firstDraft.requestId);
   });
 });
 
@@ -707,7 +721,7 @@ describe('conversation failure identity', () => {
   ])('keeps exact retry for %s', async (_name, error, targetRef) => {
     const user = userEvent.setup();
     const submitConversation = vi.fn().mockRejectedValue(error);
-    renderApp('/chat/ws1/th1', makeClient({}, { submitConversation }));
+    renderApp('/chat/ws1/th1', makeClient({}, { 'conversation.submit': submitConversation }));
     if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Retained request');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -741,13 +755,15 @@ describe('chat starter (board 01)', () => {
           })),
         }),
       },
-      { listConversationNavigation }
+      { 'conversation.navigation': listConversationNavigation }
     );
 
     renderApp('/chat', client);
 
-    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws_quick_chat'));
-    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_project');
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
+    );
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_project' });
   });
 
   it('falls back from an unavailable selected Workspace before loading threads', async () => {
@@ -760,7 +776,7 @@ describe('chat starter (board 01)', () => {
       {
         'workspace.list': vi.fn().mockReturnValue(workspaces.promise),
       },
-      { listConversationNavigation }
+      { 'conversation.navigation': listConversationNavigation }
     );
 
     renderApp('/chat', client);
@@ -775,12 +791,16 @@ describe('chat starter (board 01)', () => {
       });
       await workspaces.promise;
     });
-    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws_quick_chat'));
-    expect(listConversationNavigation.mock.calls.every(([id]) => id === 'ws_quick_chat')).toBe(
-      true
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws_quick_chat' })
     );
-    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_unavailable');
-    expect(listConversationNavigation).not.toHaveBeenCalledWith('ws_authorized');
+    expect(
+      listConversationNavigation.mock.calls.every(
+        ([{ workspaceId }]) => workspaceId === 'ws_quick_chat'
+      )
+    ).toBe(true);
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_unavailable' });
+    expect(listConversationNavigation).not.toHaveBeenCalledWith({ workspaceId: 'ws_authorized' });
   });
 
   it('shows the empty state when there are no recent chats', async () => {
@@ -791,13 +811,15 @@ describe('chat starter (board 01)', () => {
   it('switches the active Workspace from Chat', async () => {
     const user = userEvent.setup();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat', makeClient({}, { listConversationNavigation }));
+    renderApp('/chat', makeClient({}, { 'conversation.navigation': listConversationNavigation }));
 
     await screen.findByRole('heading', { name: 'What can we get done?' });
     await user.click(await workspaceSelectTrigger());
     await user.click(await screen.findByRole('menuitem', { name: 'Second workspace' }));
 
-    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws2'));
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws2' })
+    );
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe('ws2');
   });
 
@@ -840,7 +862,10 @@ describe('chat starter (board 01)', () => {
         },
       ],
     });
-    renderApp('/chat', makeClient({ listThreads }, { listConversationNavigation }));
+    renderApp(
+      '/chat',
+      makeClient({ listThreads }, { 'conversation.navigation': listConversationNavigation })
+    );
 
     const recent = (await screen.findByText('Recent')).closest('section');
     expect(recent).not.toBeNull();
@@ -854,7 +879,7 @@ describe('chat starter (board 01)', () => {
     ).toEqual(['Active later', 'Created first']);
     expect(within(recent!).queryByText('Private chat')).not.toBeInTheDocument();
     expect(within(recent!).queryByText('Old chat')).not.toBeInTheDocument();
-    expect(listConversationNavigation).toHaveBeenCalledWith('ws1');
+    expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws1' });
   });
 
   it.each([
@@ -886,7 +911,7 @@ describe('chat starter (board 01)', () => {
         },
         {
           'goal.read': readGoal,
-          listConversationNavigation: vi.fn().mockResolvedValue({
+          'conversation.navigation': vi.fn().mockResolvedValue({
             items: [{ thread, activity, state: 'idle', lastActivityAt: thread.updatedAt }],
           }),
         }
@@ -942,7 +967,13 @@ describe('chat starter (board 01)', () => {
         },
       ],
     });
-    renderApp('/chat', makeClient({ 'thread.read': getThread }, { listConversationNavigation }));
+    renderApp(
+      '/chat',
+      makeClient(
+        { 'thread.read': getThread },
+        { 'conversation.navigation': listConversationNavigation }
+      )
+    );
 
     const recent = (await screen.findByText('Recent')).closest('section');
     expect(recent).not.toBeNull();
@@ -968,7 +999,7 @@ describe('chat starter (board 01)', () => {
     const quickChat = vi.fn();
     const client = makeClient(
       { 'thread.create': createThread, 'thread.read': getThread, startTurn },
-      { quickChat, submitConversation }
+      { quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -983,14 +1014,16 @@ describe('chat starter (board 01)', () => {
     );
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th-new',
         expect.objectContaining({
-          artifactRefs: [],
-          input: 'Plan a launch',
-          logicalModelId: 'default',
-          requestId: expect.any(String),
-          targetRef: 'internal-role:assistant',
+          workspaceId: 'ws1',
+          threadId: 'th-new',
+          ...{
+            artifactRefs: [],
+            input: 'Plan a launch',
+            logicalModelId: 'default',
+            requestId: expect.any(String),
+            targetRef: 'internal-role:assistant',
+          },
         })
       )
     );
@@ -1010,7 +1043,10 @@ describe('chat starter (board 01)', () => {
   it('opens a fresh Chat when the Workspace changes from a thread', async () => {
     const user = userEvent.setup();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/chat/ws1/th1', makeClient({}, { listConversationNavigation }));
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({}, { 'conversation.navigation': listConversationNavigation })
+    );
 
     await screen.findByRole('heading', { name: 'Competitive teardown' });
     await user.click(await workspaceSelectTrigger());
@@ -1019,7 +1055,9 @@ describe('chat starter (board 01)', () => {
     expect(
       await screen.findByRole('heading', { name: 'What can we get done?' })
     ).toBeInTheDocument();
-    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith('ws2'));
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: 'ws2' })
+    );
   });
 
   it('fails closed when a canonical Thread route names an unavailable Workspace', async () => {
@@ -1087,7 +1125,7 @@ describe('chat starter (board 01)', () => {
       '/chat',
       makeClient(
         { 'thread.create': createThread, 'thread.read': getThread },
-        { 'thread.dashboard': getThreadDashboard, submitConversation }
+        { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
       )
     );
 
@@ -1107,9 +1145,11 @@ describe('chat starter (board 01)', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
       expect(createThread).toHaveBeenCalledTimes(1);
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        createdThread.id,
-        expect.objectContaining({ input: 'Story thread', targetRef: 'internal-role:assistant' })
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: createdThread.id,
+          ...{ input: 'Story thread', targetRef: 'internal-role:assistant' },
+        })
       );
     } finally {
       await act(async () => {
@@ -1150,7 +1190,7 @@ describe('chat starter (board 01)', () => {
               Promise.resolve({ items: [workspaceId === 'ws2' ? destination : origin] })
             ),
         },
-        { submitConversation }
+        { 'conversation.submit': submitConversation }
       )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Hand off this work');
@@ -1197,7 +1237,7 @@ describe('chat starter (board 01)', () => {
               Promise.resolve({ items: [workspaceId === 'ws2' ? other : origin] })
             ),
         },
-        { submitConversation }
+        { 'conversation.submit': submitConversation }
       )
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Original draft');
@@ -1228,7 +1268,7 @@ describe('chat starter (board 01)', () => {
         startTurn,
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
       },
-      { quickChat, submitConversation }
+      { quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1237,11 +1277,13 @@ describe('chat starter (board 01)', () => {
     expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th-new',
         expect.objectContaining({
-          input: 'Story thread',
-          targetRef: 'internal-role:assistant',
+          workspaceId: 'ws1',
+          threadId: 'th-new',
+          ...{
+            input: 'Story thread',
+            targetRef: 'internal-role:assistant',
+          },
         })
       )
     );
@@ -1264,7 +1306,7 @@ describe('chat starter (board 01)', () => {
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const client = makeClient(
       { 'thread.create': createThread, 'thread.read': getThread },
-      { submitConversation }
+      { 'conversation.submit': submitConversation }
     );
     const queryClient = renderApp('/chat', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
@@ -1279,9 +1321,11 @@ describe('chat starter (board 01)', () => {
     });
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th-new',
-        expect.objectContaining({ input: 'Plan for A' })
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th-new',
+          ...{ input: 'Plan for A' },
+        })
       )
     );
     await act(async () => {
@@ -1349,7 +1393,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        withdrawPendingRequest: vi.fn().mockResolvedValue({}),
+        'pending-request.withdraw': vi.fn().mockResolvedValue({}),
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1375,9 +1419,11 @@ describe('chat thread (boards 02/03)', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Withdraw' }));
-    expect(client.core.withdrawPendingRequest).toHaveBeenCalledWith(
-      'ap1',
-      expect.objectContaining({ workspaceId: 'ws1', threadId: 'th1' })
+    expect(client.operations['pending-request.withdraw']).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingRequestId: 'ap1',
+        ...{ workspaceId: 'ws1', threadId: 'th1' },
+      })
     );
   });
 
@@ -1387,7 +1433,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        respondApproval,
+        'approval.respond': respondApproval,
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1418,12 +1464,15 @@ describe('chat thread (boards 02/03)', () => {
       screen.getByRole('region', { name: 'Runtime activity' }).querySelector('button')
     ).toBeNull();
     await user.click(await screen.findByRole('button', { name: 'Approve' }));
-    expect(respondApproval).toHaveBeenCalledWith('ap1', {
-      workspaceId: 'ws1',
-      threadId: 'th1',
-      turnId: 't1',
-      decision: 'granted',
-      requestId: expect.any(String),
+    expect(respondApproval).toHaveBeenCalledWith({
+      approvalRequestId: 'ap1',
+      ...{
+        workspaceId: 'ws1',
+        threadId: 'th1',
+        turnId: 't1',
+        decision: 'granted',
+        requestId: expect.any(String),
+      },
     });
   });
 
@@ -1493,7 +1542,7 @@ describe('chat thread (boards 02/03)', () => {
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-          respondApproval,
+          'approval.respond': respondApproval,
         },
         {
           'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1524,7 +1573,7 @@ describe('chat thread (boards 02/03)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't submit this decision.");
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(respondApproval).toHaveBeenCalledTimes(2));
-    expect(respondApproval.mock.calls[0]?.[1].requestId).toEqual(expect.any(String));
+    expect(respondApproval.mock.calls[0]?.[0].requestId).toEqual(expect.any(String));
     expect(respondApproval.mock.calls[1]).toEqual(respondApproval.mock.calls[0]);
   });
 
@@ -1695,7 +1744,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-        answerUserInput,
+        'question.answer': answerUserInput,
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1731,12 +1780,14 @@ describe('chat thread (boards 02/03)', () => {
 
     await waitFor(() =>
       expect(answerUserInput).toHaveBeenCalledWith(
-        'uir1',
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          answers: { audience: ['Operators'], tone: ['Concise'] },
-          requestId: expect.any(String),
+          userInputRequestId: 'uir1',
+          ...{
+            workspaceId: 'ws1',
+            threadId: 'th1',
+            answers: { audience: ['Operators'], tone: ['Concise'] },
+            requestId: expect.any(String),
+          },
         })
       )
     );
@@ -1770,7 +1821,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: otherItems, nextCursor: null }),
-        answerUserInput,
+        'question.answer': answerUserInput,
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1796,12 +1847,14 @@ describe('chat thread (boards 02/03)', () => {
 
     await waitFor(() =>
       expect(answerUserInput).toHaveBeenCalledWith(
-        'uir1',
         expect.objectContaining({
-          workspaceId: 'ws1',
-          threadId: 'th1',
-          answers: { tone: ['Warm and direct'] },
-          requestId: expect.any(String),
+          userInputRequestId: 'uir1',
+          ...{
+            workspaceId: 'ws1',
+            threadId: 'th1',
+            answers: { tone: ['Warm and direct'] },
+            requestId: expect.any(String),
+          },
         })
       )
     );
@@ -1821,7 +1874,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: USER_INPUT_ITEMS, nextCursor: null }),
-        answerUserInput,
+        'question.answer': answerUserInput,
       },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
@@ -1930,7 +1983,7 @@ describe('chat thread (boards 02/03)', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         startTurn,
       },
-      { quickChat, submitConversation }
+      { quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1938,11 +1991,13 @@ describe('chat thread (boards 02/03)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th1',
         expect.objectContaining({
-          input: 'Add a pricing table',
-          targetRef: 'internal-role:assistant',
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          ...{
+            input: 'Add a pricing table',
+            targetRef: 'internal-role:assistant',
+          },
         })
       )
     );
@@ -3037,10 +3092,10 @@ describe('live turn subscription (S6)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        respondApproval,
+        'approval.respond': respondApproval,
         subscribeTurnEvents,
       },
-      { 'thread.dashboard': getThreadDashboard, submitConversation }
+      { 'thread.dashboard': getThreadDashboard, 'conversation.submit': submitConversation }
     );
 
     renderApp('/chat/ws1/th1', client);
@@ -3441,7 +3496,7 @@ describe('live turn subscription (S6)', () => {
           ],
           turns: [ACTIVE_TURN],
         }),
-        submitConversation,
+        'conversation.submit': submitConversation,
       }
     );
     const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
@@ -3544,7 +3599,7 @@ describe('live turn subscription (S6)', () => {
       },
       {
         'thread.dashboard': getThreadDashboard,
-        submitConversation: vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE),
+        'conversation.submit': vi.fn().mockResolvedValue(CHAT_MODE_RESPONSE),
       }
     );
 
@@ -3929,23 +3984,25 @@ describe('open thread external activity', () => {
   ] as const)('makes the current Worker selectable after %s without reloading', async (path) => {
     const user = userEvent.setup();
     let completed = false;
-    const getConversationTargets = vi.fn(async (workspaceId: string, threadId?: string) => ({
-      ...CONVERSATION_TARGET,
-      workspaceId,
-      threadId: threadId ?? null,
-      targets: [
-        ...CONVERSATION_TARGET.targets,
-        {
-          ...CONVERSATION_TARGET.targets[1]!,
-          targetRef: 'running-worker:th1',
-          kind: 'running-worker' as const,
-          label: 'Current Worker',
-          threadId: 'th1',
-          availability: completed ? ('available' as const) : ('unavailable' as const),
-          unavailableReason: completed ? null : 'Worker is busy.',
-        },
-      ],
-    }));
+    const getConversationTargets = vi.fn(
+      async ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) => ({
+        ...CONVERSATION_TARGET,
+        workspaceId,
+        threadId: threadId ?? null,
+        targets: [
+          ...CONVERSATION_TARGET.targets,
+          {
+            ...CONVERSATION_TARGET.targets[1]!,
+            targetRef: 'running-worker:th1',
+            kind: 'running-worker' as const,
+            label: 'Current Worker',
+            threadId: 'th1',
+            availability: completed ? ('available' as const) : ('unavailable' as const),
+            unavailableReason: completed ? null : 'Worker is busy.',
+          },
+        ],
+      })
+    );
     const completion = createDeferred<void>();
     async function* stream() {
       await completion.promise;
@@ -3990,7 +4047,7 @@ describe('open thread external activity', () => {
           'thread.items': vi.fn(async () => ({ items: ITEMS, nextCursor: null })),
           subscribeTurnEvents,
         },
-        { getConversationTargets, 'thread.dashboard': getThreadDashboard }
+        { 'conversation.targets': getConversationTargets, 'thread.dashboard': getThreadDashboard }
       )
     );
     await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
@@ -4022,7 +4079,7 @@ describe('open thread external activity', () => {
     ).toBeInTheDocument();
     expect(
       getConversationTargets.mock.calls.every(
-        ([workspaceId, threadId]) => workspaceId === 'ws1' && threadId === 'th1'
+        ([{ workspaceId, threadId }]) => workspaceId === 'ws1' && threadId === 'th1'
       )
     ).toBe(true);
   });
@@ -4359,7 +4416,7 @@ describe('open thread external activity', () => {
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
-    const listConversationNavigation = vi.fn(async (workspaceId: string) => ({
+    const listConversationNavigation = vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
       items:
         workspaceId === 'ws1'
           ? [
@@ -4406,12 +4463,12 @@ describe('open thread external activity', () => {
         {
           'thread.read': getThread,
           'thread.items': listThreadItems,
-          listThreads: vi.fn(async (workspaceId: string) => ({
+          listThreads: vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
             items: workspaceId === 'ws1' ? [THREAD, otherThread] : [otherThread],
           })),
         },
         {
-          listConversationNavigation,
+          'conversation.navigation': listConversationNavigation,
           'thread.dashboard': vi.fn(async () => ({ turns: [idleTurn] })),
         }
       )
@@ -4465,7 +4522,7 @@ describe('task thread (board 04)', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         startTurn,
       },
-      { quickChat, submitConversation, startTaskMode }
+      { quickChat, 'conversation.submit': submitConversation, 'task.start': startTaskMode }
     );
 
     renderApp('/tasks/ws1/th1', client);
@@ -4474,11 +4531,13 @@ describe('task thread (board 04)', () => {
 
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th1',
         expect.objectContaining({
-          input: 'Ship the fix',
-          targetRef: 'warm-worker:agent_codex_host:default',
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          ...{
+            input: 'Ship the fix',
+            targetRef: 'warm-worker:agent_codex_host:default',
+          },
         })
       )
     );
@@ -4669,7 +4728,7 @@ describe('mode entry and feedback (S8)', () => {
         }),
         startTurn,
       },
-      { quickChat, submitConversation, startTaskMode }
+      { quickChat, 'conversation.submit': submitConversation, 'task.start': startTaskMode }
     );
 
     renderApp('/chat/ws_quick_chat/th1', client);
@@ -4678,11 +4737,13 @@ describe('mode entry and feedback (S8)', () => {
 
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws_quick_chat',
-        'th1',
         expect.objectContaining({
-          input: 'Answer directly',
-          targetRef: 'internal-role:assistant',
+          workspaceId: 'ws_quick_chat',
+          threadId: 'th1',
+          ...{
+            input: 'Answer directly',
+            targetRef: 'internal-role:assistant',
+          },
         })
       )
     );
@@ -4729,7 +4790,7 @@ describe('mode entry and feedback (S8)', () => {
             })
           ),
       },
-      { submitConversation }
+      { 'conversation.submit': submitConversation }
     );
     const queryClient = renderApp('/chat/ws1/th1', client);
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
@@ -4738,9 +4799,11 @@ describe('mode entry and feedback (S8)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th1',
-        expect.objectContaining({ input: 'Continue A', targetRef: 'internal-role:assistant' })
+        expect.objectContaining({
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          ...{ input: 'Continue A', targetRef: 'internal-role:assistant' },
+        })
       )
     );
 
@@ -5491,7 +5554,7 @@ describe('Worker environment Advanced choice', () => {
     });
     const client = makeClient(
       { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
-      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -5499,15 +5562,17 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th1',
         expect.objectContaining({
-          input: 'Fresh worker',
-          targetRef: 'new-task-worker',
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          ...{
+            input: 'Fresh worker',
+            targetRef: 'new-task-worker',
+          },
         })
       )
     );
-    expect(submitConversation.mock.calls[0]?.[2]).not.toHaveProperty('workerStorageChoice');
+    expect(submitConversation.mock.calls[0]?.[0]).not.toHaveProperty('workerStorageChoice');
     expect(listWorkerEnvironments).not.toHaveBeenCalled();
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: /environment/i })).not.toBeInTheDocument();
@@ -5599,7 +5664,7 @@ describe('Worker environment Advanced choice', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -5623,21 +5688,23 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() =>
       expect(submitConversation).toHaveBeenCalledWith(
-        'ws1',
-        'th1',
         expect.objectContaining({
-          input: 'Reuse worker',
-          targetRef: 'new-task-worker',
-          workerStorageChoice: {
-            expectedRevision: 4,
-            kind: 'selected',
-            purpose: 'work',
-            storageRef: WORKER_STORAGE_REF,
+          workspaceId: 'ws1',
+          threadId: 'th1',
+          ...{
+            input: 'Reuse worker',
+            targetRef: 'new-task-worker',
+            workerStorageChoice: {
+              expectedRevision: 4,
+              kind: 'selected',
+              purpose: 'work',
+              storageRef: WORKER_STORAGE_REF,
+            },
           },
         })
       )
     );
-    expect(submitConversation.mock.calls[0]?.[2]).not.toHaveProperty(
+    expect(submitConversation.mock.calls[0]?.[0]).not.toHaveProperty(
       'workerEnvironmentLayoutDigest'
     );
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
@@ -5663,7 +5730,7 @@ describe('Worker environment Advanced choice', () => {
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
         listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     await chooseNewTaskWorker(user);
@@ -5697,11 +5764,11 @@ describe('Worker environment Advanced choice', () => {
       submitConversation.mock.invocationCallOrder[0] ?? 0
     );
     expect(selectWorkerEnvironment).not.toHaveBeenCalled();
-    const submitted = submitConversation.mock.calls[0]?.[2] as { requestId: string };
+    const submitted = submitConversation.mock.calls[0]?.[0] as { requestId: string };
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Starter reuse');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(2));
-    expect(submitConversation.mock.calls[1]?.[2]).toMatchObject({
+    expect(submitConversation.mock.calls[1]?.[0]).toMatchObject({
       input: 'Starter reuse',
       artifactRefs: [{ artifactId: 'existing-brief', artifactVersion: 2 }],
       requestId: submitted.requestId,
@@ -5749,8 +5816,8 @@ describe('Worker environment Advanced choice', () => {
           }),
         },
         {
-          submitConversation,
-          getConversationTargets: vi.fn().mockResolvedValue({
+          'conversation.submit': submitConversation,
+          'conversation.targets': vi.fn().mockResolvedValue({
             ...CONVERSATION_TARGET,
             targets: CONVERSATION_TARGET.targets.map((target) => ({
               ...target,
@@ -5778,7 +5845,7 @@ describe('Worker environment Advanced choice', () => {
       await screen.findByText(/This turn was stopped|Couldn't send that message/)
     ).textContent;
     expect(submitConversation).toHaveBeenCalledTimes(1);
-    expect(submitConversation.mock.calls[0]?.[2]).toMatchObject({
+    expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
       requestId: originalId,
       targetRef: 'internal-role:assistant',
       logicalModelId: 'alternate',
@@ -5813,14 +5880,18 @@ describe('Worker environment Advanced choice', () => {
         storageRef: WORKER_STORAGE_REF,
       },
     };
-    expect(submitConversation.mock.calls[1]).toEqual(['ws1', threadId, freshDraft]);
+    expect(submitConversation.mock.calls[1]).toEqual([
+      { workspaceId: 'ws1', threadId: threadId, ...freshDraft },
+    ]);
     expect(cancellationExplanation).toBe('This turn was stopped. Send starts a new turn.');
     expect(randomUUID).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Replacement work');
     expect(document.body).not.toHaveTextContent('Private transport detail');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(3));
-    expect(submitConversation.mock.calls[2]).toEqual(['ws1', threadId, freshDraft]);
+    expect(submitConversation.mock.calls[2]).toEqual([
+      { workspaceId: 'ws1', threadId: threadId, ...freshDraft },
+    ]);
     expect(randomUUID).toHaveBeenCalledTimes(2);
   });
 
@@ -5840,7 +5911,7 @@ describe('Worker environment Advanced choice', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, submitConversation }
+      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -5851,7 +5922,7 @@ describe('Worker environment Advanced choice', () => {
     expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
-    expect(submitConversation.mock.calls[0]?.[2]).toMatchObject({
+    expect(submitConversation.mock.calls[0]?.[0]).toMatchObject({
       input: 'Stale reuse',
       workerStorageChoice: {
         expectedRevision: 4,

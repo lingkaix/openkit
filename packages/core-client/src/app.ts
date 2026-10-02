@@ -33,10 +33,6 @@ import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  type ConversationNavigationResponse,
-  ConversationNavigationResponseSchema,
-  type ConversationTargetCatalog,
-  ConversationTargetCatalogSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
   type CreateLightAppRequest,
@@ -279,20 +275,12 @@ import {
   SetupDiagnosticsResponseSchema,
   type StartAppUpdateRequest,
   StartAppUpdateRequestSchema,
-  type StartTaskModeRequest,
-  StartTaskModeRequestSchema,
-  type StartTaskModeResponse,
-  StartTaskModeResponseSchema,
   type StorageLayoutReportResponse,
   StorageLayoutReportResponseSchema,
   type SubmitAdministrationConversationRequest,
   SubmitAdministrationConversationRequestSchema,
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
-  type SubmitConversationRequest,
-  SubmitConversationRequestSchema,
-  type SubmitConversationResponse,
-  SubmitConversationResponseSchema,
   type SubmitGenerativePresentationActionRequest,
   SubmitGenerativePresentationActionRequestSchema,
   type SubmitKnowledgeProposalDecisionRequest,
@@ -406,10 +394,6 @@ export type RecoverDeletedWorkspaceInput = OptionalRequestId<RecoverDeletedWorks
 /** Interrupted-worker retry input with optional caller-provided request id. */
 export type RetryInterruptedWorkerCheckpointInput =
   OptionalRequestId<RetryInterruptedWorkerCheckpointRequest>;
-/** Task Mode start input with optional caller-provided request id. */
-export type StartTaskModeInput = OptionalRequestId<StartTaskModeRequest>;
-/** Structured conversation input with optional caller-provided request id. */
-export type SubmitConversationInput = OptionalRequestId<SubmitConversationRequest>;
 /** Workspace Material create input with optional caller-provided request id. */
 export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
 /** Workspace Material revision save input with optional caller-provided request id. */
@@ -757,29 +741,10 @@ export interface AppApiClient {
     materialId: string,
     input: RestoreThreadMaterialInput
   ): Promise<RestoreThreadMaterialResponse>;
-  /** Reads visible active conversations with authoritative activity and viewer-relative attention. */
-  listConversationNavigation(workspaceId: string): Promise<ConversationNavigationResponse>;
   /** Reads current Workers visible in the selected Workspace, preserving restricted details. */
   listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
-  /** Starts one bounded Task Mode worker delegation. */
-  startTaskMode(
-    workspaceId: string,
-    threadId: string,
-    input: StartTaskModeInput
-  ): Promise<StartTaskModeResponse>;
-  /** Lists context-sensitive targets available to the shared Composer. */
-  getConversationTargets(
-    workspaceId: string,
-    threadId?: string
-  ): Promise<ConversationTargetCatalog>;
-  /** Submits one message to a selected conversation target. */
-  submitConversation(
-    workspaceId: string,
-    threadId: string,
-    input: SubmitConversationInput
-  ): Promise<SubmitConversationResponse>;
   /** Lists workspace synchronization reviews for one workspace. */
   listWorkspaceSyncReviews(workspaceId: string): Promise<ListWorkspaceSyncReviewsResponse>;
   /** Reads one workspace synchronization review by id. */
@@ -1388,11 +1353,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RestoreThreadMaterialResponseSchema
       );
     },
-    listConversationNavigation: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/conversations`,
-        ConversationNavigationResponseSchema
-      ),
     listWorkspaceWorkers: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${encodeURIComponent(workspaceId)}/workers`,
@@ -1402,29 +1362,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/dashboard`,
         WorkspaceDashboardResponseSchema
-      ),
-    startTaskMode: (workspaceId, threadId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/task`,
-        StartTaskModeRequestSchema.parse(request),
-        StartTaskModeResponseSchema
-      );
-    },
-    submitConversation: (workspaceId, threadId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/conversation-turns`,
-        SubmitConversationRequestSchema.parse(request),
-        SubmitConversationResponseSchema
-      );
-    },
-    getConversationTargets: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/conversation-targets${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`,
-        ConversationTargetCatalogSchema
       ),
     listWorkspaceSyncReviews: (workspaceId) =>
       transport.getJson(

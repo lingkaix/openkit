@@ -184,11 +184,6 @@ function createPassingTaskModeFixture(options) {
               },
             ],
           }),
-          startTaskMode: async () => ({
-            evidence: { reviewIds: options.reviewIds ?? [] },
-            state: 'completed',
-            turn: { id: turnId },
-          }),
           submitWorkspaceSyncReviewDecision: async (receivedWorkspaceId, reviewId, input) => {
             options.onReviewDecision?.(receivedWorkspaceId, reviewId, input);
             return { review: { id: reviewId, status: 'rejected' } };
@@ -201,6 +196,12 @@ function createPassingTaskModeFixture(options) {
           },
         },
         operations: {
+          'task.start': async () => ({
+            evidence: { reviewIds: options.reviewIds ?? [] },
+            state: 'completed',
+            turn: { id: turnId },
+          }),
+
           'thread.create': async () => ({ id: threadId }),
           'thread.items': async () => ({
             items: [
@@ -246,7 +247,6 @@ function createDistinctTaskModeActorClients(options) {
       getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics'),
       listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
       listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
-      startTaskMode: refuse('admin client must not start Task Mode'),
       submitWorkspaceSyncReviewDecision: refuse('admin client must not submit review cleanup'),
     },
     core: { createWorkspace: refuse('admin client must not create a Workspace') },
@@ -258,6 +258,8 @@ function createDistinctTaskModeActorClients(options) {
       reload: track(fixture.clients.admin.runtimeConfig.reload, adminCalls, 'reload'),
     },
     operations: {
+      'task.start': refuse('admin client must not start Task Mode'),
+
       'thread.create': refuse('admin client must not create a Thread'),
       'thread.items': refuse('admin client must not list thread items'),
     },
@@ -278,7 +280,11 @@ function createDistinctTaskModeActorClients(options) {
     productCalls,
     'listWorkspaceRuntimeEvidence'
   );
-  product.app.startTaskMode = track(product.app.startTaskMode, productCalls, 'startTaskMode');
+  product.operations['task.start'] = track(
+    product.operations['task.start'],
+    productCalls,
+    'startTaskMode'
+  );
   product.app.submitWorkspaceSyncReviewDecision = track(
     product.app.submitWorkspaceSyncReviewDecision,
     productCalls,
@@ -598,8 +604,8 @@ describe('real Task Mode worker L3 test policy', () => {
         status: 'applied',
       };
     };
-    const originalStartTaskMode = fixture.clients.core.app.startTaskMode;
-    fixture.clients.core.app.startTaskMode = async (...args) => {
+    const originalStartTaskMode = fixture.clients.core.operations['task.start'];
+    fixture.clients.core.operations['task.start'] = async (...args) => {
       calls.push('startTaskMode');
       return originalStartTaskMode(...args);
     };
@@ -678,7 +684,7 @@ describe('real Task Mode worker L3 test policy', () => {
         runtimeConfig: { pendingRestart: plan.requiresRestart },
         status: 'applied',
       });
-      fixture.clients.core.app.startTaskMode = async () => {
+      fixture.clients.core.operations['task.start'] = async () => {
         startTaskModeCalls += 1;
         return { evidence: { reviewIds: [] }, state: 'completed', turn: { id: 'turn_acceptance' } };
       };
@@ -1108,7 +1114,7 @@ describe('real Task Mode worker L3 test policy', () => {
       fixture.clients.admin.runtimeConfig.reload = async () => {
         reloadCalls += 1;
       };
-      fixture.clients.core.app.startTaskMode = async () => {
+      fixture.clients.core.operations['task.start'] = async () => {
         startTaskModeCalls += 1;
         return {
           evidence: { reviewIds: [] },
@@ -1351,7 +1357,7 @@ describe('real Task Mode worker L3 test policy', () => {
       runtimeEvidenceCalls += 1;
       return { runtimeEvidence: [turnEvidence, { ...turnEvidence, turnId: 'turn_other' }] };
     };
-    fixture.clients.core.app.startTaskMode = async () => ({
+    fixture.clients.core.operations['task.start'] = async () => ({
       evidence: { reviewIds: [] },
       state: 'failed',
       turn: { id: turnEvidence.turnId },
@@ -1432,7 +1438,7 @@ describe('real Task Mode worker L3 test policy', () => {
       runtimeEvidenceCalls += 1;
       throw new Error('Runtime evidence read failed.');
     };
-    fixture.clients.core.app.startTaskMode = async () => ({
+    fixture.clients.core.operations['task.start'] = async () => ({
       evidence: { reviewIds: [] },
       state: 'failed',
       turn: { id: 'turn_acceptance' },

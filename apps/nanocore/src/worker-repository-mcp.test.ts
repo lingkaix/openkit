@@ -28,6 +28,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
@@ -436,17 +437,23 @@ describe('selected repository MCP', () => {
         }),
         vaultUnlockState: f.vaultUnlockState,
       });
-      const response = await app.request(`/api/approvals/${item.approvalRequestId}/respond`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: f.active().turn.id,
-          requestId: randomUUID(),
-          decision: 'granted',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: item.approvalRequestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: f.active().turn.id,
+              requestId: randomUUID(),
+              decision: 'granted',
+            }),
+          }
+        )
+      );
       expect(response.status, await response.clone().text()).toBe(200);
       expect(
         f.workspaceDb.sqlite
@@ -482,18 +489,21 @@ describe('selected repository MCP', () => {
         vaultUnlockState: f.vaultUnlockState,
       });
       const response = await app.request(
-        `/api/approvals/${approvalItem.approvalRequestId}/respond`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: f.active().turn.id,
-            requestId: randomUUID(),
-            decision: 'granted',
-          }),
-        }
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: approvalItem.approvalRequestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: f.active().turn.id,
+              requestId: randomUUID(),
+              decision: 'granted',
+            }),
+          }
+        )
       );
       expect(response.status, await response.clone().text()).toBe(200);
       expect(

@@ -1,17 +1,19 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { KernelCommandError } from './generative-kernel/errors.js';
+import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createPolicyApprovalGate } from './policy/approval-gates.js';
+import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -94,24 +96,48 @@ function respondToPolicyApproval(
   requestId: string,
   decision: 'denied' | 'granted' = 'granted'
 ): Promise<Response> {
-  return fixture.app.request(`/api/approvals/${fixture.gate.approvalId}/respond`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      decision,
-      requestId,
-      threadId: fixture.turn.threadId,
-      turnId: fixture.turn.id,
-      workspaceId: fixture.turn.workspaceId,
-    }),
-  });
+  return fixture.app.request(
+    ...operationRequest(
+      'approval.respond',
+      { approvalRequestId: fixture.gate.approvalId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          decision,
+          requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workspaceId: fixture.turn.workspaceId,
+        }),
+      }
+    )
+  );
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('approval response routes', () => {
+describe('Pending Request operations', () => {
+  it.each([
+    new KernelCommandError('unavailable', 'Kernel receipt owner unavailable.'),
+    new TurnStartValidationError('recovery_required', 'Turn receipt owner needs recovery.', 409),
+    new KnowledgePageValidationError(),
+  ])('preserves the command error $code and status $status from a receipt dependency', async (error) => {
+    const f = createPolicyApprovalFixture();
+    try {
+      vi.spyOn(f.store, 'getCommandRequest').mockImplementation(() => {
+        throw error;
+      });
+      const response = await respondToPolicyApproval(f, '00000000-0000-4000-8000-000000000201');
+      expect(response.status).toBe(error.status);
+      expect(await response.json()).toMatchObject({ code: error.code, message: error.message });
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('rejects tool.use without the exact worker owner tuple', async () => {
     const fixture = createPolicyApprovalFixture('tool.use');
 
@@ -457,17 +483,23 @@ describe('approval response routes', () => {
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
-      const response = await app.request('/api/approvals/ap_runtime_scope/respond', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          decision: 'granted',
-          requestId: '00000000-0000-4000-8000-000000000106',
-          threadId: 'th_wrong',
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: 'ap_runtime_scope' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              decision: 'granted',
+              requestId: '00000000-0000-4000-8000-000000000106',
+              threadId: 'th_wrong',
+              turnId: turn.id,
+              workspaceId: turn.workspaceId,
+            }),
+          }
+        )
+      );
 
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({
@@ -511,17 +543,23 @@ describe('approval response routes', () => {
     const respondApproval = vi.spyOn(executor, 'respondApproval');
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
-    const response = await app.request('/api/approvals/ap_runtime_unsupported/respond', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        decision: 'granted',
-        requestId: '00000000-0000-4000-8000-000000000109',
-        threadId: turn.threadId,
-        turnId: turn.id,
-        workspaceId: turn.workspaceId,
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'approval.respond',
+        { approvalRequestId: 'ap_runtime_unsupported' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            decision: 'granted',
+            requestId: '00000000-0000-4000-8000-000000000109',
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workspaceId: turn.workspaceId,
+          }),
+        }
+      )
+    );
 
     try {
       expect(response.status).toBe(409);

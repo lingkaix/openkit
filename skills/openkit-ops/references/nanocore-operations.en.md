@@ -185,7 +185,7 @@ Non-interactive ops that only have a usable `server-admin` bearer can:
 
 1. `openkit ops call workspace.list --input -` with `{}` (App authorized set; expects 200).
 2. Create or select a **workspace-visible** Thread in the target Workspace.
-3. `openkit ops call task.start` (or `POST .../threads/{threadId}/task`) with an actionable prompt and `workerStorageChoice: { "kind": "fresh" }`.
+3. `openkit ops call task.start` (or `POST /api/app/operations/task.start`) with an actionable prompt and `workerStorageChoice: { "kind": "fresh" }`.
 
 Do not print token secrets. Prefer rotating into a named local destination via `token.create` / `token.rotate` when issuing dedicated automation credentials.
 

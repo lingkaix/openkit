@@ -14,6 +14,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -158,18 +159,24 @@ describe('pending requests', () => {
         completedAt: NOW,
       });
       raiseRecordedPendingRequest(store, db.sqlite, input);
-      const response = await app.request(`/api/approvals/${input.requestId}/respond`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          workspaceId: input.workspaceId,
-          threadId: input.threadId,
-          turnId: turn.id,
-          decision: 'granted',
-          requestId: '00000000-0000-4000-8000-000000000941',
-          previewAvailable: true,
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: input.requestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: input.workspaceId,
+              threadId: input.threadId,
+              turnId: turn.id,
+              decision: 'granted',
+              requestId: '00000000-0000-4000-8000-000000000941',
+              previewAvailable: true,
+            }),
+          }
+        )
+      );
       expect(response.status, await response.clone().text()).toBe(409);
       expect(await response.json()).toMatchObject({ code: 'approval_preview_unavailable' });
       expect(readPendingRequest(db.sqlite, input.requestId)).toMatchObject({
@@ -181,21 +188,24 @@ describe('pending requests', () => {
         count: 0,
       });
       const end = await app.request(
-        ending === 'denied'
-          ? `/api/approvals/${input.requestId}/respond`
-          : `/api/pending-requests/${input.requestId}/withdraw`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: input.workspaceId,
-            threadId: input.threadId,
-            ...(ending === 'denied'
-              ? { turnId: turn.id, decision: 'denied' }
-              : { pendingRequestId: input.requestId }),
-            requestId: '00000000-0000-4000-8000-000000000942',
-          }),
-        }
+        ...operationRequest(
+          ending === 'denied' ? 'approval.respond' : 'pending-request.withdraw',
+          ending === 'denied'
+            ? { approvalRequestId: input.requestId }
+            : { pendingRequestId: input.requestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: input.workspaceId,
+              threadId: input.threadId,
+              ...(ending === 'denied'
+                ? { turnId: turn.id, decision: 'denied' }
+                : { pendingRequestId: input.requestId }),
+              requestId: '00000000-0000-4000-8000-000000000942',
+            }),
+          }
+        )
       );
       expect(end.status, await end.clone().text()).toBe(200);
       expect(readPendingRequest(db.sqlite, input.requestId)).toMatchObject(
@@ -979,7 +989,9 @@ describe('pending requests', () => {
           "UPDATE pending_requests SET request_item_id='it_nonexistent' WHERE request_id='ap_attention_bad'"
         )
         .run();
-      const response = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const response = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       expect(response.status).toBe(200);
       const body = await response.json();
       const rows = body.items ?? body.rows;
@@ -1352,17 +1364,23 @@ describe('pending requests', () => {
       db.sqlite.close();
     }
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
-    const response = await app.request('/api/approvals/ap_supply/respond', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        decision: 'granted',
-        requestId: '00000000-0000-4000-8000-000000000701',
-        threadId: 'th_demo',
-        turnId: turn.id,
-        workspaceId: 'ws_demo',
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'approval.respond',
+        { approvalRequestId: 'ap_supply' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            decision: 'granted',
+            requestId: '00000000-0000-4000-8000-000000000701',
+            threadId: 'th_demo',
+            turnId: turn.id,
+            workspaceId: 'ws_demo',
+          }),
+        }
+      )
+    );
     expect(response.status, await response.clone().text()).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ id: 'ap_supply', status: 'granted' });
     const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
@@ -1462,60 +1480,84 @@ describe('pending requests', () => {
       db.sqlite.close();
     }
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
-    const secret = await app.request('/api/user-input-requests/ui_secret/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        userInputRequestId: 'ui_secret',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '00000000-0000-4000-8000-000000000702',
-        answers: { secret: ['hidden'] },
-      }),
-    });
+    const secret = await app.request(
+      ...operationRequest(
+        'question.answer',
+        { userInputRequestId: 'ui_secret' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            userInputRequestId: 'ui_secret',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000702',
+            answers: { secret: ['hidden'] },
+          }),
+        }
+      )
+    );
     expect(secret.status).toBe(400);
     await expect(secret.json()).resolves.toMatchObject({ code: 'secret_input_not_supported' });
-    const answered = await app.request('/api/user-input-requests/ui_path/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        userInputRequestId: 'ui_path',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '00000000-0000-4000-8000-000000000703',
-        answers: { path: ['left'] },
-        futureSafeField: 'ignored-command-metadata',
-      }),
-    });
+    const answered = await app.request(
+      ...operationRequest(
+        'question.answer',
+        { userInputRequestId: 'ui_path' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            userInputRequestId: 'ui_path',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000703',
+            answers: { path: ['left'] },
+            futureSafeField: 'ignored-command-metadata',
+          }),
+        }
+      )
+    );
     expect(answered.status, await answered.clone().text()).toBe(200);
     const persisted = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     expect(
       JSON.stringify(persisted.sqlite.prepare('SELECT * FROM pending_requests').all())
     ).not.toContain('ignored-command-metadata');
     persisted.sqlite.close();
-    const again = await app.request('/api/user-input-requests/ui_path/answer', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        userInputRequestId: 'ui_path',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '00000000-0000-4000-8000-000000000704',
-        answers: { path: ['right'] },
-      }),
-    });
+    const again = await app.request(
+      ...operationRequest(
+        'question.answer',
+        { userInputRequestId: 'ui_path' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            userInputRequestId: 'ui_path',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000704',
+            answers: { path: ['right'] },
+          }),
+        }
+      )
+    );
     expect(again.status).toBe(409);
     await expect(again.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
-    const withdrawn = await app.request('/api/pending-requests/ui_secret/withdraw', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        pendingRequestId: 'ui_secret',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '00000000-0000-4000-8000-000000000705',
-      }),
-    });
+    const withdrawn = await app.request(
+      ...operationRequest(
+        'pending-request.withdraw',
+        { pendingRequestId: 'ui_secret' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            pendingRequestId: 'ui_secret',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000705',
+          }),
+        }
+      )
+    );
     expect(withdrawn.status, await withdrawn.clone().text()).toBe(200);
     await expect(withdrawn.json()).resolves.toMatchObject({
       requestId: 'ui_secret',

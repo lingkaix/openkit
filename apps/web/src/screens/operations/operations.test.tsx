@@ -355,7 +355,6 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     },
     app: {
       getWorkspaceDashboard: vi.fn().mockResolvedValue({ activeWork: [] }),
-      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listInterruptedWorkers: vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
       retryInterruptedWorkerCheckpoint: vi.fn().mockResolvedValue(WORKER_RETRY_SUCCESS),
       listSchedulerAdmissions: vi
@@ -371,11 +370,11 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     agents: {
       list: vi.fn().mockResolvedValue({ items: [] }),
     },
-    actionCenter: {
-      listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
-    },
 
     operations: {
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
+
       ...core,
       ...app,
       'workspace.list': vi
@@ -1979,7 +1978,9 @@ describe('Recovery and search', () => {
     expect(useWorkspaceStore.getState().currentWorkspaceId).not.toBe(WORKSPACE.id);
     expect(events).toEqual(['workspace', 'navigate']);
     await waitFor(() =>
-      expect(vi.mocked(client.app.listConversationNavigation)).toHaveBeenCalledWith(WORKSPACE_B.id)
+      expect(vi.mocked(client.operations['conversation.navigation'])).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_B.id,
+      })
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
     unsubscribe();
@@ -3154,7 +3155,7 @@ describe('Recovery and search', () => {
         search: vi.fn().mockResolvedValue({ items: scenario.items }),
         'thread.dashboard': getThreadDashboard,
         getWorkspaceDashboard,
-        listConversationNavigation,
+        'conversation.navigation': listConversationNavigation,
       },
       {
         'workspace.list': vi.fn().mockReturnValue(discovery.promise),
@@ -3197,7 +3198,9 @@ describe('Recovery and search', () => {
       discovery.resolve({ items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({ workspace })) });
       await discovery.promise;
     });
-    await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE.id));
+    await waitFor(() =>
+      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id })
+    );
     const workspaceAReadsBeforeDestination = [
       getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
@@ -3206,8 +3209,9 @@ describe('Recovery and search', () => {
         .length,
       listThreadItems.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
         .length,
-      listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
-        .length,
+      listConversationNavigation.mock.calls.filter(
+        ([{ workspaceId }]) => workspaceId === WORKSPACE.id
+      ).length,
     ];
 
     if (pathname !== scenario.destination) {
@@ -3224,11 +3228,14 @@ describe('Recovery and search', () => {
         .length,
       listThreadItems.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
         .length,
-      listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
-        .length,
+      listConversationNavigation.mock.calls.filter(
+        ([{ workspaceId }]) => workspaceId === WORKSPACE.id
+      ).length,
     ]).toEqual(workspaceAReadsBeforeDestination);
     if (scenario.destination === '/') {
-      await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE_B.id));
+      await waitFor(() =>
+        expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id })
+      );
     } else {
       await waitFor(() =>
         expect(getThread).toHaveBeenCalledWith({

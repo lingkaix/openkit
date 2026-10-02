@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
-
 import { ensureLocalUser } from './auth/identity.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -26,8 +25,9 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createApp } from './test-support/app.js';
+import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const STORAGE_REF = `wst_${'1'.repeat(32)}`;
@@ -303,36 +303,45 @@ describe('Assistant pending input', () => {
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     try {
       const initial = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: conversationBody({
-            input: 'Help',
-            requestId: '00000000-0000-4000-8000-000000000881',
-            targetRef: 'internal-role:assistant',
-          }),
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: conversationBody({
+              input: 'Help',
+              requestId: '00000000-0000-4000-8000-000000000881',
+              targetRef: 'internal-role:assistant',
+            }),
+          }
+        )
       );
       expect(initial.status, await initial.clone().text()).toBe(202);
       const first = SubmitConversationResponseSchema.parse(await initial.json());
       expect(first.outcome).toBe('clarification-needed');
       const requestId = `ui_chat_clarify_${first.turn.id}`;
-      const response = await app.request(`/api/user-input-requests/${requestId}/answer`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          userInputRequestId: requestId,
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '00000000-0000-4000-8000-000000000882',
-          answers: {
-            chat_clarification: [
-              'Implement a bounded README correction and run its focused tests.',
-            ],
-          },
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'question.answer',
+          { userInputRequestId: requestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              userInputRequestId: requestId,
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '00000000-0000-4000-8000-000000000882',
+              answers: {
+                chat_clarification: [
+                  'Implement a bounded README correction and run its focused tests.',
+                ],
+              },
+            }),
+          }
+        )
+      );
       expect(response.status, await response.clone().text()).toBe(200);
       for (
         let i = 0;
@@ -377,7 +386,7 @@ describe('conversation.submit worker storage choice', () => {
     const store = createDemoStore({ dataRoot });
     const executor = new CompletingTurnExecutor();
     const workerSetup = createTestAgentSetup();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
@@ -390,11 +399,17 @@ describe('conversation.submit worker storage choice', () => {
     const createTurn = vi.spyOn(store, 'createTurn');
     let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
     const submit = (input: string, requestId: string) =>
-      app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
-        body: conversationBody({ input, requestId, targetRef: 'new-task-worker' }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: conversationBody({ input, requestId, targetRef: 'new-task-worker' }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
 
     try {
       const rejected = await submit('x'.repeat(2073), '0190f4c8-0000-7000-8000-000000000601');
@@ -465,7 +480,7 @@ describe('conversation.submit worker storage choice', () => {
       createdAt: '2026-09-16T00:00:00.000Z',
       updatedAt: '2026-09-16T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
       store,
@@ -473,17 +488,20 @@ describe('conversation.submit worker storage choice', () => {
     });
 
     const assistantRes = await app.request(
-      '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-      {
-        body: conversationBody({
-          input: 'Answer from Assistant.',
-          requestId: 'req_choice_assistant',
-          targetRef: 'internal-role:assistant',
-          workerStorageChoice: SELECTED_CHOICE,
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'conversation.submit',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          body: conversationBody({
+            input: 'Answer from Assistant.',
+            requestId: 'req_choice_assistant',
+            targetRef: 'internal-role:assistant',
+            workerStorageChoice: SELECTED_CHOICE,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(assistantRes.status).toBe(409);
     await expect(assistantRes.json()).resolves.toMatchObject({
@@ -493,17 +511,20 @@ describe('conversation.submit worker storage choice', () => {
     expect(store.listCommandRequests()).toEqual([]);
 
     const runningRes = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/conversation-turns`,
-      {
-        body: conversationBody({
-          input: 'Continue this Worker.',
-          requestId: 'req_choice_running',
-          targetRef: `running-worker:${encodeURIComponent(thread.id)}:${encodeURIComponent(workerSetup.manifest.id)}`,
-          workerStorageChoice: { kind: 'fresh' },
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'conversation.submit',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        {
+          body: conversationBody({
+            input: 'Continue this Worker.',
+            requestId: 'req_choice_running',
+            targetRef: `running-worker:${encodeURIComponent(thread.id)}:${encodeURIComponent(workerSetup.manifest.id)}`,
+            workerStorageChoice: { kind: 'fresh' },
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(runningRes.status).toBe(409);
     await expect(runningRes.json()).resolves.toMatchObject({
@@ -520,7 +541,7 @@ describe('conversation.submit worker storage choice', () => {
     const store = createDemoStore({ dataRoot });
     const executor = new CompletingTurnExecutor();
     const workerSetup = createTestAgentSetup();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
@@ -543,12 +564,15 @@ describe('conversation.submit worker storage choice', () => {
 
     try {
       const response = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(response.status, await response.clone().text()).toBe(202);
       const accepted = SubmitConversationResponseSchema.parse(await response.json());
@@ -562,29 +586,35 @@ describe('conversation.submit worker storage choice', () => {
       ).toEqual([expect.objectContaining({ workerStorageChoice: admittedChoice })]);
 
       const replay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
       expect(executor.startContexts).toHaveLength(1);
 
       const conflict = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: conversationBody({
-            input,
-            requestId,
-            targetRef: 'new-task-worker',
-            workerStorageChoice: { kind: 'fresh' },
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: conversationBody({
+              input,
+              requestId,
+              targetRef: 'new-task-worker',
+              workerStorageChoice: { kind: 'fresh' },
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(conflict.status).toBe(409);
       await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
@@ -608,7 +638,7 @@ describe('conversation.submit worker acceptance wait', () => {
     const store = createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor();
     const workerSetup = createTestAgentSetup();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
@@ -629,16 +659,22 @@ describe('conversation.submit worker acceptance wait', () => {
     });
     const artifactRefs = [{ artifactId: artifact.id, artifactVersion: artifact.version }];
 
-    const pending = app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
-      body: conversationBody({
-        artifactRefs,
-        input: 'Keep this Task Worker running.',
-        requestId,
-        targetRef: 'new-task-worker',
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const pending = app.request(
+      ...operationRequest(
+        'conversation.submit',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          body: conversationBody({
+            artifactRefs,
+            input: 'Keep this Task Worker running.',
+            requestId,
+            targetRef: 'new-task-worker',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     let receivingId: string | undefined;
     let workerTurnId: string | undefined;
 
@@ -698,17 +734,20 @@ describe('conversation.submit worker acceptance wait', () => {
         }),
       });
       const replay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: conversationBody({
-            artifactRefs,
-            input: 'Keep this Task Worker running.',
-            requestId,
-            targetRef: 'new-task-worker',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: conversationBody({
+              artifactRefs,
+              input: 'Keep this Task Worker running.',
+              requestId,
+              targetRef: 'new-task-worker',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(accepted);
@@ -717,17 +756,20 @@ describe('conversation.submit worker acceptance wait', () => {
       ).toHaveLength(1);
       store.updateItem(accepted.item.id, { title: 'Worker Turn failed' });
       const contradictedReplay = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
-        {
-          body: conversationBody({
-            artifactRefs,
-            input: 'Keep this Task Worker running.',
-            requestId,
-            targetRef: 'new-task-worker',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: conversationBody({
+              artifactRefs,
+              input: 'Keep this Task Worker running.',
+              requestId,
+              targetRef: 'new-task-worker',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       expect(contradictedReplay.status).toBe(409);
       await expect(contradictedReplay.json()).resolves.toMatchObject({
@@ -735,16 +777,22 @@ describe('conversation.submit worker acceptance wait', () => {
       });
       store.updateItem(accepted.item.id, { title: accepted.item.title });
       const replayAcceptedRequest = () =>
-        app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
-          body: conversationBody({
-            artifactRefs,
-            input: 'Keep this Task Worker running.',
-            requestId,
-            targetRef: 'new-task-worker',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        });
+        app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              body: conversationBody({
+                artifactRefs,
+                input: 'Keep this Task Worker running.',
+                requestId,
+                targetRef: 'new-task-worker',
+              }),
+              headers: { 'content-type': 'application/json' },
+              method: 'POST',
+            }
+          )
+        );
       const lease = listSchedulerSessionLeasesForTurn(coreDb, {
         workspaceId: 'ws_demo',
         threadId: receiving.id,
@@ -830,7 +878,7 @@ describe('conversation.submit worker acceptance wait', () => {
     const store = createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor();
     const workerSetup = createTestAgentSetup();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       store,
@@ -852,11 +900,17 @@ describe('conversation.submit worker acceptance wait', () => {
       artifactRefs: [{ artifactId: artifact.id, artifactVersion: artifact.version }],
     });
     const submit = () =>
-      app.request('/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns', {
-        body,
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body,
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
     const pending = submit();
     let accepted: ReturnType<typeof SubmitConversationResponseSchema.parse> | undefined;
@@ -1020,19 +1074,22 @@ describe('mode command failure diagnostics', () => {
     try {
       const requestId = '0190f4c8-0000-7000-8000-000000000951';
       const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/${mode === 'conversation' ? 'conversation-turns' : 'task'}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body:
-            mode === 'conversation'
-              ? conversationBody({
-                  input: 'Implement a bounded README correction.',
-                  requestId,
-                  targetRef: `warm-worker:${setup.manifest.id}:default`,
-                })
-              : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
-        }
+        ...operationRequest(
+          mode === 'conversation' ? 'conversation.submit' : 'task.start',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body:
+              mode === 'conversation'
+                ? conversationBody({
+                    input: 'Implement a bounded README correction.',
+                    requestId,
+                    targetRef: `warm-worker:${setup.manifest.id}:default`,
+                  })
+                : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
+          }
+        )
       );
       expect(response.status, await response.clone().text()).toBe(409);
       expect(await response.json()).toMatchObject({
@@ -1071,19 +1128,22 @@ describe('mode command failure diagnostics', () => {
     try {
       const requestId = '0190f4c8-0000-7000-8000-000000000952';
       const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/${mode === 'conversation' ? 'conversation-turns' : 'task'}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body:
-            mode === 'conversation'
-              ? conversationBody({
-                  input: 'Hello',
-                  requestId,
-                  targetRef: 'internal-role:assistant',
-                })
-              : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
-        }
+        ...operationRequest(
+          mode === 'conversation' ? 'conversation.submit' : 'task.start',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body:
+              mode === 'conversation'
+                ? conversationBody({
+                    input: 'Hello',
+                    requestId,
+                    targetRef: 'internal-role:assistant',
+                  })
+                : JSON.stringify({ input: 'Implement a bounded README correction.', requestId }),
+          }
+        )
       );
       expect(await response.json()).toMatchObject({
         code: mode === 'conversation' ? 'chat_mode_failed' : 'task_mode_start_failed',
@@ -1146,10 +1206,7 @@ describe('reasoning effort admission and replay', () => {
       });
     const app = makeApp(store);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const url =
-      entry === 'turn.start'
-        ? '/api/turns'
-        : '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns';
+    const url = entry === 'turn.start' ? '/api/turns' : '/api/app/operations/conversation.submit';
     const payload =
       entry === 'turn.start'
         ? {
@@ -1167,11 +1224,26 @@ describe('reasoning effort admission and replay', () => {
           };
     const body = { ...payload, ...(supplied !== undefined ? { reasoningEffort: supplied } : {}) };
     const post = (targetApp: typeof app, input: unknown) =>
-      targetApp.request(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(input),
-      });
+      targetApp.request(
+        ...(entry === 'turn.start'
+          ? ([
+              url,
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(input),
+              },
+            ] as [string, RequestInit])
+          : operationRequest(
+              'conversation.submit',
+              { workspaceId: 'ws_demo', threadId: 'th_demo' },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(input),
+              }
+            ))
+      );
     try {
       const response = await post(app, body);
       expect(response.status, await response.clone().text()).toBe(202);
@@ -1245,10 +1317,7 @@ describe('reasoning effort admission and replay', () => {
     const store = createDemoStore();
     const app = createApp({ store });
     const before = store.listThreads('ws_demo').length;
-    const url =
-      entry === 'turn.start'
-        ? '/api/turns'
-        : '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns';
+    const url = entry === 'turn.start' ? '/api/turns' : '/api/app/operations/conversation.submit';
     const input =
       entry === 'turn.start'
         ? {
@@ -1264,11 +1333,26 @@ describe('reasoning effort admission and replay', () => {
             input: 'Run',
             reasoningEffort: 'default',
           };
-    const response = await app.request(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
+    const response = await app.request(
+      ...(entry === 'turn.start'
+        ? ([
+            url,
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(input),
+            },
+          ] as [string, RequestInit])
+        : operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(input),
+            }
+          ))
+    );
     expect(response.status).toBe(400);
     expect(store.listThreads('ws_demo')).toHaveLength(before);
     expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
@@ -1298,7 +1382,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
     },
   ]);
   const base = createTestGatewayConfig();
-  const app = createApp({
+  const app = createAppWithWorkspaceAuthority({
     store: createDemoStore(),
     providerRegistry,
     gatewayConfig: {
@@ -1314,7 +1398,9 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
     agentManifests: [setup.manifest],
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
   });
-  const response = await app.request('/api/app/workspaces/ws_demo/conversation-targets');
+  const response = await app.request(
+    ...operationRequest('conversation.targets', { workspaceId: 'ws_demo' }, undefined)
+  );
   expect(response.status, await response.clone().text()).toBe(200);
   const catalog = await response.json();
   const choices = catalog.targets.find(

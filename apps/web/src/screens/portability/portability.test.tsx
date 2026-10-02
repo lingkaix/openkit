@@ -421,12 +421,7 @@ function emptyVaultUses(workspaceId: string) {
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: {
-    operations?: MethodOverrides;
-    core?: MethodOverrides;
-    app?: MethodOverrides;
-    actionCenter?: MethodOverrides;
-  } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -434,12 +429,7 @@ function makeClient(
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
-    actionCenter: {
-      listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
-      ...overrides.actionCenter,
-    },
     app: {
-      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       exportWorkspace: vi.fn().mockResolvedValue(EXPORT_RESULT),
       dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN),
       importWorkspace: vi
@@ -470,6 +460,9 @@ function makeClient(
     },
 
     operations: {
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+
       ...overrides.operations,
       'workspace.list': vi
         .fn()
@@ -2209,12 +2202,12 @@ describe('Portability', () => {
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(COLLISION.suggestedWorkspaceId);
     expect(screen.getByRole('button', { name: IMPORTED_WORKSPACE.name })).toBeInTheDocument();
     await waitFor(() =>
-      expect(vi.mocked(client.actionCenter.listHumanAttention).mock.calls).toEqual([
-        [COLLISION.suggestedWorkspaceId],
+      expect(vi.mocked(client.operations['attention.list']).mock.calls).toEqual([
+        [{ workspaceId: COLLISION.suggestedWorkspaceId }],
       ])
     );
-    expect(vi.mocked(client.app.listConversationNavigation).mock.calls).toEqual([
-      [COLLISION.suggestedWorkspaceId],
+    expect(vi.mocked(client.operations['conversation.navigation']).mock.calls).toEqual([
+      [{ workspaceId: COLLISION.suggestedWorkspaceId }],
     ]);
     expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
     expect(listWorkspaces).toHaveBeenCalledTimes(2);

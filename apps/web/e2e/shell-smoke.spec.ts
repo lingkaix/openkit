@@ -7,8 +7,8 @@ let stack: IsolatedWebStack | null = null;
 test('contains long conversation previews and keeps the next row clickable', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const title = `Improve the observed retained_baseline_conflict ${'VeryLongUnbrokenTaskIdentifier'.repeat(80)}`;
-  await page.route('**/api/app/workspaces/*/conversations', async (route) => {
-    const workspaceId = new URL(route.request().url()).pathname.split('/')[4]!;
+  await page.route('**/api/app/operations/conversation.navigation', async (route) => {
+    const workspaceId = route.request().postDataJSON().workspaceId;
     await route.fulfill({
       json: {
         items: [title, 'Next conversation'].map((name, index) => ({

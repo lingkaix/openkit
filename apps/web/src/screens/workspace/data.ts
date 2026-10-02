@@ -37,9 +37,9 @@ export const workspaceKeys = {
 /** Re-export workspace selection and Worker conversation paths for Overview / Agents / Knowledge / First-run. */
 export { chatThreadPath, taskThreadPath, useCurrentWorkspaceId, useWorkspaces };
 
-/** Human attention row from `actionCenter.listHumanAttention`. */
+/** Human attention row from `operations['attention.list']`. */
 export type AttentionRow = Awaited<
-  ReturnType<CoreClient['actionCenter']['listHumanAttention']>
+  ReturnType<CoreClient['operations']['attention.list']>
 >['items'][number];
 /** Agent catalog entry from selected-Workspace resources. */
 export type AgentEntry = Awaited<
@@ -187,7 +187,7 @@ export function useHumanAttention(workspaceId: string | null) {
     queryKey: workspaceKeys.attention(workspaceId ?? ''),
     queryFn: async () =>
       sortByWaitingTime(
-        (await client.actionCenter.listHumanAttention(workspaceId as string)).items
+        (await client.operations['attention.list']({ workspaceId: workspaceId as string })).items
       ),
     enabled: Boolean(workspaceId),
     refetchInterval: 5_000,
@@ -573,7 +573,8 @@ export function useSubmitKnowledgeProposalDecision() {
       client.operations['knowledge.proposal.decide']({
         workspaceId: input.source.workspaceId,
         proposalId: input.source.knowledgeProposalId,
-        ...{ decision: input.decision, requestId: createRequestId() },
+        decision: input.decision,
+        requestId: createRequestId(),
       }),
     retry: false,
   });
@@ -675,7 +676,8 @@ export function useDecideAttention() {
         row.threadId &&
         row.turnId
       ) {
-        return client.core.respondApproval(row.source.approvalRequestId, {
+        return client.operations['approval.respond']({
+          approvalRequestId: row.source.approvalRequestId,
           workspaceId: row.source.workspaceId,
           threadId: row.source.threadId,
           turnId: row.source.turnId,
@@ -684,7 +686,8 @@ export function useDecideAttention() {
         });
       }
       if (action.kind === 'withdraw_request' && row.source.type === 'approval') {
-        return client.core.withdrawPendingRequest(row.source.approvalRequestId, {
+        return client.operations['pending-request.withdraw']({
+          pendingRequestId: row.source.approvalRequestId,
           workspaceId: row.source.workspaceId,
           threadId: row.source.threadId,
           requestId,
@@ -700,10 +703,8 @@ export function useDecideAttention() {
           workspaceId: row.source.workspaceId,
           artifactId: row.source.artifactId,
           artifactVersion: row.source.artifactVersion,
-          ...{
-            decision: action.kind === 'accept_review' ? 'accepted' : 'rejected',
-            requestId,
-          },
+          decision: action.kind === 'accept_review' ? 'accepted' : 'rejected',
+          requestId,
         });
       }
       throw new Error(`Inline decision is not available for action ${action.kind}`);

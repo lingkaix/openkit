@@ -23,8 +23,9 @@ import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './sc
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
-import { createApp } from './test-support/app.js';
+import { type createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -61,7 +62,7 @@ function createAuthorizedCoreApp(
       workspaceId: workspace.id,
     });
   }
-  return createApp({ coreDb, store });
+  return createAppWithWorkspaceAuthority({ coreDb, store });
 }
 
 /** Installs one failed-health catalog summary after createApp wires the live projection. */
@@ -354,7 +355,7 @@ describe('action center app API', () => {
 
     try {
       const response = await createAuthorizedCoreApp(coreDb, store).request(
-        '/api/app/workspaces/ws_missing/action-center'
+        ...operationRequest('attention.list', { workspaceId: 'ws_missing' }, undefined)
       );
 
       expect(response.status).toBe(403);
@@ -487,7 +488,9 @@ describe('action center app API', () => {
     }
     const app = createAuthorizedCoreApp(coreDb, store);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const res = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
 
     expect(res.status).toBe(200);
     expect(ListHumanAttentionResponseSchema.parse(await res.json()).items).toEqual([
@@ -545,7 +548,9 @@ describe('action center app API', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const incompleteWorkerGate = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const incompleteWorkerGate = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
     expect(
       ListHumanAttentionResponseSchema.parse(await incompleteWorkerGate.json()).items.map(
         (item) => item.id
@@ -554,7 +559,7 @@ describe('action center app API', () => {
     coreDb.sqlite.close();
   });
 
-  it('projects actionable rows only to the currently eligible actor', async () => {
+  it('projects eligible member actions and admits an administrator to foreign private requests', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const thread = store.createThread('ws_demo', 'Actor-scoped attention');
@@ -711,7 +716,7 @@ describe('action center app API', () => {
         scope,
         workspaceIds: ['ws_demo'],
       }).secret;
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),
@@ -780,9 +785,15 @@ describe('action center app API', () => {
 
     try {
       for (const testCase of cases) {
-        const response = await app.request('/api/app/workspaces/ws_demo/action-center', {
-          headers: { authorization: `Bearer ${testCase.secret}` },
-        });
+        const response = await app.request(
+          ...operationRequest(
+            'attention.list',
+            { workspaceId: 'ws_demo' },
+            {
+              headers: { authorization: `Bearer ${testCase.secret}` },
+            }
+          )
+        );
         expect(response.status, testCase.name).toBe(testCase.status);
         if (response.status === 200) {
           const visibleIds = ListHumanAttentionResponseSchema.parse(await response.json())
@@ -791,6 +802,35 @@ describe('action center app API', () => {
           expect(visibleIds, testCase.name).toEqual(testCase.visibleIds);
         }
       }
+
+      store.updateThread('ws_demo', thread.id, {
+        visibility: 'private',
+        privateOwnerUserId: 'user_responsible',
+      });
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_owner',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      }).secret;
+      const adminResponse = await app.request(
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: 'ws_demo' },
+          { headers: { authorization: `Bearer ${admin}` } }
+        )
+      );
+      expect(adminResponse.status).toBe(200);
+      expect(
+        ListHumanAttentionResponseSchema.parse(await adminResponse.json()).items.map(
+          (row) => row.id
+        )
+      ).toEqual(
+        expect.arrayContaining([
+          `approval:${approval.id}`,
+          `question:${questionItem.userInputRequestId}`,
+        ])
+      );
     } finally {
       coreDb.sqlite.close();
     }
@@ -858,7 +898,9 @@ describe('action center app API', () => {
         createdAt: '2026-05-31T00:01:00.000Z',
       });
       const app = createAuthorizedCoreApp(coreDb, store);
-      const response = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      const response = await app.request(
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
+      );
       const responsePayload = await response.json();
       expect(response.status, JSON.stringify(responsePayload)).toBe(200);
       const rows = ListHumanAttentionResponseSchema.parse(responsePayload).items.filter(
@@ -896,7 +938,7 @@ describe('action center app API', () => {
 
       store.updateTurn(turn.id, { agentId: null });
       const contradictoryResponse = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
       expect(
         ListHumanAttentionResponseSchema.parse(await contradictoryResponse.json()).items.some(
@@ -917,7 +959,7 @@ describe('action center app API', () => {
         decidedAt: '2026-05-31T00:02:00.000Z',
       });
       const decidedResponse = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
       expect(
         ListHumanAttentionResponseSchema.parse(await decidedResponse.json()).items.some(
@@ -990,9 +1032,11 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createApp({ store });
+    const app = createAppWithWorkspaceAuthority({ store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const res = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
 
     expect(ListHumanAttentionResponseSchema.parse(await res.json())).toEqual({ items: [] });
   });
@@ -1083,9 +1127,11 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createApp({ store });
+    const app = createAppWithWorkspaceAuthority({ store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const res = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
 
     expect(ListHumanAttentionResponseSchema.parse(await res.json())).toEqual({ items: [] });
   });
@@ -1129,7 +1175,9 @@ describe('action center app API', () => {
       });
 
       const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const res = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const byId = new Map(
         ListHumanAttentionResponseSchema.parse(await res.json()).items.map((row) => [row.id, row])
       );
@@ -1207,7 +1255,9 @@ describe('action center app API', () => {
       });
 
       const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const res = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const items = ListHumanAttentionResponseSchema.parse(await res.json()).items;
 
       expect(res.status).toBe(200);
@@ -1305,7 +1355,9 @@ describe('action center app API', () => {
         );
 
       const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const res = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const byId = new Map(
         ListHumanAttentionResponseSchema.parse(await res.json()).items.map((row) => [row.id, row])
       );
@@ -1400,14 +1452,16 @@ describe('action center app API', () => {
     }
     const app = createAuthorizedCoreApp(coreDb, store);
 
-    const res = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const res = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
     const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
       (item) => item.id === `question:${questionItem.userInputRequestId}`
     );
 
     expect(row?.actions.find((action) => action.kind === 'answer_question')).toMatchObject({
       method: 'POST',
-      href: `/api/user-input-requests/${questionItem.userInputRequestId}/answer`,
+      href: '/api/app/operations/question.answer',
     });
     coreDb.sqlite.close();
   });
@@ -1475,8 +1529,26 @@ describe('action center app API', () => {
         workspaceDb.sqlite.close();
       }
 
-      const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const memberToken = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace',
+        workspaceIds: [workspace.id],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+      const res = await app.request(
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: workspace.id },
+          { headers: { authorization: `Bearer ${memberToken}` } }
+        )
+      );
       const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
         (item) => item.id === 'workspace-review:swr_durable_review'
       );
@@ -1556,8 +1628,26 @@ describe('action center app API', () => {
         workspaceDb.sqlite.close();
       }
 
-      const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const memberToken = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace',
+        workspaceIds: [workspace.id],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+      const res = await app.request(
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: workspace.id },
+          { headers: { authorization: `Bearer ${memberToken}` } }
+        )
+      );
       const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
         (item) => item.id === `workspace-review:${reviewId}`
       );
@@ -1697,7 +1787,7 @@ describe('action center app API', () => {
       });
       const app = createAuthorizedCoreApp(coreDb, store);
       const pendingResponse = await app.request(
-        `/api/app/workspaces/${workspace.id}/action-center`
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
       const pendingRows = ListHumanAttentionResponseSchema.parse(
         await pendingResponse.json()
@@ -1726,7 +1816,9 @@ describe('action center app API', () => {
         workspaceId: workspace.id,
       });
 
-      const response = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      const response = await app.request(
+        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
+      );
       const resolvedRows = ListHumanAttentionResponseSchema.parse(await response.json()).items;
       const rowIds = resolvedRows.map((row) => row.id);
       const resolvedWorkspaceReview = resolvedRows.find(
@@ -1798,8 +1890,26 @@ describe('action center app API', () => {
         workspaceDb.sqlite.close();
       }
 
-      const app = createAuthorizedCoreApp(coreDb, store);
-      const res = await app.request(`/api/app/workspaces/${workspace.id}/action-center`);
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'user_local',
+        workspaceId: workspace.id,
+      });
+      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const memberToken = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'workspace',
+        workspaceIds: [workspace.id],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+      const res = await app.request(
+        ...operationRequest(
+          'attention.list',
+          { workspaceId: workspace.id },
+          { headers: { authorization: `Bearer ${memberToken}` } }
+        )
+      );
       const rows = ListHumanAttentionResponseSchema.parse(await res.json()).items;
       const row = rows.find((item) => item.id === 'workspace-recovery:wrr_requires_human');
 

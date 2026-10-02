@@ -30,6 +30,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const requestId = '00000000-0000-4000-8000-000000000111';
@@ -1494,7 +1495,9 @@ describe('Knowledge Manager answer operation', () => {
     await expect(missingReceiptRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
     expect(store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
 
-    const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const actionCenterRes = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
     expect(actionCenterRes.status).toBe(200);
     const actionCenter = (await actionCenterRes.json()) as { items: Array<{ id: string }> };
     expect(actionCenter.items).toEqual([
@@ -1582,7 +1585,9 @@ describe('Knowledge Manager answer operation', () => {
       }),
     ]);
 
-    const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const actionCenterRes = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 
@@ -1692,7 +1697,9 @@ describe('Knowledge Manager answer operation', () => {
       ],
     });
 
-    const actionCenterRes = await app.request('/api/app/workspaces/ws_demo/action-center');
+    const actionCenterRes = await app.request(
+      ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+    );
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 

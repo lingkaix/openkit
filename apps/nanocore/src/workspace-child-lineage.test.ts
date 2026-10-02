@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { artifactOperationRequest } from './test-support/artifact-operation.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** One direct Core request expected to fail closed on child lineage. */
@@ -242,7 +242,7 @@ describe('Workspace child lineage', () => {
       ],
     ] as const) {
       const response = await fixture.app.request(
-        ...artifactOperationRequest(
+        ...operationRequest(
           id,
           { workspaceId: fixture.allowedWorkspace.id, artifactId: fixture.foreignArtifact.id },
           { body: JSON.stringify(child) }

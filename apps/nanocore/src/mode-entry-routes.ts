@@ -5,10 +5,10 @@ import {
   ConversationTargetCatalogSchema,
   QuickChatRequestSchema,
   QuickChatResponseSchema,
-  StartTaskModeRequestSchema,
+  type StartTaskModeRequestSchema,
   type StartTaskModeResponse,
   StartTaskModeResponseSchema,
-  SubmitConversationRequestSchema,
+  type SubmitConversationRequestSchema,
   SubmitConversationResponseSchema,
   type TaskDelegationDecision,
   type TaskModeEvidence,
@@ -21,24 +21,20 @@ import {
   type StopReason,
   TurnSchema,
 } from '@openkit/protocol';
-import type { Context, Hono } from 'hono';
+import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import {
   apiErrorPayload,
   asApiError,
-  asCommandError,
   asInvalidRequestError,
   publishedErrorMessage,
 } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
-import {
-  assertAuthorizedWorkspaceLineage,
-  currentWorkspaceAuthority,
-} from './auth/operation-authorizer.js';
+import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
@@ -1438,29 +1434,10 @@ function directTaskKnowledgeRetrievalTraceId(
 function asProviderApiError(
   error: OpenAICompatibleProviderError | LogicalModelRoutesExhaustedError
 ): Response {
-  if (error instanceof LogicalModelRoutesExhaustedError) {
-    return Response.json(apiErrorPayload({ code: error.code, message: error.message }), {
-      status: error.status,
-    });
-  }
-
-  if (error.status === 429) {
-    return Response.json(
-      apiErrorPayload({
-        code: 'provider_rate_limited',
-        message: 'Provider rate limit exceeded.',
-      }),
-      { status: 429 }
-    );
-  }
-
-  return Response.json(
-    apiErrorPayload({
-      code: 'provider_request_failed',
-      message: 'Provider request failed.',
-    }),
-    { status: error.status }
-  );
+  const failure = providerCommandError(error);
+  return Response.json(apiErrorPayload({ code: failure.code, message: failure.message }), {
+    status: failure.status,
+  });
 }
 
 /**
@@ -2049,42 +2026,10 @@ function taskModeEvidenceForTurn(
 }
 
 /**
- * Requires one Thread to belong to the centrally authorized path Workspace.
- *
- * @param context Request context carrying optional central authorization in Core-backed mode.
- * @param store Existing Thread owner.
- * @param workspaceId Authorized path Workspace.
- * @param threadId Child Thread identifier.
- * @returns Existing Thread after lineage verification.
- * @throws The original missing error in no-Core tests, or uniform Workspace denial in guarded mode.
- */
-function requireAuthorizedModeThread(
-  context: Context<{ Variables: AuthVariables }>,
-  store: FsStore,
-  workspaceId: string,
-  threadId: string
-): ReturnType<FsStore['getThread']> {
-  const workspaceAccess = context.get('workspaceAccess');
-  let thread: ReturnType<FsStore['getThread']>;
-  try {
-    thread = store.getThread(workspaceId, threadId);
-  } catch (error) {
-    if (workspaceAccess) {
-      assertAuthorizedWorkspaceLineage(workspaceAccess, null);
-    }
-    throw error;
-  }
-  if (workspaceAccess) {
-    assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
-  }
-  return thread;
-}
-
-/**
- * Registers Quick Chat and Chat Mode entry routes.
+ * Registers Quick Chat and supplies the existing conversation entry owner.
  *
  * @param dependencies Hono app and shared app composition callbacks.
- * @returns Explicit interrupt control for active internal Chat provider work only.
+ * @returns Conversation commands and explicit interrupt and pending-input controls.
  */
 export function registerQuickAndChatModeRoutes({
   app,
@@ -2096,7 +2041,6 @@ export function registerQuickAndChatModeRoutes({
   providerSubscriptionAccountManager,
   providerCredentialConfigured,
   repositoryWorkspaceDb,
-  requestStore,
   resolveGatewayProvider,
   runtimeConfig,
   startModeWorkerTurn,
@@ -2116,7 +2060,6 @@ export function registerQuickAndChatModeRoutes({
   /** Current API-key presence without resolving Vault material. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly startModeWorkerTurn: (input: {
@@ -2141,10 +2084,7 @@ export function registerQuickAndChatModeRoutes({
     store: FsStore,
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
-}): {
-  interrupt(store: FsStore, turnId: string): Promise<boolean>;
-  acceptPendingInput(store: FsStore, turnId: string): Promise<void>;
-} {
+}) {
   // These process-local handles stop admitted model work; the Turn remains the durable owner.
   const activeChatRuns = new WeakMap<
     FsStore,
@@ -2372,21 +2312,20 @@ export function registerQuickAndChatModeRoutes({
     });
   }
 
-  registerAppApiRoute(app, 'getConversationTargets', (c) => {
-    const workspaceId = c.req.param('workspaceId');
-    const requestedThreadId = c.req.query('threadId')?.trim() || null;
-    const store = requestStore(c);
-    store.getWorkspace(workspaceId);
-    if (c.get('workspaceAccess')) {
-      assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), workspaceId);
-    }
-    if (requestedThreadId) {
-      requireAuthorizedModeThread(c, store, workspaceId, requestedThreadId);
-    }
-    return c.json(
-      conversationTargetCatalog(store, workspaceId, requestedThreadId, c.get('actor').userId)
+  /** Reads the context-sensitive catalog after native Workspace and optional Thread admission. */
+  function targets(
+    store: FsStore,
+    input: { workspaceId: string; threadId?: string | undefined },
+    actor: Actor
+  ) {
+    store.getWorkspace(input.workspaceId);
+    return conversationTargetCatalog(
+      store,
+      input.workspaceId,
+      input.threadId ?? null,
+      actor.userId
     );
-  });
+  }
 
   /**
    * Executes one bounded Quick Chat provider call without creating a private runtime.
@@ -2656,32 +2595,36 @@ export function registerQuickAndChatModeRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'submitConversation', async (c) => {
-    const parsed = SubmitConversationRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-    const chatInput = parsed.data;
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    const store = requestStore(c);
+  /** Executes the existing conversation command with its exact receipt-owned success status. */
+  async function submit(
+    store: FsStore,
+    chatInput: z.infer<typeof SubmitConversationRequestSchema> & {
+      workspaceId: string;
+      threadId: string;
+    },
+    actor: Actor
+  ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
+    const { workspaceId, threadId } = chatInput;
     try {
-      const thread = requireAuthorizedModeThread(c, store, workspaceId, threadId);
+      const thread = store.getThread(workspaceId, threadId);
       if (thread.entryPath !== 'conversation') {
-        return asApiError(
-          'Conversation submission cannot continue this Thread.',
+        throw new TurnStartValidationError(
           'thread_entry_path_mismatch',
+          'Conversation submission cannot continue this Thread.',
           409
         );
       }
     } catch (error) {
-      if (error instanceof HTTPException) throw error;
-      return asApiError('Conversation Thread is unavailable.', 'target_missing', 409);
+      if (error instanceof HTTPException || error instanceof TurnStartValidationError) throw error;
+      throw new TurnStartValidationError(
+        'target_missing',
+        'Conversation Thread is unavailable.',
+        409
+      );
     }
     const triggerActor = {
       kind: 'user',
-      id: c.get('actor').userId,
+      id: actor.userId,
     } as const satisfies ActorRef;
     const actorId = triggerActor.id;
     let freshLogicalModelId: string | null = null;
@@ -3009,7 +2952,7 @@ export function registerQuickAndChatModeRoutes({
           { workspaceId, query: conversationPrompt, limit: 3 },
           {
             kind: 'public',
-            actor: c.get('actor'),
+            actor: actor,
           }
         );
         const completedAt = new Date().toISOString();
@@ -3181,7 +3124,7 @@ export function registerQuickAndChatModeRoutes({
             await runWorkerTurnLoop({
               coreDb: coreDb!,
               triggerActor,
-              requestActor: c.get('actor'),
+              requestActor: actor,
               workspaceDb,
               workspaceId,
               threadId: receivingThreadId,
@@ -3208,7 +3151,7 @@ export function registerQuickAndChatModeRoutes({
                     { workspaceId, query: chatInput.input },
                     {
                       kind: 'task',
-                      actor: c.get('actor'),
+                      actor: actor,
                       traceId: directTaskKnowledgeRetrievalTraceId(
                         actorId,
                         workspaceId,
@@ -3238,7 +3181,7 @@ export function registerQuickAndChatModeRoutes({
                 );
                 const turn = await startModeWorkerTurn({
                   triggerActor,
-                  requestActor: c.get('actor'),
+                  requestActor: actor,
                   store,
                   workspaceId,
                   threadId: receivingThreadId,
@@ -3411,7 +3354,7 @@ export function registerQuickAndChatModeRoutes({
               intent: conversationPrompt,
               expectedRevision: goal.intentRevision,
             },
-            { actor: c.get('actor') },
+            { actor: actor },
             store,
             goalDb,
             goalServices?.()
@@ -3511,7 +3454,7 @@ export function registerQuickAndChatModeRoutes({
           await runWorkerTurnLoop({
             coreDb,
             triggerActor,
-            requestActor: c.get('actor'),
+            requestActor: actor,
             workspaceDb,
             workspaceId,
             threadId,
@@ -3527,7 +3470,7 @@ export function registerQuickAndChatModeRoutes({
             startWorker: async ({ turnId, prepared }) => {
               const turn = await startModeWorkerTurn({
                 triggerActor,
-                requestActor: c.get('actor'),
+                requestActor: actor,
                 store,
                 workspaceId,
                 threadId,
@@ -3593,7 +3536,7 @@ export function registerQuickAndChatModeRoutes({
               requestId: goalHandoffRequestId(actorId, workspaceId, threadId, chatInput.requestId),
               intent: conversationPrompt,
             },
-            { actor: c.get('actor') },
+            { actor: actor },
             store,
             db,
             goalServices?.()
@@ -3735,11 +3678,7 @@ export function registerQuickAndChatModeRoutes({
         }
       }
 
-      const selection = quickChatSelection(
-        c.get('actor').userId,
-        workspaceId,
-        logicalModelId ?? undefined
-      );
+      const selection = quickChatSelection(actor.userId, workspaceId, logicalModelId ?? undefined);
       const sessionId = `chat-mode:${workspaceId}:${threadId}`;
 
       if (!selection) {
@@ -3921,8 +3860,8 @@ export function registerQuickAndChatModeRoutes({
         );
       }
 
-      return c.json(
-        SubmitConversationResponseSchema.parse({
+      return {
+        body: SubmitConversationResponseSchema.parse({
           ...result.body,
           originatingWorkspaceId: workspaceId,
           originatingThreadId: threadId,
@@ -3931,8 +3870,8 @@ export function registerQuickAndChatModeRoutes({
           targetRef: metadata.targetRef,
           logicalModelId: metadata.logicalModelId,
         }),
-        result.status
-      );
+        status: result.status,
+      };
     } catch (error) {
       if (error instanceof HTTPException) {
         throw error;
@@ -3943,9 +3882,6 @@ export function registerQuickAndChatModeRoutes({
         !(error instanceof IdempotencyKeyConflictError) &&
         coreDb
       ) {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
-        const store = requestStore(c);
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
           if (
@@ -3958,9 +3894,9 @@ export function registerQuickAndChatModeRoutes({
               chatInput.requestId
             )
           ) {
-            return asApiError(
-              'The Chat Task checkpoint is missing its outer Chat command receipt.',
+            throw new TurnStartValidationError(
               'recovery_required',
+              'The Chat Task checkpoint is missing its outer Chat command receipt.',
               409
             );
           }
@@ -3969,28 +3905,38 @@ export function registerQuickAndChatModeRoutes({
         }
       }
       if (error instanceof TurnStartValidationError) {
-        return asApiError(redactInternalAgentText(error.message), error.code, error.status);
+        throw new TurnStartValidationError(
+          error.code,
+          redactInternalAgentText(error.message),
+          error.status
+        );
       }
       if (
         error instanceof OpenAICompatibleProviderError ||
         error instanceof LogicalModelRoutesExhaustedError
       ) {
-        return asProviderApiError(error);
+        throw providerCommandError(error);
       }
       if (error instanceof IdempotencyKeyConflictError) {
-        return asApiError(redactInternalAgentText(error.message), error.code, error.status);
+        throw new TurnStartValidationError(
+          error.code,
+          redactInternalAgentText(error.message),
+          error.status
+        );
       }
 
       console.error(
         'chat_mode_failed',
         redactInternalAgentText(error instanceof Error ? error.message : String(error))
       );
-      return asApiError('Chat Mode failed.', 'chat_mode_failed', 500);
+      throw new TurnStartValidationError('chat_mode_failed', 'Chat Mode failed.', 500);
     }
-  });
+  }
 
   return {
-    async interrupt(store, turnId) {
+    targets,
+    submit,
+    async interrupt(store: FsStore, turnId: string) {
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
       run.controller.abort();
@@ -3998,7 +3944,7 @@ export function registerQuickAndChatModeRoutes({
       await run.finished;
       return true;
     },
-    async acceptPendingInput(store, turnId) {
+    async acceptPendingInput(store: FsStore, turnId: string) {
       const turn = store.getTurnById(turnId);
       const actorId = responsibleUserIdForActor(turn.triggerActor);
       if (
@@ -4266,23 +4212,21 @@ export function registerQuickAndChatModeRoutes({
 }
 
 /**
- * Registers the Task Mode entry route at its existing app registration point.
+ * Creates the ordinary bounded Task command, preserving its receipt and checkpoint owners.
  *
- * @param dependencies Hono app and shared app composition callbacks.
+ * @param dependencies Existing Task admission and worker owners.
+ * @returns Transport-free Task start command.
  */
-export function registerTaskModeRoute({
-  app,
+export function createTaskStartOperation({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
   workspaceMutationAdmission,
   repositoryWorkspaceDb,
-  requestStore,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
   goalServices,
 }: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
   readonly assertProjectWorkspace: (
     workspace: ReturnType<FsStore['getWorkspace']>,
     action: string
@@ -4291,7 +4235,6 @@ export function registerTaskModeRoute({
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly startModeWorkerTurn: (input: {
     readonly triggerActor: ActorRef;
     readonly requestActor?: Actor;
@@ -4310,17 +4253,19 @@ export function registerTaskModeRoute({
     store: FsStore,
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
-}): void {
-  registerAppApiRoute(app, 'startTaskMode', async (c) => {
-    const parsed = StartTaskModeRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-    const taskInput = parsed.data;
+}) {
+  return async (
+    store: FsStore,
+    taskInput: z.infer<typeof StartTaskModeRequestSchema> & {
+      workspaceId: string;
+      threadId: string;
+    },
+    actor: Actor
+  ): Promise<StartTaskModeResponse> => {
+    const { workspaceId, threadId } = taskInput;
     const triggerActor = {
       kind: 'user',
-      id: c.get('actor').userId,
+      id: actor.userId,
     } as const satisfies ActorRef;
     const actorId = triggerActor.id;
     const requestInputHash = commandInputHash({
@@ -4404,7 +4349,7 @@ export function registerTaskModeRoute({
               requestId: goalHandoffRequestId(actorId, workspaceId, threadId, taskInput.requestId),
               intent: taskInput.input,
             },
-            { actor: c.get('actor') },
+            { actor: actor },
             store,
             db,
             goalServices?.()
@@ -4456,7 +4401,7 @@ export function registerTaskModeRoute({
         await runWorkerTurnLoop({
           coreDb,
           triggerActor,
-          requestActor: c.get('actor'),
+          requestActor: actor,
           workspaceDb,
           workspaceId,
           threadId,
@@ -4484,7 +4429,7 @@ export function registerTaskModeRoute({
                 { workspaceId, query: taskInput.input },
                 {
                   kind: 'task',
-                  actor: c.get('actor'),
+                  actor: actor,
                   traceId: directTaskKnowledgeRetrievalTraceId(
                     actorId,
                     workspaceId,
@@ -4512,7 +4457,7 @@ export function registerTaskModeRoute({
           startWorker: async ({ turnId, prepared }) => {
             const turn = await startModeWorkerTurn({
               triggerActor,
-              requestActor: c.get('actor'),
+              requestActor: actor,
               store,
               workspaceId,
               threadId,
@@ -4569,10 +4514,7 @@ export function registerTaskModeRoute({
     }
 
     try {
-      const workspaceId = c.req.param('workspaceId');
-      const threadId = c.req.param('threadId');
-      const store = requestStore(c);
-      requireAuthorizedModeThread(c, store, workspaceId, threadId);
+      store.getThread(workspaceId, threadId);
       const result = await runIdempotentCommand({
         command: 'task.start',
         execute: () => executeTaskCommand(store, workspaceId, threadId),
@@ -4655,21 +4597,19 @@ export function registerTaskModeRoute({
         }
       }
 
-      return c.json(result, 202);
+      return result;
     } catch (error) {
       if (error instanceof HTTPException) {
         throw error;
       }
       if (error instanceof TurnStartValidationError) {
-        return asApiError(error.message, error.code, error.status);
+        throw error;
       }
       if (error instanceof IdempotencyKeyConflictError) {
-        return asApiError(error.message, error.code, error.status);
+        throw error;
       }
 
       if (coreDb) {
-        const workspaceId = c.req.param('workspaceId');
-        const threadId = c.req.param('threadId');
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         let checkpoint: WorkerCheckpointRecord | null = null;
         try {
@@ -4683,11 +4623,11 @@ export function registerTaskModeRoute({
           workspaceDb.sqlite.close();
         }
         if (checkpoint?.requestId === taskInput.requestId) {
-          return asApiError(
+          throw new TurnStartValidationError(
+            'recovery_required',
             redactInternalAgentText(
               publishedErrorMessage(error, error instanceof Error ? undefined : String(error))
             ),
-            'recovery_required',
             409
           );
         }
@@ -4697,9 +4637,13 @@ export function registerTaskModeRoute({
         'task_mode_start_failed',
         redactInternalAgentText(error instanceof Error ? error.message : String(error))
       );
-      return asCommandError(error, 'task_mode_start_failed');
+      throw new TurnStartValidationError(
+        'task_mode_start_failed',
+        publishedErrorMessage(error),
+        404
+      );
     }
-  });
+  };
 }
 
 /** Stable Goal command identity derived from the originating command, including opaque historical request ids. */
@@ -4713,4 +4657,17 @@ function goalHandoffRequestId(
     .update(JSON.stringify([actorId, workspaceId, threadId, requestId]))
     .digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Preserves provider status and bounded refusal text for transport-free conversation invocation. */
+function providerCommandError(
+  error: OpenAICompatibleProviderError | LogicalModelRoutesExhaustedError
+): TurnStartValidationError {
+  if (error instanceof LogicalModelRoutesExhaustedError)
+    return new TurnStartValidationError(error.code, error.message, error.status);
+  return new TurnStartValidationError(
+    error.status === 429 ? 'provider_rate_limited' : 'provider_request_failed',
+    error.status === 429 ? 'Provider rate limit exceeded.' : 'Provider request failed.',
+    error.status
+  );
 }

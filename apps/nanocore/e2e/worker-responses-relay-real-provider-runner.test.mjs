@@ -235,11 +235,6 @@ function createRelayStandIn(options = {}) {
       listAgentEnvironmentPackageSnapshots: async () => ({
         items: turns.map((turn) => observationFor(turn).aepItem),
       }),
-      startTaskMode: async () => ({
-        evidence: { reviewIds: [reviewId] },
-        state: 'completed',
-        turn: { id: selectedTurn.turnId },
-      }),
       submitWorkspaceSyncReviewDecision: async (receivedWorkspaceId, receivedReviewId, input) => {
         const evidenceExistedAtCleanup = Boolean(
           options.evidenceDir &&
@@ -267,6 +262,12 @@ function createRelayStandIn(options = {}) {
       },
     },
     operations: {
+      'task.start': async () => ({
+        evidence: { reviewIds: [reviewId] },
+        state: 'completed',
+        turn: { id: selectedTurn.turnId },
+      }),
+
       'thread.create': async () => ({ id: `thread_${selectedTurn.agentId}` }),
       'thread.items': async () => ({
         items: turns.map((turn) => observationFor(turn).threadItem),
@@ -1057,7 +1058,7 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     {
       cleanup: RELAY_CLEANUP.unknown,
       hang(standIn, hung) {
-        standIn.clients.core.app.startTaskMode = hung.wait;
+        standIn.clients.core.operations['task.start'] = hung.wait;
       },
       name: 'Task',
     },

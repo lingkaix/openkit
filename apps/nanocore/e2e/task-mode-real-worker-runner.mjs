@@ -552,8 +552,12 @@ async function executeTaskModeRealWorkerTest({
     'Task Mode workspace data source safe reload did not defer cleanly without restart.'
   );
 
-  const task = await clients.core.app.startTaskMode(workspaceId, threadId, {
-    input: prerequisites.config.taskInput,
+  const task = await clients.core.operations['task.start']({
+    workspaceId: workspaceId,
+    threadId: threadId,
+    ...{
+      input: prerequisites.config.taskInput,
+    },
   });
   const reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
   let provenance;

@@ -82,7 +82,7 @@ export function useConversationSubmission(workspaceId: string | null, threadId: 
       error: mutation.state.error,
       variables: mutation.state.variables as ConversationSubmission | undefined,
       data: mutation.state.data as
-        | Awaited<ReturnType<CoreClient['app']['submitConversation']>>
+        | Awaited<ReturnType<CoreClient['operations']['conversation.submit']>>
         | undefined,
     }),
   }).findLast(
@@ -260,7 +260,11 @@ export function useConversationTargets(workspaceId: string | null, threadId?: st
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.conversationTargets(workspaceId ?? '', threadId),
-    queryFn: () => client.app.getConversationTargets(workspaceId as string, threadId),
+    queryFn: () =>
+      client.operations['conversation.targets']({
+        workspaceId: workspaceId as string,
+        threadId: threadId,
+      }),
     enabled: Boolean(workspaceId),
   });
 }
@@ -400,7 +404,9 @@ export function useConversationNavigation(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.navigation(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listConversationNavigation(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['conversation.navigation']({ workspaceId: workspaceId as string }))
+        .items,
     enabled: Boolean(workspaceId),
     refetchInterval: 5_000,
     refetchIntervalInBackground: false,
@@ -679,7 +685,11 @@ export function useSendTurn() {
   return useMutation({
     mutationKey: chatKeys.submitMutation,
     mutationFn: async (input: ConversationSubmission) =>
-      client.app.submitConversation(input.workspaceId, input.threadId, input.draft),
+      client.operations['conversation.submit']({
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        ...input.draft,
+      }),
     onSuccess: (response) => {
       void queryClient.invalidateQueries({
         queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
@@ -870,7 +880,8 @@ export function useRespondApproval(workspaceId: string, threadId: string) {
       turnId: string;
       decision: 'granted' | 'denied';
     }) =>
-      client.core.respondApproval(args.approvalRequestId, {
+      client.operations['approval.respond']({
+        approvalRequestId: args.approvalRequestId,
         workspaceId,
         threadId,
         turnId: args.turnId,
@@ -901,7 +912,8 @@ export function useSubmitTurnAnswers(workspaceId: string, threadId: string) {
       answers: Record<string, [string]>;
       requestId: string;
     }) =>
-      client.core.answerUserInput(input.userInputRequestId, {
+      client.operations['question.answer']({
+        userInputRequestId: input.userInputRequestId,
         workspaceId,
         threadId,
         answers: input.answers,
@@ -920,7 +932,8 @@ export function useWithdrawPendingRequest(workspaceId: string, threadId: string)
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { pendingRequestId: string; requestId: string }) =>
-      client.core.withdrawPendingRequest(input.pendingRequestId, {
+      client.operations['pending-request.withdraw']({
+        pendingRequestId: input.pendingRequestId,
         workspaceId,
         threadId,
         requestId: input.requestId,

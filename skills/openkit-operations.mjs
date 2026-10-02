@@ -1079,82 +1079,6 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
-    id: 'conversation.targets',
-    source: 'app-api',
-    appOperationId: 'getConversationTargets',
-    clientMethod: 'app.getConversationTargets',
-    group: 'conversation',
-    summary: 'List context-sensitive conversation targets.',
-    mutating: false,
-    inputSchema: strictScope({
-      ...workspaceScope,
-      threadId: protocol.ThreadIdSchema.optional(),
-    }),
-    handler: ({ client }, input) =>
-      client.app.getConversationTargets(input.workspaceId, input.threadId),
-  },
-  {
-    ...STANDARD,
-    id: 'conversation.navigation',
-    source: 'app-api',
-    appOperationId: 'listConversationNavigation',
-    clientMethod: 'app.listConversationNavigation',
-    group: 'conversation',
-    summary: 'List visible Workspace conversation activity for navigation.',
-    mutating: false,
-    requiredAccess:
-      'current Workspace access; private Threads require exact user ownership, including for admins',
-    inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.app.listConversationNavigation(input.workspaceId),
-  },
-  {
-    ...STANDARD,
-    id: 'conversation.submit',
-    source: 'app-api',
-    appOperationId: 'submitConversation',
-    clientMethod: 'app.submitConversation',
-    group: 'conversation',
-    summary: 'Submit one structured conversation turn.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.SubmitConversationRequestSchema, threadScope),
-    handler: ({ client }, input) =>
-      client.app.submitConversation(
-        input.workspaceId,
-        input.threadId,
-        bodyWithout(input, 'workspaceId', 'threadId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'task.start',
-    source: 'app-api',
-    appOperationId: 'startTaskMode',
-    clientMethod: 'app.startTaskMode',
-    group: 'task',
-    summary: 'Start one bounded Task Mode delegation.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.StartTaskModeRequestSchema, threadScope),
-    handler: ({ client }, input) =>
-      client.app.startTaskMode(
-        input.workspaceId,
-        input.threadId,
-        bodyWithout(input, 'workspaceId', 'threadId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'attention.list',
-    source: 'app-api',
-    appOperationId: 'listHumanAttention',
-    clientMethod: 'actionCenter.listHumanAttention',
-    group: 'attention',
-    summary: 'List unified human-attention rows for one workspace.',
-    mutating: false,
-    inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.actionCenter.listHumanAttention(input.workspaceId),
-  },
-  {
-    ...STANDARD,
     id: 'usage.read',
     source: 'app-api',
     appOperationId: 'getCapabilityUsage',
@@ -2702,51 +2626,6 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
-    id: 'approval.respond',
-    source: 'core-projection',
-    clientMethod: 'core.respondApproval',
-    protocolSchema: 'RespondToApprovalRequestSchema',
-    group: 'approval',
-    summary: 'Respond to one approval request.',
-    mutating: true,
-    inputSchema: strictShared(protocol.RespondToApprovalRequestSchema),
-    handler: ({ client }, input) =>
-      client.core.respondApproval(input.approvalRequestId, bodyWithout(input, 'approvalRequestId')),
-  },
-  {
-    ...STANDARD,
-    id: 'question.answer',
-    source: 'core-projection',
-    clientMethod: 'core.answerUserInput',
-    protocolSchema: 'AnswerUserInputRequestSchema',
-    group: 'question',
-    summary: 'Submit the responsible user’s answer to one pending non-secret question.',
-    mutating: true,
-    inputSchema: strictShared(protocol.AnswerUserInputRequestSchema),
-    handler: ({ client }, input) =>
-      client.core.answerUserInput(
-        input.userInputRequestId,
-        bodyWithout(input, 'userInputRequestId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'pending-request.withdraw',
-    source: 'core-projection',
-    clientMethod: 'core.withdrawPendingRequest',
-    protocolSchema: 'WithdrawPendingRequestSchema',
-    group: 'pending-request',
-    summary: 'Withdraw one pending request on the responsible user’s direction.',
-    mutating: true,
-    inputSchema: strictShared(protocol.WithdrawPendingRequestSchema),
-    handler: ({ client }, input) =>
-      client.core.withdrawPendingRequest(
-        input.pendingRequestId,
-        bodyWithout(input, 'pendingRequestId')
-      ),
-  },
-  {
-    ...STANDARD,
     id: 'material.list',
     source: 'app-api',
     appOperationId: 'listWorkspaceMaterials',
@@ -3007,7 +2886,7 @@ export const operationCatalog = [
     group: id.split('.')[0],
     summary: definition.description,
     mutating: definition.mutating,
-    inputSchema: definition.inputSchema,
+    inputSchema: strictShared(definition.inputSchema),
     outputSchema: definition.outputSchema,
     handler: ({ client }, input) => client.operations[id](input),
   })),

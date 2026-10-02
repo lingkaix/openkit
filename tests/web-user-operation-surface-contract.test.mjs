@@ -113,11 +113,11 @@ const WEB_OPERATION_GROUPS = {
     updateLightAppSchema: { disposition: 'workflow', surface: 'Chat' },
   },
   Dashboards: {
-    getConversationTargets: { disposition: 'live', surface: 'Chat' },
-    listConversationNavigation: { disposition: 'live', surface: 'Chat' },
+    'conversation.targets': { disposition: 'live', surface: 'Chat' },
+    'conversation.navigation': { disposition: 'live', surface: 'Chat' },
     'thread.dashboard': { disposition: 'live', surface: 'Chat' },
     getWorkspaceDashboard: { disposition: 'live', surface: 'Overview' },
-    listHumanAttention: { disposition: 'live', surface: 'Overview' },
+    'attention.list': { disposition: 'live', surface: 'Overview' },
     'thread.items': { disposition: 'live', surface: 'Chat' },
   },
   'Diagnostics and evidence': {
@@ -167,8 +167,8 @@ const WEB_OPERATION_GROUPS = {
       ])
     ),
     selectWorkerEnvironment: { disposition: 'live', surface: 'Chat' },
-    submitConversation: { disposition: 'live', surface: 'Chat' },
-    startTaskMode: { disposition: 'live', surface: 'Task' },
+    'conversation.submit': { disposition: 'live', surface: 'Chat' },
+    'task.start': { disposition: 'live', surface: 'Task' },
   },
   Repositories: {
     executeGitPush: { disposition: 'live', surface: 'Repositories' },
@@ -244,12 +244,12 @@ const WEB_OPERATION_GROUPS = {
     submitWorkspaceSyncReviewDecision: { disposition: 'live', surface: 'Workspace changes' },
   },
   'Core approval': {
-    'POST /api/approvals/:approvalRequestId/respond': { disposition: 'live', surface: 'Overview' },
-    'POST /api/user-input-requests/:userInputRequestId/answer': {
+    'approval.respond': { disposition: 'live', surface: 'Overview' },
+    'question.answer': {
       disposition: 'live',
       surface: 'Chat',
     },
-    'POST /api/pending-requests/:pendingRequestId/withdraw': {
+    'pending-request.withdraw': {
       disposition: 'live',
       surface: 'Overview',
     },

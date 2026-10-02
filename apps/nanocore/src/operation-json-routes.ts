@@ -47,12 +47,20 @@ export function registerOperationJsonRoutes(
             : args;
         const parsed = definition.inputSchema.safeParse(input);
         if (!parsed.success) return asInvalidRequestError(parsed.error);
-        const invoke = createOperationInvocation({ ...dependencies, store: requestStore(c) });
+        let successStatus: 200 | 201 | 202 =
+          'successStatus' in definition ? definition.successStatus : 200;
+        const invoke = createOperationInvocation({
+          ...dependencies,
+          store: requestStore(c),
+          observeSuccessStatus: (status) => {
+            successStatus = status;
+          },
+        });
         const output = await invoke(id as keyof typeof PRODUCT_OPERATION_DEFINITIONS, input, {
           kind: 'public',
           actor: c.get('actor'),
         });
-        return c.json(output, 'successStatus' in definition ? definition.successStatus : 200);
+        return c.json(output, successStatus);
       } catch (error) {
         if (error instanceof HTTPException) return error.getResponse();
         if (error instanceof OperationInvocationError)

@@ -14,6 +14,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createDemoStore } from './demo-store.js';
+import { operationRequest } from './operation-request.js';
 
 // Separate processes cross the actual retained-file/SQLite boundary, not an in-memory restart.
 const [mode, phase, retainedRoot] = process.argv.slice(2);
@@ -71,17 +72,23 @@ if (retainedRoot) {
     });
   }
   const respond = (index: number) =>
-    app.request(`/api/approvals/ap_crash_${index}/respond`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        turnId: turn.id,
-        requestId: randomUUID(),
-        decision: 'granted',
-      }),
-    });
+    app.request(
+      ...operationRequest(
+        'approval.respond',
+        { approvalRequestId: `ap_crash_${index}` },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+            requestId: randomUUID(),
+            decision: 'granted',
+          }),
+        }
+      )
+    );
   if (
     mode === 'invalidation' ||
     mode === 'shared-closeout' ||

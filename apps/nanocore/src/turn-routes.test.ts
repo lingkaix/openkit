@@ -33,6 +33,7 @@ import {
 } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'user_local' } as const;
@@ -577,18 +578,21 @@ describe('generic turn routes', () => {
       }
 
       const response = await fixture.app.request(
-        `/api/user-input-requests/${requestItem.userInputRequestId}/answer`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            answers: { choice: ['Continue'] },
-            requestId: '00000000-0000-4000-8000-000000000411',
-            threadId: 'th_demo',
-            userInputRequestId: requestItem.userInputRequestId,
-            workspaceId: 'ws_demo',
-          }),
-          headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
-        }
+        ...operationRequest(
+          'question.answer',
+          { userInputRequestId: requestItem.userInputRequestId },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              answers: { choice: ['Continue'] },
+              requestId: '00000000-0000-4000-8000-000000000411',
+              threadId: 'th_demo',
+              userInputRequestId: requestItem.userInputRequestId,
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json', 'x-user-id': 'user_other' },
+          }
+        )
       );
 
       expect(response.status, await response.clone().text()).toBe(403);

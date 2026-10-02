@@ -839,8 +839,10 @@ async function startRealTaskAttempt(config, scenarioId) {
   const completion = appRequest(
     config,
     'POST',
-    `/api/app/workspaces/${workspace.id}/threads/${thread.id}/task`,
+    '/api/app/operations/task.start',
     {
+      workspaceId: workspace.id,
+      threadId: thread.id,
       input:
         scenarioId === 'F1'
           ? 'Run `sleep 240` once. After it returns, reply exactly `DONE` without running another command.'

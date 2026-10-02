@@ -19,6 +19,7 @@ import {
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -82,6 +83,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
@@ -1281,18 +1283,21 @@ describe('worker MCP routes', () => {
             ? 'execution-error'
             : 'approved-executed';
       const response = await app.request(
-        `/api/approvals/${approvalItem.approvalRequestId}/respond`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-            requestId: '00000000-0000-4000-8000-000000000117',
-            decision: change === 'deny' ? 'denied' : 'granted',
-          }),
-        }
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: approvalItem.approvalRequestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: turn.id,
+              requestId: '00000000-0000-4000-8000-000000000117',
+              decision: change === 'deny' ? 'denied' : 'granted',
+            }),
+          }
+        )
       );
       resolved.mockRestore();
       expect(response.status, await response.clone().text()).toBe(200);
@@ -1525,7 +1530,6 @@ describe('worker MCP routes', () => {
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'task.start',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     },
     {
       transientPreparation: false,
@@ -1534,7 +1538,6 @@ describe('worker MCP routes', () => {
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
     {
       transientPreparation: false,
@@ -1543,7 +1546,6 @@ describe('worker MCP routes', () => {
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
     {
       transientPreparation: true,
@@ -1552,7 +1554,6 @@ describe('worker MCP routes', () => {
       repository: false,
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
     },
     ...(['granted', 'denied'] as const).map((decision) => ({
       transientPreparation: false,
@@ -1561,12 +1562,10 @@ describe('worker MCP routes', () => {
       repository: true,
       decision,
       ownerCommand: 'task.start',
-      path: '/api/app/workspaces/ws_demo/threads/th_demo/task',
     })),
-  ])('delivers a public $entry pending outcome through native worker admission', async ({
+  ])('starts a definition-derived $entry, observes attention, responds and delivers the captured outcome once', async ({
     transientPreparation,
     ownerCommand,
-    path,
     refuseFirst,
     repository,
     decision,
@@ -2019,20 +2018,26 @@ describe('worker MCP routes', () => {
       );
       expect(repositoryResponse.status).toBe(200);
 
-      const firstRequest = app.request(path, {
-        body: JSON.stringify({
-          input: 'Implement the bounded MCP Task fix.',
-          requestId: '0190f4c8-0000-7000-8000-000000000501',
-          ...(ownerCommand === 'conversation.submit'
-            ? {
-                artifactRefs: [],
-                targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
-              }
-            : {}),
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const firstRequest = app.request(
+        ...operationRequest(
+          ownerCommand,
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: JSON.stringify({
+              input: 'Implement the bounded MCP Task fix.',
+              requestId: '0190f4c8-0000-7000-8000-000000000501',
+              ...(ownerCommand === 'conversation.submit'
+                ? {
+                    artifactRefs: [],
+                    targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+                  }
+                : {}),
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       const [firstResponse, firstRun] = await Promise.all([firstRequest, driveTask(true)]);
       expect(firstResponse.status, await firstResponse.clone().text()).toBe(202);
       const firstTask =
@@ -2058,8 +2063,44 @@ describe('worker MCP routes', () => {
           )
           .map((receipt) => receipt.command)
       ).toEqual([ownerCommand]);
+      // Settled owner replay is compared across all three projections without another Worker launch.
+      const replayInput = {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        input: 'Implement the bounded MCP Task fix.',
+        requestId: '0190f4c8-0000-7000-8000-000000000501',
+        ...(ownerCommand === 'conversation.submit'
+          ? { artifactRefs: [], targetRef: `warm-worker:${agentSetup.manifest.id}:default` }
+          : {}),
+      };
+      const nativeClient = createCoreClient({
+        baseUrl: 'http://nanocore.test',
+        fetch: (input, init) => app.fetch(new Request(input, init)),
+      });
+      const replayResponse = await app.request(
+        ...operationRequest(ownerCommand, {}, { body: JSON.stringify(replayInput) })
+      );
+      expect(replayResponse.status, await replayResponse.clone().text()).toBe(202);
+      const replayResult = await replayResponse.json();
+      expect(await nativeClient.operations[ownerCommand](replayInput as never)).toEqual(
+        replayResult
+      );
+      const { operationCatalog } = await import(
+        new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
+      );
+      const cliOperation = operationCatalog.find(
+        (entry: { id: string }) => entry.id === ownerCommand
+      )!;
+      expect(
+        await cliOperation.handler(
+          { client: nativeClient },
+          cliOperation.inputSchema.parse(replayInput)
+        )
+      ).toEqual(replayResult);
       expect(repositoryApprovalId).not.toBeNull();
-      const attentionResponse = await app.request('/api/app/workspaces/ws_demo/action-center');
+      const attentionResponse = await app.request(
+        ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)
+      );
       expect(
         ListHumanAttentionResponseSchema.parse(await attentionResponse.json()).items
       ).toContainEqual(
@@ -2100,11 +2141,17 @@ describe('worker MCP routes', () => {
         threadId: 'th_demo',
         turnId: firstTask.turn.id,
       };
-      const approvalResponse = app.request(`/api/approvals/${repositoryApprovalId}/respond`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(responseInput),
-      });
+      const approvalResponse = app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: repositoryApprovalId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(responseInput),
+          }
+        )
+      );
       let responded: Response;
       let continuation: Awaited<ReturnType<typeof driveTask>>;
       if (refuseFirst) {
@@ -2159,16 +2206,22 @@ describe('worker MCP routes', () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(count);
         providerFault!.mockRestore();
-        const user = app.request(path, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            input: 'Continue after refused admission.',
-            requestId: '0190f4c8-0000-7000-8000-000000000599',
-            artifactRefs: [],
-            targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
-          }),
-        });
+        const user = app.request(
+          ...operationRequest(
+            'conversation.submit',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                input: 'Continue after refused admission.',
+                requestId: '0190f4c8-0000-7000-8000-000000000599',
+                artifactRefs: [],
+                targetRef: `warm-worker:${agentSetup.manifest.id}:default`,
+              }),
+            }
+          )
+        );
         const [userResponse, resumed] = await Promise.all([user, driveTask(false)]);
         expect(userResponse.status, await userResponse.clone().text()).toBe(202);
         continuation = resumed;
@@ -2195,11 +2248,17 @@ describe('worker MCP routes', () => {
       expect(responded.status, await responded.clone().text()).toBe(200);
       expect(store.getTurnById(firstTask.turn.id).status).toBe('completed');
       expect(continuation.agentSessionId).toBe(firstRun.agentSessionId);
-      const replay = await app.request(`/api/approvals/${repositoryApprovalId}/respond`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(responseInput),
-      });
+      const replay = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: repositoryApprovalId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(responseInput),
+          }
+        )
+      );
       expect(replay.status).toBe(200);
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       try {

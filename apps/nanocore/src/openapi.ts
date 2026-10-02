@@ -22,8 +22,6 @@ import {
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  ConversationNavigationResponseSchema,
-  ConversationTargetCatalogSchema,
   CreateAutomationRequestSchema,
   CreateLightAppRequestSchema,
   CreateLightAppResponseSchema,
@@ -80,7 +78,6 @@ import {
   ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListGitPushRecordsResponseSchema,
-  ListHumanAttentionResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
   ListLightAppRecordsResponseSchema,
   ListLightAppsResponseSchema,
@@ -186,13 +183,9 @@ import {
   SkillCandidateResponseSchema,
   StartAppUpdateRequestSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
-  StartTaskModeRequestSchema,
-  StartTaskModeResponseSchema,
   StorageLayoutReportResponseSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
-  SubmitConversationRequestSchema,
-  SubmitConversationResponseSchema,
   SubmitGenerativePresentationActionRequestSchema,
   SubmitSkillCandidateRequestSchema,
   SubmitTurnFeedbackRequestSchema,
@@ -406,7 +399,8 @@ function appJsonOperation<const OperationId extends string>(input: {
   operationId: OperationId;
   tag: string;
   summary: string;
-  responseStatus: '200' | '201';
+  responseStatus: '200' | '201' | '202';
+  responseStatuses?: readonly ('200' | '201' | '202')[];
   responseSchema: string;
   responseDescription?: string;
   requestSchema?: string;
@@ -432,14 +426,19 @@ function appJsonOperation<const OperationId extends string>(input: {
         }
       : {}),
     responses: {
-      [input.responseStatus]: {
-        description: input.responseDescription ?? input.summary,
-        content: {
-          [JSON_CONTENT_TYPE]: {
-            schema: { $ref: `#/components/schemas/${input.responseSchema}` },
+      ...Object.fromEntries(
+        (input.responseStatuses ?? [input.responseStatus]).map((status) => [
+          status,
+          {
+            description: input.responseDescription ?? input.summary,
+            content: {
+              [JSON_CONTENT_TYPE]: {
+                schema: { $ref: `#/components/schemas/${input.responseSchema}` },
+              },
+            },
           },
-        },
-      },
+        ])
+      ),
       default: {
         description: 'Protocol error envelope.',
         content: {
@@ -608,6 +607,13 @@ function productOperationPaths() {
           responseSchema: `${id}.output`,
           responseStatus:
             'successStatus' in definition ? (`${definition.successStatus}` as const) : '200',
+          ...('successStatuses' in definition
+            ? {
+                responseStatuses: definition.successStatuses.map(
+                  (status) => `${status}` as '200' | '202'
+                ),
+              }
+            : {}),
           ...(definition.mutating && 'requestId' in definition.inputSchema.shape
             ? { parameters: [REQUEST_ID_HEADER] }
             : {}),
@@ -2351,119 +2357,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/conversation-targets': {
-        get: {
-          operationId: 'getConversationTargets',
-          tags: ['modes'],
-          summary: 'List the context-sensitive targets available to the shared Composer.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              in: 'query',
-              name: 'threadId',
-              required: false,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Workspace conversation targets.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ConversationTargetCatalog' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/conversation-turns': {
-        post: {
-          operationId: 'submitConversation',
-          tags: ['modes'],
-          summary: 'Submit one structured message to a selected conversation target.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitConversationRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Completed Chat Mode response.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SubmitConversationResponse' },
-                },
-              },
-            },
-            '202': {
-              description: 'Accepted Chat Mode handoff or clarification response.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SubmitConversationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/task': {
-        post: {
-          operationId: 'startTaskMode',
-          tags: ['modes'],
-          summary: 'Start one bounded Task Mode worker delegation.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/StartTaskModeRequest' },
-              },
-            },
-          },
-          responses: {
-            '202': {
-              description: 'Accepted Task Mode attempt or escalation.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/StartTaskModeResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/worker-environments': {
         get: {
           operationId: 'listWorkerEnvironments',
@@ -2653,33 +2546,6 @@ export function createAppOpenApiDocument() {
               description: 'Protocol error envelope.',
               content: {
                 [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/conversations': {
-        get: {
-          operationId: 'listConversationNavigation',
-          tags: ['dashboards'],
-          summary: 'Read one conversation navigation read model.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Conversation navigation read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ConversationNavigationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
               },
             },
           },
@@ -3043,33 +2909,6 @@ export function createAppOpenApiDocument() {
           responseStatus: '200',
           responseSchema: 'RestoreThreadMaterialResponse',
         }),
-      },
-      '/api/app/workspaces/{workspaceId}/action-center': {
-        get: {
-          operationId: 'listHumanAttention',
-          tags: ['dashboards'],
-          summary: 'List unified human attention rows for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Unified human attention rows.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListHumanAttentionResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
       },
       '/api/app/workspaces/{workspaceId}/capability-usage': {
         get: {
@@ -5274,7 +5113,6 @@ export function createAppOpenApiDocument() {
           ListAgentEnvironmentPackageSnapshotsResponseSchema
         ),
         ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
-        ListHumanAttentionResponse: toJsonSchema(ListHumanAttentionResponseSchema),
         ListGitPushRecordsResponse: toJsonSchema(ListGitPushRecordsResponseSchema),
         ListInterruptedWorkerStatesResponse: toJsonSchema(
           ListInterruptedWorkerStatesResponseSchema
@@ -5411,8 +5249,6 @@ export function createAppOpenApiDocument() {
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
         SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
-        SubmitConversationRequest: toJsonSchema(SubmitConversationRequestSchema),
-        SubmitConversationResponse: toJsonSchema(SubmitConversationResponseSchema),
         SubmitAdministrationConversationRequest: toJsonSchema(
           SubmitAdministrationConversationRequestSchema
         ),
@@ -5427,13 +5263,10 @@ export function createAppOpenApiDocument() {
         ),
         ActivateWorkerEnvironmentRequest: toJsonSchema(ActivateWorkerEnvironmentRequestSchema),
         ActivateWorkerEnvironmentResponse: toJsonSchema(ActivateWorkerEnvironmentResponseSchema),
-        ConversationTargetCatalog: toJsonSchema(ConversationTargetCatalogSchema),
         StartAppUpdateRequest: toJsonSchema(StartAppUpdateRequestSchema),
         StartProviderSubscriptionAccountLoginRequest: toJsonSchema(
           StartProviderSubscriptionAccountLoginRequestSchema
         ),
-        StartTaskModeRequest: toJsonSchema(StartTaskModeRequestSchema),
-        StartTaskModeResponse: toJsonSchema(StartTaskModeResponseSchema),
         SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
         StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
@@ -5470,7 +5303,6 @@ export function createAppOpenApiDocument() {
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
         WorkspaceImportRequest: toJsonSchema(WorkspaceImportRequestSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
-        ConversationNavigationResponse: toJsonSchema(ConversationNavigationResponseSchema),
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
         WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),

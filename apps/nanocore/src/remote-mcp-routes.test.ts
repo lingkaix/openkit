@@ -18,6 +18,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import * as invocation from './operation-invocation.js';
+import * as goalCoordinator from './runtime/goal-coordinator.js';
 import { openExistingAppDb } from './storage/app-db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -134,6 +135,41 @@ async function fixture(
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
+  it('creates a Goal through remote MCP and wakes its existing coordinator owner', async () => {
+    const createCoordinator = goalCoordinator.createGoalCoordinator;
+    const wake = vi.fn();
+    vi.spyOn(goalCoordinator, 'createGoalCoordinator').mockImplementation((options) => ({
+      ...createCoordinator(options),
+      wake,
+    }));
+    const f = await fixture();
+    try {
+      const result = await f.call(
+        'call',
+        {
+          operation: 'goal.create',
+          input: {
+            workspaceId: 'ws_demo',
+            requestId: randomUUID(),
+            intent: 'Prepare a reviewed design',
+          },
+        },
+        f.token().secret
+      );
+      expect(result.isError).not.toBe(true);
+      const created = JSON.parse(result.content[0].text);
+      expect(created.goal).toMatchObject({
+        workspaceId: 'ws_demo',
+        responsibleUserId: 'user_remote_mcp',
+        intent: 'Prepare a reviewed design',
+      });
+      expect(f.store.getThread('ws_demo', created.goal.threadId).visibility).toBe('workspace');
+      expect(wake).toHaveBeenCalledExactlyOnceWith('ws_demo', created.goal.goalId);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('refuses mutating calls while product admission is closed and keeps non-mutating calls available', async () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'boot_mcp_admission' });
     const f = await fixture('server', () => readiness);

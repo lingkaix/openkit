@@ -17,3 +17,5 @@ This directory contains NanoCore's existing app-local product-state aggregate an
 Run the nearest store, reload, canonical-file, event-stream, and simulator tests affected by a change, followed by the package gates in the [NanoCore source guide](../README.md).
 
 The canonical Turn record preserves optional `reasoningEffort` at creation and reload. `updateTurn` refuses changes to this immutable admission field. Existing command receipts hash explicit submission content, so identical replay preserves the original choice even after an Agent default changes.
+
+`FsStore.getApprovalProjectionLineage` returns only Workspace and Thread selectors from the existing Approval map under the selected Workspace for opaque-child admission. The Pending Request command owner still decides missing or contradictory canonical-record outcomes.

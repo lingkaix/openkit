@@ -24,7 +24,6 @@ function makeClient(
 ): CoreClient {
   return {
     app: {
-      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listOpenKitAccessTokens: vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Server-admin authority is required.', {
           code: 'forbidden',
@@ -51,6 +50,8 @@ function makeClient(
     },
 
     operations: {
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+
       'workspace.resources': vi.fn().mockResolvedValue({
         knowledge: [],
         skills: [],

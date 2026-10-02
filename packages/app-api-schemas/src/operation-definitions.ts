@@ -1,4 +1,6 @@
 import {
+  AnswerUserInputRequestSchema,
+  ApprovalRequestSchema,
   ArtifactIdSchema,
   CreateKnowledgeEntryRequestSchema,
   CreateThreadRequestSchema,
@@ -7,23 +9,36 @@ import {
   KnowledgeEntrySchema,
   ListArtifactsResponseSchema,
   ListKnowledgeEntriesResponseSchema,
+  PendingRequestOutcomeSchema,
   RequestIdSchema,
+  RespondToApprovalRequestSchema,
   ThreadIdSchema,
   ThreadSchema,
   TurnIdSchema,
   TurnReadProjectionSchema,
   UpdateKnowledgeEntryRequestSchema,
+  WithdrawPendingRequestSchema,
   WorkspaceIdSchema,
   WorkspaceResourcesResponseSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  ListHumanAttentionResponseSchema,
   ReverseKnowledgeProposalRequestSchema,
   ReverseKnowledgeProposalResponseSchema,
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from './action-center.js';
-import { ListThreadItemsResponseSchema, ThreadDashboardResponseSchema } from './dashboard.js';
+import {
+  ConversationTargetCatalogSchema,
+  SubmitConversationRequestSchema,
+  SubmitConversationResponseSchema,
+} from './chat-mode.js';
+import {
+  ConversationNavigationResponseSchema,
+  ListThreadItemsResponseSchema,
+  ThreadDashboardResponseSchema,
+} from './dashboard.js';
 import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
 import {
   KnowledgeDerivedIndexesResponseSchema,
@@ -70,6 +85,7 @@ import {
   SubmitArtifactReviewDecisionResponseSchema,
 } from './material.js';
 import { NanoHostRuntimeTargetStatusResponseSchema } from './nanohost.js';
+import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 
 /** Current trusted authentication procedures eligible for Kernel operations. */
@@ -591,6 +607,108 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
   },
 } as const;
 
+/** Conversation discovery and submission preserve their existing bounded domain owners. */
+export const CONVERSATION_OPERATION_DEFINITIONS = {
+  'conversation.targets': {
+    description: 'List context-sensitive conversation targets.',
+    inputSchema: z.object({ ...workspaceSelector, threadId: ThreadIdSchema.optional() }).strict(),
+    outputSchema: ConversationTargetCatalogSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'optional-addressed-thread', threadField: 'threadId' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+  'conversation.navigation': {
+    description: 'List visible Workspace conversation activity for navigation.',
+    inputSchema: z.object(workspaceSelector).strict(),
+    outputSchema: ConversationNavigationResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'conversation.submit': {
+    description: 'Submit one structured conversation turn.',
+    inputSchema: SubmitConversationRequestSchema.safeExtend(threadSelector),
+    outputSchema: SubmitConversationResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId' },
+    policyOperation: 'turn.run',
+    mutating: true,
+    successStatuses: [200, 202],
+  },
+} as const;
+
+/** Ordinary bounded Task admission and replay, without a new Task lifecycle. */
+export const TASK_OPERATION_DEFINITIONS = {
+  'task.start': {
+    description: 'Start one bounded Task Mode delegation.',
+    inputSchema: StartTaskModeRequestSchema.extend(threadSelector),
+    outputSchema: StartTaskModeResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId' },
+    policyOperation: 'turn.run',
+    mutating: true,
+    successStatus: 202,
+  },
+} as const;
+
+/** Action Center remains the single projection of human attention. */
+export const ATTENTION_OPERATION_DEFINITIONS = {
+  'attention.list': {
+    description: 'List unified human-attention rows for one Workspace.',
+    inputSchema: z.object(workspaceSelector).strict(),
+    outputSchema: ListHumanAttentionResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'audit.read',
+    mutating: false,
+  },
+} as const;
+
+/** Decisions join the shared Pending Request owner; CLI semantic ids stay unchanged. */
+export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
+  'approval.respond': {
+    description: 'Respond to one approval request.',
+    inputSchema: RespondToApprovalRequestSchema,
+    outputSchema: ApprovalRequestSchema,
+    credentials: publicCredentials,
+    scope: {
+      kind: 'opaque-child-workspace',
+      field: 'workspaceId',
+      childField: 'approvalRequestId',
+    },
+    target: { kind: 'workspace' },
+    policyOperation: 'approval.respond',
+    mutating: true,
+  },
+  'question.answer': {
+    description: 'Submit the responsible user’s answer to one pending non-secret question.',
+    inputSchema: AnswerUserInputRequestSchema,
+    outputSchema: PendingRequestOutcomeSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId' },
+    policyOperation: 'approval.respond',
+    mutating: true,
+  },
+  'pending-request.withdraw': {
+    description: 'Withdraw one pending request under an explicit human decision.',
+    inputSchema: WithdrawPendingRequestSchema,
+    outputSchema: PendingRequestOutcomeSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId' },
+    policyOperation: 'approval.respond',
+    mutating: true,
+  },
+} as const;
+
 /** JSON product operations; administration's private Tool retains its separate public transport. */
 export const PRODUCT_OPERATION_DEFINITIONS = {
   ...KERNEL_OPERATION_DEFINITIONS,
@@ -601,6 +719,10 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   ...ARTIFACT_OPERATION_DEFINITIONS,
   ...GOAL_OPERATION_DEFINITIONS,
+  ...CONVERSATION_OPERATION_DEFINITIONS,
+  ...TASK_OPERATION_DEFINITIONS,
+  ...ATTENTION_OPERATION_DEFINITIONS,
+  ...PENDING_REQUEST_OPERATION_DEFINITIONS,
 } as const;
 
 /** Static composition of the implemented families; this is not a registration surface. */

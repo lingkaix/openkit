@@ -209,7 +209,7 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Message' }).fill(input);
   const turnResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/app/workspaces/ws_demo/threads/${threadId}/conversation-turns`)
+    response.url().endsWith('/api/app/operations/conversation.submit')
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
   const response = await turnResponse;

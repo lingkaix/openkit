@@ -10,7 +10,7 @@ The same dashboard preserves NanoCore's verified `taskInputs` objective summarie
 
 The package owns transport, request-id insertion, response validation, capability helpers, and turn-event iteration.
 
-`client.core.respondApproval`, `answerUserInput`, and `withdrawPendingRequest` submit request-identified pending-request commands. The answer and withdrawal methods use their dedicated routes; clients do not resubmit the raising Turn to obtain an outcome.
+`client.operations['approval.respond']`, `client.operations['question.answer']`, and `client.operations['pending-request.withdraw']` submit request-identified pending-request commands. The commands use the definition-derived JSON routes; clients do not resubmit the raising Turn to obtain an outcome.
 
 It does not own NanoCore App API schemas.
 
@@ -38,7 +38,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, detail, and health refresh routes.
-- `client.actionCenter`: unified Human Attention Action Center read-model route.
+- `client.operations['attention.list']`: definition-derived unified Human Attention read model with one selector object.
 - `client.repositories`: workspace repository resource, diagnostics, and Git push record routes.
 
 `parseWorkspaceSharingError(error)` narrows a generic `ApiCallError` only when it validates as the closed Workspace sharing error family.
@@ -60,7 +60,7 @@ Deprecated flat aliases are not exported.
 
 `client.app.createWorkspaceVaultSecret`, `rotateWorkspaceVaultSecret`, `revokeWorkspaceVaultSecret`, `createWorkspaceVaultGrant`, and `revokeWorkspaceVaultGrant` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
 
-`client.app.listConversationNavigation` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
+`client.operations['conversation.navigation']` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
 
 `client.app.listWorkspaceWorkers` reads the selected-Workspace current Worker projection, including exact recorded work and separately labeled package preference and last-used model. NanoCore owns Thread visibility and the additional audit permission for usage; the client validates the response without joining records or exposing hidden runtime identity.
 
@@ -77,3 +77,5 @@ The private native environment configuration client discards inert additive resp
 Knowledge reads, Sources, maintenance ledgers, retrieval, preparation, proposals and the four retained entry operations use `client.operations` derived from the two Knowledge definition tables. The `client.app` and `client.core` handwritten Knowledge methods are removed. Caller argument types preserve schema defaults, and command request identities travel in `x-openkit-request-id`; trace-only retrieval and preparation require no command identity. Deletion returns the definition’s JSON `null` success.
 
 The six Artifact operations use `client.operations` with one selector-and-payload object. Artifact list/read response types derive from those definitions; hand-written Core and App Artifact methods are deleted. Request identities use the definition-derived header binding.
+
+Conversation discovery/submission, Task start, human attention and Pending Request decisions use `client.operations` with one selector object. The former App/Core/Action Center methods and Action Center sub-client are removed.

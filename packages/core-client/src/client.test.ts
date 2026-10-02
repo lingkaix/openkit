@@ -1560,7 +1560,8 @@ describe('createCoreClient', () => {
     expect(client.auth.email).toBeDefined();
     expect(client.capabilities).toBeDefined();
     expect(client.agents).toBeDefined();
-    expect(client.actionCenter).toBeDefined();
+    expect('actionCenter' in client).toBe(false);
+    expect(client.operations['attention.list']).toBeTypeOf('function');
     expect(client.catalog).toBeDefined();
     expect(client.repositories).toBeDefined();
     expect('updateArtifactMetadata' in client.core).toBe(false);
@@ -1633,15 +1634,20 @@ describe('createCoreClient', () => {
     [
       'Chat Mode',
       (client: CoreClient) =>
-        client.app.submitConversation('ws_demo', 'th_demo', {
-          input: 'Hello',
-          model: 'caller-model',
-        } as never),
+        client.operations['conversation.submit']({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          ...({
+            input: 'Hello',
+            model: 'caller-model',
+          } as never),
+        }),
     ],
-  ])('rejects caller provider or model authority before %s transport', (_name, invoke) => {
+  ])('rejects caller provider or model authority before %s transport', async (name, invoke) => {
     const { client, requests } = createFakeClient({});
 
-    expect(() => invoke(client)).toThrow();
+    if (name === 'Chat Mode') await expect(invoke(client)).rejects.toThrow();
+    else expect(() => invoke(client)).toThrow();
     expect(requests).toEqual([]);
   });
 
@@ -2145,7 +2151,7 @@ describe('createCoreClient', () => {
     expect(requests[6]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
 
-  it('keeps approval response mutation on the core approval command path', async () => {
+  it('derives approval response JSON and request identity from the operation definition', async () => {
     const approval = {
       id: 'approval_demo',
       workspaceId: 'ws_demo',
@@ -2159,21 +2165,24 @@ describe('createCoreClient', () => {
       resolvedAt: timestamp,
     };
     const { client, requests } = createFakeClient({
-      'POST /api/approvals/approval_demo/respond': { body: approval },
+      'POST /api/app/operations/approval.respond': { body: approval },
     });
 
-    await client.core.respondApproval('approval_demo', {
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'turn_demo',
-      decision: 'granted',
+    await client.operations['approval.respond']({
+      approvalRequestId: 'approval_demo',
+      ...{
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+        decision: 'granted',
+      },
     });
 
     expect(requests[0]?.body).toMatchObject({
       approvalRequestId: 'approval_demo',
       decision: 'granted',
-      requestId: expect.any(String),
     });
+    expect(requests[0]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
   });
 
   it('routes derived Artifact operations and the Stage 2 Material app surface', async () => {
@@ -2778,7 +2787,7 @@ describe('createCoreClient', () => {
           content: 'Answer',
         },
       },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/task': {
+      'POST /api/app/operations/task.start': {
         body: {
           state: 'running',
           turn: turn(),
@@ -2788,7 +2797,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/conversation-turns': {
+      'POST /api/app/operations/conversation.submit': {
         body: {
           outcome: 'answered',
           explanation: 'The Assistant answered directly.',
@@ -3249,7 +3258,7 @@ describe('createCoreClient', () => {
       },
       'GET /api/app/agents': { body: { items: [agent()] } },
       'GET /api/app/agents/agent_demo': { body: agent() },
-      'GET /api/app/workspaces/ws_demo/action-center': { body: { items: [] } },
+      'POST /api/app/operations/attention.list': { body: { items: [] } },
       'GET /api/app/recovery/interrupted-workers': {
         body: { items: [interruptedWorkerState()] },
       },
@@ -3417,15 +3426,23 @@ describe('createCoreClient', () => {
       status: 'completed',
     });
     await expect(
-      client.app.startTaskMode('ws_demo', 'th_demo', { input: 'Implement the focused fix.' })
+      client.operations['task.start']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        ...{ input: 'Implement the focused fix.' },
+      })
     ).resolves.toMatchObject({
       state: 'running',
     });
     await expect(
-      client.app.submitConversation('ws_demo', 'th_demo', {
-        input: 'What is OpenKit?',
-        targetRef: 'assistant',
-        artifactRefs: [],
+      client.operations['conversation.submit']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        ...{
+          input: 'What is OpenKit?',
+          targetRef: 'assistant',
+          artifactRefs: [],
+        },
       })
     ).resolves.toMatchObject({
       outcome: 'answered',
@@ -3671,7 +3688,7 @@ describe('createCoreClient', () => {
     await expect(client.agents.refreshHealth('ws_demo')).resolves.not.toHaveProperty('sessions');
     await expect(client.agents.list()).resolves.toEqual({ items: [agent()] });
     await expect(client.agents.get('agent_demo')).resolves.toEqual(agent());
-    await expect(client.actionCenter.listHumanAttention('ws_demo')).resolves.toEqual({
+    await expect(client.operations['attention.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
       items: [],
     });
     await expect(client.app.listInterruptedWorkers()).resolves.toEqual({
@@ -3734,8 +3751,8 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/permission-decisions',
       'GET /api/app/permission-decisions',
       'POST /api/app/quick-chat',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/task',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/conversation-turns',
+      'POST /api/app/operations/task.start',
+      'POST /api/app/operations/conversation.submit',
       'POST /api/app/operations/knowledge.answer',
       'POST /api/app/operations/knowledge.source.register',
       'POST /api/app/operations/knowledge.source.list',
@@ -3757,7 +3774,7 @@ describe('createCoreClient', () => {
       'POST /api/app/workspaces/ws_demo/agents/health/refresh',
       'GET /api/app/agents',
       'GET /api/app/agents/agent_demo',
-      'GET /api/app/workspaces/ws_demo/action-center',
+      'POST /api/app/operations/attention.list',
       'GET /api/app/recovery/interrupted-workers',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry',
       'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_denied/retry',
@@ -3775,7 +3792,7 @@ describe('createCoreClient', () => {
     expect(requests[11]?.body).toEqual({
       materialBase64: Buffer.from('workspace-secret').toString('base64'),
     });
-    expect(requests.at(-6)?.body).toBeNull();
+    expect(requests.at(-6)?.body).toEqual({ workspaceId: 'ws_demo' });
     expect(requests.at(-5)?.body).toBeNull();
     expect(requests.at(-4)?.body).toEqual({ requestId: 'req_worker_retry' });
     expect(requests.at(-3)?.body).toEqual({});

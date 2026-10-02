@@ -119,9 +119,13 @@ describe('conversation navigation sidebar', () => {
           return rows[2]!.thread;
         },
       },
-      app: { listConversationNavigation: list, submitConversation },
+      app: {},
 
       operations: {
+        'conversation.submit': submitConversation,
+
+        'conversation.navigation': list,
+
         'workspace.list': async () => ({
           items: [{ id: 'ws1', name: 'Workspace', kind: 'general' }].map((workspace) => ({
             workspace,
@@ -214,8 +218,10 @@ describe('conversation navigation sidebar', () => {
     const user = userEvent.setup();
     const client = {
       core: {},
-      app: {
-        listConversationNavigation: async () => ({
+      app: {},
+
+      operations: {
+        'conversation.navigation': async () => ({
           items: [
             {
               thread: { id: 'th?#%', workspaceId: 'ws/1', name: 'Encoded conversation' },
@@ -224,9 +230,7 @@ describe('conversation navigation sidebar', () => {
             },
           ],
         }),
-      },
 
-      operations: {
         'workspace.list': async () => ({
           items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }].map((workspace) => ({
             workspace,
@@ -263,9 +267,11 @@ describe('conversation navigation sidebar', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const client = {
       core: {},
-      app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+      app: {},
 
       operations: {
+        'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+
         'workspace.list': async () => ({
           items: [
             { id: 'ws1', name: 'Market research', kind: 'general' },

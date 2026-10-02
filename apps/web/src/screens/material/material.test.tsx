@@ -157,12 +157,13 @@ function makeClient(
         threadId: THREAD_ID,
         outcome: 'included',
       }),
-      submitConversation: vi.fn(),
-      startTaskMode: vi.fn(),
       ...overrides.app,
     },
 
     operations: {
+      'conversation.submit': vi.fn(),
+      'task.start': vi.fn(),
+
       'thread.read': vi.fn().mockResolvedValue({
         id: THREAD_ID,
         workspaceId: WORKSPACE_ID,
@@ -344,8 +345,8 @@ describe('Workspace Material Plane 1 S11', () => {
       )
     );
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.submitConversation).not.toHaveBeenCalled();
-    expect(client.app.startTaskMode).not.toHaveBeenCalled();
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    expect(client.operations['task.start']).not.toHaveBeenCalled();
   });
 
   it('keeps a failed Material list retryable before settling on an authoritative empty list', async () => {
@@ -409,8 +410,8 @@ describe('Workspace Material Plane 1 S11', () => {
       })
     );
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.submitConversation).not.toHaveBeenCalled();
-    expect(client.app.startTaskMode).not.toHaveBeenCalled();
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    expect(client.operations['task.start']).not.toHaveBeenCalled();
   });
 
   it('creates and saves the first exact revision from a null-current Material', async () => {
@@ -487,8 +488,8 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
     expect(client.core.startTurn).not.toHaveBeenCalled();
-    expect(client.app.submitConversation).not.toHaveBeenCalled();
-    expect(client.app.startTaskMode).not.toHaveBeenCalled();
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+    expect(client.operations['task.start']).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
 

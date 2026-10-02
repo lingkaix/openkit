@@ -10,7 +10,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
-import { artifactOperationRequest } from './test-support/artifact-operation.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('dashboard and search Thread audiences', () => {
@@ -81,18 +81,20 @@ describe('dashboard and search Thread audiences', () => {
       privateOwnerUserId: 'user_local',
     });
     const app = createApp({ store });
-    for (const mode of ['task']) {
+    for (const _mode of ['task']) {
       const response = await app.request(
-        `/api/app/workspaces/${workspace.id}/threads/${thread.id}/${mode}`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '44444444-4444-4444-8444-444444444444',
-            input: 'Start formal work',
-            objective: 'Start formal work',
-          }),
-        }
+        ...operationRequest(
+          'task.start',
+          { workspaceId: workspace.id, threadId: thread.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '44444444-4444-4444-8444-444444444444',
+              input: 'Start formal work',
+            }),
+          }
+        )
       );
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({
@@ -278,7 +280,7 @@ describe('dashboard and search Thread audiences', () => {
         const deniedArtifactId = userId === 'user_local' ? 'ar_other-private' : 'ar_local-private';
         const ownArtifactId = userId === 'user_local' ? 'ar_local-private' : 'ar_other-private';
         const catalog = await app.request(
-          ...artifactOperationRequest('artifact.list', { workspaceId: workspace.id }, { headers })
+          ...operationRequest('artifact.list', { workspaceId: workspace.id }, { headers })
         );
         expect(catalog.status).toBe(200);
         expect((await catalog.json()).items.map((item: { id: string }) => item.id).sort()).toEqual(
@@ -293,7 +295,7 @@ describe('dashboard and search Thread audiences', () => {
         expect(await record.json()).toMatchObject({ counts: { artifactCount: 3 } });
         {
           const hidden = await app.request(
-            ...artifactOperationRequest(
+            ...operationRequest(
               'artifact.read',
               { workspaceId: workspace.id, artifactId: deniedArtifactId },
               { headers }
@@ -302,7 +304,7 @@ describe('dashboard and search Thread audiences', () => {
           expect(hidden.status).toBe(scope === 'server-admin' ? 200 : 404);
           if (scope !== 'server-admin') expect(await hidden.text()).not.toContain(denied.name);
           const visible = await app.request(
-            ...artifactOperationRequest(
+            ...operationRequest(
               'artifact.read',
               { workspaceId: workspace.id, artifactId: ownArtifactId },
               { headers }
@@ -311,7 +313,7 @@ describe('dashboard and search Thread audiences', () => {
           expect(visible.status).toBe(200);
         }
         const hiddenReview = await app.request(
-          ...artifactOperationRequest(
+          ...operationRequest(
             'artifact.review-list',
             { workspaceId: workspace.id, artifactId: deniedArtifactId },
             { headers }
@@ -321,17 +323,20 @@ describe('dashboard and search Thread audiences', () => {
         if (scope === 'server-admin') {
           const receiving = store.createThread(workspace.id, 'Attachment audience');
           const attached = await app.request(
-            `/api/app/workspaces/${workspace.id}/threads/${receiving.id}/conversation-turns`,
-            {
-              method: 'POST',
-              headers: { ...headers, 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: 'private-artifact-attachment',
-                input: 'Use output',
-                targetRef: 'internal-role:assistant',
-                artifactRefs: [{ artifactId: deniedArtifactId, artifactVersion: 1 }],
-              }),
-            }
+            ...operationRequest(
+              'conversation.submit',
+              { workspaceId: workspace.id, threadId: receiving.id },
+              {
+                method: 'POST',
+                headers: { ...headers, 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: 'private-artifact-attachment',
+                  input: 'Use output',
+                  targetRef: 'internal-role:assistant',
+                  artifactRefs: [{ artifactId: deniedArtifactId, artifactVersion: 1 }],
+                }),
+              }
+            )
           );
           expect(attached.status, await attached.clone().text()).toBe(409);
           expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
@@ -357,7 +362,7 @@ describe('dashboard and search Thread audiences', () => {
             lastMutationRequestId: 'import-safe',
           });
           const introduced = await app.request(
-            ...artifactOperationRequest(
+            ...operationRequest(
               'artifact.introduce',
               { workspaceId: workspace.id, threadId: denied.id, artifactId: 'ar_imported_safe' },
               {

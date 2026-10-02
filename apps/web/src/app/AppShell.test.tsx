@@ -22,7 +22,6 @@ const originalMatchMedia = window.matchMedia;
 function makeClient(): CoreClient {
   return {
     app: {
-      listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listOpenKitAccessTokens: vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Server-admin authority is required.', {
           code: 'forbidden',
@@ -49,6 +48,8 @@ function makeClient(): CoreClient {
     },
 
     operations: {
+      'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+
       'workspace.list': vi.fn().mockResolvedValue({
         items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
           workspace,

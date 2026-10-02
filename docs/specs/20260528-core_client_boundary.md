@@ -84,7 +84,7 @@ The public client is grouped by boundary:
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, get, and health refresh routes.
-- `client.actionCenter`: unified Human Attention read-model route.
+- `client.operations['attention.list']`: unified Human Attention read-model operation.
 - `client.repositories`: workspace repository resource list, diagnostics, and default repository setup routes.
 
 Deprecated flat aliases are removed.
@@ -142,10 +142,10 @@ App API wrappers add only NanoCore-local read-model behavior.
 
 NanoCore exposes:
 
-- `GET /api/app/workspaces/:workspaceId/conversation-targets`
-- `POST /api/app/workspaces/:workspaceId/threads/:threadId/conversation-turns`
+- `POST /api/app/operations/conversation.targets`
+- `POST /api/app/operations/conversation.submit`
 
-`@openkit/app-api-schemas` owns the strict target catalog, structured request, and accepted response schemas defined by `docs/specs/20260831-unified_conversation_composer.md`. The client exposes `client.app.listConversationTargets(workspaceId)` and `client.app.submitConversationTurn(workspaceId, threadId, input)`, inserts a request identity when omitted, and returns only schema-validated product fields.
+`@openkit/app-api-schemas` owns the strict target catalog, structured request, and accepted response schemas defined by `docs/specs/20260831-unified_conversation_composer.md`. The client exposes `client.operations['conversation.targets']({ workspaceId })` and `client.operations['conversation.submit']({ workspaceId, threadId, ...input })`, inserts a request identity when omitted, and returns only schema-validated product fields.
 
 The cutover removes `StartChatModeRequestSchema`, `StartChatModeResponseSchema`, `client.app.startChatMode`, the old thread `/chat` route, and the `chat.start` operation rather than retaining aliases. Direct Task, Goal, Knowledge Manager, and Core operations remain because they serve callers outside the Composer.
 
@@ -153,15 +153,15 @@ The cutover removes `StartChatModeRequestSchema`, `StartChatModeResponseSchema`,
 
 NanoCore exposes:
 
-- `GET /api/app/workspaces/:workspaceId/action-center`
+- `POST /api/app/operations/attention.list`
 
 This route is the unified Human Attention read model for pending human actions, review states, recovery prompts, and app-local attention sources.
 
-Approval mutations stay on the Core command path at `POST /api/approvals/:approvalRequestId/respond`.
+Approval mutations stay on the definition-derived operation path at `POST /api/app/operations/approval.respond`.
 
-Question response mutations stay on the Core turn-input path at `POST /api/turns`.
+Question response mutations use the definition-derived operation path at `POST /api/app/operations/question.answer`.
 
-The client exposes `client.actionCenter.listHumanAttention(workspaceId)`.
+The client exposes `client.operations['attention.list']({ workspaceId })`.
 
 ## Workspace Repository Slice
 
@@ -220,9 +220,9 @@ Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema
 
 Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 
-The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.app.getConversationTargets` and `client.app.submitConversation` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
+The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
 
-NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Those hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge and retained Knowledge Entry operations now use the definition-derived `client.operations` map; their former `client.app` and `client.core` mappings are absent.
+NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Those hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention and Pending Request operations now use the definition-derived `client.operations` map; their former `client.app` and `client.core` mappings are absent.
 
 Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
 

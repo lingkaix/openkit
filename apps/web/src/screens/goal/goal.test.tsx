@@ -96,12 +96,7 @@ type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: {
-    operations?: MethodOverrides;
-    core?: MethodOverrides;
-    app?: MethodOverrides;
-    actionCenter?: MethodOverrides;
-  } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -134,12 +129,10 @@ function makeClient(
       saveWorkspaceMaterialRevision: vi.fn(),
       ...overrides.app,
     },
-    actionCenter: {
-      listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
-      ...overrides.actionCenter,
-    },
 
     operations: {
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
+
       'artifact.read': vi.fn().mockResolvedValue(ARTIFACT),
       'artifact.list': vi.fn().mockResolvedValue({ items: [ARTIFACT] }),
       'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [REVIEW] }),

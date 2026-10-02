@@ -21,6 +21,7 @@ import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { upsertWorkspaceRepositoryResource } from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -907,17 +908,23 @@ describe('workspace repository app API', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
       expect(store.listThreadTurns('ws_demo', thread.id)).toHaveLength(2);
 
-      const grantRes = await app.request(`/api/approvals/${approvalPayload.approval.id}/respond`, {
-        body: JSON.stringify({
-          decision: 'granted',
-          requestId: '00000000-0000-4000-8000-000000000206',
-          threadId: thread.id,
-          turnId: expectedPublicationTurnId,
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const grantRes = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: approvalPayload.approval.id },
+          {
+            body: JSON.stringify({
+              decision: 'granted',
+              requestId: '00000000-0000-4000-8000-000000000206',
+              threadId: thread.id,
+              turnId: expectedPublicationTurnId,
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       expect(grantRes.status).toBe(200);
       expect(store.getTurn('ws_demo', thread.id, sourceTurn.id)).toMatchObject({
         completedAt: '2026-07-19T00:00:00.000Z',
@@ -1023,17 +1030,23 @@ describe('workspace repository app API', () => {
         turnId: sourceTurn.id,
         workspaceId: 'ws_demo',
       });
-      const denyRes = await app.request(`/api/approvals/${approvalPayload.approval.id}/respond`, {
-        body: JSON.stringify({
-          decision: 'denied',
-          requestId: '00000000-0000-4000-8000-000000000209',
-          threadId: thread.id,
-          turnId: expectedPublicationTurnId,
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const denyRes = await app.request(
+        ...operationRequest(
+          'approval.respond',
+          { approvalRequestId: approvalPayload.approval.id },
+          {
+            body: JSON.stringify({
+              decision: 'denied',
+              requestId: '00000000-0000-4000-8000-000000000209',
+              threadId: thread.id,
+              turnId: expectedPublicationTurnId,
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       expect(denyRes.status).toBe(200);
       expect(store.getTurn('ws_demo', thread.id, sourceTurn.id)).toMatchObject({
         completedAt: '2026-07-19T00:00:00.000Z',
