@@ -328,8 +328,8 @@ describe('OpenCode resident adapter', () => {
     const capability = await startSyntheticCapability();
     servers.push(inference, capability);
     const creds = loopback('lost-registry', inference.url, capability.url);
+    // Use the owner's eight-second RPC bound so catalog reload and move precede registry proof.
     const adapter = createOpenCodeAdapter({
-      rpcTimeoutMs: 500,
       spawnServer(binary, args, options) {
         const pluginPath = join(layout.controlRoot, 'plugin', 'index.js');
         const plugin = readFileSync(pluginPath, 'utf8');

@@ -2,7 +2,7 @@
 
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import {
+import fs, {
   chmod,
   mkdir,
   mkdtemp,
@@ -926,6 +926,75 @@ describe('Codex App Server adapter', () => {
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
   }, 30_000);
 
+  it('scans retained credentials when a native scratch file vanishes before read', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const git = join(roots.state, '.tmp', 'git-disappearing');
+    const plugins = join(roots.state, '.tmp', 'plugins-clone-retained');
+    await mkdir(git, { recursive: true });
+    await mkdir(plugins);
+    const vanished = join(git, 'HEAD');
+    const retained = join(plugins, 'credential');
+    const wal = join(roots.state, 'native.sqlite-wal');
+    await writeFile(vanished, 'ref: refs/heads/main');
+    await writeFile(retained, CAPABILITY_SECRET);
+    await writeFile(wal, INFERENCE_SECRET);
+    const nativeRead = fs.readFile;
+    const read = vi.spyOn(fs, 'readFile').mockImplementation(async (...args) => {
+      // Native TempDir cleanup happens after enumeration, before this exact read.
+      if (args[0] === vanished) await rm(git, { recursive: true });
+      return nativeRead(...args);
+    });
+    try {
+      expect(
+        (await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).sort()
+      ).toEqual([retained, wal].sort());
+      expect(read).toHaveBeenCalledWith(vanished);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('scans retained credentials when a native scratch directory vanishes before traversal', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const vanished = join(roots.state, '.tmp');
+    const retained = join(roots.state, 'native.sqlite-wal');
+    await mkdir(vanished);
+    await writeFile(join(vanished, 'HEAD'), 'ref: refs/heads/main');
+    await writeFile(retained, INFERENCE_SECRET);
+    const nativeReadDirectory = fs.readdir;
+    const readDirectory = vi.spyOn(fs, 'readdir').mockImplementation(async (...args) => {
+      if (args[0] === vanished) await rm(vanished, { recursive: true });
+      return nativeReadDirectory(...args);
+    });
+    try {
+      expect(await filesContaining(roots.state, [INFERENCE_SECRET])).toEqual([retained]);
+      expect(readDirectory).toHaveBeenCalledWith(vanished, { withFileTypes: true });
+      await expect(
+        filesContaining(join(roots.state, 'missing'), [INFERENCE_SECRET])
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      readDirectory.mockRestore();
+    }
+  });
+
+  it('rejects a credential scan when a retained credential-bearing file is unreadable', async () => {
+    const roots = await tempRoots();
+    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    const blocked = join(roots.state, 'native.sqlite-wal');
+    await writeFile(blocked, INFERENCE_SECRET);
+    await chmod(blocked, 0);
+    try {
+      await expect(readFile(blocked)).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(filesContaining(roots.state, [INFERENCE_SECRET])).rejects.toMatchObject({
+        code: 'EACCES',
+      });
+    } finally {
+      await chmod(blocked, 0o600);
+    }
+  });
+
   it('rejects a credential scan when a credential-bearing subtree is unreadable', async () => {
     const roots = await tempRoots();
     const blocked = join(roots.state, 'blocked');
@@ -1495,6 +1564,10 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
   it('keeps one thread across Turns, resumes exactly, and leaves no credential behind', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+    // Fresh native staging bytes are opaque retained data, just like unknown.data.
+    const nativeScratch = join(roots.state, '.tmp', 'plugins-clone-retained', 'marker');
+    await mkdir(join(nativeScratch, '..'), { recursive: true });
+    await writeFile(nativeScratch, 'retained native staging bytes');
     await writeFile(
       join(roots.state, 'config.toml'),
       'model_provider = "retained-bad"\n# retained user configuration marker\n'
@@ -1659,7 +1732,8 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const retained = await walk(roots.state);
     expect(retained.some((name) => name.includes('rollout-'))).toBe(true);
     expect(retained.join('\n')).not.toContain('model_catalog');
-    expect(retained.join('\n')).not.toContain('plugins-clone');
+    // Native staging names are not adapter-owned control material.
+    expect(await readFile(nativeScratch, 'utf8')).toBe('retained native staging bytes');
     const leaked = await filesContaining(roots.state, [
       INFERENCE_SECRET,
       CAPABILITY_SECRET,
@@ -1708,6 +1782,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
       'model_provider = "retained-bad"\n# retained user configuration marker\n'
     );
     expect(await readFile(join(roots.state, 'unknown.data'), 'utf8')).toBe('retained unknown file');
+    expect(await readFile(nativeScratch, 'utf8')).toBe('retained native staging bytes');
     expect(
       await filesContaining(roots.state, [
         INFERENCE_SECRET,
@@ -3118,25 +3193,38 @@ function listen(
   });
 }
 
+/** Lists every surviving native-home entry; an absent scan root remains an error. */
 async function walk(directory: string): Promise<string[]> {
   const found: string[] = [];
   async function visit(current: string): Promise<void> {
-    const entries = await readdir(current, { withFileTypes: true });
+    const entries = await fs.readdir(current, { withFileTypes: true });
     for (const entry of entries) {
       const path = join(current, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else found.push(path);
+      if (entry.isDirectory()) {
+        try {
+          await visit(path);
+        } catch (error) {
+          // Native TempDir cleanup can remove a child after its parent was enumerated.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      } else found.push(path);
     }
   }
   await visit(directory);
   return found;
 }
 
+/** Scans retained bytes without excluding native databases, logs, or scratch paths. */
 async function filesContaining(directory: string, needles: readonly string[]): Promise<string[]> {
   const hits: string[] = [];
   for (const path of await walk(directory)) {
-    const bytes = await readFile(path);
-    if (needles.some((needle) => bytes.includes(Buffer.from(needle)))) hits.push(path);
+    try {
+      const bytes = await fs.readFile(path);
+      if (needles.some((needle) => bytes.includes(Buffer.from(needle)))) hits.push(path);
+    } catch (error) {
+      // A vanished file has no retained/exportable bytes; unreadable existing bytes fail closed.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   return hits;
 }

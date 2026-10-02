@@ -59,6 +59,8 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 - `pnpm --filter @openkit/worker-shim build`
 - `pnpm --filter @openkit/worker-shim lint`
 
+Real-pin regressions use the adapters' owned native request bounds, including OpenCode's eight-second RPC bound, so setup completes before a deliberately missing tool-registry proof is examined. Codex home checks preserve opaque native staging bytes and scan all surviving files, including `.tmp/`, SQLite, WAL and logs; only `ENOENT` for a vanished child is tolerated, while a missing scan root and unreadable bytes fail the check. Deterministic disappearance and unreadability cases qualify that scan without relying on native cleanup timing.
+
 ## File Map
 
 - `src/harness.ts`: the poll loop, one Harness per instance id, the six operations over resident bindings, resume references, and the resident environment.
