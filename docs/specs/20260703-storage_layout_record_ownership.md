@@ -37,6 +37,7 @@ The important call is to stop organizing persistence by feature module. Storage 
 
 - `docs/core/storage.md`
 - `docs/core/identity.md`
+- `docs/core/permissions.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/knowledge.md`
@@ -483,7 +484,7 @@ This storage owner assigns User Memory to `users/<userId>/memory/` and Server Kn
 
 The authored `knowledgeMaintenance` setting uses existing configuration owners: User `users/<userId>/config/user.jsonc`, Workspace `workspaces/<workspaceId>/config/workspace.jsonc`, Server `config/server.jsonc`. The notebook owner defines its strict fields/defaults and authority. Existing revision-aware configuration commands validate and retain its revision; publication rechecks that current value. It never lives inside editable notebook pages or imported content. User-scope command/Audit evidence follows existing User command routing, not a new notebook database.
 
-Private project Threads and their Item/Artifact material remain in their existing Workspace paths. Their canonical Thread record adds creation-fixed `visibility` and `privateOwnerUserId` under `20260909-thread_visibility_and_sharing.md`; physical containment does not confer access. Every index/export/read projection resolves that owner before publishing private-derived metadata or bytes. User Memory is excluded from Workspace migration/clone; a private Thread remains attached to the original Workspace rather than moving when its user changes membership.
+Private project Threads and their Item/Artifact material remain in their existing Workspace paths. Their canonical Thread record adds creation-fixed `visibility` and `privateOwnerUserId` under `20260909-thread_visibility_and_sharing.md`; physical containment does not confer access. Every index, export, and read projection resolves that owner before publishing private-derived metadata or bytes to an ordinary caller. A currently usable administrator credential is eligible for those bytes under the administrator eligibility rule in [Core Permissions](../core/permissions.md). User Memory is excluded from Workspace migration/clone; a private Thread remains attached to the original Workspace rather than moving when its user changes membership.
 
 ## User Storage Layout
 

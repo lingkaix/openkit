@@ -30,6 +30,7 @@ kind: concept
 - `docs/core/work-model.md`
 - `docs/core/storage.md`
 - `docs/core/knowledge.md`
+- `docs/core/permissions.md`
 
 ## Related Docs
 
@@ -88,7 +89,7 @@ User Memory is independently stored in the User scope and retrieved through `202
 
 OpenKit will add a `quick-chat` workspace kind.
 
-NanoCore ensures one Quick Chat Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Quick Chat Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived Quick Chat operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before ordinary Workspace and private Thread authorization. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
+NanoCore ensures one Quick Chat Workspace, and no Demo Workspace, for every active local or server user. Local boot ensures the local user's owner relationship, and Better Auth ensures a server user's Workspace and owner relationship before recording each new active session; both paths are idempotent, so a pre-existing project Workspace never suppresses the personal Quick Chat Workspace and an interrupted first attempt can retry on the next sign-in without a repair workflow. A presented usable server-admin bearer may also first enter through an actor-derived Quick Chat operation, including the private administration Assistant, without a prior browser session. After validating the current credential and active canonical user, that resolver invokes the same idempotent provisioner only for the authenticated actor’s deterministic home before the requested operation is authorized. That provisioning creates only the authenticated actor's own Quick Chat. A currently usable administrator credential may read another user's Quick Chat under the administrator eligibility rule in [Core Permissions](../core/permissions.md). That read does not create their home, transfer ownership, or revive a tombstone. Invalid credentials create nothing; conflicting ownership or retained membership tombstones fail closed without revival. A denied or interrupted attempt never deletes retained Workspace files as a cleanup shortcut; a subsequent authorized request reuses the same existing provisioning path.
 
 Quick Chat will be the default workspace by being the only fresh workspace, not by a separate `defaultWorkspaceId` record.
 
