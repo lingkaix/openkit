@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 
 describe('thread item replay app API', () => {
@@ -36,7 +36,11 @@ describe('thread item replay app API', () => {
     });
     const app = createApp({ store });
 
-    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/items`);
+    const res = await app.request('/api/app/operations/thread.items', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({

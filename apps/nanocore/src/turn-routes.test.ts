@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { ApiErrorSchema, TurnReadProjectionSchema, TurnSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
@@ -28,7 +27,10 @@ import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createApp } from './test-support/app.js';
+import {
+  createAppWithWorkspaceAuthority as createApp,
+  createApp as createUnbackedApp,
+} from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -339,7 +341,11 @@ describe('generic turn routes', () => {
     const turn = store.createTurn('ws_demo', 'th_demo', 'Read this turn', LOCAL_ACTOR);
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
-    const response = await app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`);
+    const response = await app.request('/api/app/operations/turn.read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }),
+    });
 
     expect(response.status).toBe(200);
     expect(TurnReadProjectionSchema.parse(await response.json())).toEqual({
@@ -354,7 +360,11 @@ describe('generic turn routes', () => {
     store.updateTurn(turn.id, { agentSessionId: 'as_hidden' });
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
-    const response = await app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}`);
+    const response = await app.request('/api/app/operations/turn.read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }),
+    });
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -371,7 +381,12 @@ describe('generic turn routes', () => {
       `/api/workspaces/ws_quick_chat/threads/th_demo/turns/${turn.id}`,
       `/api/workspaces/ws_demo/threads/th_missing/turns/${turn.id}`,
     ]) {
-      const response = await app.request(path);
+      const [, , , workspaceId, , threadId, , turnId] = path.split('/');
+      const response = await app.request('/api/app/operations/turn.read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId, threadId, turnId }),
+      });
 
       expect(response.status).toBe(404);
       expect(ApiErrorSchema.parse(await response.json()).code).toBe('not_found');
@@ -387,7 +402,7 @@ describe('generic turn routes', () => {
       LOCAL_ACTOR
     );
     const executor = new RecordingTurnExecutor();
-    const app = createApp({ store, turnExecutor: executor });
+    const app = createUnbackedApp({ store, turnExecutor: executor });
 
     const response = await app.request(
       `/api/workspaces/ws_demo/threads/th_missing/turns/${turn.id}/interrupt`,

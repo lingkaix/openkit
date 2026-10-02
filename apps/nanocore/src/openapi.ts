@@ -84,8 +84,6 @@ import {
   IntroduceWorkspaceArtifactResponseSchema,
   IssueNanoHostTransportTokenRequestSchema,
   IssueNanoHostTransportTokenResponseSchema,
-  KERNEL_OPERATION_DEFINITIONS,
-  type KernelOperationId,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -104,7 +102,6 @@ import {
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
   ListArtifactReviewsResponseSchema,
-  ListAuthorizedWorkspacesResponseSchema,
   ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListGitPushRecordsResponseSchema,
@@ -127,7 +124,6 @@ import {
   ListServerVaultUseRecordsResponseSchema,
   ListSkillCatalogResponseSchema,
   ListStagedWorkspaceReviewsResponseSchema,
-  ListThreadItemsResponseSchema,
   ListWorkerEnvironmentsResponseSchema,
   ListWorkerOutputManifestsResponseSchema,
   ListWorkspaceApplyPlansResponseSchema,
@@ -156,10 +152,12 @@ import {
   operationModelInput,
   PauseThreadGoalRequestSchema,
   PauseThreadGoalResponseSchema,
+  PRODUCT_OPERATION_DEFINITIONS,
   PrepareAppUpdateRequestSchema,
   PrepareAppUpdateResponseSchema,
   PrepareWorkerEnvironmentRequestSchema,
   PrepareWorkerEnvironmentResponseSchema,
+  type ProductOperationId,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
   ProviderSubscriptionAutoTopupSchema,
@@ -266,7 +264,6 @@ import {
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
   SubscriptionProviderIdSchema,
-  ThreadDashboardResponseSchema,
   ThreadGoalPlanReadResponseSchema,
   ThreadGoalSummaryResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
@@ -683,14 +680,14 @@ function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['ope
 }
 
 /** Derives the migrated JSON bindings and their contract references. */
-function kernelOperationPaths() {
+function productOperationPaths() {
   return Object.fromEntries(
-    Object.entries(KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => [
+    Object.entries(PRODUCT_OPERATION_DEFINITIONS).map(([id, definition]) => [
       operationHttpPath(id),
       {
         post: appJsonOperation({
           operationId: id,
-          tag: 'light-apps',
+          tag: id.split('.')[0]!,
           summary: definition.description,
           requestSchema: `${id}.input`,
           responseSchema: `${id}.output`,
@@ -700,7 +697,7 @@ function kernelOperationPaths() {
       },
     ])
   ) as {
-    [K in KernelOperationId as `/api/app/operations/${K}`]: {
+    [K in ProductOperationId as `/api/app/operations/${K}`]: {
       post: ReturnType<typeof appJsonOperation<K>>;
     };
   };
@@ -722,16 +719,8 @@ export function createAppOpenApiDocument() {
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
-      ...kernelOperationPaths(),
-      '/api/app/workspaces': {
-        get: appJsonOperation({
-          operationId: 'listAuthorizedWorkspaces',
-          tag: 'workspace-sharing',
-          summary: 'List Workspaces authorized for the current user.',
-          responseStatus: '200',
-          responseSchema: 'ListAuthorizedWorkspacesResponse',
-        }),
-      },
+      ...productOperationPaths(),
+
       '/api/app/workspaces/{workspaceId}/members': {
         get: appJsonOperation({
           operationId: 'listWorkspaceMembers',
@@ -3774,75 +3763,7 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/dashboard': {
-        get: {
-          operationId: 'getThreadDashboard',
-          tags: ['dashboards'],
-          summary: 'Read one thread dashboard read model.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Thread dashboard read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ThreadDashboardResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/items': {
-        get: {
-          operationId: 'listThreadItems',
-          tags: ['dashboards'],
-          summary: 'List durable item log entries for one thread.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            THREAD_ID_PARAMETER,
-            {
-              name: 'since',
-              in: 'query',
-              required: false,
-              schema: { type: 'number' },
-            },
-            {
-              name: 'limit',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Thread item log entries.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListThreadItemsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
+
       '/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/reviews': {
         get: appJsonOperation({
           operationId: 'listArtifactReviews',
@@ -6400,7 +6321,7 @@ export function createAppOpenApiDocument() {
       },
       schemas: {
         ...Object.fromEntries(
-          Object.entries(KERNEL_OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
+          Object.entries(PRODUCT_OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
             [
               `${id}.input`,
               toJsonSchema(operationModelInput(definition.inputSchema, ['requestId'])),
@@ -6419,7 +6340,6 @@ export function createAppOpenApiDocument() {
         DisableUserRequest: toJsonSchema(DisableUserRequestSchema),
         DisableUserResponse: toJsonSchema(DisableUserResponseSchema),
         LeaveWorkspaceRequest: toJsonSchema(LeaveWorkspaceRequestSchema),
-        ListAuthorizedWorkspacesResponse: toJsonSchema(ListAuthorizedWorkspacesResponseSchema),
         ListWorkspaceInvitationsResponse: toJsonSchema(ListWorkspaceInvitationsResponseSchema),
         ListWorkerEnvironmentsResponse: toJsonSchema(ListWorkerEnvironmentsResponseSchema),
         ListWorkspaceMembersResponse: toJsonSchema(ListWorkspaceMembersResponseSchema),
@@ -6645,7 +6565,6 @@ export function createAppOpenApiDocument() {
         ListWorkspacePermissionDecisionsResponse: toJsonSchema(
           ListWorkspacePermissionDecisionsResponseSchema
         ),
-        ListThreadItemsResponse: toJsonSchema(ListThreadItemsResponseSchema),
         ListAutomationsResponse: toJsonSchema(ListAutomationsResponseSchema),
         ListStagedWorkspaceReviewsResponse: toJsonSchema(ListStagedWorkspaceReviewsResponseSchema),
         ListWorkspaceApplyPlansResponse: toJsonSchema(ListWorkspaceApplyPlansResponseSchema),
@@ -6816,7 +6735,6 @@ export function createAppOpenApiDocument() {
         SubmitThreadGoalSteeringRequest: toJsonSchema(SubmitThreadGoalSteeringRequestSchema),
         SubmitThreadGoalSteeringResponse: toJsonSchema(SubmitThreadGoalSteeringResponseSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),
-        ThreadDashboardResponse: toJsonSchema(ThreadDashboardResponseSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         ThreadGoalSummaryResponse: toJsonSchema(ThreadGoalSummaryResponseSchema),
         TurnId: toJsonSchema(TurnIdSchema),

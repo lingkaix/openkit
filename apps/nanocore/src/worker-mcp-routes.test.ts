@@ -2042,9 +2042,11 @@ describe('worker MCP routes', () => {
               .spyOn(runtimeConfigManager, 'current')
               .mockReturnValue({ ...originalSnapshot, providerRegistry: new ProviderRegistry([]) })
           : undefined;
-      const detailResponse = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
-      );
+      const detailResponse = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+      });
       expect(detailResponse.status, await detailResponse.clone().text()).toBe(200);
       const detailDashboard = await detailResponse.json();
       expect(

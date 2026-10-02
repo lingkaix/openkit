@@ -16,15 +16,21 @@ const EXPECTED_TIER_B_SURFACE_IDS = ['automations', 'channels'] as const;
 /** Minimal client — Tier-B demos use sample fixtures, not live reads. */
 function makeClient(): CoreClient {
   return {
-    app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
-    },
+    app: {},
     core: {
       meta: vi.fn().mockResolvedValue({}),
+    },
+
+    operations: {
+      'workspace.list': vi.fn().mockResolvedValue({
+        items: [].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner',
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      } satisfies Awaited<ReturnType<CoreClient['operations']['workspace.list']>>),
     },
   } as unknown as CoreClient;
 }

@@ -503,7 +503,7 @@ async function executeTaskModeRealWorkerTest({
     typeof workspaceId === 'string' && workspaceId.length > 0,
     'Workspace id was not returned.'
   );
-  const thread = await clients.core.core.createThread({
+  const thread = await clients.core.operations['thread.create']({
     name: 'Task Mode real worker release',
     workspaceId,
   });
@@ -569,7 +569,7 @@ async function executeTaskModeRealWorkerTest({
     assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
     runtimeEvidencePromise = clients.core.app.listWorkspaceRuntimeEvidence(workspaceId);
     const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
-      clients.core.core.listThreadItems(workspaceId, threadId),
+      clients.core.operations['thread.items']({ workspaceId: workspaceId, threadId: threadId }),
       clients.core.app.listAgentEnvironmentPackageSnapshots(workspaceId),
       clients.core.app.getCapabilityUsage(workspaceId),
       runtimeEvidencePromise,

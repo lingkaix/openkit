@@ -1,11 +1,11 @@
 import type {
   ConversationNavigationResponse,
+  OperationOutput,
   WorkerEnvironmentSummary,
 } from '@openkit/app-api-schemas';
 import {
   ApiCallError,
   type CoreClient,
-  type ListThreadItemsResponse,
   type SseEventEnvelope,
   type Thread,
 } from '@openkit/core-client';
@@ -306,7 +306,8 @@ export function useWorkspaces() {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.workspaces,
-    queryFn: async () => (await client.core.listWorkspaces()).items,
+    queryFn: async () =>
+      (await client.operations['workspace.list']({})).items.map((entry) => entry.workspace),
   });
 }
 
@@ -411,7 +412,8 @@ export function useThread(workspaceId: string | null, threadId: string) {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.thread(workspaceId ?? '', threadId),
-    queryFn: () => client.core.getThread(workspaceId as string, threadId),
+    queryFn: () =>
+      client.operations['thread.read']({ workspaceId: workspaceId as string, threadId: threadId }),
     enabled: Boolean(workspaceId),
   });
 }
@@ -433,7 +435,11 @@ export function useThreadDashboard(
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
-    queryFn: () => client.app.getThreadDashboard(workspaceId as string, threadId),
+    queryFn: () =>
+      client.operations['thread.dashboard']({
+        workspaceId: workspaceId as string,
+        threadId: threadId,
+      }),
     enabled: Boolean(workspaceId) && enabled,
     // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
     staleTime: poll ? 5_000 : 0,
@@ -453,7 +459,13 @@ export function useThreadItems(workspaceId: string | null, threadId: string, pol
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.items(workspaceId ?? '', threadId),
-    queryFn: async () => (await client.core.listThreadItems(workspaceId as string, threadId)).items,
+    queryFn: async () =>
+      (
+        await client.operations['thread.items']({
+          workspaceId: workspaceId as string,
+          threadId: threadId,
+        })
+      ).items,
     enabled: Boolean(workspaceId),
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
@@ -575,22 +587,24 @@ export function useLiveThreadItems(
           if (event.event === 'turn.completed' || event.event === 'turn.updated') {
             const updatedTurn = (
               event.data as {
-                turn: Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>['turns'][number];
+                turn: Awaited<
+                  ReturnType<CoreClient['operations']['thread.dashboard']>
+                >['turns'][number];
               }
             ).turn;
             await queryClient.cancelQueries({ queryKey: dashboardKey, exact: true });
             if (cancelled) break;
-            queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>>(
-              dashboardKey,
-              (dashboard) =>
-                dashboard
-                  ? {
-                      ...dashboard,
-                      turns: dashboard.turns.map((candidate) =>
-                        candidate.id === turnId ? updatedTurn : candidate
-                      ),
-                    }
-                  : dashboard
+            queryClient.setQueryData<
+              Awaited<ReturnType<CoreClient['operations']['thread.dashboard']>>
+            >(dashboardKey, (dashboard) =>
+              dashboard
+                ? {
+                    ...dashboard,
+                    turns: dashboard.turns.map((candidate) =>
+                      candidate.id === turnId ? updatedTurn : candidate
+                    ),
+                  }
+                : dashboard
             );
             continue;
           }
@@ -599,7 +613,7 @@ export function useLiveThreadItems(
             const identity = created.success && 'actor' in created.data ? created.data.actor : null;
             const current =
               queryClient.getQueryData<
-                Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>
+                Awaited<ReturnType<CoreClient['operations']['thread.dashboard']>>
               >(dashboardKey);
             if (
               identity &&
@@ -611,7 +625,11 @@ export function useLiveThreadItems(
               void queryClient
                 .fetchQuery({
                   queryKey: dashboardKey,
-                  queryFn: () => client.app.getThreadDashboard(workspaceId, threadId),
+                  queryFn: () =>
+                    client.operations['thread.dashboard']({
+                      workspaceId: workspaceId,
+                      threadId: threadId,
+                    }),
                   staleTime: 0,
                 })
                 .catch(() => undefined);
@@ -802,7 +820,7 @@ export function useInterruptTurn() {
     mutationFn: (input: { workspaceId: string; threadId: string; turnId: string }) =>
       client.core.interruptTurn(input),
     onSuccess: (turn) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['getThreadDashboard']>>>(
+      queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['thread.dashboard']>>>(
         chatKeys.dashboard(turn.workspaceId, turn.threadId),
         (dashboard) =>
           dashboard
@@ -829,7 +847,7 @@ export function useCreateThread() {
   return useMutation({
     mutationFn: async (input: { workspaceId: string; draft: ConversationDraft }) => {
       const name = input.draft.input.trim().slice(0, 60) || 'Artifact task';
-      return client.core.createThread({
+      return client.operations['thread.create']({
         workspaceId: input.workspaceId,
         name,
         requestId: input.draft.requestId,
@@ -925,3 +943,6 @@ export function groupItemsByTurn(items: ThreadItem[]): { turnId: string; items: 
   }
   return groups;
 }
+
+/** Thread Item view inferred from the definition-owned result. */
+type ListThreadItemsResponse = OperationOutput<'thread.items'>;

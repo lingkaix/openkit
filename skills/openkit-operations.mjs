@@ -1591,26 +1591,7 @@ export const operationCatalog = [
     handler: ({ client }, input) =>
       client.app.checkKnowledgeHealth(input.workspaceId, bodyWithout(input, 'workspaceId')),
   },
-  {
-    ...STANDARD,
-    id: 'thread.items',
-    source: 'app-api',
-    appOperationId: 'listThreadItems',
-    clientMethod: 'core.listThreadItems',
-    group: 'thread',
-    summary: 'List durable items for one thread.',
-    mutating: false,
-    inputSchema: strictScope({
-      ...threadScope,
-      since: z.number().nonnegative().optional(),
-      limit: z.number().int().positive().optional(),
-    }),
-    handler: ({ client }, input) =>
-      client.core.listThreadItems(input.workspaceId, input.threadId, {
-        ...(input.since === undefined ? {} : { since: input.since }),
-        ...(input.limit === undefined ? {} : { limit: input.limit }),
-      }),
-  },
+
   {
     ...STANDARD,
     id: 'attention.list',
@@ -3098,19 +3079,7 @@ export const operationCatalog = [
     inputSchema: EMPTY_INPUT,
     handler: ({ client }) => client.core.meta(),
   },
-  {
-    ...STANDARD,
-    requiredAccess: 'implicit local access or a Workspace-bound bearer token',
-    id: 'workspace.list',
-    source: 'app-api',
-    appOperationId: 'listAuthorizedWorkspaces',
-    clientMethod: 'app.listAuthorizedWorkspaces',
-    group: 'workspace',
-    summary: 'List authorized Workspaces with effective access and revisions.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.app.listAuthorizedWorkspaces(),
-  },
+
   {
     ...STANDARD,
     id: 'workspace.create',
@@ -3135,18 +3104,7 @@ export const operationCatalog = [
     inputSchema: strictScope(workspaceScope),
     handler: ({ client }, input) => client.core.getWorkspace(input.workspaceId),
   },
-  {
-    ...STANDARD,
-    id: 'workspace.resources',
-    source: 'core-projection',
-    clientMethod: 'core.getWorkspaceResources',
-    protocolSchema: 'WorkspaceResourcesResponseSchema',
-    group: 'workspace',
-    summary: 'Read one workspace resource bundle.',
-    mutating: false,
-    inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.core.getWorkspaceResources(input.workspaceId),
-  },
+
   {
     ...STANDARD,
     id: 'workspace.update',
@@ -3239,21 +3197,7 @@ export const operationCatalog = [
     inputSchema: strictScope(workspaceScope),
     handler: ({ client }, input) => client.app.getWorkspaceDashboard(input.workspaceId),
   },
-  {
-    ...STANDARD,
-    id: 'thread.dashboard',
-    source: 'app-api',
-    appOperationId: 'getThreadDashboard',
-    clientMethod: 'app.getThreadDashboard',
-    group: 'thread',
-    summary: 'Read one visible Thread dashboard.',
-    mutating: false,
-    requiredAccess:
-      'current Workspace access; private Threads require exact user ownership, including for admins',
-    inputSchema: strictScope(threadScope),
-    handler: ({ client }, input) =>
-      client.app.getThreadDashboard(input.workspaceId, input.threadId),
-  },
+
   {
     ...STANDARD,
     id: 'app.search',
@@ -3280,30 +3224,7 @@ export const operationCatalog = [
     inputSchema: strictScope(workspaceScope),
     handler: ({ client }, input) => client.core.listThreads(input.workspaceId),
   },
-  {
-    ...STANDARD,
-    id: 'thread.create',
-    source: 'core-projection',
-    clientMethod: 'core.createThread',
-    protocolSchema: 'CreateThreadRequestSchema',
-    group: 'thread',
-    summary: 'Create one thread.',
-    mutating: true,
-    inputSchema: strictShared(protocol.CreateThreadRequestSchema),
-    handler: ({ client }, input) => client.core.createThread(input),
-  },
-  {
-    ...STANDARD,
-    id: 'thread.read',
-    source: 'core-projection',
-    clientMethod: 'core.getThread',
-    protocolSchema: 'ThreadSchema',
-    group: 'thread',
-    summary: 'Read one thread.',
-    mutating: false,
-    inputSchema: strictScope(threadScope),
-    handler: ({ client }, input) => client.core.getThread(input.workspaceId, input.threadId),
-  },
+
   {
     ...STANDARD,
     id: 'thread.update',
@@ -3340,19 +3261,7 @@ export const operationCatalog = [
     inputSchema: protocol.SubmitTurnInputRequestSchema,
     handler: ({ client }, input) => client.core.startTurn(input),
   },
-  {
-    ...STANDARD,
-    id: 'turn.read',
-    source: 'core-projection',
-    clientMethod: 'core.getTurn',
-    protocolSchema: 'TurnReadProjectionSchema',
-    group: 'turn',
-    summary: 'Read one turn.',
-    mutating: false,
-    inputSchema: strictScope(turnScope),
-    handler: ({ client }, input) =>
-      client.core.getTurn(input.workspaceId, input.threadId, input.turnId),
-  },
+
   {
     ...STANDARD,
     id: 'turn.interrupt',
@@ -3757,16 +3666,17 @@ export const operationCatalog = [
       return { deleted: credentialStore.deleteToken({ baseUrl: endpoint }) };
     },
   },
-  ...Object.entries(appSchemas.KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => ({
+  ...Object.entries(appSchemas.PRODUCT_OPERATION_DEFINITIONS).map(([id, definition]) => ({
     ...STANDARD,
     id,
     source: 'app-api',
     appOperationId: id,
     clientMethod: `operations.${id}`,
-    group: 'kernel',
+    group: id.split('.')[0],
     summary: definition.description,
     mutating: definition.mutating,
     inputSchema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
     handler: ({ client }, input) => client.operations[id](input),
   })),
   {
@@ -4023,13 +3933,6 @@ export const operationCatalog = [
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
-  {
-    source: 'core-projection',
-    name: 'listWorkspaces',
-    reason:
-      'workspace.list uses the richer authorized App API summary; exposing this lower-fidelity projection would duplicate one user intent.',
-    owner: 'docs/specs/20260715-multi_user_workspace_system.md',
-  },
   {
     source: 'core-projection',
     name: 'subscribeTurnEvents',

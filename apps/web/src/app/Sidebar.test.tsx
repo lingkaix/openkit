@@ -118,11 +118,20 @@ describe('conversation navigation sidebar', () => {
           rows[2]!.thread = { ...rows[2]!.thread, status: 'archived' };
           return rows[2]!.thread;
         },
-        listWorkspaces: async () => ({
-          items: [{ id: 'ws1', name: 'Workspace', kind: 'general' }],
-        }),
       },
       app: { listConversationNavigation: list, submitConversation },
+
+      operations: {
+        'workspace.list': async () => ({
+          items: [{ id: 'ws1', name: 'Workspace', kind: 'general' }].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      },
     } as unknown as CoreClient;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -204,11 +213,7 @@ describe('conversation navigation sidebar', () => {
   ] as const)('matches encoded Thread identity across modes at %s independently of the %s destination', async (path, activity, active, destination) => {
     const user = userEvent.setup();
     const client = {
-      core: {
-        listWorkspaces: async () => ({
-          items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }],
-        }),
-      },
+      core: {},
       app: {
         listConversationNavigation: async () => ({
           items: [
@@ -218,6 +223,18 @@ describe('conversation navigation sidebar', () => {
               state: 'idle',
             },
           ],
+        }),
+      },
+
+      operations: {
+        'workspace.list': async () => ({
+          items: [{ id: 'ws/1', name: 'Encoded workspace', kind: 'general' }].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
         }),
       },
     } as unknown as CoreClient;
@@ -245,15 +262,23 @@ describe('conversation navigation sidebar', () => {
     const user = userEvent.setup();
     useWorkspaceStore.setState({ currentWorkspaceId: 'ws1' });
     const client = {
-      core: {
-        listWorkspaces: async () => ({
+      core: {},
+      app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+
+      operations: {
+        'workspace.list': async () => ({
           items: [
             { id: 'ws1', name: 'Market research', kind: 'general' },
             { id: 'ws2', name: 'Ops workspace', kind: 'general' },
-          ],
+          ].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
         }),
       },
-      app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
     } as unknown as CoreClient;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(

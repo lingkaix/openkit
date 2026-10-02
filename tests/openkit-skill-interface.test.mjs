@@ -586,7 +586,6 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
-    'core-projection:listWorkspaces',
     'core-projection:subscribeTurnEvents',
   ]);
   assert.equal(new Set(operationCatalog.map((entry) => entry.id)).size, operationCatalog.length);
@@ -600,8 +599,8 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(!operationCatalog.some((entry) => entry.id === id));
   }
   assert.equal(
-    operationCatalog.find((entry) => entry.id === 'turn.read')?.protocolSchema,
-    'TurnReadProjectionSchema'
+    operationCatalog.find((entry) => entry.id === 'turn.read')?.outputSchema,
+    appSchemas.TURN_OPERATION_DEFINITIONS['turn.read'].outputSchema
   );
   assert.equal(operationCatalog.filter((entry) => entry.id === 'thread.items').length, 1);
   assert.deepEqual(
@@ -701,7 +700,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.equal(operationCatalog.filter((entry) => entry.id.startsWith('oauth.')).length, 0);
 
   for (const entry of operationCatalog) {
-    if (Object.hasOwn(appSchemas.KERNEL_OPERATION_DEFINITIONS, entry.id)) {
+    if (Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)) {
       assert.match(entry.id, /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/);
     } else {
       assert.match(entry.id, /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/);
@@ -723,9 +722,9 @@ test('one catalog covers the checked App API and public Core projection', async 
     } else {
       assert.equal(typeof resolvePath(client, entry.clientMethod), 'function');
       assert.ok(
-        Object.hasOwn(appSchemas.KERNEL_OPERATION_DEFINITIONS, entry.id)
+        Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)
           ? entry.clientMethod === `operations.${entry.id}` &&
-              entry.inputSchema === appSchemas.KERNEL_OPERATION_DEFINITIONS[entry.id].inputSchema
+              entry.inputSchema === appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema
           : String(entry.handler).includes(`client.${entry.clientMethod}`),
         `${entry.id} handler must invoke ${entry.clientMethod}`
       );
@@ -923,7 +922,7 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
     'workspace.invitation-create': ['createWorkspaceInvitation', 'app.createWorkspaceInvitation'],
     'workspace.invitation-list': ['listWorkspaceInvitations', 'app.listWorkspaceInvitations'],
     'workspace.invitation-revoke': ['revokeWorkspaceInvitation', 'app.revokeWorkspaceInvitation'],
-    'workspace.list': ['listAuthorizedWorkspaces', 'app.listAuthorizedWorkspaces'],
+    'workspace.list': ['workspace.list', 'operations.workspace.list'],
     'workspace.member-access-change': [
       'changeWorkspaceMemberAccess',
       'app.changeWorkspaceMemberAccess',
@@ -967,7 +966,7 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       .filter((entry) => entry.owner === 'docs/specs/20260715-multi_user_workspace_system.md')
       .map(({ source, name }) => `${source}:${name}`)
       .sort(),
-    ['core-projection:listWorkspaces']
+    []
   );
 });
 
@@ -2429,8 +2428,8 @@ test('the bundled CLI performs one typed call with fixed audit headers', async (
   const fetchStub = dataModule(`
     globalThis.fetch = async (url, options) => {
       const headers = new Headers(options.headers);
-      if (url !== 'http://nanocore.example/api/app/workspaces') throw new Error('unexpected URL');
-      if (options.method !== 'GET') throw new Error('unexpected method');
+      if (url !== 'http://nanocore.example/api/app/operations/workspace.list') throw new Error('unexpected URL');
+      if (options.method !== 'POST') throw new Error('unexpected method');
       if (headers.get('x-openkit-client-channel') !== 'openkit-cli') throw new Error('missing channel');
       if (headers.get('x-openkit-client-source') !== 'agent-skill') throw new Error('missing source');
       if (headers.has('authorization')) throw new Error('unexpected authorization');
@@ -2894,10 +2893,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     ],
     [
       'thread.dashboard',
-      'getThreadDashboard',
-      'getThreadDashboard',
+      'thread.dashboard',
+      'thread.dashboard',
       { workspaceId: 'ws_team', threadId: 'th_shared' },
-      ['ws_team', 'th_shared'],
+      [{ workspaceId: 'ws_team', threadId: 'th_shared' }],
     ],
     ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
     [
@@ -2927,7 +2926,7 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     const result = await entry.handler(
       {
         client: {
-          app: {
+          [id === 'thread.dashboard' ? 'operations' : 'app']: {
             [method]: async (...values) => {
               observed = values;
               return { items: [] };
@@ -2952,7 +2951,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
     [
       'thread.dashboard',
       { workspaceId: 'ws_team', threadId: 'th_private' },
-      '/api/app/workspaces/ws_team/threads/th_private/dashboard',
+      '/api/app/operations/thread.dashboard',
     ],
     ['app.search', { query: 'private needle' }, '/api/app/search?q=private%20needle'],
     ['worker.list', { workspaceId: 'ws_team' }, '/api/app/workspaces/ws_team/workers'],
@@ -2968,7 +2967,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         [
           dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== 'GET') throw new Error('unexpected transport');
+          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
           return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };

@@ -6,27 +6,38 @@ import {
   type OperationId,
   type OperationInput,
   type OperationOutput,
+  type THREAD_OPERATION_DEFINITIONS,
+  type TURN_OPERATION_DEFINITIONS,
+  type WORKSPACE_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { responsibleUserIdForActor } from '@openkit/protocol';
+import { readThreadDashboard } from './app-dashboard.js';
 import type { Actor } from './auth/identity.js';
 import {
+  assertAuthorizedWorkspaceLineage,
+  authorizedWorkspaceSet,
+  authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
-  isWorkspaceOperationAuthorized,
+  isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import type { CoreMode } from './config/mode.js';
+import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import type { FsStore } from './lib/store.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from './runtime/nanohost-runtime-target.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
-import type { CoreDb } from './storage/db.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { createThread } from './thread-routes.js';
+import { readTurn } from './turn-routes.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { readAuthorizedWorkspaces } from './workspace-sharing-routes.js';
 
 /** Trusted entry context, constructed by authentication or Worker supply assembly. */
 export type OperationInvocationContext =
@@ -49,6 +60,8 @@ export type KernelOperationImplementations = {
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  readonly runtimeConfigManager?: RuntimeConfigManager;
+  readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
@@ -66,6 +79,7 @@ export class OperationInvocationError extends Error {
       | 'invalid_operation_output'
       | 'invalid_request'
       | 'unsupported_operation'
+      | 'not_found'
       | 'deployment_admin_required'
       | 'nanohost_transport_admin_server_mode_required'
       | 'nanohost_transport_storage_unavailable'
@@ -108,9 +122,84 @@ function createKernelOperationImplementations(
 export type OperationImplementations = {
   [K in OperationId]: (
     input: OperationInput<K>,
-    actor: ActorRef
+    actor: ActorRef,
+    context: OperationInvocationContext,
+    workspaceIds: readonly string[]
   ) => OperationOutput<K> | Promise<OperationOutput<K>>;
 };
+
+/** Exact family join signatures; descriptors and id sets remain solely in the shared tables. */
+type FamilyImplementations<T> = Pick<OperationImplementations, Extract<keyof T, OperationId>>;
+
+/** Joins Workspace reads to their existing admitted-set and resource owners. */
+function createWorkspaceOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): FamilyImplementations<typeof WORKSPACE_OPERATION_DEFINITIONS> {
+  return {
+    'workspace.list': (_input, _actor, context, workspaceIds) =>
+      readAuthorizedWorkspaces(
+        dependencies.coreDb!,
+        dependencies.store!,
+        publicActor(context),
+        workspaceIds
+      ),
+    'workspace.resources': (input) => dependencies.store!.getWorkspaceResources(input.workspaceId),
+  };
+}
+
+/** Joins Thread creation, record/history reads and dashboard projection without a second lifecycle. */
+function createThreadOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): FamilyImplementations<typeof THREAD_OPERATION_DEFINITIONS> {
+  return {
+    'thread.create': (input, actor) =>
+      createThread(
+        input,
+        { store: dependencies.store!, inflightCommands: dependencies.inflightCommands! },
+        responsibleUserIdForActor(actor)!
+      ),
+    'thread.read': (input) => dependencies.store!.getThread(input.workspaceId, input.threadId),
+    // The old owner accepts the cursor/limit view but returns the full retained Item log.
+    'thread.items': (input) => ({
+      items: dependencies.store!.listThreadItems(input.workspaceId, input.threadId),
+      nextCursor: null,
+    }),
+    'thread.dashboard': (input, _actor, context) =>
+      readThreadDashboard({
+        ...input,
+        store: dependencies.store!,
+        coreDb: dependencies.coreDb,
+        actor: publicActor(context),
+        runtimeConfigManager: dependencies.runtimeConfigManager!,
+        repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+        administratorEligible: isCurrentDeploymentAdministrator(
+          dependencies.coreDb!,
+          publicActor(context)
+        ),
+      }),
+  };
+}
+
+/** Joins the ordinary Turn read to its existing evidence projection. */
+function createTurnOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): FamilyImplementations<typeof TURN_OPERATION_DEFINITIONS> {
+  return {
+    'turn.read': (input) =>
+      readTurn(
+        dependencies.store!,
+        dependencies.coreDb,
+        dependencies.repositoryWorkspaceDb!,
+        input
+      ),
+  };
+}
+
+/** Requires public authenticated context for families that have no Worker projection. */
+function publicActor(context: OperationInvocationContext): Actor {
+  if (context.kind !== 'public') throw denied();
+  return context.actor;
+}
 
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 function createOperationImplementations(
@@ -118,6 +207,9 @@ function createOperationImplementations(
 ): OperationImplementations {
   return {
     ...createKernelOperationImplementations(dependencies),
+    ...createWorkspaceOperationImplementations(dependencies),
+    ...createThreadOperationImplementations(dependencies),
+    ...createTurnOperationImplementations(dependencies),
     'nanohost.runtime-target': () => {
       const observation = readConfiguredNanoHostRuntimeTargetStatus({
         coreDb: dependencies.coreDb,
@@ -166,6 +258,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         ? context.actor
         : { kind: 'user' as const, id: context.actor.userId };
     let release: (() => void) | undefined;
+    let workspaceIds: readonly string[] = [];
     if (definition.scope.kind === 'server') {
       if (context.kind !== 'public') throw denied();
       if (!coreDb)
@@ -181,13 +274,18 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
           throw new OperationInvocationError('deployment_admin_required', error.message, 403);
         throw error;
       }
-    } else {
-      if (
-        definition.scope.kind !== 'body-workspace' ||
-        definition.target.kind !== 'workspace-light-app'
-      )
+    } else if (definition.scope.kind === 'authorized-workspace-set') {
+      if (context.kind !== 'public' || !coreDb || !dependencies.workspaceMutationAdmission)
         throw denied();
-      const input = parsed.data as KernelOperationInput<KernelOperationId>;
+      workspaceIds = authorizedWorkspaceSet(
+        coreDb,
+        context.actor,
+        definition,
+        dependencies.workspaceMutationAdmission
+      );
+    } else {
+      if (definition.scope.kind !== 'body-workspace') throw denied();
+      const input = parsed.data as { workspaceId: string; threadId?: string; turnId?: string };
       const workspaceId = input[definition.scope.field];
       if (
         !coreDb ||
@@ -204,7 +302,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
               definition.policyOperation,
               true
             )
-          : isWorkspaceOperationAuthorized(coreDb, context.actor, workspaceId, definition);
+          : authorizeWorkspace(coreDb, context.actor, workspaceId, definition);
       if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
         throw denied();
       if (context.kind === 'worker') {
@@ -215,6 +313,38 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         )
           throw denied();
       }
+      if (
+        definition.target.kind === 'addressed-thread' ||
+        definition.target.kind === 'addressed-turn'
+      ) {
+        const userId = responsibleUserIdForActor(actor);
+        const administratorEligible =
+          context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb, context.actor);
+        if (
+          !isThreadIdVisible(
+            dependencies.store,
+            workspaceId,
+            input[definition.target.threadField]!,
+            userId ?? undefined,
+            administratorEligible
+          )
+        )
+          throw new OperationInvocationError('not_found', 'Thread not found.', 404);
+        if (definition.target.kind === 'addressed-turn') {
+          const turn = dependencies.store.getTurnById(input[definition.target.turnField]!);
+          assertAuthorizedWorkspaceLineage(
+            {
+              ...(authorized as {
+                workspaceId: string;
+                effectiveRole: import('./workspace-membership.js').WorkspaceRole;
+              }),
+              kind: 'workspace',
+              policyOperation: definition.policyOperation,
+            },
+            turn.workspaceId
+          );
+        }
+      }
       // Domain handlers resolve the child inside this authorized Workspace and preserve their own availability outcomes.
       release = definition.mutating
         ? (dependencies.workspaceMutationAdmission.enter(workspaceId) ?? undefined)
@@ -223,7 +353,12 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
     }
     try {
       const handlers: OperationImplementations = createOperationImplementations(dependencies);
-      const output = await handlers[id](parsed.data as OperationInput<K>, actor);
+      const output = await handlers[id](
+        parsed.data as OperationInput<K>,
+        actor,
+        context,
+        workspaceIds
+      );
       const validated = definition.outputSchema.safeParse(output);
       if (!validated.success)
         throw new OperationInvocationError(
@@ -260,8 +395,6 @@ function bindOperationInput(
     'userId',
     'triggerActor',
     'entryScope',
-    'threadId',
-    'turnId',
     'agentSessionId',
     'packageSnapshotId',
   ]) {
@@ -273,6 +406,14 @@ function bindOperationInput(
       );
   }
   if (context.kind !== 'worker') return input;
+  for (const key of ['threadId', 'turnId']) {
+    if (Object.hasOwn(input, key))
+      throw new OperationInvocationError(
+        'bound_input_conflict',
+        'Caller cannot supply trusted invocation identity.',
+        403
+      );
+  }
   const bound = { workspaceId: context.lineage.workspaceId, requestId: context.requestId };
   for (const key of ['workspaceId', 'requestId'] as const) {
     if (Object.hasOwn(input, key) && input[key] !== bound[key])

@@ -1,9 +1,7 @@
 import {
   CreateWorkspaceRequestSchema,
-  ListWorkspacesResponseSchema,
   UpdateWorkspaceRequestSchema,
   WorkspaceRecordSchema,
-  WorkspaceResourcesResponseSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import {
@@ -30,15 +28,11 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  */
 export function registerWorkspaceRoutes({
   app,
-  authorizedWorkspaceIds,
   coreDb,
   inflightCommands,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly authorizedWorkspaceIds: (
-    context: Context<{ Variables: AuthVariables }>
-  ) => readonly string[];
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
@@ -57,19 +51,6 @@ export function registerWorkspaceRoutes({
       },
     });
   }
-
-  app.get('/api/workspaces', (c) => {
-    try {
-      const store = requestStore(c);
-      const items = authorizedWorkspaceIds(c).map((workspaceId) =>
-        readWorkspace(store, workspaceId, c.get('actor')?.userId)
-      );
-
-      return c.json(ListWorkspacesResponseSchema.parse({ items }));
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error), 'workspace_list_failed', 500);
-    }
-  });
 
   app.post('/api/workspaces', async (c) => {
     const parsed = CreateWorkspaceRequestSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -114,18 +95,6 @@ export function registerWorkspaceRoutes({
     try {
       return c.json(
         readWorkspace(requestStore(c), c.req.param('workspaceId'), c.get('actor')?.userId)
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
-
-  app.get('/api/workspaces/:workspaceId/resources', (c) => {
-    try {
-      return c.json(
-        WorkspaceResourcesResponseSchema.parse(
-          requestStore(c).getWorkspaceResources(c.req.param('workspaceId'))
-        )
       );
     } catch (error) {
       return asApiError(publishedErrorMessage(error));

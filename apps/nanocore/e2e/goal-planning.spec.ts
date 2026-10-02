@@ -18,17 +18,20 @@ describe('nanocore e2e goal planning', () => {
   it('creates, approves, supervises, and completes a deterministic Goal Mode plan without providers', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
 
-    const threadResponse = await fetch(`${harness.baseUrl}/api/workspaces/ws_demo/threads`, {
+    const requestId = randomUUID();
+    const threadResponse = await fetch(`${harness.baseUrl}/api/app/operations/thread.create`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
       body: JSON.stringify({
+        workspaceId: 'ws_demo',
         name: 'Goal planning e2e',
-        requestId: randomUUID(),
+        visibility: 'workspace',
+        requestId,
       }),
     });
     const thread = (await threadResponse.json()) as { id: string };
 
-    expect(threadResponse.status).toBe(201);
+    expect(threadResponse.status).toBe(200);
     expect(thread.id).toMatch(/^th_/);
 
     const goalResponse = await fetch(
@@ -44,7 +47,7 @@ describe('nanocore e2e goal planning', () => {
       }
     );
 
-    expect(goalResponse.status).toBe(200);
+    expect(goalResponse.status, await goalResponse.clone().text()).toBe(200);
 
     const planResponse = await fetch(
       `${harness.baseUrl}/api/app/workspaces/ws_demo/threads/${thread.id}/goal/plan`,

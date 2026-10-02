@@ -732,6 +732,7 @@ type MethodOverrides = Partial<Record<string, unknown>>;
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
   overrides: {
+    operations?: MethodOverrides;
     core?: MethodOverrides;
     app?: MethodOverrides;
     runtimeConfig?: MethodOverrides;
@@ -741,20 +742,13 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue(META),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       getWorkspace: vi.fn().mockResolvedValue(WORKSPACE),
-      getWorkspaceResources: vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
       updateWorkspace: vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
     app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS),
       setProviderApiKey: vi
         .fn()
@@ -870,6 +864,36 @@ function makeClient(
     },
     actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [] }) },
     repositories: {},
+
+    operations: {
+      'workspace.resources': vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
+    },
   } as unknown as CoreClient;
 }
 
@@ -1198,8 +1222,16 @@ describe('Vault settings (board 15)', () => {
     const listWorkspaces = vi
       .fn()
       .mockRejectedValueOnce(new Error('workspace-store-private failure'))
-      .mockResolvedValue({ items: [WORKSPACE] });
-    const client = makeClient({ core: { listWorkspaces } });
+      .mockResolvedValue({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     renderApp('/workspace/vault', client);
 
     const alert = await screen.findByRole('alert');
@@ -1441,7 +1473,9 @@ describe('Debug settings (board 11)', () => {
     renderApp(
       '/settings/debug',
       makeClient({
-        core: { listWorkspaces: vi.fn().mockReturnValue(new Promise(() => {})) },
+        core: {},
+
+        operations: { 'workspace.list': vi.fn().mockReturnValue(new Promise(() => {})) },
       })
     );
 
@@ -1455,7 +1489,19 @@ describe('Debug settings (board 11)', () => {
     renderApp(
       '/settings/debug',
       makeClient({
-        core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) },
+        core: {},
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -1476,8 +1522,20 @@ describe('Debug settings (board 11)', () => {
     );
     const getAgentEnvironmentPackageSnapshot = vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL);
     const client = makeClient({
-      core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE, workspaceB] }) },
+      core: {},
       app: { listAgentEnvironmentPackageSnapshots, getAgentEnvironmentPackageSnapshot },
+
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [WORKSPACE, workspaceB].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      },
     });
     renderApp('/settings/debug', client);
 
@@ -1615,8 +1673,16 @@ describe('Usage and audit settings (board 17)', () => {
     const listWorkspaces = vi
       .fn()
       .mockRejectedValueOnce(new Error('workspace-discovery-private failure'))
-      .mockResolvedValue({ items: [WORKSPACE] });
-    const client = makeClient({ core: { listWorkspaces } });
+      .mockResolvedValue({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     renderApp('/workspace/usage', client);
 
     const alert = await screen.findByRole('alert');

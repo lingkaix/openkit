@@ -1,7 +1,7 @@
 import {
   CreateAutomationRequestSchema,
   ExecuteGitPushRequestSchema,
-  KERNEL_OPERATION_DEFINITIONS,
+  PRODUCT_OPERATION_DEFINITIONS,
   RequestGitPushApprovalRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -555,13 +555,11 @@ async function authorizeWorkspaceOperation(
     if (readonlyTokenCannotMutate(actor, route.access)) {
       return workspaceAccessDenied();
     }
-    const candidateWorkspaceIds = isUsablePresentedServerAdminToken(input.coreDb, actor)
-      ? listActiveWorkspaceIds(input.coreDb)
-      : listActiveWorkspaceIdsForActor(input.coreDb, actor.userId);
-    const workspaceIds = candidateWorkspaceIds.filter(
-      (workspaceId) =>
-        !input.workspaceMutationAdmission.isClosed(workspaceId) &&
-        authorizeWorkspace(input.coreDb, actor, workspaceId, route.access) !== null
+    const workspaceIds = authorizedWorkspaceSet(
+      input.coreDb,
+      actor,
+      route.access,
+      input.workspaceMutationAdmission
     );
     context.set('workspaceAccess', {
       kind: 'workspace-set',
@@ -676,7 +674,7 @@ async function resolveWorkspaceId(
  * @param access Exact operation metadata.
  * @returns Authorized Workspace and effective role, or null on any denial.
  */
-function authorizeWorkspace(
+export function authorizeWorkspace(
   coreDb: CoreDb,
   actor: Actor,
   workspaceId: string,
@@ -687,11 +685,8 @@ function authorizeWorkspace(
   if (readonlyTokenCannotMutate(actor, access)) {
     return null;
   }
-  if (actor.kind === 'token' && actor.tokenScope === 'server-admin') {
-    if (
-      !isUsablePresentedServerAdminToken(coreDb, actor) ||
-      !isActiveRegisteredWorkspace(coreDb, workspaceId)
-    ) {
+  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
+    if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) {
       return null;
     }
     return { effectiveRole: 'owner', workspaceId };
@@ -1046,7 +1041,7 @@ function guardedOperationRoutes(): OperationRoute[] {
   const routes: OperationRoute[] = [];
 
   for (const [operationKey, access] of Object.entries(PUBLIC_OPERATION_ACCESS)) {
-    if (access.scope === 'server' || Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operationKey)) {
+    if (access.scope === 'server' || Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, operationKey)) {
       continue;
     }
     const direct = directOperationRoute(operationKey);
@@ -1119,4 +1114,32 @@ function workspaceAccessDenied(): Response {
 /** Returns the uniform missing-or-inaccessible Thread failure. */
 function threadNotFound(): Response {
   return asApiError('Thread not found.', 'not_found', 404);
+}
+
+/** Checks the existing current-administrator owner without treating unpresented Tokens as authority. */
+export function isCurrentDeploymentAdministrator(coreDb: CoreDb, actor: Actor): boolean {
+  try {
+    requireCurrentDeploymentAdmin(coreDb, actor);
+    return true;
+  } catch (error) {
+    if (error instanceof DeploymentAdminRequiredError) return false;
+    throw error;
+  }
+}
+
+/** Candidate-first collection admission shared by catalog guards and native operation invocation. */
+export function authorizedWorkspaceSet(
+  coreDb: CoreDb,
+  actor: Actor,
+  access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'>,
+  admission: WorkspaceMutationAdmission
+): string[] {
+  const candidates = isCurrentDeploymentAdministrator(coreDb, actor)
+    ? listActiveWorkspaceIds(coreDb)
+    : listActiveWorkspaceIdsForActor(coreDb, actor.userId);
+  return candidates.filter(
+    (workspaceId) =>
+      !admission.isClosed(workspaceId) &&
+      authorizeWorkspace(coreDb, actor, workspaceId, access) !== null
+  );
 }

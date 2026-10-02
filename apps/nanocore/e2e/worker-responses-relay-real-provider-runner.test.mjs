@@ -259,16 +259,18 @@ function createRelayStandIn(options = {}) {
       },
     },
     core: {
-      createThread: async () => ({ id: `thread_${selectedTurn.agentId}` }),
       createWorkspace: async () => ({ id: workspaceId }),
-      listThreadItems: async () => ({
-        items: turns.map((turn) => observationFor(turn).threadItem),
-      }),
       updateWorkspace: async (_workspaceId, input) => {
         defaultAgentId = input?.defaults?.defaultAgentId ?? defaultAgentId;
         selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
         return { defaults: { defaultAgentId }, id: workspaceId };
       },
+    },
+    operations: {
+      'thread.create': async () => ({ id: `thread_${selectedTurn.agentId}` }),
+      'thread.items': async () => ({
+        items: turns.map((turn) => observationFor(turn).threadItem),
+      }),
     },
   };
 
@@ -1062,7 +1064,7 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     {
       cleanup: RELAY_CLEANUP.succeeded,
       hang(standIn, hung) {
-        standIn.clients.core.core.listThreadItems = hung.wait;
+        standIn.clients.core.operations['thread.items'] = hung.wait;
       },
       name: 'readback',
     },

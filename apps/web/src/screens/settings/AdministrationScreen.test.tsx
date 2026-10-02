@@ -247,8 +247,8 @@ const CONFIG_OUTCOME_ARTIFACT = {
 } as const;
 
 function makeClient(
-  app: Partial<CoreClient['app']> = {},
-  core: Partial<CoreClient['core']> = {},
+  app: Partial<CoreClient['app'] & CoreClient['operations']> = {},
+  core: Partial<CoreClient['core'] & CoreClient['operations']> = {},
   runtimeConfig: Partial<CoreClient['runtimeConfig']> = {}
 ): CoreClient {
   return {
@@ -259,27 +259,7 @@ function makeClient(
       ...app,
     },
     core: {
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [PROJECT, SECOND_PROJECT, QUICK_CHAT] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getThread: vi.fn().mockImplementation((workspaceId: string, threadId: string) =>
-        Promise.resolve({
-          id: threadId,
-          workspaceId,
-          name: 'Administration',
-          preview: 'Administration',
-          status: 'active',
-          entryPath: 'administration',
-          createdAt: TIMESTAMP,
-          updatedAt: TIMESTAMP,
-        })
-      ),
-      listThreadItems: vi.fn().mockResolvedValue({ items: [] }),
-      getWorkspaceResources: vi.fn().mockResolvedValue({
-        knowledge: [],
-        skills: [],
-        agents: [],
-        models: [],
-      }),
       meta: vi.fn().mockResolvedValue({}),
       ...core,
     },
@@ -287,6 +267,57 @@ function makeClient(
       listFiles: vi.fn().mockResolvedValue({ files: [] }),
       getFile: vi.fn(),
       ...runtimeConfig,
+    },
+
+    operations: {
+      'thread.read': vi
+        .fn()
+        .mockImplementation(
+          ({ workspaceId, threadId }: { workspaceId: string; threadId?: string }) =>
+            Promise.resolve({
+              id: threadId,
+              workspaceId,
+              name: 'Administration',
+              preview: 'Administration',
+              status: 'active',
+              entryPath: 'administration',
+              createdAt: TIMESTAMP,
+              updatedAt: TIMESTAMP,
+            })
+        ),
+      'thread.items': vi.fn().mockResolvedValue({ items: [] }),
+      'workspace.resources': vi.fn().mockResolvedValue({
+        knowledge: [],
+        skills: [],
+        agents: [],
+        models: [],
+      }),
+      ...core,
+      ...app,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [PROJECT, SECOND_PROJECT, QUICK_CHAT].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          core['workspace.list'] ??
+            app['workspace.list'] ??
+            vi.fn().mockResolvedValue({
+              items: [PROJECT, SECOND_PROJECT, QUICK_CHAT].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -328,10 +359,10 @@ describe('Administration', () => {
       const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
       renderScreen(
         makeClient(
-          { getThreadDashboard },
+          { 'thread.dashboard': getThreadDashboard },
           {
             listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
-            listThreadItems,
+            'thread.items': listThreadItems,
           }
         )
       );
@@ -366,7 +397,8 @@ describe('Administration', () => {
       expect(getThreadDashboard.mock.calls.length).toBeGreaterThan(baselineReads);
       expect(
         getThreadDashboard.mock.calls.every(
-          ([workspaceId, threadId]) => workspaceId === QUICK_CHAT.id && threadId === ADMIN_THREAD.id
+          ([{ workspaceId, threadId }]) =>
+            workspaceId === QUICK_CHAT.id && threadId === ADMIN_THREAD.id
         )
       ).toBe(true);
       expect(listThreadItems.mock.calls.length).toBe(itemReads);
@@ -684,7 +716,7 @@ describe('Administration', () => {
                 }
           )
         ),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM, CANDIDATE_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM, CANDIDATE_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -900,7 +932,7 @@ describe('Administration', () => {
       { prepareWorkerEnvironment },
       {
         getArtifact: vi.fn().mockResolvedValue(AUTHORED_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -926,7 +958,7 @@ describe('Administration', () => {
       {},
       {
         getArtifact,
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CANDIDATE_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CANDIDATE_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -944,7 +976,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -969,7 +1001,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1021,7 +1053,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1048,7 +1080,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
         meta: vi.fn().mockRejectedValue(new Error('down')),
       }
@@ -1069,7 +1101,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact: vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1109,7 +1141,7 @@ describe('Administration', () => {
               ? Promise.reject(new Error('candidate unavailable'))
               : Promise.resolve(CONFIG_ARTIFACT)
           ),
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
         meta: vi
           .fn()
@@ -1149,7 +1181,7 @@ describe('Administration', () => {
               artifactId === CONFIG_CANDIDATE_B.artifactId ? CONFIG_ARTIFACT_B : CONFIG_ARTIFACT
             )
           ),
-        listThreadItems: vi.fn().mockImplementation(() => Promise.resolve({ items })),
+        'thread.items': vi.fn().mockImplementation(() => Promise.resolve({ items })),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1193,7 +1225,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact,
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM, CONFIG_OUTCOME_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM, CONFIG_OUTCOME_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1221,7 +1253,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact,
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );
@@ -1242,7 +1274,7 @@ describe('Administration', () => {
       { applyAdministrationConfiguration },
       {
         getArtifact,
-        listThreadItems: vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
         listThreads: vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
       }
     );

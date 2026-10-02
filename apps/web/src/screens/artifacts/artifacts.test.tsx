@@ -10,7 +10,6 @@ import {
   ItemSchema,
   ListArtifactsResponseSchema,
   ListThreadsResponseSchema,
-  ListWorkspacesResponseSchema,
   ThreadSchema,
   TurnReadProjectionSchema,
   WorkspaceRecordSchema,
@@ -343,14 +342,13 @@ function matchedIntroduceItem(requestId: string) {
 }
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
-function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides } = {}): CoreClient {
+function makeClient(
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
+): CoreClient {
   const artifacts = [...artifactsFor(WORKSPACE.id), ...artifactsFor(WORKSPACE_B.id)];
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi
-        .fn()
-        .mockResolvedValue(ListWorkspacesResponseSchema.parse({ items: [WORKSPACE, WORKSPACE_B] })),
       listArtifacts: vi
         .fn()
         .mockImplementation((workspaceId: string) =>
@@ -369,18 +367,42 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
         .mockImplementation((workspaceId: string) =>
           Promise.resolve(ListThreadsResponseSchema.parse({ items: threadsFor(workspaceId) }))
         ),
-      getTurn: vi.fn(),
       ...overrides.core,
     },
     app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       importWorkspaceArtifact: vi.fn().mockResolvedValue(IMPORT_MUTATION),
       introduceWorkspaceArtifact: vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
       ...overrides.app,
+    },
+
+    operations: {
+      'turn.read': vi.fn(),
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -474,9 +496,10 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
         listArtifacts: vi
           .fn()
           .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
-        getTurn,
       },
       app: { introduceWorkspaceArtifact },
+
+      operations: { 'turn.read': getTurn },
     })
   );
   expect(await screen.findByText(IMPORTED_ARTIFACT.title)).toBeInTheDocument();
@@ -489,9 +512,11 @@ async function startImportedIntroduction(user: ReturnType<typeof userEvent.setup
   await waitFor(() => expect(introduceWorkspaceArtifact).toHaveBeenCalledTimes(1));
   const command = acceptedIntroduce(introduceWorkspaceArtifact);
   await waitFor(() =>
-    expect(getTurn.mock.calls).toEqual([[WORKSPACE.id, THREAD.id, INTRODUCE_MUTATION.turnId]])
+    expect(getTurn.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id, threadId: THREAD.id, turnId: INTRODUCE_MUTATION.turnId }],
+    ])
   );
-  return { command, getTurn, introduceWorkspaceArtifact, turnRead };
+  return { command, 'turn.read': getTurn, introduceWorkspaceArtifact, turnRead };
 }
 
 /** Fail-closed recovery UI after a contradictory introduction Turn, with no later mutation. */
@@ -813,8 +838,10 @@ describe('Artifacts', () => {
     const { client } = renderApp(
       '/artifacts',
       makeClient({
-        core: { listArtifacts, getTurn },
+        core: { listArtifacts },
         app: { introduceWorkspaceArtifact },
+
+        operations: { 'turn.read': getTurn },
       })
     );
 
@@ -844,7 +871,9 @@ describe('Artifacts', () => {
       requestId: expect.any(String),
     });
     await waitFor(() =>
-      expect(getTurn.mock.calls).toEqual([[WORKSPACE.id, THREAD.id, INTRODUCE_MUTATION.turnId]])
+      expect(getTurn.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id, threadId: THREAD.id, turnId: INTRODUCE_MUTATION.turnId }],
+      ])
     );
     expect(screen.queryByText(new RegExp(`added to ${THREAD_NAME}`, 'i'))).not.toBeInTheDocument();
     expect(listArtifacts.mock.calls).toEqual([[WORKSPACE.id]]);
@@ -876,8 +905,12 @@ describe('Artifacts', () => {
 
   it('does not settle introduction from a mismatched-only authoritative Turn', async () => {
     const user = userEvent.setup();
-    const { command, getTurn, introduceWorkspaceArtifact, turnRead } =
-      await startImportedIntroduction(user);
+    const {
+      command,
+      'turn.read': getTurn,
+      introduceWorkspaceArtifact,
+      turnRead,
+    } = await startImportedIntroduction(user);
 
     const mismatched = introduceItem({
       id: 'it_intro_other',
@@ -1163,12 +1196,24 @@ describe('Artifacts', () => {
     const error = privateError(403, 'workspace_access_denied', `${command}-denied-private failure`);
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce(
-        ListWorkspacesResponseSchema.parse({ items: [WORKSPACE, WORKSPACE_B] })
-      )
-      .mockResolvedValueOnce(
-        ListWorkspacesResponseSchema.parse({ items: [WORKSPACE, WORKSPACE_B] })
-      );
+      .mockResolvedValueOnce({
+        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
+      .mockResolvedValueOnce({
+        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
     const importWorkspaceArtifact = vi
       .fn()
       .mockRejectedValueOnce(error)
@@ -1180,8 +1225,10 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listWorkspaces },
+        core: {},
         app: { importWorkspaceArtifact, introduceWorkspaceArtifact },
+
+        operations: { 'workspace.list': listWorkspaces },
       })
     );
 
@@ -1445,8 +1492,12 @@ describe('Artifacts', () => {
     },
   ])('fail-closes introduction when $name', async ({ turn }) => {
     const user = userEvent.setup();
-    const { command, getTurn, introduceWorkspaceArtifact, turnRead } =
-      await startImportedIntroduction(user);
+    const {
+      command,
+      'turn.read': getTurn,
+      introduceWorkspaceArtifact,
+      turnRead,
+    } = await startImportedIntroduction(user);
 
     await act(async () => {
       turnRead.resolve(turn(command.requestId));
@@ -1681,9 +1732,15 @@ describe('Artifacts', () => {
     const user = userEvent.setup();
     const recoveredArtifacts =
       createDeferred<ReturnType<typeof ListArtifactsResponseSchema.parse>>();
-    const listWorkspaces = vi
-      .fn()
-      .mockResolvedValue(ListWorkspacesResponseSchema.parse({ items: [WORKSPACE, WORKSPACE_B] }));
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const listArtifacts = vi
       .fn()
       .mockResolvedValueOnce(ListArtifactsResponseSchema.parse({ items: [ARTIFACT] }))
@@ -1696,8 +1753,10 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listWorkspaces, listArtifacts, getArtifact },
+        core: { listArtifacts, getArtifact },
         app: { importWorkspaceArtifact },
+
+        operations: { 'workspace.list': listWorkspaces },
       })
     );
 

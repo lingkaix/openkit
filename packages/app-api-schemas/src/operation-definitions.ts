@@ -1,11 +1,22 @@
-import { RequestIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  CreateThreadRequestSchema,
+  RequestIdSchema,
+  ThreadIdSchema,
+  ThreadSchema,
+  TurnIdSchema,
+  TurnReadProjectionSchema,
+  WorkspaceIdSchema,
+  WorkspaceResourcesResponseSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
+import { ListThreadItemsResponseSchema, ThreadDashboardResponseSchema } from './dashboard.js';
 import {
   CreateLightAppRecordRequestSchema,
   GetLightAppResponseSchema,
   LightAppRecordSchema,
 } from './light-apps.js';
 import { NanoHostRuntimeTargetStatusResponseSchema } from './nanohost.js';
+import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 
 /** Current trusted authentication procedures eligible for Kernel operations. */
 type KernelCredential =
@@ -90,11 +101,125 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = {
   },
 } as const;
 
+/** Credentials already used by the public Workspace, Thread and Turn families. */
+const publicCredentials = [
+  'local-user',
+  'user-session',
+  'user-bearer',
+  'deployment-administrator',
+] as const;
+const workspaceSelector = { workspaceId: WorkspaceIdSchema };
+const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
+
+/** Candidate-first Workspace discovery and its existing resource bundle. */
+export const WORKSPACE_OPERATION_DEFINITIONS = {
+  'workspace.list': {
+    description: 'List authorized Workspaces with effective access and revisions.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: ListAuthorizedWorkspacesResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'authorized-workspace-set' },
+    target: { kind: 'authorized-workspaces' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+  'workspace.resources': {
+    description: 'Read one Workspace resource bundle.',
+    inputSchema: z.object(workspaceSelector).strict(),
+    outputSchema: WorkspaceResourcesResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.read',
+    mutating: false,
+  },
+} as const;
+
+/** Creation and audience-scoped Thread reads retain the protocol and dashboard owners. */
+export const THREAD_OPERATION_DEFINITIONS = {
+  'thread.create': {
+    description:
+      'Create one Thread; private by default, explicitly workspace-shared for formal work.',
+    inputSchema: CreateThreadRequestSchema.strict(),
+    outputSchema: ThreadSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'workspace.write',
+    mutating: true,
+  },
+  'thread.read': {
+    description: 'Read one visible Thread.',
+    inputSchema: z.object(threadSelector).strict(),
+    outputSchema: ThreadSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+  'thread.items': {
+    description: 'List durable Items for one visible Thread.',
+    inputSchema: z
+      .object({
+        ...threadSelector,
+        since: z.number().nonnegative().optional(),
+        limit: z.number().int().positive().optional(),
+      })
+      .strict(),
+    outputSchema: ListThreadItemsResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+  'thread.dashboard': {
+    description: 'Read one visible Thread dashboard.',
+    inputSchema: z.object(threadSelector).strict(),
+    outputSchema: ThreadDashboardResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+} as const;
+
+/** Turn detail keeps the ordinary product projection and verified Context Package evidence. */
+export const TURN_OPERATION_DEFINITIONS = {
+  'turn.read': {
+    description: 'Read one Turn in its visible Thread.',
+    inputSchema: z.object({ ...threadSelector, turnId: TurnIdSchema }).strict(),
+    outputSchema: TurnReadProjectionSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: {
+      kind: 'addressed-turn',
+      threadField: 'threadId',
+      turnField: 'turnId',
+      missing: 'not-found',
+    },
+    policyOperation: 'thread.read',
+    mutating: false,
+  },
+} as const;
+
+/** JSON product operations; administration's private Tool retains its separate public transport. */
+export const PRODUCT_OPERATION_DEFINITIONS = {
+  ...KERNEL_OPERATION_DEFINITIONS,
+  ...WORKSPACE_OPERATION_DEFINITIONS,
+  ...THREAD_OPERATION_DEFINITIONS,
+  ...TURN_OPERATION_DEFINITIONS,
+} as const;
+
 /** Static composition of the implemented families; this is not a registration surface. */
 export const OPERATION_DEFINITIONS = {
-  ...KERNEL_OPERATION_DEFINITIONS,
+  ...PRODUCT_OPERATION_DEFINITIONS,
   ...ADMINISTRATION_OPERATION_DEFINITIONS,
 } as const;
+/** JSON product ids inferred from the static public composition. */
+export type ProductOperationId = keyof typeof PRODUCT_OPERATION_DEFINITIONS;
 /** Exact implemented ids inferred from the definitions. */
 export type OperationId = keyof typeof OPERATION_DEFINITIONS;
 /** Complete logical input of an implemented operation. */

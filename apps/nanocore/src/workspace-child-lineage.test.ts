@@ -171,9 +171,15 @@ describe('Workspace child lineage', () => {
     const basePath = `/api/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.foreignThread.id}`;
 
     for (const request of [
-      { path: basePath },
       {
-        path: `/api/app/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.foreignThread.id}/items`,
+        path: '/api/app/operations/thread.read',
+        method: 'POST',
+        body: { workspaceId: fixture.allowedWorkspace.id, threadId: fixture.foreignThread.id },
+      },
+      {
+        path: '/api/app/operations/thread.items',
+        method: 'POST',
+        body: { workspaceId: fixture.allowedWorkspace.id, threadId: fixture.foreignThread.id },
       },
       {
         method: 'PATCH',
@@ -257,7 +263,15 @@ describe('Workspace child lineage', () => {
     const path = `/api/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.allowedThread.id}/turns/${fixture.foreignTurn.id}`;
 
     for (const request of [
-      { path },
+      {
+        path: '/api/app/operations/turn.read',
+        method: 'POST',
+        body: {
+          workspaceId: fixture.allowedWorkspace.id,
+          threadId: fixture.allowedThread.id,
+          turnId: fixture.foreignTurn.id,
+        },
+      },
       {
         method: 'POST',
         path: `${path}/interrupt`,

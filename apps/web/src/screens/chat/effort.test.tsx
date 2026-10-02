@@ -73,25 +73,10 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
   const client = {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({
-        items: [
-          { id: 'ws1', name: 'Market research' },
-          { id: 'ws2', name: 'Second workspace' },
-        ],
-      }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getThread: vi.fn().mockResolvedValue(THREAD),
-      listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-      createThread: vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
       ...core,
     },
     app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
-      getThreadDashboard: vi.fn().mockResolvedValue({ turns: [] }),
       getConversationTargets: vi.fn().mockImplementation((workspaceId: string, threadId?: string) =>
         Promise.resolve({
           ...CONVERSATION_TARGET,
@@ -100,6 +85,46 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         })
       ),
       ...app,
+    },
+
+    operations: {
+      'thread.read': vi.fn().mockResolvedValue(THREAD),
+      'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      'thread.create': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
+      'thread.dashboard': vi.fn().mockResolvedValue({ turns: [] }),
+      ...core,
+      ...app,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [
+            { id: 'ws1', name: 'Market research' },
+            { id: 'ws2', name: 'Second workspace' },
+          ].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          ((core['workspace.list'] ?? app['workspace.list']) as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [
+                { id: 'ws1', name: 'Market research' },
+                { id: 'ws2', name: 'Second workspace' },
+              ].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
   if (app.listConversationNavigation == null) {
@@ -248,7 +273,7 @@ describe.each([
         {
           getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()),
           // The newer Turn has no override; it does not erase the last admitted choice.
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [
               { ...COMPLETED_TURN, reasoningEffort: 'high' },
               { ...COMPLETED_TURN, id: 't2' },
@@ -289,7 +314,7 @@ describe.each([
         {},
         {
           getConversationTargets: vi.fn().mockResolvedValue(catalog),
-          getThreadDashboard: vi
+          'thread.dashboard': vi
             .fn()
             .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort }] }),
           submitConversation,
@@ -313,7 +338,7 @@ describe.each([
         {},
         {
           getConversationTargets: vi.fn().mockResolvedValue(effortCatalog()),
-          getThreadDashboard: vi
+          'thread.dashboard': vi
             .fn()
             .mockResolvedValue({ turns: [{ ...COMPLETED_TURN, reasoningEffort: 'high' }] }),
         }
@@ -376,8 +401,8 @@ describe.each([
       path,
       makeClient(
         {
-          createThread,
-          getThread: vi
+          'thread.create': createThread,
+          'thread.read': vi
             .fn()
             .mockResolvedValue({ ...THREAD, id: surface === 'starter' ? 'th-new' : 'th1' }),
           listArtifacts: vi

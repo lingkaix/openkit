@@ -767,6 +767,7 @@ function createDeferred<T>() {
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
   overrides: {
+    operations?: MethodOverrides;
     core?: MethodOverrides;
     app?: MethodOverrides;
     agents?: MethodOverrides;
@@ -778,7 +779,6 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       createKnowledge: vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
@@ -793,38 +793,11 @@ function makeClient(
         createdAt: TIMESTAMP_NEW,
         updatedAt: TIMESTAMP_NEW,
       }),
-      getWorkspaceResources: vi.fn().mockImplementation(async () => {
-        const listAgents = overrides.agents?.list as CoreClient['agents']['list'] | undefined;
-        const listed = overrides.agents?.list ? await listAgents?.() : { items: [] };
-        return {
-          knowledge: [],
-          skills: [],
-          agents: listed && typeof listed === 'object' && 'items' in listed ? listed.items : [],
-          models: [],
-        };
-      }),
       respondApproval: vi.fn().mockResolvedValue({}),
       withdrawPendingRequest: vi.fn().mockResolvedValue({}),
       ...overrides.core,
     },
     app: {
-      getThreadDashboard: vi.fn().mockResolvedValue({
-        pendingRequests: ['ap1', 'ap2', 'ap_disabled'].map((requestId) => ({
-          requestId,
-          state: 'pending',
-          canRespond: true,
-          approvalEffect: {
-            status: 'available',
-            summary: 'Summary: One effect',
-            detail: '{"effect":"complete"}',
-          },
-        })),
-      }),
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       getWorkspaceDashboard: vi.fn().mockResolvedValue({
         workspace: { id: WORKSPACE_A.id, name: WORKSPACE_A.name },
         counts: {
@@ -920,6 +893,57 @@ function makeClient(
       updateMcpBinding: vi.fn(),
       importPlugin: vi.fn(),
       ...overrides.catalog,
+    },
+
+    operations: {
+      'workspace.resources': vi.fn().mockImplementation(async () => {
+        const listAgents = overrides.agents?.list as CoreClient['agents']['list'] | undefined;
+        const listed = overrides.agents?.list ? await listAgents?.() : { items: [] };
+        return {
+          knowledge: [],
+          skills: [],
+          agents: listed && typeof listed === 'object' && 'items' in listed ? listed.items : [],
+          models: [],
+        };
+      }),
+      'thread.dashboard': vi.fn().mockResolvedValue({
+        pendingRequests: ['ap1', 'ap2', 'ap_disabled'].map((requestId) => ({
+          requestId,
+          state: 'pending',
+          canRespond: true,
+          approvalEffect: {
+            status: 'available',
+            summary: 'Summary: One effect',
+            detail: '{"effect":"complete"}',
+          },
+        })),
+      }),
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE_A].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE_A].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -1375,8 +1399,10 @@ describe('Overview / Action Center (board 07)', () => {
   it('waits for complete exact detail before enabling an attention grant', async () => {
     const detail = createDeferred<unknown>();
     const client = makeClient({
-      app: { getThreadDashboard: vi.fn().mockReturnValue(detail.promise) },
+      app: {},
       actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
+
+      operations: { 'thread.dashboard': vi.fn().mockReturnValue(detail.promise) },
     });
     renderApp('/', client);
     expect(
@@ -1405,21 +1431,7 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('keeps authorized denial available when attention detail is unavailable', async () => {
     const client = makeClient({
-      app: {
-        getThreadDashboard: vi.fn().mockResolvedValue({
-          pendingRequests: [
-            {
-              requestId: 'ap1',
-              state: 'pending',
-              canRespond: true,
-              approvalEffect: {
-                status: 'unavailable',
-                reason: 'Complete detail cannot be loaded.',
-              },
-            },
-          ],
-        }),
-      },
+      app: {},
       actionCenter: {
         listHumanAttention: vi.fn().mockResolvedValue({
           items: [
@@ -1434,6 +1446,22 @@ describe('Overview / Action Center (board 07)', () => {
                   href: '/api/pending-requests/ap1/withdraw',
                 },
               ],
+            },
+          ],
+        }),
+      },
+
+      operations: {
+        'thread.dashboard': vi.fn().mockResolvedValue({
+          pendingRequests: [
+            {
+              requestId: 'ap1',
+              state: 'pending',
+              canRespond: true,
+              approvalEffect: {
+                status: 'unavailable',
+                reason: 'Complete detail cannot be loaded.',
+              },
             },
           ],
         }),
@@ -1460,8 +1488,11 @@ describe('Overview / Action Center (board 07)', () => {
     'read-only',
   ])('keeps attention approval controls closed for %s authority/state', async (state) => {
     const client = makeClient({
-      app: {
-        getThreadDashboard: vi.fn().mockResolvedValue({
+      app: {},
+      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
+
+      operations: {
+        'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
             {
               requestId: 'ap1',
@@ -1472,7 +1503,6 @@ describe('Overview / Action Center (board 07)', () => {
           ],
         }),
       },
-      actionCenter: { listHumanAttention: vi.fn().mockResolvedValue({ items: [APPROVAL_ROW] }) },
     });
     renderApp('/', client);
     expect(
@@ -1673,14 +1703,22 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({
-            items: [{ ...WORKSPACE_A, id: workspaceId }],
-          }),
-        },
+        core: {},
         app: {
           listConversationNavigation: vi.fn().mockResolvedValue({
             items: [{ ...item, thread: { ...item.thread, workspaceId } }],
+          }),
+        },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [{ ...WORKSPACE_A, id: workspaceId }].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
           }),
         },
       })
@@ -1847,12 +1885,21 @@ describe('Overview / Action Center (board 07)', () => {
     const queryClient = renderApp(
       '/',
       makeClient({
-        core: {
-          respondApproval,
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: { respondApproval },
         actionCenter: { listHumanAttention },
         app: { listConversationNavigation },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
     expect(
@@ -1888,16 +1935,25 @@ describe('Overview / Action Center (board 07)', () => {
     renderApp(
       '/',
       makeClient({
-        core: {
-          respondApproval,
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: { respondApproval },
         actionCenter: {
           listHumanAttention: vi.fn().mockImplementation(async (id: string) => ({
             items: id === WORKSPACE_A.id ? [APPROVAL_ROW, other] : [],
           })),
         },
         app: { listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }) },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
     await screen.findByRole('heading', { name: 'Another approval' });
@@ -2037,8 +2093,10 @@ describe('Agents (board 08)', () => {
     renderApp(
       '/agents',
       makeClient({
-        core: { getWorkspaceResources },
+        core: {},
         agents: { list },
+
+        operations: { 'workspace.resources': getWorkspaceResources },
       })
     );
 
@@ -2049,7 +2107,7 @@ describe('Agents (board 08)', () => {
     expect(screen.queryByText('Internal worker')).not.toBeInTheDocument();
     expect(screen.queryByText(/Coding/)).not.toBeInTheDocument();
     expect(list).not.toHaveBeenCalled();
-    expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_A.id);
+    expect(getWorkspaceResources).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id });
   });
 });
 
@@ -2567,28 +2625,44 @@ describe('Catalog', () => {
 describe('Agents roster continued', () => {
   it('queries only the selected Workspace resources and does not project another Workspace roster', async () => {
     const user = userEvent.setup();
-    const getWorkspaceResources = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        knowledge: [],
-        skills: [],
-        agents: workspaceId === WORKSPACE_A.id ? [AGENT_READY] : [AGENT_WORKING],
-        models: [],
-      })
-    );
+    const getWorkspaceResources = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
+        Promise.resolve({
+          knowledge: [],
+          skills: [],
+          agents: workspaceId === WORKSPACE_A.id ? [AGENT_READY] : [AGENT_WORKING],
+          models: [],
+        })
+      );
     const list = vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] });
     const client = makeClient({
-      core: {
-        listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        getWorkspaceResources,
-      },
+      core: {},
       agents: { list },
+
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+        'workspace.resources': getWorkspaceResources,
+      },
     });
     renderApp('/agents', client);
 
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
     expect(screen.queryByText('Scout')).not.toBeInTheDocument();
-    await waitFor(() => expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_A.id));
-    expect(getWorkspaceResources.mock.calls.every(([id]) => id === WORKSPACE_A.id)).toBe(true);
+    await waitFor(() =>
+      expect(getWorkspaceResources).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id })
+    );
+    expect(
+      getWorkspaceResources.mock.calls.every(([{ workspaceId }]) => workspaceId === WORKSPACE_A.id)
+    ).toBe(true);
     expect(list).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
@@ -2596,7 +2670,7 @@ describe('Agents roster continued', () => {
 
     expect(await screen.findByText('Scout')).toBeInTheDocument();
     expect(screen.queryByText('Ledger')).not.toBeInTheDocument();
-    expect(getWorkspaceResources).toHaveBeenCalledWith(WORKSPACE_B.id);
+    expect(getWorkspaceResources).toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id });
     expect(list).not.toHaveBeenCalled();
   });
 
@@ -2747,12 +2821,22 @@ describe('Agents roster continued', () => {
     renderApp(
       '/agents',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         agents: {
           list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
           refreshHealth,
+        },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
         },
       })
     );
@@ -2866,8 +2950,20 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) },
+        core: {},
         app: { listWorkspaceWorkers },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -3088,11 +3184,21 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         app: { listWorkspaceWorkers },
         agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -3904,11 +4010,21 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         actionCenter: { listHumanAttention },
         app: { submitKnowledgeProposalDecision },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -4368,12 +4484,23 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
           listKnowledge: vi.fn().mockImplementation(async (workspaceId: string) => ({
             items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
           })),
         },
         app: { retrieveKnowledge },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
     await screen.findByRole('heading', { level: 1, name: 'Knowledge' });
@@ -4941,9 +5068,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         app: {
           listKnowledgeConflicts: vi.fn().mockImplementation((workspaceId: string) =>
             Promise.resolve({
@@ -4958,6 +5083,18 @@ describe('Knowledge (board 14)', () => {
           registerKnowledgeSource,
           resolveKnowledgeConflict,
           retrieveKnowledge,
+        },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
         },
       })
     );
@@ -4993,9 +5130,18 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-          createKnowledge,
+        core: { createKnowledge },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
         },
       })
     );
@@ -5042,10 +5188,20 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         app: { listKnowledgeSources, registerKnowledgeSource },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -5142,9 +5298,20 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
           listKnowledge,
           [testCase.operation === 'update' ? 'updateKnowledge' : 'deleteKnowledge']: mutation,
+        },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
         },
       })
     );
@@ -5231,11 +5398,21 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         actionCenter: { listHumanAttention },
         app: { submitKnowledgeProposalDecision },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
     await user.click(await screen.findByRole('button', { name: 'Accept' }));
@@ -5288,17 +5465,27 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({
-            items: mode === 'switch' ? [WORKSPACE_A, WORKSPACE_B] : [WORKSPACE_A],
-          }),
-        },
+        core: {},
         app: {
           listKnowledgeClaims,
           listKnowledgeConflicts,
           listKnowledgeObservations,
           listKnowledgeSources,
           readKnowledgeIndexes,
+        },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: (mode === 'switch' ? [WORKSPACE_A, WORKSPACE_B] : [WORKSPACE_A]).map(
+              (workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })
+            ),
+          }),
         },
       })
     );
@@ -5689,8 +5876,16 @@ describe('Repositories (board 19)', () => {
     const listWorkspaces = vi
       .fn()
       .mockRejectedValueOnce(new Error('workspace-private failure'))
-      .mockResolvedValue({ items: [WORKSPACE_A] });
-    const client = makeClient({ core: { listWorkspaces } });
+      .mockResolvedValue({
+        items: [WORKSPACE_A].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     renderApp('/repositories', client);
 
     const alert = await screen.findByRole('alert');
@@ -6430,7 +6625,19 @@ describe('Repositories (board 19)', () => {
 
   it('does not expose a set-default repository action on Quick Chat', async () => {
     const client = makeClient({
-      core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [QUICK_CHAT_WORKSPACE] }) },
+      core: {},
+
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      },
     });
     renderApp('/repositories', client);
 
@@ -6490,10 +6697,20 @@ describe('Repositories (board 19)', () => {
     renderApp(
       '/repositories',
       makeClient({
-        core: {
-          listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE_A, WORKSPACE_B] }),
-        },
+        core: {},
         repositories: { diagnostics, list, listGitPushRecords, setDefault },
+
+        operations: {
+          'workspace.list': vi.fn().mockResolvedValue({
+            items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          }),
+        },
       })
     );
 
@@ -6582,9 +6799,18 @@ describe('First run (board 18)', () => {
       .mockRejectedValueOnce(new Error('down'))
       .mockResolvedValue({});
     const client = makeClient({
-      core: {
-        meta,
-        listWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
+      core: { meta },
+
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
       },
     });
     renderApp('/first-run', client);
@@ -6599,7 +6825,19 @@ describe('First run (board 18)', () => {
 
   it('shows welcome guidance when connected with no workspaces', async () => {
     const client = makeClient({
-      core: { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) },
+      core: {},
+
+      operations: {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      },
     });
     renderApp('/first-run', client);
     expect(await screen.findByText(/Your agent team/i)).toBeInTheDocument();

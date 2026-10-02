@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { operationHttpPath, WORKSPACE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -26,6 +27,7 @@ import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
 import {
   assertAuthorizedWorkspaceLineage,
+  authorizedWorkspaceSet,
   currentScheduledTurnWorkspaceAuthority,
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -136,7 +138,17 @@ function createFixture() {
     return c.json(c.get('workspaceAccess') ?? null);
   });
   app.get('/api/app/automations', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.get('/api/app/workspaces', (c) => c.json(c.get('workspaceAccess') ?? null));
+  app.post(operationHttpPath('workspace.list'), (c) =>
+    c.json({
+      kind: 'workspace-set',
+      workspaceIds: authorizedWorkspaceSet(
+        coreDb,
+        actorState.current,
+        WORKSPACE_OPERATION_DEFINITIONS['workspace.list'],
+        workspaceMutationAdmission
+      ),
+    })
+  );
   app.post('/api/app/automations', async (c) =>
     c.json({
       body: await c.req.json(),
@@ -157,7 +169,7 @@ function createFixture() {
   app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/dashboard', (c) => {
+  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/material', (c) => {
     threadDashboardHandlerReads += 1;
     const actualWorkspaceId =
       c.req.param('threadId') === foreignThread.id ? foreignThread.workspaceId : workspace.id;
@@ -718,7 +730,7 @@ describe('central Workspace operation authorizer', () => {
   it('authorizes the Workspace before reading child lineage and denies a mismatched child', async () => {
     fixture.actorState.current = { kind: 'session', userId: 'user_missing' };
     const deniedBeforeHandler = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/dashboard`
+      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/material`
     );
 
     expect(deniedBeforeHandler.status).toBe(403);
@@ -726,7 +738,7 @@ describe('central Workspace operation authorizer', () => {
 
     fixture.actorState.current = { kind: 'session', userId: 'user_local' };
     const deniedAfterAuthorization = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/dashboard`
+      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/material`
     );
     const deniedBeforeHandlerBody = await deniedBeforeHandler.json();
     const deniedAfterAuthorizationBody = await deniedAfterAuthorization.json();
@@ -796,7 +808,11 @@ describe('central Workspace operation authorizer', () => {
   it('fences ordinary Workspace routes during deletion', async () => {
     await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
 
-    const collection = await fixture.app.request('/api/app/workspaces');
+    const collection = await fixture.app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
     const mutation = await fixture.app.request('/api/app/automations', {
       body: JSON.stringify({
@@ -868,7 +884,11 @@ describe('central Workspace operation authorizer', () => {
     const dashboard = await fixture.app.request(
       `/api/app/workspaces/${fixture.workspace.id}/dashboard`
     );
-    const collection = await fixture.app.request('/api/app/workspaces');
+    const collection = await fixture.app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const create = await fixture.app.request('/api/workspaces', { method: 'POST' });
 
     expect(dashboard.status).toBe(200);

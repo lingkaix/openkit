@@ -236,15 +236,29 @@ async function readDefaultScope(
     throw new Error('Expected project workspace to be created.');
   }
 
-  const threadRes = await app.request(`/api/workspaces/${workspaceId}/threads`, {
-    method: 'POST',
-    headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      name: 'Server Flow Thread',
-      requestId: randomUUID(),
-      visibility: 'workspace',
-    }),
-  });
+  const threadRes = await ((requestId: string) =>
+    ((input: Record<string, unknown>) =>
+      app.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{
+            ...{ cookie, 'content-type': 'application/json' },
+            'content-type': 'application/json',
+            'x-openkit-request-id': requestId,
+          },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({
+      ...{
+        name: 'Server Flow Thread',
+        requestId,
+        visibility: 'workspace',
+      },
+      workspaceId: workspaceId,
+    }))(randomUUID());
   const threadBody = (await threadRes.json()) as { id?: string };
   const threadId = threadBody.id;
 
@@ -291,16 +305,25 @@ describe('server auth flow', () => {
         .prepare('SELECT id FROM users WHERE email = ?')
         .get('first@example.com') as { id: string };
       const firstQuickChatId = quickChatWorkspaceIdForUser(firstUser.id);
-      const initialWorkspaceList = await app.request('/api/workspaces', {
-        headers: { cookie: firstCookie },
+      const initialWorkspaceList = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { cookie: firstCookie },
+        },
+        method: 'POST',
+        headers: { ...{ cookie: firstCookie }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
       });
 
       expect(initialWorkspaceList.status).toBe(200);
-      expect((await initialWorkspaceList.json()) as { items: Array<{ id: string }> }).toMatchObject(
-        {
-          items: [expect.objectContaining({ id: firstQuickChatId, kind: 'quick-chat' })],
-        }
-      );
+      expect(
+        (await initialWorkspaceList.json()) as { items: Array<{ workspace: { id: string } }> }
+      ).toMatchObject({
+        items: [
+          expect.objectContaining({
+            workspace: expect.objectContaining({ id: firstQuickChatId, kind: 'quick-chat' }),
+          }),
+        ],
+      });
 
       const createWorkspace = await app.request('/api/workspaces', {
         method: 'POST',
@@ -314,13 +337,24 @@ describe('server auth flow', () => {
       expect(createWorkspace.status).toBe(201);
 
       const firstWorkspace = (await createWorkspace.json()) as { id: string; name: string };
-      const firstList = await app.request('/api/workspaces', {
-        headers: { cookie: firstCookie },
+      const firstList = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { cookie: firstCookie },
+        },
+        method: 'POST',
+        headers: { ...{ cookie: firstCookie }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
       });
 
       expect(firstList.status).toBe(200);
-      expect((await firstList.json()) as { items: Array<{ id: string }> }).toMatchObject({
-        items: expect.arrayContaining([expect.objectContaining({ id: firstWorkspace.id })]),
+      expect(
+        (await firstList.json()) as { items: Array<{ workspace: { id: string } }> }
+      ).toMatchObject({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            workspace: expect.objectContaining({ id: firstWorkspace.id }),
+          }),
+        ]),
       });
 
       const secondSignUp = await app.request('/api/auth/sign-up/email', {
@@ -368,9 +402,17 @@ describe('server auth flow', () => {
         dataRoot,
         mode: 'server',
       });
-      const persistedSessionList = await restartedApp.request('/api/workspaces', {
-        headers: { cookie: firstCookie },
-      });
+      const persistedSessionList = await restartedApp.request(
+        '/api/app/operations/workspace.list',
+        {
+          ...{
+            headers: { cookie: firstCookie },
+          },
+          method: 'POST',
+          headers: { ...{ cookie: firstCookie }, 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
 
       expect(persistedSessionList.status).toBe(200);
 
@@ -381,8 +423,13 @@ describe('server auth flow', () => {
 
       expect(signOut.status).toBe(200);
 
-      const afterSignOut = await restartedApp.request('/api/workspaces', {
-        headers: { cookie: firstCookie },
+      const afterSignOut = await restartedApp.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { cookie: firstCookie },
+        },
+        method: 'POST',
+        headers: { ...{ cookie: firstCookie }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
       });
 
       expect(afterSignOut.status).toBe(401);

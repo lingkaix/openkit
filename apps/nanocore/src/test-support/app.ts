@@ -1,6 +1,14 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
 
@@ -43,4 +51,37 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     turnExecutor: new SimulatedTurnExecutor(),
     ...options,
   });
+}
+
+/** Databases owned only by tests that exercise local HTTP through canonical Workspace authority. */
+const workspaceAuthorityFixtures: Array<{
+  coreDb: ReturnType<typeof openCoreDb>;
+  dataRoot: string;
+}> = [];
+
+afterEach(() => {
+  for (const fixture of workspaceAuthorityFixtures.splice(0)) {
+    if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
+    rmSync(fixture.dataRoot, { recursive: true, force: true });
+  }
+});
+
+/** Supplies real local identity and membership records for formerly storage-only HTTP fixtures; explicit and server authority stays caller-owned. */
+export function createAppWithWorkspaceAuthority(
+  options: CreateAppOptions = {}
+): ReturnType<typeof createNanoCoreApp> {
+  if (options.coreDb || options.mode === 'server' || !options.store) return createApp(options);
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-test-workspace-authority-'));
+  const coreDb = openCoreDb(dataRoot);
+  workspaceAuthorityFixtures.push({ coreDb, dataRoot });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  for (const workspace of options.store.listWorkspaces()) {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: workspace.id,
+    });
+  }
+  return createApp({ ...options, coreDb });
 }

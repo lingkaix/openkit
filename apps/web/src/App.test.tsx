@@ -25,11 +25,6 @@ function makeClient(
   return {
     app: {
       listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       listOpenKitAccessTokens: vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Server-admin authority is required.', {
           code: 'forbidden',
@@ -38,14 +33,7 @@ function makeClient(
     },
     core: {
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: workspaces }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getWorkspaceResources: vi.fn().mockResolvedValue({
-        knowledge: [],
-        skills: [],
-        agents: [],
-        models: [],
-      }),
     },
     runtimeConfig: {
       listFiles: vi.fn().mockRejectedValue(
@@ -60,6 +48,37 @@ function makeClient(
           code: 'forbidden',
         })
       ),
+    },
+
+    operations: {
+      'workspace.resources': vi.fn().mockResolvedValue({
+        knowledge: [],
+        skills: [],
+        agents: [],
+        models: [],
+      }),
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: workspaces.map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          vi.fn().mockResolvedValue({
+            items: workspaces.map((workspace) => ({
+              workspace,
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            })),
+          })
+        ),
     },
   } as unknown as CoreClient;
 }

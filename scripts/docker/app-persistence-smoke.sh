@@ -252,7 +252,7 @@ read_workspace_id() {
 }
 
 assert_workspace_exists() {
-  node -e "const data = JSON.parse(process.argv[1]); const id = process.argv[2]; const found = Array.isArray(data.items) && data.items.some((item) => item.id === id); if (!found) process.exit(1);" "$1" "$2"
+  node -e "const data = JSON.parse(process.argv[1]); const id = process.argv[2]; const found = Array.isArray(data.items) && data.items.some((item) => item.workspace.id === id); if (!found) process.exit(1);" "$1" "$2"
 }
 
 if [[ "${OPENKIT_APP_SMOKE_ASSERT_ONLY:-0}" == "1" ]]; then
@@ -292,7 +292,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null
 start_container
 wait_for_url "${BASE_URL}/api/health"
 
-workspace_list="$(curl -fsS "${BASE_URL}/api/workspaces")"
+workspace_list="$(curl -fsS --request POST --header 'content-type: application/json' --data '{}' "${BASE_URL}/api/app/operations/workspace.list")"
 if assert_workspace_exists "${workspace_list}" "${workspace_id}"; then
   record_pass "api workspace persisted"
 else

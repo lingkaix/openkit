@@ -37,7 +37,7 @@ export interface ArtifactIntroduceInput {
 /** Authoritative introduce settlement: command receipt, Turn read, and frozen request. */
 export interface ArtifactIntroduceSettlement {
   result: Awaited<ReturnType<CoreClient['app']['introduceWorkspaceArtifact']>>;
-  turn: Awaited<ReturnType<CoreClient['core']['getTurn']>>;
+  turn: Awaited<ReturnType<CoreClient['operations']['turn.read']>>;
   input: ArtifactIntroduceInput;
 }
 
@@ -328,7 +328,7 @@ export async function importComposerFile(
 /**
  * Introduces one exact Artifact version, then reads the authoritative completed Turn.
  *
- * @returns Mutation over `client.app.introduceWorkspaceArtifact` plus `client.core.getTurn`.
+ * @returns Mutation over `client.app.introduceWorkspaceArtifact` plus `client.operations['turn.read']`.
  */
 export function useIntroduceWorkspaceArtifact() {
   const client = useCoreClient();
@@ -343,7 +343,11 @@ export function useIntroduceWorkspaceArtifact() {
           requestId: input.requestId,
         }
       );
-      const turn = await client.core.getTurn(input.workspaceId, input.threadId, result.turnId);
+      const turn = await client.operations['turn.read']({
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: result.turnId,
+      });
       const settlement = { result, turn, input };
       if (!isAuthoritativeIntroduceItem(settlement, input.requestId)) {
         throw new ApiCallError(409, 'Introduction settlement was contradictory.', {

@@ -2,7 +2,6 @@ import {
   CreateLightAppRequestSchema,
   CreateLightAppResponseSchema,
   GetLightAppRecordResponseSchema,
-  KERNEL_OPERATION_DEFINITIONS,
   LightAppBatchRequestSchema,
   LightAppBatchResponseSchema,
   LightAppRequestIdSchema,
@@ -33,10 +32,9 @@ import {
 import { KernelCommandError } from './generative-kernel/errors.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
-import { createOperationInvocation, OperationInvocationError } from './operation-invocation.js';
+import { OperationInvocationError } from './operation-invocation.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import type { WorkspaceDb } from './storage/db.js';
 
 /**
  * Registers Light App Kernel App API routes.
@@ -45,58 +43,15 @@ import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.
  */
 export function registerKernelRoutes({
   app,
-  coreDb,
-  workspaceMutationAdmission,
   inflightCommands,
   openWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly coreDb: CoreDb | undefined;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly openWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
-  for (const [id, definition] of Object.entries(KERNEL_OPERATION_DEFINITIONS)) {
-    registerAppApiRoute(app, id as keyof typeof KERNEL_OPERATION_DEFINITIONS, async (c) => {
-      try {
-        const body: unknown = await c.req.json().catch(() => null);
-        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-          throw new OperationInvocationError('invalid_request', 'Invalid operation input.', 400);
-        }
-        const args = body as Record<string, unknown>;
-        const requestId = c.req.header('x-openkit-request-id');
-        if (
-          definition.mutating &&
-          Object.hasOwn(args, 'requestId') &&
-          args.requestId !== requestId
-        ) {
-          throw new OperationInvocationError(
-            'bound_input_conflict',
-            'Request identity conflicts with its header.',
-            403
-          );
-        }
-        const invoke = createOperationInvocation({
-          coreDb,
-          store: requestStore(c),
-          inflightCommands,
-          workspaceMutationAdmission,
-        });
-        return c.json(
-          await invoke(
-            id as keyof typeof KERNEL_OPERATION_DEFINITIONS,
-            definition.mutating ? { ...args, requestId } : args,
-            { kind: 'public', actor: c.get('actor') }
-          )
-        );
-      } catch (error) {
-        return asKernelApiError(error);
-      }
-    });
-  }
-
   registerAppApiRoute(app, 'listLightApps', (c) => {
     try {
       const context = bindWorkspace(c, requestStore, openWorkspaceDb);
@@ -308,7 +263,7 @@ function bindWorkspace(
  * @param error Caught error.
  * @returns JSON error response.
  */
-function asKernelApiError(error: unknown): Response {
+export function asKernelApiError(error: unknown): Response {
   if (error instanceof OperationInvocationError) {
     return asApiError(error.message, error.code, error.status);
   }

@@ -18,7 +18,11 @@ describe('nanocore e2e server unauthenticated rejection', () => {
   it('returns a typed unauthenticated error for protected workspace reads', async () => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
 
-    const response = await fetch(`${harness.baseUrl}/api/workspaces`);
+    const response = await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(401);

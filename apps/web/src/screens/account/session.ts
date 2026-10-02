@@ -44,7 +44,7 @@ export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
   const client = useCoreClient();
   const admission = useQuery({
     queryKey: accountAdmissionKey,
-    queryFn: () => client.app.listAuthorizedWorkspaces(),
+    queryFn: () => client.operations['workspace.list']({}),
     retry: false,
     structuralSharing: false,
     enabled: options?.enabled ?? true,

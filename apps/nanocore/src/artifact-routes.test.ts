@@ -29,7 +29,7 @@ import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.j
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -589,10 +589,16 @@ describe('Core artifact routes', () => {
         expect(await dashboard.json()).toMatchObject({ counts: { artifactCount: 1 } });
         const workspace = await app.request('/api/workspaces/ws_demo');
         expect(await workspace.json()).toMatchObject({ counts: { artifactCount: 1 } });
-        const workspaces = await app.request('/api/workspaces');
+        const workspaces = await app.request('/api/app/operations/workspace.list', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        });
         expect(
-          (await workspaces.json()).items.find((item: { id: string }) => item.id === 'ws_demo')
-        ).toMatchObject({ counts: { artifactCount: 1 } });
+          (await workspaces.json()).items.find(
+            (item: { workspace: { id: string } }) => item.workspace.id === 'ws_demo'
+          )?.workspace
+        ).toEqual(store.getWorkspace('ws_demo'));
         for (let attempt = 0; attempt < 2; attempt++) {
           const renamed = await app.request('/api/workspaces/ws_demo', {
             method: 'PATCH',
@@ -627,9 +633,11 @@ describe('Core artifact routes', () => {
         expect(attached.status).toBe(409);
         expect(await attached.json()).toMatchObject({ code: 'artifact_not_found' });
         expect(store.listThreadTurns('ws_demo', receivingThread.id)).toHaveLength(0);
-        const threads = await app.request(
-          `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-        );
+        const threads = await app.request('/api/app/operations/thread.dashboard', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+        });
         expect(threads.status).toBe(200);
         const threadDashboard = await threads.json();
         expect(threadDashboard.artifacts.map((item: { id: string }) => item.id)).toEqual([

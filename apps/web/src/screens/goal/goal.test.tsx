@@ -367,27 +367,23 @@ type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: { core?: MethodOverrides; app?: MethodOverrides; actionCenter?: MethodOverrides } = {}
+  overrides: {
+    operations?: MethodOverrides;
+    core?: MethodOverrides;
+    app?: MethodOverrides;
+    actionCenter?: MethodOverrides;
+  } = {}
 ): CoreClient {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [{ id: 'ws1', name: 'Market research' }] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
       getArtifact: vi.fn().mockResolvedValue(ARTIFACT),
       listArtifacts: vi.fn().mockResolvedValue({ items: [ARTIFACT] }),
       startTurn: vi.fn(),
       ...overrides.core,
     },
     app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       getThreadGoalSummary: vi.fn().mockResolvedValue(goalSummary('running')),
       getThreadGoalPlan: vi.fn().mockResolvedValue(ABSENT_PLAN_READ),
       startThreadGoal: vi.fn().mockResolvedValue({
@@ -480,6 +476,36 @@ function makeClient(
     actionCenter: {
       listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.actionCenter,
+    },
+
+    operations: {
+      'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -2525,7 +2551,11 @@ describe('goal surfaces (WP-5)', () => {
       const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
       renderApp(
         '/goals/ws1/th1?lens=thread',
-        makeClient({ app: { getThreadDashboard }, core: { listThreadItems } })
+        makeClient({
+          app: {},
+          core: {},
+          operations: { 'thread.dashboard': getThreadDashboard, 'thread.items': listThreadItems },
+        })
       );
       expect(await screen.findByText('Activity collection is ongoing.')).toBeInTheDocument();
       const baselineReads = getThreadDashboard.mock.calls.length;
@@ -2565,8 +2595,10 @@ describe('goal surfaces (WP-5)', () => {
 
   it('shows authorized runtime activity in the shared Thread lens without Items', async () => {
     const client = makeClient({
-      app: {
-        getThreadDashboard: vi.fn().mockResolvedValue({
+      app: {},
+
+      operations: {
+        'thread.dashboard': vi.fn().mockResolvedValue({
           turns: [{ id: 'turn_worker', status: 'completed', items: [] }],
           runtimeActivity: [
             {

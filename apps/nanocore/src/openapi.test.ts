@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
-  KERNEL_OPERATION_DEFINITIONS,
+  PRODUCT_OPERATION_DEFINITIONS,
   SubscriptionProviderIdSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -92,14 +92,10 @@ const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../skills/',
 ];
 const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
-  'GET /api/workspaces',
   'POST /api/workspaces',
   'GET /api/workspaces/:workspaceId',
-  'GET /api/workspaces/:workspaceId/resources',
   'PATCH /api/workspaces/:workspaceId',
   'GET /api/workspaces/:workspaceId/threads',
-  'POST /api/workspaces/:workspaceId/threads',
-  'GET /api/workspaces/:workspaceId/threads/:threadId',
   'PATCH /api/workspaces/:workspaceId/threads/:threadId',
   'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
   'GET /api/workspaces/:workspaceId/knowledge',
@@ -110,7 +106,6 @@ const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
   'GET /api/workspaces/:workspaceId/artifacts/:artifactId',
   'GET /api/workspaces/:workspaceId/artifacts/:artifactId/content',
   'GET /api/workspaces/:workspaceId/threads/:threadId/events',
-  'GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId',
   'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
   'POST /api/approvals/:approvalRequestId/respond',
   'POST /api/user-input-requests/:userInputRequestId/answer',
@@ -183,10 +178,10 @@ describe('app api openapi projection', () => {
       '/api/app/workspaces/{workspaceId}/runtime-config/stale-sessions/{sessionId}/restart';
 
     expect(document.paths[restartPath]).toBeUndefined();
-    expect(document.components.schemas.ThreadDashboardResponse).not.toHaveProperty(
+    expect(document.components.schemas['thread.dashboard.output']).not.toHaveProperty(
       'properties.activeSession'
     );
-    expect(JSON.stringify(document.components.schemas.ThreadDashboardResponse)).not.toContain(
+    expect(JSON.stringify(document.components.schemas['thread.dashboard.output'])).not.toContain(
       'agentSessionId'
     );
     expect(JSON.stringify(document.components.schemas.SubmitConversationResponse)).not.toContain(
@@ -1714,46 +1709,36 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/dashboard']?.get
-    ).toMatchObject({
-      operationId: 'getThreadDashboard',
-      tags: ['dashboards'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-      ],
+    expect(document.paths['/api/app/operations/thread.dashboard']?.post).toMatchObject({
+      operationId: 'thread.dashboard',
+      tags: ['thread'],
+      requestBody: {
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/thread.dashboard.input' } },
+        },
+      },
       responses: {
         '200': {
           content: {
             'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ThreadDashboardResponse',
-              },
+              schema: { $ref: '#/components/schemas/thread.dashboard.output' },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/threads/{threadId}/items']?.get
-    ).toMatchObject({
-      operationId: 'listThreadItems',
-      tags: ['dashboards'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'threadId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'since', in: 'query', required: false }),
-        expect.objectContaining({ name: 'limit', in: 'query', required: false }),
-      ],
+    expect(document.paths['/api/app/operations/thread.items']?.post).toMatchObject({
+      operationId: 'thread.items',
+      tags: ['thread'],
+      requestBody: {
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/thread.items.input' } },
+        },
+      },
       responses: {
         '200': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListThreadItemsResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/thread.items.output' } },
           },
         },
       },
@@ -2870,11 +2855,11 @@ describe('app api openapi projection', () => {
     const document = createAppOpenApiDocument();
     const operations = [
       [
-        'get',
-        '/api/app/workspaces',
-        'listAuthorizedWorkspaces',
-        undefined,
-        'ListAuthorizedWorkspacesResponse',
+        'post',
+        '/api/app/operations/workspace.list',
+        'workspace.list',
+        'workspace.list.input',
+        'workspace.list.output',
       ],
       [
         'get',
@@ -3019,7 +3004,7 @@ describe('app api openapi projection', () => {
       getWorkspaceAccessRecoveryState: [{ bearerAuth: [] }, { sessionCookie: [] }],
       recoverWorkspaceAccess: [{ bearerAuth: [] }, { sessionCookie: [] }],
       disableUser: [{ bearerAuth: [] }, { sessionCookie: [] }],
-      listAuthorizedWorkspaces: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.list': [{ bearerAuth: [] }, { sessionCookie: [] }],
     });
   });
 
@@ -3235,7 +3220,7 @@ describe('app api openapi projection', () => {
       resolver: 'actor-quick-chat-workspace',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS['GET /api/workspaces']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['workspace.list']).toMatchObject({
       mutating: false,
       policyOperation: 'workspace.read',
       resolver: 'authorized-workspace-set',
@@ -3270,12 +3255,10 @@ describe('app api openapi projection', () => {
       resolver: 'path-workspace',
       scope: 'workspace',
     });
-    expect(
-      PUBLIC_OPERATION_ACCESS['GET /api/workspaces/:workspaceId/threads/:threadId']
-    ).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['thread.read']).toMatchObject({
       mutating: false,
       policyOperation: 'thread.read',
-      resolver: 'workspace-child-lineage',
+      resolver: 'body-workspace',
       scope: 'workspace',
     });
     expect(PUBLIC_OPERATION_ACCESS['POST /api/workspaces']).toMatchObject({
@@ -3365,7 +3348,7 @@ describe('app api openapi projection', () => {
         ({ operation }) =>
           typeof operation.operationId !== 'string' ||
           (!/^[a-z][A-Za-z0-9]*$/.test(operation.operationId) &&
-            !Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operation.operationId))
+            !Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, operation.operationId))
       )
       .map(({ route }) => route);
     const duplicateOperationIds = operationIds.filter(
@@ -3605,7 +3588,6 @@ describe('app api openapi projection', () => {
       'getConversationTargets',
       'quickChat',
       'submitConversation',
-      'listThreadItems',
       'listWorkspaceMaterials',
       'createWorkspaceMaterial',
       'getWorkspaceMaterial',
@@ -3617,7 +3599,7 @@ describe('app api openapi projection', () => {
       'unbindThreadMaterial',
       'excludeThreadMaterial',
       'restoreThreadMaterial',
-      ...Object.keys(KERNEL_OPERATION_DEFINITIONS),
+      ...Object.keys(PRODUCT_OPERATION_DEFINITIONS),
       'listLightApps',
       'createLightApp',
       'updateLightAppSchema',
@@ -3675,7 +3657,6 @@ describe('app api openapi projection', () => {
       'listServerPermissionDecisions',
       'listConversationNavigation',
       'getWorkspaceDashboard',
-      'getThreadDashboard',
       'startTaskMode',
       'getThreadGoalSummary',
       'getThreadGoalPlan',
@@ -3693,7 +3674,6 @@ describe('app api openapi projection', () => {
       'listInterruptedWorkers',
       'retryInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
-      'listAuthorizedWorkspaces',
       'listWorkspaceMembers',
       'listWorkspaceInvitations',
       'createWorkspaceInvitation',

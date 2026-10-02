@@ -1,7 +1,6 @@
-import { ListThreadItemsResponseSchema } from '@openkit/app-api-schemas';
 import {
   ArchiveThreadRequestSchema,
-  CreateThreadRequestSchema,
+  type CreateThreadRequestSchema,
   ListThreadsResponseSchema,
   ThreadSchema,
   UpdateThreadRequestSchema,
@@ -19,7 +18,6 @@ import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
-import { registerAppApiRoute } from './openapi.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -54,67 +52,6 @@ export function registerThreadRoutes({
             .filter((thread) => isThreadVisible(store, thread, actorId)),
         })
       );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
-
-  app.post('/api/workspaces/:workspaceId/threads', async (c) => {
-    const parsed = CreateThreadRequestSchema.safeParse({
-      ...(await c.req.json().catch(() => ({}))),
-      workspaceId: c.req.param('workspaceId'),
-    });
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const store = requestStore(c);
-      const input = parsed.data;
-      const actorId = c.get('actor').userId;
-      const thread = await runIdempotentCommand({
-        store,
-        inflightCommands,
-        command: 'thread.create',
-        requestId: input.requestId,
-        scope: { actorId, workspaceId: input.workspaceId },
-        input,
-        responseKind: 'thread',
-        execute: () =>
-          ThreadSchema.parse(
-            store.createThread(
-              input.workspaceId,
-              input.name,
-              undefined,
-              'conversation',
-              input.visibility === 'workspace'
-                ? { visibility: 'workspace' }
-                : { visibility: 'private', privateOwnerUserId: actorId }
-            )
-          ),
-        replay: (record) =>
-          ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
-        responseId: (result) => result.id,
-      });
-      if (!isThreadVisible(store, thread, actorId)) {
-        return asApiError('Thread not found.', 'not_found', 404);
-      }
-
-      return c.json(thread, 201);
-    } catch (error) {
-      return asCommandError(error, 'thread_create_failed');
-    }
-  });
-
-  app.get('/api/workspaces/:workspaceId/threads/:threadId', (c) => {
-    const store = requestStore(c);
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    assertThreadWorkspaceLineage(c, store, workspaceId, threadId);
-
-    try {
-      return c.json(ThreadSchema.parse(store.getThread(workspaceId, threadId)));
     } catch (error) {
       return asApiError(publishedErrorMessage(error));
     }
@@ -212,24 +149,6 @@ export function registerThreadRoutes({
       return asCommandError(error, 'thread_archive_failed');
     }
   });
-
-  registerAppApiRoute(app, 'listThreadItems', (c) => {
-    const store = requestStore(c);
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    assertThreadWorkspaceLineage(c, store, workspaceId, threadId);
-
-    try {
-      return c.json(
-        ListThreadItemsResponseSchema.parse({
-          items: store.listThreadItems(workspaceId, threadId),
-          nextCursor: null,
-        })
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
 }
 
 /**
@@ -259,4 +178,43 @@ function assertThreadWorkspaceLineage(
   if (!isThreadVisible(store, thread, context.get('actor')?.userId)) {
     throw new HTTPException(404, { res: asApiError('Thread not found.', 'not_found', 404) });
   }
+}
+
+/** Creates or replays the same actor-bound Thread without admitting Task work or changing visibility. */
+export async function createThread(
+  input: import('zod').infer<typeof CreateThreadRequestSchema>,
+  dependencies: {
+    store: FsStore;
+    inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  },
+  actorId: string
+) {
+  const { store, inflightCommands } = dependencies;
+  const thread = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'thread.create',
+    requestId: input.requestId,
+    scope: { actorId, workspaceId: input.workspaceId },
+    input,
+    responseKind: 'thread',
+    execute: () =>
+      ThreadSchema.parse(
+        store.createThread(
+          input.workspaceId,
+          input.name,
+          undefined,
+          'conversation',
+          input.visibility === 'workspace'
+            ? { visibility: 'workspace' }
+            : { visibility: 'private', privateOwnerUserId: actorId }
+        )
+      ),
+    replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
+    responseId: (result) => result.id,
+  });
+  if (!isThreadVisible(store, thread, actorId)) {
+    throw new HTTPException(404, { res: asApiError('Thread not found.', 'not_found', 404) });
+  }
+  return thread;
 }

@@ -32,17 +32,30 @@ describe('nanocore e2e server auth', () => {
     expect(signInResponse.status).toBe(200);
 
     const cookie = cookieHeader(signInResponse);
-    const workspacesResponse = await fetch(`${harness.baseUrl}/api/workspaces`, {
-      headers: { cookie },
+    const workspacesResponse = await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+      ...{
+        headers: { cookie },
+      },
+      method: 'POST',
+      headers: { ...{ cookie }, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
     });
     expect(workspacesResponse.status).toBe(200);
 
     const signOutResponse = await postJson(`${harness.baseUrl}/api/auth/sign-out`, {}, cookie);
     expect(signOutResponse.status).toBe(200);
 
-    const afterSignOutResponse = await fetch(`${harness.baseUrl}/api/workspaces`, {
-      headers: { cookie },
-    });
+    const afterSignOutResponse = await fetch(
+      `${harness.baseUrl}/api/app/operations/workspace.list`,
+      {
+        ...{
+          headers: { cookie },
+        },
+        method: 'POST',
+        headers: { ...{ cookie }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }
+    );
     const afterSignOutBody = (await afterSignOutResponse.json()) as Record<string, unknown>;
 
     expect(afterSignOutResponse.status).toBe(401);
@@ -116,8 +129,13 @@ describe('nanocore e2e server auth', () => {
     await harness.stop();
     harness = await startNanoCoreHarness({ coreMode: 'server', dataRoot });
 
-    const editorWorkspaces = await fetch(`${harness.baseUrl}/api/app/workspaces`, {
-      headers: { cookie: editorCookie },
+    const editorWorkspaces = await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+      ...{
+        headers: { cookie: editorCookie },
+      },
+      method: 'POST',
+      headers: { ...{ cookie: editorCookie }, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
     });
     const editorWorkspaceBody = (await editorWorkspaces.json()) as {
       items: Array<{ workspace: { id: string } }>;

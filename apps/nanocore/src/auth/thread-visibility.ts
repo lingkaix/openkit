@@ -5,14 +5,16 @@ import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 
-/** Unique Thread audience predicate applied after current Workspace eligibility. */
+/** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
   store: Pick<FsStore, 'getWorkspace'>,
   thread: Thread,
-  userId: string | undefined
+  userId: string | undefined,
+  administratorEligible = false
 ): boolean {
   if (!userId || !ThreadSchema.safeParse(thread).success) return false;
   const workspace = store.getWorkspace(thread.workspaceId);
+  if (administratorEligible) return true;
   if (
     workspace.kind === 'quick-chat' &&
     (thread.visibility !== 'private' || workspace.id !== quickChatWorkspaceIdForUser(userId))
@@ -37,10 +39,16 @@ export function isThreadIdVisible(
   store: FsStore,
   workspaceId: string,
   threadId: string,
-  userId: string | undefined
+  userId: string | undefined,
+  administratorEligible = false
 ): boolean {
   try {
-    return isThreadVisible(store, store.getThread(workspaceId, threadId), userId);
+    return isThreadVisible(
+      store,
+      store.getThread(workspaceId, threadId),
+      userId,
+      administratorEligible
+    );
   } catch {
     return false;
   }
@@ -50,12 +58,19 @@ export function isThreadIdVisible(
 export function isArtifactVisible(
   store: FsStore,
   artifact: Artifact,
-  userId: string | undefined
+  userId: string | undefined,
+  administratorEligible = false
 ): boolean {
   if (!userId) return false;
   if (artifact.origin.kind === 'imported')
     return artifact.threadId === null && artifact.turnId === null;
   if (artifact.threadId !== artifact.origin.threadId || artifact.turnId !== artifact.origin.turnId)
     return false;
-  return isThreadIdVisible(store, artifact.workspaceId, artifact.origin.threadId, userId);
+  return isThreadIdVisible(
+    store,
+    artifact.workspaceId,
+    artifact.origin.threadId,
+    userId,
+    administratorEligible
+  );
 }

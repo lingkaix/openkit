@@ -17,11 +17,13 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
+import {
+  readAuthorizedWorkspaces,
+  registerWorkspaceSharingRoutes,
+} from './workspace-sharing-routes.js';
 
 const openDatabases: CoreDb[] = [];
 const SHARING_OPERATION_IDS = [
-  'listAuthorizedWorkspaces',
   'listWorkspaceMembers',
   'listWorkspaceInvitations',
   'createWorkspaceInvitation',
@@ -184,7 +186,7 @@ describe('Workspace sharing routes', () => {
 
     expect(getRegisteredAppApiOperationIds(fixture.app)).toEqual(SHARING_OPERATION_IDS);
     expect(PUBLIC_OPERATION_ACCESS).toMatchObject({
-      listAuthorizedWorkspaces: {
+      'workspace.list': {
         policyOperation: 'workspace.read',
         resolver: 'authorized-workspace-set',
         scope: 'workspace',
@@ -214,12 +216,15 @@ describe('Workspace sharing routes', () => {
 
   it('projects only the centrally authorized Workspace set', async () => {
     const fixture = createFixture();
-    const response = await fixture.app.request('/api/app/workspaces');
-    const body = await response.json();
+    const body = readAuthorizedWorkspaces(
+      fixture.coreDb,
+      fixture.store,
+      fixture.actorState.current,
+      [fixture.workspaceId]
+    );
 
-    expect({ body, status: response.status }).toMatchObject({
-      body: { items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }] },
-      status: 200,
+    expect(body).toMatchObject({
+      items: [{ effectiveRole: 'owner', workspace: { id: fixture.workspaceId } }],
     });
   });
 
@@ -239,20 +244,13 @@ describe('Workspace sharing routes', () => {
       tokenWorkspaceIds: [],
       userId: 'user_admin',
     };
-    // Authorizer-admitted set includes a Workspace the admin does not belong to.
-    const app = fixture.app;
-    // Override the middleware workspace-set by wrapping a one-off request path is already set
-    // in createFixture to fixture.workspaceId; admin has no membership there.
-    const response = await app.request('/api/app/workspaces');
-    const body = (await response.json()) as {
-      items: Array<{
-        effectiveRole: string;
-        membershipRevision: number;
-        workspace: { id: string };
-      }>;
-    };
+    const body = readAuthorizedWorkspaces(
+      fixture.coreDb,
+      fixture.store,
+      fixture.actorState.current,
+      [fixture.workspaceId]
+    );
 
-    expect(response.status).toBe(200);
     expect(body.items).toEqual([
       expect.objectContaining({
         effectiveRole: 'owner',

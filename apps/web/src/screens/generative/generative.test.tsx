@@ -20,15 +20,21 @@ import statesSource from './states.ts?raw';
 /** Minimal client — generative shell uses fixtures only. */
 function makeClient(): CoreClient {
   return {
-    app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
-    },
+    app: {},
     core: {
       meta: vi.fn().mockResolvedValue({}),
+    },
+
+    operations: {
+      'workspace.list': vi.fn().mockResolvedValue({
+        items: [].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner',
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      } satisfies Awaited<ReturnType<CoreClient['operations']['workspace.list']>>),
     },
   } as unknown as CoreClient;
 }

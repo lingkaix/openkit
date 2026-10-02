@@ -25,6 +25,7 @@ export async function postJson(
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      ...(typeof body.requestId === 'string' ? { 'x-openkit-request-id': body.requestId } : {}),
       ...(cookie ? { cookie } : {}),
     },
     body: JSON.stringify(body),

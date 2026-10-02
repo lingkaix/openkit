@@ -421,12 +421,16 @@ function emptyVaultUses(workspaceId: string) {
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: { core?: MethodOverrides; app?: MethodOverrides; actionCenter?: MethodOverrides } = {}
+  overrides: {
+    operations?: MethodOverrides;
+    core?: MethodOverrides;
+    app?: MethodOverrides;
+    actionCenter?: MethodOverrides;
+  } = {}
 ): CoreClient {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
@@ -435,7 +439,6 @@ function makeClient(
       ...overrides.actionCenter,
     },
     app: {
-      listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
       listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       exportWorkspace: vi.fn().mockResolvedValue(EXPORT_RESULT),
       dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN),
@@ -464,6 +467,35 @@ function makeClient(
         )
       ),
       ...overrides.app,
+    },
+
+    operations: {
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -819,8 +851,16 @@ describe('Portability', () => {
     const listWorkspaces = vi
       .fn()
       .mockRejectedValueOnce(new Error('workspace-private failure'))
-      .mockResolvedValue({ items: [WORKSPACE] });
-    const client = makeClient({ core: { listWorkspaces } });
+      .mockResolvedValue({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByRole('region', { name: 'Import' })).toBeInTheDocument();
@@ -889,10 +929,26 @@ describe('Portability', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce({ items: [WORKSPACE, WORKSPACE_B] })
+      .mockResolvedValueOnce({
+        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
       .mockRejectedValueOnce(new Error('workspace-private failure'))
-      .mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] });
-    const client = makeClient({ core: { listWorkspaces } });
+      .mockResolvedValue({
+        items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByRole('button', { name: 'Export workspace' })).toBeEnabled();
@@ -922,15 +978,25 @@ describe('Portability', () => {
     const reboundVault = createDeferred<typeof REBOUND_LIST>();
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce({ items: [WORKSPACE] })
+      .mockResolvedValueOnce({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
       .mockReturnValueOnce(importedWorkspaces.promise);
     const listWorkspaceVaultReferences = vi
       .fn()
       .mockResolvedValueOnce(VAULT_LIST)
       .mockReturnValueOnce(reboundVault.promise);
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { listWorkspaceVaultReferences },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -971,7 +1037,9 @@ describe('Portability', () => {
       name: IMPORTED_WORKSPACE.name,
     });
 
-    importedWorkspaces.resolve({ items: [WORKSPACE, IMPORTED_WORKSPACE] });
+    importedWorkspaces.resolve({
+      items: [WORKSPACE, IMPORTED_WORKSPACE].map((workspace) => ({ workspace })),
+    });
     await expectImportedSuccess({
       id: COLLISION.suggestedWorkspaceId,
       name: IMPORTED_WORKSPACE.name,
@@ -1007,13 +1075,23 @@ describe('Portability', () => {
 
   it('shows non-collision dry-run review semantics before import is enabled', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE_B] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE_B].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: {
         dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         listWorkspaceVaultReferences: vi.fn().mockResolvedValue(EMPTY_VAULT_B),
       },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1095,9 +1173,21 @@ describe('Portability', () => {
 
   it('treats an uncertain export as a result-unknown outcome and requires an explicit new export action', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const exportWorkspace = vi.fn().mockRejectedValue(new Error('export-private failure'));
-    const client = makeClient({ core: { listWorkspaces }, app: { exportWorkspace } });
+    const client = makeClient({
+      core: {},
+      app: { exportWorkspace },
+      operations: { 'workspace.list': listWorkspaces },
+    });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
@@ -1361,7 +1451,15 @@ describe('Portability', () => {
   ] as const)('keeps user import global and a late Workspace rebind scoped for %s %s', async (operation, settlement) => {
     const user = userEvent.setup();
     const pending = createDeferred<unknown>();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const listWorkspaceVaultReferences = vi
       .fn()
       .mockImplementation((workspaceId: string) =>
@@ -1377,8 +1475,10 @@ describe('Portability', () => {
       .fn()
       .mockReturnValue(operation === 'rebind' ? pending.promise : Promise.resolve(REBIND_MUTATION));
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { importWorkspace, listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1474,15 +1574,25 @@ describe('Portability', () => {
 
   it('clears typed Vault material on Workspace switch without retaining it in TanStack', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const listWorkspaceVaultReferences = vi
       .fn()
       .mockImplementation((workspaceId: string) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { listWorkspaceVaultReferences },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1508,10 +1618,20 @@ describe('Portability', () => {
 
   it('keeps user-scoped import without export or Vault for Quick Chat', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [QUICK_CHAT_WORKSPACE] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1528,10 +1648,20 @@ describe('Portability', () => {
 
   it('keeps user-scoped import available when no Workspace is selected and does not describe it as selected-Workspace permission', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1551,9 +1681,17 @@ describe('Portability', () => {
   it('keeps existing Portability UI plus stale or error indication when a background Workspace refetch fails', async () => {
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce({ items: [WORKSPACE] })
+      .mockResolvedValueOnce({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
       .mockRejectedValueOnce(new Error('workspace-private failure'));
-    const client = makeClient({ core: { listWorkspaces } });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
@@ -1751,10 +1889,20 @@ describe('Portability', () => {
     ['only Quick Chat', [QUICK_CHAT_WORKSPACE]],
   ] as const)('reaches user-scoped Portability from Settings with %s', async (_label, items) => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [...items] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [...items].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/', client);
 
@@ -2031,9 +2179,17 @@ describe('Portability', () => {
     const importedWorkspaces = createDeferred<{ items: unknown[] }>();
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce({ items: [WORKSPACE] })
+      .mockResolvedValueOnce({
+        items: [WORKSPACE].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
       .mockReturnValue(importedWorkspaces.promise);
-    const client = makeClient({ core: { listWorkspaces } });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     renderApp('/settings/portability', client);
 
     expect(
@@ -2138,10 +2294,26 @@ describe('Portability', () => {
     const file = archiveFile();
     const listWorkspaces = vi
       .fn()
-      .mockResolvedValueOnce({ items: [] })
-      .mockResolvedValue({ items: [{ ...IMPORTED_WORKSPACE, id: EXPORTED_ABSENT_ID }] });
+      .mockResolvedValueOnce({
+        items: [].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      })
+      .mockResolvedValue({
+        items: [{ ...IMPORTED_WORKSPACE, id: EXPORTED_ABSENT_ID }].map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner' as const,
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      });
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: {
         dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
@@ -2154,6 +2326,8 @@ describe('Portability', () => {
           )
         ),
       },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -2254,15 +2428,25 @@ describe('Portability', () => {
 
   it('does not offer an earlier export archive after the selected Workspace changes', async () => {
     const user = userEvent.setup();
-    const listWorkspaces = vi.fn().mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] });
+    const listWorkspaces = vi.fn().mockResolvedValue({
+      items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+        workspace,
+        effectiveRole: 'owner' as const,
+        membershipRevision: 1,
+        ownerUserId: 'user_local',
+        registryRevision: 1,
+      })),
+    });
     const listWorkspaceVaultReferences = vi
       .fn()
       .mockImplementation((workspaceId: string) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
     const client = makeClient({
-      core: { listWorkspaces },
+      core: {},
       app: { listWorkspaceVaultReferences },
+
+      operations: { 'workspace.list': listWorkspaces },
     });
     renderApp('/settings/portability', client);
 

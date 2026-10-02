@@ -24,7 +24,7 @@ const RECORD = {
   lastUsedSource: null,
 };
 
-function makeClient(app: Partial<CoreClient['app']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
     app: {
       listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [RECORD] }),

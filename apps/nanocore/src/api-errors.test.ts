@@ -3,6 +3,7 @@ import { expect, it } from 'vitest';
 import { z } from 'zod';
 import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { registerThreadRoutes } from './thread-routes.js';
 
 it('walks cyclic causes and aggregate entries before reading the baked message', () => {
@@ -87,18 +88,22 @@ it.each([
 
 it('preserves safeParse request-body validation detail on the real route', async () => {
   const app = new Hono<{ Variables: AuthVariables }>();
-  registerThreadRoutes({
+  registerOperationJsonRoutes({
     app,
     inflightCommands: new WeakMap(),
     requestStore: () => {
       throw new Error('Must not enter operation.');
     },
   });
-  const response = await app.request('/api/workspaces/ws_demo/threads', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 42 }),
-  });
+  const response = await ((input: Record<string, unknown>) =>
+    app.request('/api/app/operations/thread.create', {
+      method: 'POST',
+      headers: {
+        ...{ ...{ 'content-type': 'application/json' }, 'content-type': 'application/json' },
+        ...(typeof input.requestId === 'string' ? { 'x-openkit-request-id': input.requestId } : {}),
+      },
+      body: JSON.stringify(input),
+    }))({ ...{ name: 42 }, workspaceId: 'ws_demo' });
   expect(response.status).toBe(400);
   const body = await response.json();
   expect(body.code).toBe('invalid_request');

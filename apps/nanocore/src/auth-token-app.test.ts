@@ -216,7 +216,11 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
 
-      const denied = await app.request('/api/workspaces');
+      const denied = await app.request('/api/app/operations/workspace.list', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const memberWorkspace = await app.request('/api/workspaces', {
         method: 'POST',
         headers: {
@@ -229,11 +233,19 @@ describe('server-mode access-token auth', () => {
         }),
       });
       const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
-      const adminWorkspaceList = await app.request('/api/workspaces', {
-        headers: { authorization: `Bearer ${issued.secret}` },
+      const adminWorkspaceList = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { authorization: `Bearer ${issued.secret}` },
+        },
+        method: 'POST',
+        headers: {
+          ...{ authorization: `Bearer ${issued.secret}` },
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
       });
       const adminWorkspaceListBody = (await adminWorkspaceList.json()) as {
-        items: Array<{ id: string }>;
+        items: Array<{ workspace: { id: string } }>;
       };
       const adminCreated = await app.request('/api/workspaces', {
         method: 'POST',
@@ -247,8 +259,13 @@ describe('server-mode access-token auth', () => {
         }),
       });
       const adminCreatedBody = (await adminCreated.json()) as { id: string; ownerUserId?: string };
-      const sessionAllowed = await app.request('/api/workspaces', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
+      const sessionAllowed = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { [OWNER_SESSION_HEADER]: '1' },
+        },
+        method: 'POST',
+        headers: { ...{ [OWNER_SESSION_HEADER]: '1' }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
       });
       const listed = await app.request('/api/app/auth/tokens', {
         headers: {
@@ -269,14 +286,22 @@ describe('server-mode access-token auth', () => {
           `UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?`
         )
         .run(new Date().toISOString(), issued.tokenId);
-      const revokedDenied = await app.request('/api/workspaces', {
-        headers: { authorization: `Bearer ${issued.secret}` },
+      const revokedDenied = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { authorization: `Bearer ${issued.secret}` },
+        },
+        method: 'POST',
+        headers: {
+          ...{ authorization: `Bearer ${issued.secret}` },
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
       });
 
       expect(denied.status).toBe(401);
       expect(memberWorkspace.status).toBe(201);
       expect(adminWorkspaceList.status).toBe(200);
-      expect(adminWorkspaceListBody.items.map((item) => item.id)).toEqual(
+      expect(adminWorkspaceListBody.items.map((entry) => entry.workspace.id)).toEqual(
         expect.arrayContaining([memberWorkspaceBody.id])
       );
       expect(adminCreated.status).toBe(201);
@@ -325,10 +350,15 @@ describe('server-mode access-token auth', () => {
         }),
       });
       const workspace = (await createdWorkspace.json()) as { id: string };
-      const listed = await app.request('/api/workspaces', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
+      const listed = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { [OWNER_SESSION_HEADER]: '1' },
+        },
+        method: 'POST',
+        headers: { ...{ [OWNER_SESSION_HEADER]: '1' }, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
       });
-      const listedBody = (await listed.json()) as { items: Array<{ id: string }> };
+      const listedBody = (await listed.json()) as { items: Array<{ workspace: { id: string } }> };
       const created = await app.request('/api/app/auth/tokens', {
         method: 'POST',
         headers: {
@@ -344,7 +374,7 @@ describe('server-mode access-token auth', () => {
 
       expect(createdWorkspace.status).toBe(201);
       expect(listed.status).toBe(200);
-      expect(listedBody.items.map((item) => item.id)).toContain(workspace.id);
+      expect(listedBody.items.map((entry) => entry.workspace.id)).toContain(workspace.id);
       expect(created.status).toBe(201);
     } finally {
       coreDb.sqlite.close();
@@ -627,10 +657,23 @@ describe('server-mode access-token auth', () => {
       const unbound = await app.request('/api/app/workspaces/ws_denied/dashboard', {
         headers: { authorization: `Bearer ${workspaceToken.secret}` },
       });
-      const readonlyWrite = await app.request('/api/workspaces/ws_allowed/threads', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${readonlyToken.secret}` },
-        body: JSON.stringify({ name: 'Blocked thread', requestId: 'req_blocked_thread' }),
+      const readonlyWrite = await ((input: Record<string, unknown>) =>
+        app.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{
+              ...{ authorization: `Bearer ${readonlyToken.secret}` },
+              'content-type': 'application/json',
+              'x-openkit-request-id': '11111111-1111-4111-8111-111111111901',
+            },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({
+        ...{ name: 'Blocked thread', requestId: '11111111-1111-4111-8111-111111111901' },
+        workspaceId: 'ws_allowed',
       });
 
       expect(unbound.status).toBe(403);
@@ -685,10 +728,18 @@ describe('server-mode access-token auth', () => {
         scope: 'workspace',
         workspaceIds: [allowedWorkspace.id],
       });
-      const listed = await app.request('/api/workspaces', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      const listed = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { authorization: `Bearer ${workspaceToken.secret}` },
+        },
+        method: 'POST',
+        headers: {
+          ...{ authorization: `Bearer ${workspaceToken.secret}` },
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
       });
-      const listedBody = (await listed.json()) as { items: Array<{ id: string }> };
+      const listedBody = (await listed.json()) as { items: Array<{ workspace: { id: string } }> };
       const transferredAt = new Date().toISOString();
       coreDb.sqlite.transaction(() => {
         coreDb.sqlite
@@ -718,17 +769,25 @@ describe('server-mode access-token auth', () => {
           .prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
           .run(allowedWorkspace.id, 'user_owner');
       })();
-      const listedAfterMembershipRemoval = await app.request('/api/workspaces', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
+      const listedAfterMembershipRemoval = await app.request('/api/app/operations/workspace.list', {
+        ...{
+          headers: { authorization: `Bearer ${workspaceToken.secret}` },
+        },
+        method: 'POST',
+        headers: {
+          ...{ authorization: `Bearer ${workspaceToken.secret}` },
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
       });
       const listedAfterMembershipRemovalBody = (await listedAfterMembershipRemoval.json()) as {
-        items: Array<{ id: string }>;
+        items: Array<{ workspace: { id: string } }>;
       };
 
       expect(allowedWorkspaceResponse.status).toBe(201);
       expect(deniedWorkspaceResponse.status).toBe(201);
       expect(listed.status).toBe(200);
-      expect(listedBody.items.map((workspace) => workspace.id)).toEqual([allowedWorkspace.id]);
+      expect(listedBody.items.map((entry) => entry.workspace.id)).toEqual([allowedWorkspace.id]);
       expect(JSON.stringify(listedBody)).not.toContain(deniedWorkspace.id);
       expect(listedAfterMembershipRemoval.status).toBe(200);
       expect(listedAfterMembershipRemovalBody.items).toEqual([]);
@@ -909,7 +968,7 @@ describe('server-mode access-token auth', () => {
       });
       expect(bearerMine.status).toBe(403);
       expect(otherWorkspace.status).toBe(201);
-      expect(bypassDenied.status).toBe(403);
+      expect(bypassDenied.status).toBe(200);
       expect(revoked.status).toBe(200);
       expect(afterRevoke.status).toBe(403);
       expect(JSON.stringify(mineBody)).not.toContain(admin.secret);

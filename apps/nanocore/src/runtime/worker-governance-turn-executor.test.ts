@@ -3491,7 +3491,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       ]);
       expect(runtimeEvidence[0]?.evidenceBundleIds).toHaveLength(2);
-      const itemsResponse = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/items');
+      const itemsResponse = await app.request('/api/app/operations/thread.items', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+      });
       expect(itemsResponse.status, await itemsResponse.clone().text()).toBe(200);
       const turnItems = ListThreadItemsResponseSchema.parse(
         await itemsResponse.json()
@@ -8073,9 +8077,15 @@ describe('retained-record failure publication', () => {
           data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
         });
         const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
-        const response = await app.request(
-          `/api/workspaces/ws_demo/threads/th_demo/turns/${fixture.turn.id}`
-        );
+        const response = await app.request('/api/app/operations/turn.read', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: fixture.turn.id,
+          }),
+        });
         expect(response.status).toBe(200);
         const body = await response.json();
         expect(body).toMatchObject({ error: turn.error });

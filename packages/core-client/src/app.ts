@@ -163,8 +163,6 @@ import {
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
   type ListArtifactReviewsResponse,
   ListArtifactReviewsResponseSchema,
-  type ListAuthorizedWorkspacesResponse,
-  ListAuthorizedWorkspacesResponseSchema,
   type ListAutomationsResponse,
   ListAutomationsResponseSchema,
   type ListBackendWorkspaceHandlesResponse,
@@ -421,8 +419,6 @@ import {
   SubmitWorkspaceSyncReviewDecisionRequestSchema,
   type SubmitWorkspaceSyncReviewDecisionResponse,
   SubmitWorkspaceSyncReviewDecisionResponseSchema,
-  type ThreadDashboardResponse,
-  ThreadDashboardResponseSchema,
   type ThreadGoalPlanReadResponse,
   ThreadGoalPlanReadResponseSchema,
   type ThreadGoalSummaryResponse,
@@ -653,8 +649,6 @@ export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingErro
 
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
-  /** Lists workspaces authorized for the current principal. */
-  listAuthorizedWorkspaces(): Promise<ListAuthorizedWorkspacesResponse>;
   /** Lists one bounded page of currently authorized retained Worker environments. */
   listWorkerEnvironments(
     workspaceId: string,
@@ -939,8 +933,6 @@ export interface AppApiClient {
   listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
-  /** Reads one thread dashboard read model. */
-  getThreadDashboard(workspaceId: string, threadId: string): Promise<ThreadDashboardResponse>;
   /** Reads one thread Goal Mode summary read model. */
   getThreadGoalSummary(workspaceId: string, threadId: string): Promise<ThreadGoalSummaryResponse>;
   /** Reads active and pending Plans plus the exact next planning action. */
@@ -1377,8 +1369,6 @@ export interface AppApiClient {
 /** Creates the NanoCore App API client. */
 export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
-    listAuthorizedWorkspaces: () =>
-      transport.getJson('/api/app/workspaces', ListAuthorizedWorkspacesResponseSchema),
     listWorkerEnvironments: (workspaceId, query = {}) => {
       const parsed = ListWorkerEnvironmentsQuerySchema.parse(query);
       const parameters = new URLSearchParams({ limit: String(parsed.limit) });
@@ -1774,11 +1764,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/dashboard`,
         WorkspaceDashboardResponseSchema
-      ),
-    getThreadDashboard: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/dashboard`,
-        ThreadDashboardResponseSchema
       ),
     getThreadGoalSummary: (workspaceId, threadId) =>
       transport.getJson(

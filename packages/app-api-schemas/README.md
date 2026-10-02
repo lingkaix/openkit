@@ -52,7 +52,7 @@ Workspace Sync Review patch schemas scan metadata and ordinary file contents for
 
 ## Operation Definition Slice
 
-[`src/operation-definitions.ts`](src/operation-definitions.ts) holds the release-authored Generative Kernel slice and the one administration read descriptor. It reuses existing domain payload schemas and exports inferred operation ids, inputs and outputs. HTTP placement, Tool spelling and model views derive from that table; executable handlers and current authority facts stay in NanoCore. Model views omit trusted fields without replacing the remaining schema objects. The built browser import-graph regression in Web covers this package transitively.
+[`src/operation-definitions.ts`](src/operation-definitions.ts) holds the Generative Kernel, Workspace, Thread and Turn family tables and the one administration read descriptor. `PRODUCT_OPERATION_DEFINITIONS` composes the public JSON families; `OPERATION_DEFINITIONS` also includes administration. Workspace collections retain nested authorized summaries, Thread creation retains private-default visibility, and Turn reads retain the ordinary product projection. It reuses existing domain payload schemas and exports inferred operation ids, inputs and outputs. HTTP placement, Tool spelling and model views derive from that table; executable handlers and current authority facts stay in NanoCore. Model views omit trusted fields without replacing the remaining schema objects. The built browser import-graph regression in Web covers this package transitively.
 
 ## Commands
 

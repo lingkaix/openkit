@@ -3,8 +3,6 @@ import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-
-import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -13,6 +11,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import * as workObservations from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -76,9 +75,11 @@ describe('thread dashboard app API', () => {
       .run('Simon', 'user_local');
     const openedWorkspaceDb = vi.spyOn(database, 'openWorkspaceDb');
     try {
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-      );
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+      });
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.viewerUserId).toBe('user_local');
@@ -151,9 +152,11 @@ describe('thread dashboard app API', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
     try {
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-      );
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+      });
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.runtimeActivity).toEqual([
@@ -211,9 +214,11 @@ describe('thread dashboard app API', () => {
         ),
         'corrupt restricted diagnostic\n'
       );
-      const unavailable = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-      );
+      const unavailable = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+      });
       expect(unavailable.status).toBe(200);
       const unavailableBody = await unavailable.json();
       expect(unavailableBody.runtimeActivity).toEqual([
@@ -274,16 +279,29 @@ describe('thread dashboard app API', () => {
       .spyOn(workObservations, 'readThreadRuntimeActivity')
       .mockReturnValue([activity]);
     const opened = vi.spyOn(database, 'openWorkspaceDb');
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      mode: 'server',
+      auth: {
+        api: { getSession: async () => ({ user: { id: 'user_local' } }) },
+        handler: async () => new Response(null, { status: 404 }),
+      },
+    });
     try {
-      const denied = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${privateThread.id}/dashboard`
-      );
+      const denied = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: privateThread.id }),
+      });
       expect(denied.status).toBe(404);
       expect(read).not.toHaveBeenCalled();
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-      );
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+      });
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(read).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
@@ -334,9 +352,11 @@ describe('thread dashboard app API', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${foreignThread.id}/dashboard`
-      );
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: foreignThread.id }),
+      });
 
       expect(response.status).toBe(404);
       await expect(response.json()).resolves.toMatchObject({
@@ -397,7 +417,11 @@ describe('thread dashboard app API', () => {
     });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
 
-    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+    const res = await app.request('/api/app/operations/thread.dashboard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -415,7 +439,7 @@ describe('thread dashboard app API', () => {
         defaultAgentId: null,
       },
       itemLog: {
-        href: `/api/app/workspaces/ws_demo/threads/${thread.id}/items`,
+        href: '/api/app/operations/thread.items',
       },
     });
   });
@@ -449,7 +473,11 @@ describe('thread dashboard app API', () => {
     });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
 
-    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+    const res = await app.request('/api/app/operations/thread.dashboard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -497,7 +525,11 @@ describe('thread dashboard app API', () => {
     }
     const inventory = store.listArtifacts('ws_demo');
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
-    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+    const res = await app.request('/api/app/operations/thread.dashboard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -652,10 +684,15 @@ describe('thread dashboard app API', () => {
     });
 
     try {
-      const response = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`,
-        { headers: { authorization: `Bearer ${readonlyToken.secret}` } }
-      );
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        ...{ headers: { authorization: `Bearer ${readonlyToken.secret}` } },
+        method: 'POST',
+        headers: {
+          ...{ authorization: `Bearer ${readonlyToken.secret}` },
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+      });
 
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
@@ -773,7 +810,11 @@ describe('thread dashboard app API', () => {
       updatedAt: timestamp,
     });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
-    const res = await app.request(`/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`);
+    const res = await app.request('/api/app/operations/thread.dashboard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -868,9 +909,11 @@ describe('thread dashboard app API', () => {
     store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
 
-    const response = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/dashboard`
-    );
+    const response = await app.request('/api/app/operations/thread.dashboard', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo', threadId: thread.id }),
+    });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({

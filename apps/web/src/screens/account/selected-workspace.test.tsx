@@ -96,12 +96,22 @@ function renderAccountSelection(options: {
   leaveWorkspace?: ReturnType<typeof vi.fn>;
 }) {
   let discovery = options.items;
-  const listWorkspaces = vi.fn(async () => ({ items: discovery }));
+  const listWorkspaces = vi.fn(async () => ({
+    items: discovery.map((workspace) => ({
+      workspace,
+      effectiveRole: 'owner' as const,
+      membershipRevision: 1,
+      ownerUserId: 'user_local',
+      registryRevision: 1,
+    })),
+  }));
   const client = {
     app: {
       leaveWorkspace: options.leaveWorkspace ?? vi.fn(),
     },
-    core: { listWorkspaces },
+    core: {},
+
+    operations: { 'workspace.list': listWorkspaces },
   } as unknown as CoreClient;
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -146,8 +156,9 @@ describe('account selected Workspace', () => {
     let releaseDiscovery!: (items: WorkspaceRecord[]) => void;
     const listWorkspaces = vi.fn(
       () =>
-        new Promise<{ items: WorkspaceRecord[] }>((resolve) => {
-          releaseDiscovery = (items) => resolve({ items });
+        new Promise<{ items: Array<{ workspace: WorkspaceRecord }> }>((resolve) => {
+          releaseDiscovery = (items) =>
+            resolve({ items: items.map((workspace) => ({ workspace })) });
         })
     );
     const listWorkspaceMembers = vi.fn().mockResolvedValue({ items: [] });
@@ -158,7 +169,9 @@ describe('account selected Workspace', () => {
         listWorkspaceInvitations,
         listWorkspaceMembers,
       },
-      core: { listWorkspaces },
+      core: {},
+
+      operations: { 'workspace.list': listWorkspaces },
     } as unknown as CoreClient;
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },

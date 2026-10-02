@@ -9,12 +9,7 @@ import {
 import type { Context, Hono } from 'hono';
 import type { z } from 'zod';
 
-import {
-  asApiError,
-  asCommandError,
-  asInvalidRequestError,
-  publishedErrorMessage,
-} from './api-errors.js';
+import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
@@ -50,7 +45,7 @@ function projectOrdinaryTurn(turn: TurnReadModel) {
 }
 
 /**
- * Registers the Core turn start, feedback, read, and interrupt routes.
+ * Registers the retained Core Turn start and interrupt routes.
  *
  * @param dependencies Hono app and concrete turn persistence, scheduler, and runtime dependencies.
  */
@@ -61,7 +56,6 @@ export function registerTurnRoutes({
   interruptInternalChatTurn,
   providerCredentialResolver,
   requestStore,
-  repositoryWorkspaceDb,
   runtimeConfig,
   schedulerEpoch,
   turnExecutor,
@@ -73,7 +67,6 @@ export function registerTurnRoutes({
   readonly interruptInternalChatTurn: (store: FsStore, turnId: string) => Promise<boolean>;
   readonly providerCredentialResolver: ProviderCredentialResolver;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
@@ -156,54 +149,6 @@ export function registerTurnRoutes({
   });
 
   registerFeedbackRoutes({ app, requestStore });
-
-  app.get('/api/workspaces/:workspaceId/threads/:threadId/turns/:turnId', (c) => {
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    const turnId = c.req.param('turnId');
-    const store = requestStore(c);
-    let ownerTurn: ReturnType<FsStore['getTurnById']>;
-
-    try {
-      ownerTurn = store.getTurnById(turnId);
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-
-    const workspaceAccess = c.get('workspaceAccess');
-    if (workspaceAccess) {
-      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
-    }
-
-    try {
-      const turn = store.getTurn(workspaceId, threadId, turnId);
-      let contextPackageDigest: string | null = null;
-
-      if (coreDb) {
-        let workspaceDb: WorkspaceDb | null = null;
-        try {
-          workspaceDb = repositoryWorkspaceDb(workspaceId);
-          contextPackageDigest = readStrictWorkerContextPackageDigest({
-            coreDb,
-            store,
-            threadId,
-            turnId,
-            workspaceDb,
-          });
-        } catch {
-          contextPackageDigest = null;
-        } finally {
-          workspaceDb?.sqlite.close();
-        }
-      }
-
-      return c.json(
-        TurnReadProjectionSchema.parse({ ...projectOrdinaryTurn(turn), contextPackageDigest })
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
 
   app.post('/api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt', async (c) => {
     const parsed = InterruptTurnRequestSchema.safeParse(await c.req.json().catch(() => ({})));
@@ -382,4 +327,34 @@ export async function interruptProductTurn(input: {
   return turn;
 }
 
-/** Structured user-input command that closes one existing Human Gate. */
+/** Reads the owner-scoped product Turn and nullable verified Context Package evidence; unavailable evidence never repairs history. */
+export function readTurn(
+  store: FsStore,
+  coreDb: CoreDb | undefined,
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb,
+  input: { workspaceId: string; threadId: string; turnId: string }
+) {
+  const { workspaceId, threadId, turnId } = input;
+  const turn = store.getTurn(workspaceId, threadId, turnId);
+  let contextPackageDigest: string | null = null;
+
+  if (coreDb) {
+    let workspaceDb: WorkspaceDb | null = null;
+    try {
+      workspaceDb = repositoryWorkspaceDb(workspaceId);
+      contextPackageDigest = readStrictWorkerContextPackageDigest({
+        coreDb,
+        store,
+        threadId,
+        turnId,
+        workspaceDb,
+      });
+    } catch {
+      contextPackageDigest = null;
+    } finally {
+      workspaceDb?.sqlite.close();
+    }
+  }
+
+  return TurnReadProjectionSchema.parse({ ...projectOrdinaryTurn(turn), contextPackageDigest });
+}

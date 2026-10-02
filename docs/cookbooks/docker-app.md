@@ -80,7 +80,7 @@ Run the host-side persistence smoke after building the app image:
 scripts/docker/app-persistence-smoke.sh
 ```
 
-The script starts `openkit-app` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `/api/workspaces`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and verifies the Workspace plus the canonical data-root layout survived.
+The script starts `openkit-app` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `/api/workspaces`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and reads the definition-derived `workspace.list` JSON binding to verify the Workspace plus the canonical data-root layout survived.
 
 The PASS summary covers `server/db/core.sqlite`, `config/server.jsonc`, `server/files`, `server/runtime`, `server/vendor`, the personal `users/user_local` subtree, the canonical `workspaces/<workspaceId>` subtree, an agent resolved-snapshot marker, and server and Workspace log markers.
 

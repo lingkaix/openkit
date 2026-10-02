@@ -19,7 +19,7 @@ function formatRecordedTime(value: string) {
 }
 
 /** Provides only the two authorized server reads; any other client call fails. */
-function makeClient(app: Partial<CoreClient['app']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
     app: {
       listServerAuditEvents: vi.fn().mockResolvedValue({

@@ -1,17 +1,22 @@
-import { ListWorkspacesResponseSchema } from '@openkit/protocol';
+import { ListAuthorizedWorkspacesResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
+import { FsStore } from './lib/store.js';
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 
 describe('quick-chat workspace mode', () => {
   it('seeds a special lightweight workspace for simple provider-backed prompts', async () => {
-    const app = createApp();
-    const res = await app.request('/api/workspaces');
-    const body = ListWorkspacesResponseSchema.parse(await res.json());
+    const app = createApp({ store: new FsStore() });
+    const res = await app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const body = ListAuthorizedWorkspacesResponseSchema.parse(await res.json());
 
-    expect(body.items).toContainEqual(
+    expect(body.items.map((entry) => entry.workspace)).toContainEqual(
       expect.objectContaining({
         id: 'ws_quick_chat',
         name: 'Quick Chat',

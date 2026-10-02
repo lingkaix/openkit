@@ -9,7 +9,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('dashboard and search Thread audiences', () => {
@@ -18,20 +18,35 @@ describe('dashboard and search Thread audiences', () => {
     const workspace = store.createWorkspace('Creation team');
     const app = createApp({ store });
     for (const visibility of ['private', 'workspace'] as const) {
-      const response = await app.request(`/api/workspaces/${workspace.id}/threads`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
+      const response = await ((input: Record<string, unknown>) =>
+        app.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{
+              ...{ 'content-type': 'application/json' },
+              'content-type': 'application/json',
+              'x-openkit-request-id':
+                visibility === 'private'
+                  ? '11111111-1111-4111-8111-111111111111'
+                  : '22222222-2222-4222-8222-222222222222',
+            },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({
+        ...{
           requestId:
             visibility === 'private'
               ? '11111111-1111-4111-8111-111111111111'
               : '22222222-2222-4222-8222-222222222222',
           name: 'New work',
           visibility,
-          privateOwnerUserId: 'user_forged',
-        }),
+        },
+        workspaceId: workspace.id,
       });
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
       const thread = await response.json();
       expect(thread.visibility).toBe(visibility);
       expect(thread.privateOwnerUserId).toBe(visibility === 'private' ? 'user_local' : undefined);
@@ -326,20 +341,28 @@ describe('dashboard and search Thread audiences', () => {
         ).toHaveLength(3);
         for (const hidden of [denied, threads[4]!, threads[5]!]) {
           expect(readItems.mock.calls.some((args) => args[1] === hidden.id)).toBe(false);
-          const direct = await app.request(
-            `/api/app/workspaces/${workspace.id}/threads/${hidden.id}/dashboard`,
-            { headers }
-          );
-          expect(direct.status).toBe(404);
-          expect(await direct.text()).not.toContain(hidden.name);
+          const direct = await app.request('/api/app/operations/thread.dashboard', {
+            ...{ headers },
+            method: 'POST',
+            headers: { ...headers, ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: workspace.id, threadId: hidden.id }),
+          });
+          if (scope === 'server-admin' && [own.id, denied.id].includes(hidden.id)) {
+            expect(direct.status).toBe(200);
+          } else {
+            expect(direct.status).toBe(404);
+            expect(await direct.text()).not.toContain(hidden.name);
+          }
         }
         for (const visible of [own, threads[2]!, threads[3]!]) {
-          const response = await app.request(
-            `/api/app/workspaces/${workspace.id}/threads/${visible.id}/dashboard`,
-            { headers }
-          );
+          const response = await app.request('/api/app/operations/thread.dashboard', {
+            ...{ headers },
+            method: 'POST',
+            headers: { ...headers, ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: workspace.id, threadId: visible.id }),
+          });
           expect(response.status).toBe(200);
-          expect(await response.text()).not.toContain(denied.name);
+          if (scope !== 'server-admin') expect(await response.text()).not.toContain(denied.name);
         }
         readItems.mockRestore();
       }

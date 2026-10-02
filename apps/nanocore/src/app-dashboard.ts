@@ -2,6 +2,7 @@ import {
   type ConversationNavigationResponse,
   ConversationNavigationResponseSchema,
   type DashboardArtifactSummary,
+  operationHttpPath,
   type ThreadDashboardResponse,
   ThreadDashboardResponseSchema,
   type ThreadWorkStatus,
@@ -18,15 +19,11 @@ import {
   type TurnSchema,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
 import { goalRows } from './action-center.js';
 import { asApiError, publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { AuthVariables } from './auth/middleware.js';
-import {
-  assertAuthorizedWorkspaceLineage,
-  isWorkspaceOperationAuthorized,
-} from './auth/operation-authorizer.js';
+import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import { projectThreadTaskInputs } from './context/worker-context-projection.js';
@@ -653,205 +650,196 @@ export function registerDashboardRoutes({
       return asApiError(publishedErrorMessage(error));
     }
   });
+}
 
-  registerAppApiRoute(app, 'getThreadDashboard', (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const actor = c.get('actor');
-      const approvalDecisionAuthorized =
-        coreDb === undefined ||
-        (actor !== undefined &&
-          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-            mutating: true,
-            policyOperation: 'approval.respond',
-          }));
-      const turnDecisionAuthorized =
-        coreDb === undefined ||
-        (actor !== undefined &&
-          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-            mutating: true,
-            policyOperation: 'turn.run',
-          }));
-      const threadId = c.req.param('threadId');
-      const workspaceAccess = c.get('workspaceAccess');
-      let thread: ReturnType<FsStore['getThread']>;
-      try {
-        thread = store.getThread(workspaceId, threadId);
-      } catch (error) {
-        if (workspaceAccess) {
-          assertAuthorizedWorkspaceLineage(workspaceAccess, null);
-        }
-        throw error;
-      }
-      if (workspaceAccess) {
-        assertAuthorizedWorkspaceLineage(workspaceAccess, thread.workspaceId);
-      }
-      if (!isThreadVisible(store, thread, actor?.userId)) {
-        throw new HTTPException(404, { message: 'Thread not found.' });
-      }
-      const visibleArtifacts = store
-        .listArtifacts(workspaceId)
-        .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId));
-      const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
-      const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
-        ...turn,
-        items: turn.items.filter(
-          (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
-        ),
+/** Builds the existing dashboard after primary Workspace admission and addressed-Thread audience resolution. */
+export function readThreadDashboard(input: {
+  store: FsStore;
+  coreDb: CoreDb | undefined;
+  runtimeConfigManager: RuntimeConfigManager;
+  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+  actor: import('./auth/identity.js').Actor;
+  workspaceId: string;
+  threadId: string;
+  administratorEligible: boolean;
+}) {
+  const {
+    store,
+    coreDb,
+    runtimeConfigManager,
+    repositoryWorkspaceDb,
+    actor,
+    workspaceId,
+    threadId,
+    administratorEligible,
+  } = input;
+  const approvalDecisionAuthorized =
+    coreDb === undefined ||
+    (actor !== undefined &&
+      isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+        mutating: true,
+        policyOperation: 'approval.respond',
       }));
-      const threadItems = store.listThreadItems(workspaceId, threadId);
-      const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
-      const authors = [
-        ...threadItems.flatMap((item) => ('actor' in item ? [item.actor] : [])),
-        ...turns.flatMap((turn) =>
-          turn.agentId ? [{ kind: 'agent' as const, id: turn.agentId }] : []
-        ),
-      ];
-      for (const { kind, id } of authors) {
-        const key = `${kind}:${id}`;
-        if (participants.has(key)) continue;
-        const user =
-          kind === 'user'
-            ? (coreDb?.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').get(id) as
-                | { display_name: string }
-                | undefined)
-            : undefined;
-        const agent =
-          kind === 'agent'
-            ? runtimeConfigManager.current().agentManifests.find((entry) => entry.id === id)
-            : undefined;
-        participants.set(key, {
-          kind,
-          id,
-          displayName:
-            user?.display_name.trim() ||
-            agent?.displayName.trim() ||
-            (kind === 'agent' && id === QUICK_CHAT_AGENT_ID
-              ? 'Assistant'
-              : kind === 'agent' && id === 'knowledge-manager'
-                ? 'Knowledge Manager'
-                : id),
-        });
-      }
-      const latestTurn = turns.at(-1) ?? null;
-      const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
-      const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
-      const threadArtifacts = listOutputArtifacts(store, coreDb, workspaceId, actor?.userId).filter(
-        (artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id)
-      );
-      const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
-      let pendingRequests: ThreadDashboardResponse['pendingRequests'] = [];
-      let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
-      let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
-      if (coreDb) {
-        let workspaceDb: WorkspaceDb | undefined;
-        try {
-          workspaceDb = repositoryWorkspaceDb(workspaceId);
-          const workspaceTurns = store
-            .listThreads(workspaceId)
-            .flatMap((candidate) => store.listThreadTurns(workspaceId, candidate.id));
-          const receipts = readCommandRequestRecordsFromSqlite(workspaceDb.sqlite);
-          pendingRequests = listThreadPendingRequests(
-            workspaceDb.sqlite,
-            workspaceId,
-            threadId
-          ).map((record) => ({
-            requestId: record.requestId,
-            canRespond:
-              actor?.userId === record.responsibleUserId &&
-              isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-                mutating: true,
-                policyOperation: 'approval.respond',
-              }),
-            ...(record.kind === 'approval' &&
-            !validateCanonicalLoad(record, workspaceTurns, receipts)
-              ? { approvalEffect: projectApprovalEffect({ record, store, coreDb, actor }) }
-              : {}),
-            state: validateCanonicalLoad(record, workspaceTurns, receipts)
-              ? 'inspect-only'
-              : record.state,
-            resolution: record.resolution,
-            ending: record.ending,
-            disposition: record.disposition,
-          }));
-          const projected = new Set(pendingRequests.map((record) => record.requestId));
-          const unreadable = workspaceDb.sqlite
-            .prepare(
-              'SELECT request_id FROM pending_requests WHERE workspace_id = ? AND thread_id = ?'
-            )
-            .all(workspaceId, threadId) as Array<{ request_id: string }>;
-          for (const row of unreadable)
-            if (!projected.has(row.request_id))
-              pendingRequests.push({
-                requestId: row.request_id,
-                state: 'inspect-only',
-                resolution: null,
-                ending: null,
-                disposition: null,
-              });
-          try {
-            taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
-          } catch {
-            taskInputs = [];
-          }
-          // Audience and Workspace lineage were checked before opening any activity or body reader.
-          runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
-            threadId,
-            turnIds: turns.map((turn) => turn.id),
-          }).map((activity) => ({
-            turnId: activity.turnId,
-            contentCapture: activity.contentCapture,
-            coverage: activity.coverage,
-            entries: activity.entries.map((entry) => ({
-              sequence: entry.sequence,
-              observedAt: entry.observedAt,
-              kind: entry.kind,
-              label: entry.label,
-              text: entry.text,
-              textTruncated: entry.textTruncated,
-            })),
-            omittedEntryCount: activity.omittedEntryCount,
-          }));
-        } finally {
-          workspaceDb?.sqlite.close();
-        }
-      }
-
-      return c.json(
-        ThreadDashboardResponseSchema.parse({
-          viewerUserId: actor?.userId ?? null,
-          participants: [...participants.values()],
-          thread,
-          turns,
-          artifacts,
-          workStatus: buildThreadWorkStatus({
-            store,
-            turns,
-            items: threadItems,
-            artifacts: threadArtifacts,
-            selectedAgentId,
-            approvalDecisionAuthorized,
-            turnDecisionAuthorized,
-            responsibleUserId: actor?.userId ?? null,
-          }),
-          composer: {
-            disabled: !turnDecisionAuthorized,
-            defaultAgentId,
-          },
-          itemLog: {
-            href: `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`,
-          },
-          taskInputs,
-          pendingRequests,
-          runtimeActivity,
+  const turnDecisionAuthorized =
+    coreDb === undefined ||
+    (actor !== undefined &&
+      isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+        mutating: true,
+        policyOperation: 'turn.run',
+      }));
+  const thread = store.getThread(workspaceId, threadId);
+  const visibleArtifacts = store
+    .listArtifacts(workspaceId)
+    .filter((artifact) => isArtifactVisible(store, artifact, actor?.userId, administratorEligible));
+  const visibleArtifactIds = new Set(visibleArtifacts.map((artifact) => artifact.id));
+  const turns = store.listThreadTurns(workspaceId, threadId).map((turn) => ({
+    ...turn,
+    items: turn.items.filter(
+      (item) => item.type !== 'artifact-reference' || visibleArtifactIds.has(item.artifactId)
+    ),
+  }));
+  const threadItems = store.listThreadItems(workspaceId, threadId);
+  const participants = new Map<string, ThreadDashboardResponse['participants'][number]>();
+  const authors = [
+    ...threadItems.flatMap((item) => ('actor' in item ? [item.actor] : [])),
+    ...turns.flatMap((turn) =>
+      turn.agentId ? [{ kind: 'agent' as const, id: turn.agentId }] : []
+    ),
+  ];
+  for (const { kind, id } of authors) {
+    const key = `${kind}:${id}`;
+    if (participants.has(key)) continue;
+    const user =
+      kind === 'user'
+        ? (coreDb?.sqlite.prepare('SELECT display_name FROM users WHERE id = ?').get(id) as
+            | { display_name: string }
+            | undefined)
+        : undefined;
+    const agent =
+      kind === 'agent'
+        ? runtimeConfigManager.current().agentManifests.find((entry) => entry.id === id)
+        : undefined;
+    participants.set(key, {
+      kind,
+      id,
+      displayName:
+        user?.display_name.trim() ||
+        agent?.displayName.trim() ||
+        (kind === 'agent' && id === QUICK_CHAT_AGENT_ID
+          ? 'Assistant'
+          : kind === 'agent' && id === 'knowledge-manager'
+            ? 'Knowledge Manager'
+            : id),
+    });
+  }
+  const latestTurn = turns.at(-1) ?? null;
+  const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
+  const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
+  const threadArtifacts = listOutputArtifacts(
+    store,
+    coreDb,
+    workspaceId,
+    actor?.userId,
+    administratorEligible
+  ).filter((artifact) => artifact.threadId === threadId && visibleArtifactIds.has(artifact.id));
+  const artifacts = threadArtifacts.map((artifact) => summarizeDashboardArtifact(artifact));
+  let pendingRequests: ThreadDashboardResponse['pendingRequests'] = [];
+  let taskInputs: ThreadDashboardResponse['taskInputs'] = [];
+  let runtimeActivity: ThreadDashboardResponse['runtimeActivity'];
+  if (coreDb) {
+    let workspaceDb: WorkspaceDb | undefined;
+    try {
+      workspaceDb = repositoryWorkspaceDb(workspaceId);
+      const workspaceTurns = store
+        .listThreads(workspaceId)
+        .flatMap((candidate) => store.listThreadTurns(workspaceId, candidate.id));
+      const receipts = readCommandRequestRecordsFromSqlite(workspaceDb.sqlite);
+      pendingRequests = listThreadPendingRequests(workspaceDb.sqlite, workspaceId, threadId).map(
+        (record) => ({
+          requestId: record.requestId,
+          canRespond:
+            actor?.userId === record.responsibleUserId &&
+            isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+              mutating: true,
+              policyOperation: 'approval.respond',
+            }),
+          ...(record.kind === 'approval' && !validateCanonicalLoad(record, workspaceTurns, receipts)
+            ? { approvalEffect: projectApprovalEffect({ record, store, coreDb, actor }) }
+            : {}),
+          state: validateCanonicalLoad(record, workspaceTurns, receipts)
+            ? 'inspect-only'
+            : record.state,
+          resolution: record.resolution,
+          ending: record.ending,
+          disposition: record.disposition,
         })
       );
-    } catch (error) {
-      if (error instanceof HTTPException) {
-        throw error;
+      const projected = new Set(pendingRequests.map((record) => record.requestId));
+      const unreadable = workspaceDb.sqlite
+        .prepare('SELECT request_id FROM pending_requests WHERE workspace_id = ? AND thread_id = ?')
+        .all(workspaceId, threadId) as Array<{ request_id: string }>;
+      for (const row of unreadable)
+        if (!projected.has(row.request_id))
+          pendingRequests.push({
+            requestId: row.request_id,
+            state: 'inspect-only',
+            resolution: null,
+            ending: null,
+            disposition: null,
+          });
+      try {
+        taskInputs = projectThreadTaskInputs({ coreDb, store, threadId, workspaceDb });
+      } catch {
+        taskInputs = [];
       }
-      return asApiError(publishedErrorMessage(error));
+      // Audience and Workspace lineage were checked before opening any activity or body reader.
+      runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
+        threadId,
+        turnIds: turns.map((turn) => turn.id),
+      }).map((activity) => ({
+        turnId: activity.turnId,
+        contentCapture: activity.contentCapture,
+        coverage: activity.coverage,
+        entries: activity.entries.map((entry) => ({
+          sequence: entry.sequence,
+          observedAt: entry.observedAt,
+          kind: entry.kind,
+          label: entry.label,
+          text: entry.text,
+          textTruncated: entry.textTruncated,
+        })),
+        omittedEntryCount: activity.omittedEntryCount,
+      }));
+    } finally {
+      workspaceDb?.sqlite.close();
     }
+  }
+
+  return ThreadDashboardResponseSchema.parse({
+    viewerUserId: actor?.userId ?? null,
+    participants: [...participants.values()],
+    thread,
+    turns,
+    artifacts,
+    workStatus: buildThreadWorkStatus({
+      store,
+      turns,
+      items: threadItems,
+      artifacts: threadArtifacts,
+      selectedAgentId,
+      approvalDecisionAuthorized,
+      turnDecisionAuthorized,
+      responsibleUserId: actor?.userId ?? null,
+    }),
+    composer: {
+      disabled: !turnDecisionAuthorized,
+      defaultAgentId,
+    },
+    itemLog: {
+      href: operationHttpPath('thread.items'),
+    },
+    taskInputs,
+    pendingRequests,
+    runtimeActivity,
   });
 }

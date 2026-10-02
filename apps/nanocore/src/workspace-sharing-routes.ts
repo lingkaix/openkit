@@ -34,7 +34,7 @@ import { type Actor, isDeploymentAdminActor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   assertAuthorizedWorkspaceLineage,
-  isUsablePresentedServerAdminToken,
+  isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -122,41 +122,6 @@ export interface RegisterWorkspaceSharingRoutesInput {
  */
 export function registerWorkspaceSharingRoutes(input: RegisterWorkspaceSharingRoutesInput): void {
   const { app, inflightCommands, requestStore } = input;
-
-  registerAppApiRoute(app, 'listAuthorizedWorkspaces', (context) => {
-    try {
-      const coreDb = requireCoreDb(input.coreDb);
-      const access = context.get('workspaceAccess');
-      if (access?.kind !== 'workspace-set') {
-        throw accessDenied();
-      }
-      const store = requestStore(context);
-      const actor = requireActor(context);
-      const facts = new Map(
-        listAuthorizedWorkspaceRegistryFacts(coreDb, actor.userId).map((fact) => [
-          fact.workspaceId,
-          fact,
-        ])
-      );
-      const items = access.workspaceIds.map((workspaceId) => {
-        const fact =
-          facts.get(workspaceId) ?? serverAdminAuthorizedWorkspaceFact(coreDb, actor, workspaceId);
-        if (!fact) {
-          throw accessDenied();
-        }
-        return AuthorizedWorkspaceSummarySchema.parse({
-          effectiveRole: fact.effectiveRole,
-          membershipRevision: fact.membershipRevision,
-          ownerUserId: fact.ownerUserId,
-          registryRevision: fact.registryRevision,
-          workspace: store.getWorkspace(workspaceId),
-        });
-      });
-      return context.json(ListAuthorizedWorkspacesResponseSchema.parse({ items }));
-    } catch (error) {
-      return sharingErrorResponse(error);
-    }
-  });
 
   registerAppApiRoute(app, 'listWorkspaceMembers', (context) => {
     try {
@@ -889,24 +854,23 @@ function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
   }
 }
 
-/** Returns the uniform non-enumerating access failure. */
 /**
- * Projects owner Workspace registry facts for a presented usable server-admin bearer
- * when the caller has no membership edge.
+ * Projects owner Workspace registry facts for a current usable administrator Web session or presented administrator bearer on active Workspaces without a manufactured membership.
  *
- * Synthetic membershipRevision is 1 and is not a membership CAS authority.
+ * Migrated private reads pass current Administrator Eligibility into the visibility check; read-only credentials stay read-only, and retained route guards and the Turn event stream keep the ordinary audience check until cutover.
+ * Synthetic membershipRevision: 1 is not a membership compare-and-set value.
  *
  * @param coreDb Core Workspace authority.
  * @param actor Authenticated request actor.
  * @param workspaceId Canonical Workspace id already admitted by the authorizer set.
- * @returns Owner fact for an active registry row, or null when the actor is not a usable presented server-admin.
+ * @returns Owner fact for an active registry row, or null when the actor lacks current Administrator Eligibility.
  */
 function serverAdminAuthorizedWorkspaceFact(
   coreDb: CoreDb,
   actor: Actor,
   workspaceId: string
 ): AuthorizedWorkspaceRegistryFact | null {
-  if (!isUsablePresentedServerAdminToken(coreDb, actor)) {
+  if (!isCurrentDeploymentAdministrator(coreDb, actor)) {
     return null;
   }
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
@@ -1276,4 +1240,41 @@ function sharingErrorResponse(error: unknown): Response {
       : asCommandError(error, error.code, error.status);
   }
   return asCommandError(error, 'workspace_sharing_failed', 500);
+}
+
+/** Projects only the candidate set already admitted by the unique Workspace authorizer. */
+export function readAuthorizedWorkspaces(
+  coreDb: CoreDb,
+  store: FsStore,
+  actor: Actor,
+  workspaceIds: readonly string[]
+) {
+  try {
+    const facts = new Map(
+      listAuthorizedWorkspaceRegistryFacts(coreDb, actor.userId).map((fact) => [
+        fact.workspaceId,
+        fact,
+      ])
+    );
+    return ListAuthorizedWorkspacesResponseSchema.parse({
+      items: workspaceIds.map((workspaceId) => {
+        const fact =
+          facts.get(workspaceId) ?? serverAdminAuthorizedWorkspaceFact(coreDb, actor, workspaceId);
+        if (!fact) throw accessDenied();
+        return AuthorizedWorkspaceSummarySchema.parse({
+          effectiveRole: fact.effectiveRole,
+          membershipRevision: fact.membershipRevision,
+          ownerUserId: fact.ownerUserId,
+          registryRevision: fact.registryRevision,
+          workspace: store.getWorkspace(workspaceId),
+        });
+      }),
+    });
+  } catch (error) {
+    const response = sharingErrorResponse(error);
+    throw new HTTPException(
+      response.status as import('hono/utils/http-status').ContentfulStatusCode,
+      { res: response }
+    );
+  }
 }

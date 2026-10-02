@@ -327,9 +327,11 @@ describe('core Thread audience', () => {
   it('requires CoreDb server auth instead of the local implicit actor', async () => {
     const fixture = createCoreAudienceFixture();
     try {
-      const response = await fixture.app.request(
-        `/api/workspaces/${fixture.workspace.id}/threads/${fixture.own.id}`
-      );
+      const response = await fixture.app.request('/api/app/operations/thread.read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: fixture.workspace.id, threadId: fixture.own.id }),
+      });
       expect(response.status).toBe(401);
     } finally {
       fixture.close();
@@ -342,27 +344,42 @@ describe('core Thread audience', () => {
       for (const actor of READ_ACTORS) {
         const headers = bearer(fixture.coreDb, actor, fixture.workspace.id);
         const { denied, own } = audienceFor(fixture, actor.userId);
-        const ownRes = await fixture.app.request(
-          `/api/workspaces/${fixture.workspace.id}/threads/${own.id}`,
-          { headers }
-        );
+        const ownRes = await fixture.app.request('/api/app/operations/thread.read', {
+          ...{ headers },
+          method: 'POST',
+          headers: { ...headers, ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: fixture.workspace.id, threadId: own.id }),
+        });
         expect(ownRes.status, await ownRes.clone().text()).toBe(200);
         expect(await ownRes.json()).toMatchObject({ id: own.id, name: own.name });
-        const sharedRes = await fixture.app.request(
-          `/api/workspaces/${fixture.workspace.id}/threads/${fixture.shared.id}`,
-          { headers }
-        );
+        const sharedRes = await fixture.app.request('/api/app/operations/thread.read', {
+          ...{ headers },
+          method: 'POST',
+          headers: { ...headers, ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: fixture.workspace.id, threadId: fixture.shared.id }),
+        });
         expect(sharedRes.status, await sharedRes.clone().text()).toBe(200);
         expect(await sharedRes.json()).toMatchObject({ id: fixture.shared.id });
-        await expectNondisclosing404(
-          await fixture.app.request(
-            `/api/workspaces/${fixture.workspace.id}/threads/${denied.id}`,
-            {
-              headers,
-            }
-          ),
-          [denied.name as string]
-        );
+        if (actor.scope === 'server-admin') {
+          const adminRead = await fixture.app.request('/api/app/operations/thread.read', {
+            method: 'POST',
+            headers: { ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: fixture.workspace.id, threadId: denied.id }),
+          });
+          expect(adminRead.status).toBe(200);
+          expect(await adminRead.json()).toMatchObject({ id: denied.id });
+        } else
+          await expectNondisclosing404(
+            await fixture.app.request('/api/app/operations/thread.read', {
+              ...{
+                headers,
+              },
+              method: 'POST',
+              headers: { ...headers, ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ workspaceId: fixture.workspace.id, threadId: denied.id }),
+            }),
+            [denied.name as string]
+          );
         const listRes = await fixture.app.request(
           `/api/workspaces/${fixture.workspace.id}/threads`,
           {
@@ -394,12 +411,30 @@ describe('core Thread audience', () => {
         ] as const;
         for (const [thread, turn] of rows) {
           const paths = [
-            `/api/workspaces/${fixture.workspace.id}/threads/${thread.id}/turns/${turn.id}`,
-            `/api/app/workspaces/${fixture.workspace.id}/threads/${thread.id}/items`,
-            `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${thread.id}`,
+            [
+              '/api/app/operations/turn.read',
+              { workspaceId: fixture.workspace.id, threadId: thread.id, turnId: turn.id },
+            ],
+            [
+              '/api/app/operations/thread.items',
+              { workspaceId: fixture.workspace.id, threadId: thread.id },
+            ],
+            [
+              `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${thread.id}`,
+              null,
+            ],
           ];
-          for (const path of paths) {
-            const response = await fixture.app.request(path, { headers });
+          for (const [path, input] of paths as Array<[string, unknown]>) {
+            const response = await fixture.app.request(
+              path,
+              input
+                ? {
+                    method: 'POST',
+                    headers: { ...headers, 'content-type': 'application/json' },
+                    body: JSON.stringify(input),
+                  }
+                : { headers }
+            );
             expect(response.status, await response.clone().text()).toBe(200);
           }
         }
@@ -417,12 +452,41 @@ describe('core Thread audience', () => {
         const { denied, deniedTurn } = audienceFor(fixture, actor.userId);
         const secrets = [denied.name as string, `${denied.name?.slice(0, -7)} needle content`];
         const paths = [
-          `/api/workspaces/${fixture.workspace.id}/threads/${denied.id}/turns/${deniedTurn.id}`,
-          `/api/app/workspaces/${fixture.workspace.id}/threads/${denied.id}/items`,
-          `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${denied.id}`,
+          [
+            '/api/app/operations/turn.read',
+            { workspaceId: fixture.workspace.id, threadId: denied.id, turnId: deniedTurn.id },
+          ],
+          [
+            '/api/app/operations/thread.items',
+            { workspaceId: fixture.workspace.id, threadId: denied.id },
+          ],
+          [
+            `/api/app/workspaces/${fixture.workspace.id}/conversation-targets?threadId=${denied.id}`,
+            null,
+          ],
         ];
-        for (const path of paths) {
-          await expectNondisclosing404(await fixture.app.request(path, { headers }), secrets);
+        for (const [path, input] of paths as Array<[string, unknown]>) {
+          if (actor.scope === 'server-admin' && input) {
+            const adminRead = await fixture.app.request(path, {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify(input),
+            });
+            expect(adminRead.status).toBe(200);
+          } else
+            await expectNondisclosing404(
+              await fixture.app.request(
+                path,
+                input
+                  ? {
+                      method: 'POST',
+                      headers: { ...headers, 'content-type': 'application/json' },
+                      body: JSON.stringify(input),
+                    }
+                  : { headers }
+              ),
+              secrets
+            );
         }
       }
     } finally {
@@ -734,27 +798,63 @@ describe('core Thread audience', () => {
         fixture.workspace.id
       );
       const requestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-      const created = await fixture.app.request(`/api/workspaces/${fixture.workspace.id}/threads`, {
-        body: JSON.stringify({ name: 'Owner private create', requestId, visibility: 'private' }),
-        headers: { ...owner, 'content-type': 'application/json' },
-        method: 'POST',
+      const created = await ((input: Record<string, unknown>) =>
+        fixture.app.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{
+              ...{ ...owner, 'content-type': 'application/json' },
+              'content-type': 'application/json',
+            },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({
+        ...{ name: 'Owner private create', requestId, visibility: 'private' },
+        workspaceId: fixture.workspace.id,
       });
-      expect(created.status, await created.clone().text()).toBe(201);
+      expect(created.status, await created.clone().text()).toBe(200);
       const createdThread = (await created.json()) as { id: string; name: string | null };
-      const replay = await fixture.app.request(`/api/workspaces/${fixture.workspace.id}/threads`, {
-        body: JSON.stringify({ name: 'Owner private create', requestId, visibility: 'private' }),
-        headers: { ...owner, 'content-type': 'application/json' },
-        method: 'POST',
+      const replay = await ((input: Record<string, unknown>) =>
+        fixture.app.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{
+              ...{ ...owner, 'content-type': 'application/json' },
+              'content-type': 'application/json',
+            },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({
+        ...{ name: 'Owner private create', requestId, visibility: 'private' },
+        workspaceId: fixture.workspace.id,
       });
       expect([200, 201]).toContain(replay.status);
       expect(await replay.json()).toMatchObject({
         id: createdThread.id,
         name: 'Owner private create',
       });
-      const crossed = await fixture.app.request(`/api/workspaces/${fixture.workspace.id}/threads`, {
-        body: JSON.stringify({ name: 'Other create attempt', requestId, visibility: 'private' }),
-        headers: { ...other, 'content-type': 'application/json' },
-        method: 'POST',
+      const crossed = await ((input: Record<string, unknown>) =>
+        fixture.app.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{
+              ...{ ...other, 'content-type': 'application/json' },
+              'content-type': 'application/json',
+            },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({
+        ...{ name: 'Other create attempt', requestId, visibility: 'private' },
+        workspaceId: fixture.workspace.id,
       });
       const crossedText = await crossed.text();
       expect(crossedText).not.toContain(createdThread.id);

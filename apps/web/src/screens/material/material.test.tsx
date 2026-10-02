@@ -120,31 +120,17 @@ function createDeferred<T>() {
 }
 
 /** Build a fake Core Client whose Material operations remain individually observable. */
-function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides } = {}): CoreClient {
+function makeClient(
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
+): CoreClient {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({
-        items: [{ id: WORKSPACE_ID, name: 'Product workspace' }],
-      }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getThread: vi.fn().mockResolvedValue({
-        id: THREAD_ID,
-        workspaceId: WORKSPACE_ID,
-        name: 'Release',
-        status: 'active',
-        createdAt: TIMESTAMP,
-        updatedAt: TIMESTAMP,
-      }),
       startTurn: vi.fn(),
       ...overrides.core,
     },
     app: {
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue({ items: [] } satisfies Awaited<
-          ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
-        >),
       listWorkspaceMaterials: vi.fn().mockResolvedValue({ materials: [MATERIAL] }),
       createWorkspaceMaterial: vi.fn().mockResolvedValue({ materialId: 'material_new' }),
       getWorkspaceMaterial: vi.fn().mockResolvedValue({ material: MATERIAL }),
@@ -219,6 +205,43 @@ function makeClient(overrides: { core?: MethodOverrides; app?: MethodOverrides }
       startTaskMode: vi.fn(),
       ...overrides.app,
     },
+
+    operations: {
+      'thread.read': vi.fn().mockResolvedValue({
+        id: THREAD_ID,
+        workspaceId: WORKSPACE_ID,
+        name: 'Release',
+        status: 'active',
+        createdAt: TIMESTAMP,
+        updatedAt: TIMESTAMP,
+      }),
+      ...overrides.operations,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          (overrides.operations?.['workspace.list'] as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
+    },
   } as unknown as CoreClient;
 }
 
@@ -265,9 +288,11 @@ describe('S19-F Material Workspace discovery barrier', () => {
     settlement,
     workspaces,
   }) => {
-    const discovery = createDeferred<{ items: { id: string; name: string }[] }>();
+    const discovery = createDeferred<{ items: { workspace: { id: string; name: string } }[] }>();
     const client = makeClient({
-      core: { listWorkspaces: vi.fn().mockReturnValue(discovery.promise) },
+      core: {},
+
+      operations: { 'workspace.list': vi.fn().mockReturnValue(discovery.promise) },
     });
     const materialOperations = [
       client.app.listWorkspaceMaterials,
@@ -307,7 +332,7 @@ describe('S19-F Material Workspace discovery barrier', () => {
     for (const operation of materialOperations) expect.soft(operation).not.toHaveBeenCalled();
 
     await act(async () => {
-      discovery.resolve({ items: workspaces });
+      discovery.resolve({ items: workspaces.map((workspace) => ({ workspace })) });
       await discovery.promise;
     });
 
@@ -339,12 +364,12 @@ describe('S19-F Material Workspace discovery barrier', () => {
 
   it('keeps Workspace discovery failure retryable without projecting Material or Thread Material failure', async () => {
     const user = userEvent.setup();
-    const retry = createDeferred<{ items: { id: string; name: string }[] }>();
+    const retry = createDeferred<{ items: { workspace: { id: string; name: string } }[] }>();
     const listWorkspaces = vi
       .fn()
       .mockRejectedValueOnce(new Error('workspace discovery unavailable'))
       .mockReturnValueOnce(retry.promise);
-    const client = makeClient({ core: { listWorkspaces } });
+    const client = makeClient({ core: {}, operations: { 'workspace.list': listWorkspaces } });
     const materialOperations = [
       client.app.listWorkspaceMaterials,
       client.app.createWorkspaceMaterial,

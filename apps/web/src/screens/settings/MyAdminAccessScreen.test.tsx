@@ -43,7 +43,7 @@ const TOKENS = {
   ],
 };
 
-function makeClient(app: Partial<CoreClient['app']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
     app: {
       listMyAdminAccessTokens: vi.fn().mockResolvedValue(TOKENS),

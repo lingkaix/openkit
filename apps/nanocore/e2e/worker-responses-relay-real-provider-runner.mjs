@@ -438,7 +438,7 @@ async function runSelectedAgentRelay(client, input) {
   );
 
   const thread = await awaitRelayDeadline(
-    client.core.createThread({
+    client.operations['thread.create']({
       name: `Worker Responses relay ${input.agentId}`,
       workspaceId: input.workspaceId,
     }),
@@ -469,7 +469,7 @@ async function runSelectedAgentRelay(client, input) {
 
   const [threadResponse, aepRead, usage] = await awaitRelayDeadline(
     Promise.all([
-      client.core.listThreadItems(input.workspaceId, threadId),
+      client.operations['thread.items']({ workspaceId: input.workspaceId, threadId: threadId }),
       client.app.listAgentEnvironmentPackageSnapshots(input.workspaceId),
       client.app.getCapabilityUsage(input.workspaceId),
     ]),

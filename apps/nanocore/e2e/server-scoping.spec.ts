@@ -28,10 +28,17 @@ describe('nanocore e2e server workspace scoping', () => {
       firstCookie
     );
     const createdWorkspace = (await createResponse.json()) as { id: string; name: string };
-    const secondListResponse = await fetch(`${harness.baseUrl}/api/workspaces`, {
-      headers: { cookie: secondCookie },
+    const secondListResponse = await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+      ...{
+        headers: { cookie: secondCookie },
+      },
+      method: 'POST',
+      headers: { ...{ cookie: secondCookie }, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
     });
-    const secondList = (await secondListResponse.json()) as { items: Array<{ id: string }> };
+    const secondList = (await secondListResponse.json()) as {
+      items: Array<{ workspace: { id: string } }>;
+    };
     const secondGetResponse = await fetch(
       `${harness.baseUrl}/api/workspaces/${createdWorkspace.id}`,
       {
@@ -41,7 +48,7 @@ describe('nanocore e2e server workspace scoping', () => {
     const secondGetBody = (await secondGetResponse.json()) as { code: string };
 
     expect(createResponse.status).toBe(201);
-    expect(secondList.items.map((workspace) => workspace.id)).not.toContain(createdWorkspace.id);
+    expect(secondList.items.map((entry) => entry.workspace.id)).not.toContain(createdWorkspace.id);
     expect(secondGetResponse.status).toBe(403);
     expect(secondGetBody.code).toBe('workspace_access_denied');
   });

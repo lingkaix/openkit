@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 
 /**
  * Creates the smallest signed-out Better Auth surface needed by CORS tests.
@@ -86,7 +86,11 @@ describe('browser CORS', () => {
   it('rejects a disallowed browser origin before a mutating handler runs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-mutation-'));
     const app = createApp({ dataRoot });
-    const before = await app.request('/api/workspaces');
+    const before = await app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const workspacesBefore = await before.json();
 
     const rejected = await app.request('/api/workspaces', {
@@ -100,7 +104,11 @@ describe('browser CORS', () => {
         requestId: '00000000-0000-4000-8000-00000000c001',
       }),
     });
-    const workspaces = await app.request('/api/workspaces');
+    const workspaces = await app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
 
     expect(rejected.status).toBe(403);
     await expect(workspaces.json()).resolves.toEqual(workspacesBefore);

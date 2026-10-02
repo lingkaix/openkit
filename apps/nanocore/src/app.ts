@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   AppDiagnosticsResponseSchema,
   type BootReadinessSnapshot,
+  PRODUCT_OPERATION_DEFINITIONS,
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -105,6 +106,7 @@ import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-
 import { registerMaterialRoutes } from './material-routes.js';
 import { registerQuickAndChatModeRoutes, registerTaskModeRoute } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
@@ -306,6 +308,14 @@ function requireDiagnosticsAdminActor(actor: AuthVariables['actor'] | undefined)
  * @returns True when boot readiness should gate the request.
  */
 function isProductWorkAdmissionRequest(method: string, path: string): boolean {
+  if (method === 'POST' && path.startsWith('/api/app/operations/')) {
+    const id = path.slice('/api/app/operations/'.length);
+    if (Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, id)) {
+      return PRODUCT_OPERATION_DEFINITIONS[id as keyof typeof PRODUCT_OPERATION_DEFINITIONS]
+        .mutating;
+    }
+  }
+
   if (
     method === 'POST' &&
     (path === '/api/app/quick-chat' ||
@@ -1679,10 +1689,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
-  registerKernelRoutes({
+  registerOperationJsonRoutes({
     app,
     coreDb: options.coreDb,
     workspaceMutationAdmission,
+    inflightCommands,
+    runtimeConfigManager,
+    repositoryWorkspaceDb,
+    requestStore,
+  });
+
+  registerKernelRoutes({
+    app,
     inflightCommands,
     openWorkspaceDb: repositoryWorkspaceDb,
     requestStore,
@@ -1800,7 +1818,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     inflightCommands,
     requestStore,
-    authorizedWorkspaceIds,
   });
 
   registerWorkspaceSharingRoutes({
@@ -1836,7 +1853,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     interruptInternalChatTurn,
     providerCredentialResolver,
     requestStore,
-    repositoryWorkspaceDb,
     runtimeConfig,
     schedulerEpoch,
     turnExecutor,

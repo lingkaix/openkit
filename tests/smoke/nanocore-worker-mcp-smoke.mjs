@@ -369,8 +369,21 @@ async function main() {
         },
       });
       assert.equal(approval.isError, undefined, JSON.stringify(approval));
-      const turnUrl = `${baseUrl}/api/workspaces/ws_demo/threads/th_demo/turns/${encodeURIComponent(environmentPackage.scope.turnId)}`;
-      const afterApprovalResponse = await fetch(turnUrl, { signal: AbortSignal.timeout(10_000) });
+      const turnUrl = `${baseUrl}/api/app/operations/turn.read`;
+      const turnReadOptions = {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: environmentPackage.scope.turnId,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      };
+      const afterApprovalResponse = await fetch(turnUrl, {
+        ...turnReadOptions,
+        signal: AbortSignal.timeout(10_000),
+      });
       assert.equal(afterApprovalResponse.status, 200);
       const afterApproval = await afterApprovalResponse.json();
       assert.equal(afterApproval.humanGate, null);
@@ -383,7 +396,10 @@ async function main() {
         },
       });
       assert.equal(pushed.isError, undefined, JSON.stringify(pushed));
-      const afterExecutionResponse = await fetch(turnUrl, { signal: AbortSignal.timeout(10_000) });
+      const afterExecutionResponse = await fetch(turnUrl, {
+        ...turnReadOptions,
+        signal: AbortSignal.timeout(10_000),
+      });
       assert.equal(afterExecutionResponse.status, 200);
       const afterExecution = await afterExecutionResponse.json();
       observation.repository = {

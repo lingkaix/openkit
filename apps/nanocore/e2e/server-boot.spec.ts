@@ -20,7 +20,11 @@ describe('nanocore e2e server boot', () => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
 
     const healthResponse = await fetch(`${harness.baseUrl}/api/health`);
-    const protectedResponse = await fetch(`${harness.baseUrl}/api/workspaces`);
+    const protectedResponse = await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const protectedBody = (await protectedResponse.json()) as Record<string, unknown>;
     const sqlite = new Database(join(harness.dataRoot, 'server', 'db', 'core.sqlite'), {
       readonly: true,

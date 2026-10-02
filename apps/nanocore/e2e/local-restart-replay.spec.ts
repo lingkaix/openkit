@@ -25,21 +25,27 @@ describe('nanocore e2e local restart replay', () => {
     dataRootToRemove = harness.dataRoot;
 
     const workspaceId = 'ws_demo';
-    const threadResponse = await fetch(`${harness.baseUrl}/api/workspaces/${workspaceId}/threads`, {
+    const requestId = randomUUID();
+    const threadResponse = await fetch(`${harness.baseUrl}/api/app/operations/thread.create`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Restart replay e2e', requestId: randomUUID() }),
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({ workspaceId, name: 'Restart replay e2e', requestId }),
     });
     const thread = (await threadResponse.json()) as { id: string; name: string };
 
-    expect(threadResponse.status).toBe(201);
+    expect(threadResponse.status).toBe(200);
 
     const dataRoot = harness.dataRoot;
     await harness.stop();
     harness = await startNanoCoreHarness({ dataRoot });
 
     const dashboardResponse = await fetch(
-      `${harness.baseUrl}/api/app/workspaces/${workspaceId}/threads/${thread.id}/dashboard`
+      `${harness.baseUrl}/api/app/operations/thread.dashboard`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: workspaceId, threadId: thread.id }),
+      }
     );
     const dashboard = (await dashboardResponse.json()) as {
       thread: { id: string; name: string };

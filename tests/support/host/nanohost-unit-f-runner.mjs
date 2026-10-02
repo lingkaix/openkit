@@ -371,6 +371,9 @@ export async function requestJson(config, method, path, body, authority = 'produ
           ? { authorization: `Bearer ${config.token}` }
           : { cookie: config.sessionCookie }),
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...(path.startsWith('/api/app/operations/') && body?.requestId
+          ? { 'x-openkit-request-id': body.requestId }
+          : {}),
       },
       method,
       signal: deadline.signal,
@@ -778,7 +781,7 @@ async function startRealTaskAttempt(config, scenarioId) {
   const thread = await appRequest(
     config,
     'POST',
-    `/api/workspaces/${workspace.id}/threads`,
+    '/api/app/operations/thread.create',
     {
       name: `NanoHost Unit F ${scenarioId}`,
       requestId: randomUUID(),
@@ -1402,7 +1405,18 @@ async function interruptFaultTask(config, lineage) {
   const turnPath = `/api/workspaces/${lineage.workspaceId}/threads/${lineage.threadId}/turns/${lineage.turnId}`;
   const isTerminal = (turn) =>
     ['cancelled', 'completed', 'failed', 'interrupted'].includes(turn?.status);
-  if (isTerminal(await appRequest(config, 'GET', turnPath, undefined, 'product'))) return;
+  if (
+    isTerminal(
+      await appRequest(
+        config,
+        'POST',
+        '/api/app/operations/turn.read',
+        { workspaceId: lineage.workspaceId, threadId: lineage.threadId, turnId: lineage.turnId },
+        'product'
+      )
+    )
+  )
+    return;
   try {
     await appRequest(
       config,
@@ -1417,7 +1431,18 @@ async function interruptFaultTask(config, lineage) {
       'product'
     );
   } catch (error) {
-    if (isTerminal(await appRequest(config, 'GET', turnPath, undefined, 'product'))) return;
+    if (
+      isTerminal(
+        await appRequest(
+          config,
+          'POST',
+          '/api/app/operations/turn.read',
+          { workspaceId: lineage.workspaceId, threadId: lineage.threadId, turnId: lineage.turnId },
+          'product'
+        )
+      )
+    )
+      return;
     throw error;
   }
 }
@@ -2209,9 +2234,9 @@ function bindNanoHostUnitFSequencePorts(config) {
     readTurn: (lineage) =>
       appRequest(
         config,
-        'GET',
-        `/api/workspaces/${lineage.workspaceId}/threads/${lineage.threadId}/turns/${lineage.turnId}`,
-        undefined,
+        'POST',
+        '/api/app/operations/turn.read',
+        { workspaceId: lineage.workspaceId, threadId: lineage.threadId, turnId: lineage.turnId },
         'product'
       ),
     rebootHost: () =>

@@ -1,4 +1,4 @@
-import { KERNEL_OPERATION_DEFINITIONS, operationHttpPath } from '@openkit/app-api-schemas';
+import { operationHttpPath, PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { createCoreClient } from './client.js';
 
@@ -12,9 +12,13 @@ describe('definition-derived client operations', () => {
         return new Response('{}');
       },
     });
-    expect(Object.keys(client.operations)).toEqual(Object.keys(KERNEL_OPERATION_DEFINITIONS));
-    for (const method of Object.values(client.operations))
-      await expect(method({} as never)).rejects.toThrow();
+    expect(Object.keys(client.operations)).toEqual(Object.keys(PRODUCT_OPERATION_DEFINITIONS));
+    for (const [id, definition] of Object.entries(PRODUCT_OPERATION_DEFINITIONS)) {
+      if (!definition.inputSchema.safeParse({}).success)
+        await expect(
+          client.operations[id as keyof typeof client.operations]({} as never)
+        ).rejects.toThrow();
+    }
     expect(calls).toBe(0);
     expect(client.app).not.toHaveProperty('getLightApp');
     expect(client.app).not.toHaveProperty('createLightAppRecord');

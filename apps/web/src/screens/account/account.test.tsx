@@ -474,7 +474,6 @@ function makeClient(overrides: ClientOverrides = {}) {
       getDiagnostics: forbidden.diagnostics,
       getSetupDiagnostics: forbidden.setup,
       getWorkspaceAccessRecoveryState: forbidden.admin,
-      listAuthorizedWorkspaces,
       listServerAuditEvents: forbidden.admin,
       listServerPermissionDecisions: forbidden.admin,
       listServerVaultUseRecords: forbidden.admin,
@@ -494,17 +493,13 @@ function makeClient(overrides: ClientOverrides = {}) {
       snapshot: vi.fn().mockReturnValue(null),
       supports: vi.fn().mockReturnValue(false),
     },
-    core: {
-      listWorkspaces: vi.fn().mockResolvedValue({
-        items: overrides.coreWorkspaces ?? [{ id: 'ws1', name: 'Authorized Workspace' }],
-      }),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      meta: forbidden.meta,
-    },
+    core: { listThreads: vi.fn().mockResolvedValue({ items: [] }), meta: forbidden.meta },
     runtimeConfig: {
       getFile: forbidden.runtimeConfig,
       listFiles: forbidden.runtimeConfig,
     },
+
+    operations: { 'workspace.list': listAuthorizedWorkspaces },
   } as unknown as CoreClient;
   return { client, forbidden, listAuthorizedWorkspaces };
 }
@@ -888,7 +883,7 @@ describe('protected-read account gate', () => {
     );
     expect(screen.getByRole('main', { name: 'Workspace' })).toBeInTheDocument();
     expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(1);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
     expectSettledAccountQuery(queryClient, 'success', response);
     expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 0);
     expectNoDeploymentAdmissionProbes(forbidden);
@@ -1035,7 +1030,7 @@ describe('protected-read account gate', () => {
     expect(forbidden.meta).not.toHaveBeenCalled();
     successfulRetry.resolve(response);
     expect(await screen.findByRole('navigation')).toBeInTheDocument();
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(3);
     expectSettledAccountQuery(queryClient, 'success', response);
     expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 1);
     expectNoDeploymentAdmissionProbes(forbidden);
@@ -1075,6 +1070,7 @@ describe('email/password session operations', () => {
         ? vi
             .fn()
             .mockResolvedValueOnce(PRODUCT_WORKSPACES)
+            .mockResolvedValueOnce(PRODUCT_WORKSPACES)
             .mockReturnValueOnce(protectedRead.promise)
             .mockReturnValueOnce(retryRead.promise)
         : vi
@@ -1110,7 +1106,9 @@ describe('email/password session operations', () => {
     expectAccountMutation(queryClient, 'pending');
     expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
     authOperation.resolve(authResponse);
-    await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 3 : 2)
+    );
     await waitFor(expectProtectedReadPending);
     expectFetchingAccountQuery(queryClient);
     expectSanitizedAccountMutation(queryClient, 'success', [
@@ -1121,7 +1119,7 @@ describe('email/password session operations', () => {
     ]);
     expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
     expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
-      listAuthorizedWorkspaces.mock.invocationCallOrder[1] as number
+      listAuthorizedWorkspaces.mock.invocationCallOrder[operation === 'signOut' ? 2 : 1] as number
     );
 
     if (outcome === 'success') {
@@ -1133,7 +1131,7 @@ describe('email/password session operations', () => {
       expectMetaAfterProtectedRead(
         forbidden,
         listAuthorizedWorkspaces,
-        1,
+        operation === 'signOut' ? 2 : 1,
         metaCallsBeforeAuthSettlement
       );
     } else if (outcome === 'typed unauthenticated') {
@@ -1151,7 +1149,9 @@ describe('email/password session operations', () => {
       expectSettledAccountQuery(queryClient, 'error', failure);
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
       await userEvent.click(retry);
-      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(3));
+      await waitFor(() =>
+        expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 4 : 3)
+      );
       await waitFor(expectProtectedReadPending);
       expectFetchingAccountQuery(queryClient);
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
@@ -1163,7 +1163,7 @@ describe('email/password session operations', () => {
       expectMetaAfterProtectedRead(
         forbidden,
         listAuthorizedWorkspaces,
-        2,
+        operation === 'signOut' ? 3 : 2,
         metaCallsBeforeAuthSettlement
       );
     }
@@ -2438,7 +2438,7 @@ describe('selected-Workspace owner management', () => {
     expect(
       screen.queryByRole('button', { name: /invite|remove member|transfer ownership|revoke/i })
     ).not.toBeInTheDocument();
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads + 1);
     expect(methods.listWorkspaceMembers).toHaveBeenCalledTimes(memberReads);
     expect(methods.listWorkspaceInvitations).toHaveBeenCalledTimes(invitationReads);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
@@ -3138,7 +3138,7 @@ describe('selected-membership self-leave', () => {
     leave.resolve({ member: SELF_REMOVED_MEMBER });
 
     await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(authorizedReads + 1);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
     expect(screen.queryByRole('region', { name: 'Workspace members' })).not.toBeInTheDocument();

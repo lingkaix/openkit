@@ -9,8 +9,6 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -19,6 +17,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { projectAgentCatalogEntries } from './catalog-projection.js';
@@ -167,14 +166,18 @@ describe('agent catalog routes', () => {
         const otherDetail = await app.request('/api/app/agents/agent_other_supply', { headers });
         const deniedDetail = await app.request('/api/app/agents/agent_denied_only', { headers });
         const missingDetail = await app.request('/api/app/agents/agent_missing', { headers });
-        const allowedResources = await app.request(
-          `/api/workspaces/${allowedWorkspace.id}/resources`,
-          { headers }
-        );
-        const deniedResources = await app.request(
-          `/api/workspaces/${deniedWorkspace.id}/resources`,
-          { headers }
-        );
+        const allowedResources = await app.request('/api/app/operations/workspace.resources', {
+          ...{ headers },
+          method: 'POST',
+          headers: { ...headers, ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: allowedWorkspace.id }),
+        });
+        const deniedResources = await app.request('/api/app/operations/workspace.resources', {
+          ...{ headers },
+          method: 'POST',
+          headers: { ...headers, ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: deniedWorkspace.id }),
+        });
 
         expect(list.status).toBe(200);
         expect(listBody.items.map((agent) => agent.id).sort()).toEqual([
@@ -271,7 +274,11 @@ describe('agent catalog routes', () => {
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const resourcesRes = await app.request('/api/workspaces/ws_demo/resources');
+    const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+    });
     const listRes = await app.request('/api/app/agents');
     const configuredDetailRes = await app.request('/api/app/agents/agent_configured');
     const unreadyDetailRes = await app.request('/api/app/agents/agent_unready');

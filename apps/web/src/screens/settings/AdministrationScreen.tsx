@@ -113,7 +113,10 @@ export function AdministrationScreen() {
   const administrationThread = useQuery({
     queryKey: ['settings', 'administration', 'thread', quickChat?.id ?? '', threadId ?? ''],
     queryFn: async () => {
-      const thread = await client.core.getThread(quickChat?.id as string, threadId as string);
+      const thread = await client.operations['thread.read']({
+        workspaceId: quickChat?.id as string,
+        threadId: threadId as string,
+      });
       if (thread.entryPath !== 'administration') {
         throw new Error('This Thread is not an administration conversation.');
       }

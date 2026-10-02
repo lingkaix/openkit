@@ -457,8 +457,8 @@ const MISSING_PATCH_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   },
 });
 
-type AppOverrides = Partial<CoreClient['app']>;
-type CoreOverrides = Partial<CoreClient['core']>;
+type AppOverrides = Partial<CoreClient['app'] & CoreClient['operations']>;
+type CoreOverrides = Partial<CoreClient['core'] & CoreClient['operations']>;
 
 /** Creates a caller-controlled promise for proving pre-settlement UI state. */
 function createDeferred<T>() {
@@ -476,12 +476,10 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...core,
     },
     app: {
-      listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
       listWorkspaceSyncReviews: vi
         .fn()
         .mockResolvedValue({ items: [PENDING_REVIEW, REJECTED_REVIEW] }),
@@ -502,6 +500,35 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
       listWorkspaceQuarantineRecords: vi.fn().mockResolvedValue({ items: [QUARANTINE_RECORD] }),
       submitWorkspaceRecoveryDecision: vi.fn(),
       ...app,
+    },
+
+    operations: {
+      ...core,
+      ...app,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          core['workspace.list'] ??
+            app['workspace.list'] ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -917,7 +944,17 @@ describe('Workspace changes', () => {
 
     const client = makeClient(
       {},
-      { listWorkspaces: vi.fn().mockResolvedValue({ items: [QUICK_CHAT_WORKSPACE] }) }
+      {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      }
     );
     renderApp('/workspace-changes', client);
 
@@ -962,7 +999,17 @@ describe('Workspace changes', () => {
     );
     const client = makeClient(
       { listWorkspaceSyncReviews, submitWorkspaceSyncReviewDecision },
-      { listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] }) }
+      {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
     renderApp('/workspace-changes', client);
@@ -1345,7 +1392,17 @@ describe('Workspace changes', () => {
     useWorkspaceStore.setState({ currentWorkspaceId: QUICK_CHAT_WORKSPACE.id });
     const client = makeClient(
       {},
-      { listWorkspaces: vi.fn().mockResolvedValue({ items: [QUICK_CHAT_WORKSPACE] }) }
+      {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      }
     );
     renderApp('/workspace-changes', client);
 

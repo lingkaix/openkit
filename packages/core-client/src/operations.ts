@@ -1,26 +1,26 @@
 import {
-  KERNEL_OPERATION_DEFINITIONS,
-  type KernelOperationId,
-  type KernelOperationInput,
-  type KernelOperationOutput,
+  type OperationInput,
+  type OperationOutput,
   operationHttpPath,
+  PRODUCT_OPERATION_DEFINITIONS,
+  type ProductOperationId,
 } from '@openkit/app-api-schemas';
 import { createRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
 /** Typed operation methods derived solely from the shared definition table. */
 export type OperationClient = {
-  readonly [K in KernelOperationId]: (
-    input: KernelOperationInput<K> extends { requestId: string }
-      ? Omit<KernelOperationInput<K>, 'requestId'> & { requestId?: string }
-      : KernelOperationInput<K>
-  ) => Promise<KernelOperationOutput<K>>;
+  readonly [K in ProductOperationId]: (
+    input: OperationInput<K> extends { requestId: string }
+      ? Omit<OperationInput<K>, 'requestId'> & { requestId?: string }
+      : OperationInput<K>
+  ) => Promise<OperationOutput<K>>;
 };
 
 /** Projects definition-driven JSON methods onto the existing shared client transport. */
 export function createOperationClient(transport: ClientTransport): OperationClient {
   return Object.fromEntries(
-    Object.entries(KERNEL_OPERATION_DEFINITIONS).map(([id, definition]) => [
+    Object.entries(PRODUCT_OPERATION_DEFINITIONS).map(([id, definition]) => [
       id,
       async (value: Record<string, unknown>) => {
         const parsed = definition.inputSchema.parse(

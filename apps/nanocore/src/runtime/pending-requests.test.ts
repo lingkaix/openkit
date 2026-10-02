@@ -752,7 +752,11 @@ describe('pending requests', () => {
           "UPDATE pending_requests SET authorization_context_json = '{invalid' WHERE request_id = ?"
         )
         .run(input.requestId);
-      const response = await app.request('/api/app/workspaces/ws_demo/threads/th_demo/dashboard');
+      const response = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+      });
       expect(response.status, await response.clone().text()).toBe(200);
       expect((await response.json()).pendingRequests).toContainEqual({
         requestId: input.requestId,

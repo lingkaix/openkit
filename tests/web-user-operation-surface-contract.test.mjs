@@ -4,10 +4,10 @@ import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 249;
+const EXPECTED_CATALOG_SIZE = 248;
 const EXPECTED_SERVER_SIZE = 55;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 192;
+const EXPECTED_INCLUDED_SIZE = 191;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -115,10 +115,10 @@ const WEB_OPERATION_GROUPS = {
   Dashboards: {
     getConversationTargets: { disposition: 'live', surface: 'Chat' },
     listConversationNavigation: { disposition: 'live', surface: 'Chat' },
-    getThreadDashboard: { disposition: 'live', surface: 'Chat' },
+    'thread.dashboard': { disposition: 'live', surface: 'Chat' },
     getWorkspaceDashboard: { disposition: 'live', surface: 'Overview' },
     listHumanAttention: { disposition: 'live', surface: 'Overview' },
-    listThreadItems: { disposition: 'live', surface: 'Chat' },
+    'thread.items': { disposition: 'live', surface: 'Chat' },
   },
   'Diagnostics and evidence': {
     getCapabilityUsage: { disposition: 'live', surface: 'Usage & audit' },
@@ -221,7 +221,7 @@ const WEB_OPERATION_GROUPS = {
     declineWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
     deleteWorkspace: { disposition: 'roadmap', roadmap: 'R049' },
     leaveWorkspace: { disposition: 'live', surface: 'Account' },
-    listAuthorizedWorkspaces: { disposition: 'live', surface: 'Account' },
+    'workspace.list': { disposition: 'live', surface: 'Account' },
     listMyWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
     listWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
     listWorkspaceMembers: { disposition: 'live', surface: 'Account' },
@@ -290,12 +290,12 @@ const WEB_OPERATION_GROUPS = {
   },
   'Core thread reads': {
     'GET /api/workspaces/:workspaceId/threads': { disposition: 'live', surface: 'Chat' },
-    'GET /api/workspaces/:workspaceId/threads/:threadId': { disposition: 'live', surface: 'Chat' },
+    'thread.read': { disposition: 'live', surface: 'Chat' },
     'GET /api/workspaces/:workspaceId/threads/:threadId/events': {
       disposition: 'live',
       surface: 'Chat',
     },
-    'GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId': {
+    'turn.read': {
       disposition: 'workflow',
       surface: 'Chat',
     },
@@ -308,9 +308,8 @@ const WEB_OPERATION_GROUPS = {
     },
   },
   'Core workspace lifecycle and reads': {
-    'GET /api/workspaces': { disposition: 'live', surface: 'Chat' },
     'GET /api/workspaces/:workspaceId': { disposition: 'live', surface: 'General' },
-    'GET /api/workspaces/:workspaceId/resources': { disposition: 'workflow', surface: 'Overview' },
+    'workspace.resources': { disposition: 'workflow', surface: 'Overview' },
     'PATCH /api/workspaces/:workspaceId': { disposition: 'live', surface: 'General' },
   },
   'Core workspace and Thread writes': {
@@ -319,7 +318,7 @@ const WEB_OPERATION_GROUPS = {
       surface: 'Chat',
     },
     'POST /api/workspaces': { disposition: 'live', surface: 'New workspace' },
-    'POST /api/workspaces/:workspaceId/threads': { disposition: 'live', surface: 'Chat' },
+    'thread.create': { disposition: 'live', surface: 'Chat' },
     'POST /api/workspaces/:workspaceId/threads/:threadId/archive': {
       disposition: 'live',
       surface: 'Chat',

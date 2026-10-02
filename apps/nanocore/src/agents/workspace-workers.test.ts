@@ -300,7 +300,11 @@ describe('workspace workers route', () => {
 
     try {
       const workersRes = await app.request('/api/app/workspaces/ws_demo/workers');
-      const resourcesRes = await app.request('/api/workspaces/ws_demo/resources');
+      const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      });
       const workers = WorkspaceWorkersResponseSchema.parse(await workersRes.json());
       const resources = WorkspaceResourcesResponseSchema.parse(await resourcesRes.json());
 

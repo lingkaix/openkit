@@ -426,7 +426,11 @@ describe('workspace membership foundation', () => {
         mode: 'server',
       });
 
-      const response = await app.request('/api/workspaces');
+      const response = await app.request('/api/app/operations/workspace.list', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
 
       expect(response.status, await response.clone().text()).toBe(200);
       await expect(response.json()).resolves.toEqual({ items: [] });

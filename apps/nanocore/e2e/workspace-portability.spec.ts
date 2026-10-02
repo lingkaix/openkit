@@ -135,7 +135,14 @@ describe('nanocore e2e workspace portability', () => {
       'workspace_import_failed'
     );
 
-    const workspaces = (await expectJson(await fetch(`${harness.baseUrl}/api/workspaces`), {})) as {
+    const workspaces = (await expectJson(
+      await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      {}
+    )) as {
       items?: Array<{ id?: string }>;
     };
 
@@ -176,7 +183,14 @@ describe('nanocore e2e workspace portability', () => {
       'workspace_import_failed'
     );
 
-    const workspaces = (await expectJson(await fetch(`${harness.baseUrl}/api/workspaces`), {})) as {
+    const workspaces = (await expectJson(
+      await fetch(`${harness.baseUrl}/api/app/operations/workspace.list`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }),
+      {}
+    )) as {
       items?: Array<{ id?: string }>;
     };
 

@@ -191,7 +191,10 @@ import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
 import { readWorkspaceKnowledgeRetrievalTrace } from './storage/workspace-portable-file-state.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import { createApp as createDeterministicTestApp } from './test-support/app.js';
+import {
+  createAppWithWorkspaceAuthority,
+  createApp as createDeterministicTestApp,
+} from './test-support/app.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
@@ -539,7 +542,10 @@ function chatAnsweringProvider(
  * @param options App options.
  * @returns Test app.
  */
-function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+function createApp(
+  options: CreateAppOptions = {},
+  canonicalAuthority = false
+): ReturnType<typeof createNanoCoreApp> {
   if (options.coreDb) {
     ensureLocalUser(options.coreDb);
   }
@@ -563,7 +569,7 @@ function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNano
       });
     }
   }
-  return createDeterministicTestApp({
+  return (canonicalAuthority ? createAppWithWorkspaceAuthority : createDeterministicTestApp)({
     agentManifests: [createTestAgentSetup().manifest],
     openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
     providerRegistry: testProviderRegistry(),
@@ -1085,8 +1091,10 @@ class BrokenWorkspaceListStore extends FsStore {
    *
    * @returns Never returns.
    */
-  public override listWorkspaces(): never {
-    throw new Error('Workspace storage failed.');
+  public failReads = false;
+  public override getWorkspace(workspaceId: string): ReturnType<FsStore['getWorkspace']> {
+    if (this.failReads) throw new Error('Workspace storage failed.');
+    return super.getWorkspace(workspaceId);
   }
 }
 
@@ -1326,49 +1334,98 @@ async function createGitWorkspaceReviewFixture(input: {
 
 describe('nanocore server', () => {
   it('lists seeded workspaces', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/workspaces');
+    const canonicalStore = createDemoStore();
+    const canonicalApp = createApp(
+      { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
+      true
+    );
+    const res = await canonicalApp.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
 
     expect(res.status).toBe(200);
   });
 
   it('returns protocol JSON when workspace listing fails', async () => {
-    const app = createApp({
-      store: new BrokenWorkspaceListStore(),
-      turnExecutor: new FakeTurnExecutor(),
+    const broken = new BrokenWorkspaceListStore();
+    const canonicalApp = createApp(
+      {
+        store: broken,
+        turnExecutor: new FakeTurnExecutor(),
+      },
+      true
+    );
+    broken.failReads = true;
+    const res = await canonicalApp.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
     });
-    const res = await app.request('/api/workspaces');
 
     expect(res.status).toBe(500);
     expect(res.headers.get('content-type')).toContain('application/json');
     await expect(res.json()).resolves.toMatchObject({
-      code: 'workspace_list_failed',
+      code: 'workspace_sharing_failed',
       message: 'Workspace storage failed.',
     });
   });
 
   it('rejects product work when boot readiness closes product admission', async () => {
+    const canonicalStore = createDemoStore();
     const app = createApp({
-      bootReadiness: computeBootReadinessSnapshot({
-        bootId: 'boot_failed',
-        subsystems: {
-          storage: {
-            state: 'failed',
-            reasons: [
-              {
-                code: 'storage.failed',
-                message: 'Storage is unavailable.',
-                blocks: ['product_work'],
-              },
-            ],
+      ...{
+        bootReadiness: computeBootReadinessSnapshot({
+          bootId: 'boot_failed',
+          subsystems: {
+            storage: {
+              state: 'failed',
+              reasons: [
+                {
+                  code: 'storage.failed',
+                  message: 'Storage is unavailable.',
+                  blocks: ['product_work'],
+                },
+              ],
+            },
           },
-        },
-      }),
-      turnExecutor: new FakeTurnExecutor(),
+        }),
+        turnExecutor: new FakeTurnExecutor(),
+      },
+      store: canonicalStore,
     });
+    const canonicalApp = createApp(
+      {
+        ...{
+          bootReadiness: computeBootReadinessSnapshot({
+            bootId: 'boot_failed',
+            subsystems: {
+              storage: {
+                state: 'failed',
+                reasons: [
+                  {
+                    code: 'storage.failed',
+                    message: 'Storage is unavailable.',
+                    blocks: ['product_work'],
+                  },
+                ],
+              },
+            },
+          }),
+          turnExecutor: new FakeTurnExecutor(),
+        },
+        store: canonicalStore,
+      },
+      true
+    );
 
     const diagnostics = await app.request('/api/app/diagnostics');
-    const read = await app.request('/api/workspaces');
+    const read = await canonicalApp.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
     const write = await app.request('/api/workspaces', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1399,6 +1456,24 @@ describe('nanocore server', () => {
       }),
     });
 
+    const threadCount = canonicalStore.listThreads('ws_demo').length;
+    const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
+    const createThread = await canonicalApp.request('/api/app/operations/thread.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({ workspaceId: 'ws_demo', name: 'Blocked Thread', requestId }),
+    });
+    expect(createThread.status).toBe(503);
+    await expect(createThread.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
+    expect(canonicalStore.listThreads('ws_demo')).toHaveLength(threadCount);
+    const createRecord = await canonicalApp.request('/api/app/operations/kernel.records.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({ workspaceId: 'ws_demo', requestId }),
+    });
+    expect(createRecord.status).toBe(503);
+    await expect(createRecord.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
+
     expect(diagnostics.status).toBe(200);
     expect(read.status).toBe(200);
     expect(write.status).toBe(503);
@@ -1425,12 +1500,24 @@ describe('nanocore server', () => {
 
   it('uses the latest boot readiness for product admission and diagnostics', async () => {
     let bootReadiness = computeBootReadinessSnapshot({ bootId: 'boot_dynamic' });
-    const app = createApp({
-      getBootReadiness: () => bootReadiness,
-      turnExecutor: new FakeTurnExecutor(),
-    });
+    const canonicalStore = createDemoStore();
+    const app = createApp(
+      {
+        store: canonicalStore,
+        getBootReadiness: () => bootReadiness,
+        turnExecutor: new FakeTurnExecutor(),
+      },
+      true
+    );
 
     bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
+
+    const read = await app.request('/api/app/operations/workspace.list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(read.status).toBe(200);
 
     const diagnostics = await app.request('/api/app/diagnostics');
     const write = await app.request('/api/workspaces', {
@@ -1438,6 +1525,24 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Blocked Workspace' }),
     });
+
+    const threadCount = canonicalStore.listThreads('ws_demo').length;
+    const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
+    const createThread = await app.request('/api/app/operations/thread.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({ workspaceId: 'ws_demo', name: 'Blocked Thread', requestId }),
+    });
+    expect(createThread.status).toBe(503);
+    await expect(createThread.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
+    expect(canonicalStore.listThreads('ws_demo')).toHaveLength(threadCount);
+    const createRecord = await app.request('/api/app/operations/kernel.records.create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+      body: JSON.stringify({ workspaceId: 'ws_demo', requestId }),
+    });
+    expect(createRecord.status).toBe(503);
+    await expect(createRecord.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
 
     expect(diagnostics.status).toBe(200);
     await expect(diagnostics.json()).resolves.toMatchObject({
@@ -5085,10 +5190,19 @@ describe('nanocore server', () => {
   });
 
   it('returns a thin workspace record and separate resources payload', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const canonicalStore = createDemoStore();
+    const app = createApp({ ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore });
+    const canonicalApp = createApp(
+      { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
+      true
+    );
 
     const workspaceRes = await app.request('/api/workspaces/ws_demo');
-    const resourcesRes = await app.request('/api/workspaces/ws_demo/resources');
+    const resourcesRes = await canonicalApp.request('/api/app/operations/workspace.resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+    });
 
     expect(workspaceRes.status).toBe(200);
     expect(resourcesRes.status).toBe(200);
@@ -8284,17 +8398,34 @@ describe('nanocore server', () => {
   });
 
   it('creates a thread from the name field used by the protocol package', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/workspaces/ws_demo/threads', {
-      method: 'POST',
-      body: JSON.stringify({
+    const canonicalStore = createDemoStore();
+    const canonicalApp = createApp(
+      { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
+      true
+    );
+    const res = await ((input: Record<string, unknown>) =>
+      canonicalApp.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{
+            ...{ 'content-type': 'application/json' },
+            'content-type': 'application/json',
+            'x-openkit-request-id': '0190f4c8-0000-7000-8000-000000000204',
+          },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({
+      ...{
         requestId: '0190f4c8-0000-7000-8000-000000000204',
         name: 'Follow-up thread',
-      }),
-      headers: { 'content-type': 'application/json' },
+      },
+      workspaceId: 'ws_demo',
     });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
 
     const thread = ThreadSchema.parse(await res.json());
 
@@ -8305,6 +8436,7 @@ describe('nanocore server', () => {
   it('deduplicates repeated workspace, knowledge, and thread commands', async () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const canonicalApp = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
 
     const workspaceBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000501',
@@ -8444,16 +8576,28 @@ describe('nanocore server', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000505',
       name: 'Idempotent thread',
     };
-    const threadFirst = await app.request('/api/workspaces/ws_demo/threads', {
-      method: 'POST',
-      body: JSON.stringify(threadBody),
-      headers: jsonHeaders(),
-    });
-    const threadSecond = await app.request('/api/workspaces/ws_demo/threads', {
-      method: 'POST',
-      body: JSON.stringify(threadBody),
-      headers: jsonHeaders(),
-    });
+    const threadFirst = await ((input: Record<string, unknown>) =>
+      canonicalApp.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{ ...jsonHeaders(), 'content-type': 'application/json' },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({ ...threadBody, workspaceId: 'ws_demo' });
+    const threadSecond = await ((input: Record<string, unknown>) =>
+      canonicalApp.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{ ...jsonHeaders(), 'content-type': 'application/json' },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({ ...threadBody, workspaceId: 'ws_demo' });
     const thread = (await threadFirst.json()) as { id: string };
     const duplicateThread = (await threadSecond.json()) as { id: string };
 
@@ -8663,20 +8807,36 @@ describe('nanocore server', () => {
   });
 
   it('returns an idempotency conflict for the same request id with different input', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const canonicalStore = createDemoStore();
+    const canonicalApp = createApp(
+      { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
+      true
+    );
     const requestId = '0190f4c8-0000-7000-8000-000000000513';
-    const first = await app.request('/api/workspaces/ws_demo/threads', {
-      method: 'POST',
-      body: JSON.stringify({ requestId, name: 'Conflict A' }),
-      headers: jsonHeaders(),
-    });
-    const conflict = await app.request('/api/workspaces/ws_demo/threads', {
-      method: 'POST',
-      body: JSON.stringify({ requestId, name: 'Conflict B' }),
-      headers: jsonHeaders(),
-    });
+    const first = await ((input: Record<string, unknown>) =>
+      canonicalApp.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{ ...jsonHeaders(), 'content-type': 'application/json' },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({ ...{ requestId, name: 'Conflict A' }, workspaceId: 'ws_demo' });
+    const conflict = await ((input: Record<string, unknown>) =>
+      canonicalApp.request('/api/app/operations/thread.create', {
+        method: 'POST',
+        headers: {
+          ...{ ...jsonHeaders(), 'content-type': 'application/json' },
+          ...(typeof input.requestId === 'string'
+            ? { 'x-openkit-request-id': input.requestId }
+            : {}),
+        },
+        body: JSON.stringify(input),
+      }))({ ...{ requestId, name: 'Conflict B' }, workspaceId: 'ws_demo' });
 
-    expect(first.status).toBe(201);
+    expect(first.status).toBe(200);
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({
       code: 'idempotency_key_conflict',
@@ -8686,6 +8846,7 @@ describe('nanocore server', () => {
   it('returns invalid_request for missing request ids on all protocol mutating routes', async () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
+    const canonicalApp = createApp({ store, turnExecutor: new ApprovalTurnExecutor() }, true);
     const turn = store.createTurn('ws_demo', 'th_demo', 'Need input', {
       kind: 'user',
       id: 'user_local',
@@ -8728,11 +8889,17 @@ describe('nanocore server', () => {
         body: JSON.stringify({}),
         headers: jsonHeaders(),
       }),
-      app.request('/api/workspaces/ws_demo/threads', {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Missing request id' }),
-        headers: jsonHeaders(),
-      }),
+      ((input: Record<string, unknown>) =>
+        canonicalApp.request('/api/app/operations/thread.create', {
+          method: 'POST',
+          headers: {
+            ...{ ...jsonHeaders(), 'content-type': 'application/json' },
+            ...(typeof input.requestId === 'string'
+              ? { 'x-openkit-request-id': input.requestId }
+              : {}),
+          },
+          body: JSON.stringify(input),
+        }))({ ...{ name: 'Missing request id' }, workspaceId: 'ws_demo' }),
       app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({

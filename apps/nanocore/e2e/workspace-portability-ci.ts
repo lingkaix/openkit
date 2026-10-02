@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
@@ -16,6 +15,7 @@ import {
   removeDataRoot,
   startNanoCoreHarness,
 } from './_lib/harness.js';
+import { postJson } from './_lib/http.js';
 
 const ARCHIVE_FILE = 'workspace.openkit-workspace.tar.zst';
 const DIGEST_FILE = `${ARCHIVE_FILE}.sha256`;
@@ -331,7 +331,7 @@ async function readSemanticSnapshot(
   for (const thread of threads) {
     const threadId = requiredString(readPath(thread, 'id'), 'Thread id');
     const items = requiredArray(
-      (await getJson(`${baseUrl}/api/app/workspaces/${workspaceId}/threads/${threadId}/items`))
+      (await postJson(`${baseUrl}/api/app/operations/thread.items`, { workspaceId, threadId }))
         .items
     );
     const turnIds = [
@@ -344,9 +344,11 @@ async function readSemanticSnapshot(
     const turns = [];
 
     for (const turnId of turnIds) {
-      const turn = await getJson(
-        `${baseUrl}/api/workspaces/${workspaceId}/threads/${threadId}/turns/${turnId}`
-      );
+      const turn = await postJson(`${baseUrl}/api/app/operations/turn.read`, {
+        workspaceId,
+        threadId,
+        turnId,
+      });
       const events = await readTurnEventsUntil(
         baseUrl,
         workspaceId,

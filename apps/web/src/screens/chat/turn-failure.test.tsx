@@ -150,21 +150,11 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({
-        items: [{ id: 'ws1', name: 'Market research' }],
-      }),
       listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
-      getThread: vi.fn().mockResolvedValue(THREAD),
-      listThreadItems: vi.fn().mockResolvedValue({
-        items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
-        nextCursor: null,
-      }),
       startTurn: vi.fn(),
       ...core,
     },
     app: {
-      listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
-      getThreadDashboard: vi.fn().mockResolvedValue({ turns: [FAILED_DASHBOARD_TURN] }),
       getConversationTargets: vi.fn().mockResolvedValue({
         workspaceId: 'ws1',
         threadId: 'th_82',
@@ -174,6 +164,42 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
       submitConversation: vi.fn(),
       startTaskMode: vi.fn(),
       ...app,
+    },
+
+    operations: {
+      'thread.read': vi.fn().mockResolvedValue(THREAD),
+      'thread.items': vi.fn().mockResolvedValue({
+        items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
+        nextCursor: null,
+      }),
+      'thread.dashboard': vi.fn().mockResolvedValue({ turns: [FAILED_DASHBOARD_TURN] }),
+      ...core,
+      ...app,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          ((core['workspace.list'] ?? app['workspace.list']) as
+            | CoreClient['operations']['workspace.list']
+            | undefined) ??
+            vi.fn().mockResolvedValue({
+              items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -201,13 +227,13 @@ describe('task runtime activity', () => {
     renderTask(
       makeClient(
         {
-          listThreadItems: vi.fn().mockResolvedValue({
+          'thread.items': vi.fn().mockResolvedValue({
             items: [HISTORICAL_USER_MESSAGE, USER_MESSAGE, HISTORICAL_ACCEPTED_STATUS_ITEM],
             nextCursor: null,
           }),
         },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [HISTORICAL_FAILED_TURN, COMPLETED_DASHBOARD_TURN],
             runtimeActivity: [
               {
@@ -255,9 +281,9 @@ describe('task runtime activity', () => {
   ] as const)('shows %s coverage for historical and latest Turns without Items', async (coverage) => {
     renderTask(
       makeClient(
-        { listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
+        { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [
               { ...HISTORICAL_FAILED_TURN, items: [], status: 'completed', error: null },
               { ...COMPLETED_DASHBOARD_TURN, items: [] },
@@ -306,7 +332,7 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {},
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [COMPLETED_DASHBOARD_TURN] }) }
+        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [COMPLETED_DASHBOARD_TURN] }) }
       )
     );
 
@@ -319,7 +345,7 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {
-          listThreadItems: vi.fn().mockResolvedValue({
+          'thread.items': vi.fn().mockResolvedValue({
             items: [
               HISTORICAL_USER_MESSAGE,
               HISTORICAL_ACCEPTED_STATUS_ITEM,
@@ -330,7 +356,7 @@ describe('task turn failure (dashboard reload)', () => {
           }),
         },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [HISTORICAL_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }
@@ -356,7 +382,7 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {
-          listThreadItems: vi.fn().mockResolvedValue({
+          'thread.items': vi.fn().mockResolvedValue({
             items: [
               HISTORICAL_USER_MESSAGE,
               USER_MESSAGE,
@@ -371,7 +397,7 @@ describe('task turn failure (dashboard reload)', () => {
           }),
         },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [
               { ...HISTORICAL_FAILED_TURN, completedAt: '2026-09-16T05:21:30.000Z' },
               FAILED_DASHBOARD_TURN,
@@ -396,8 +422,8 @@ describe('task turn failure (dashboard reload)', () => {
   it('still shows the latest failed Turn error when that Turn has no Items', async () => {
     renderTask(
       makeClient(
-        { listThreadItems: vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
-        { getThreadDashboard: vi.fn().mockResolvedValue({ turns: [EMPTY_FAILED_DASHBOARD_TURN] }) }
+        { 'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }) },
+        { 'thread.dashboard': vi.fn().mockResolvedValue({ turns: [EMPTY_FAILED_DASHBOARD_TURN] }) }
       )
     );
 
@@ -412,13 +438,13 @@ describe('task turn failure (dashboard reload)', () => {
     renderTask(
       makeClient(
         {
-          listThreadItems: vi.fn().mockResolvedValue({
+          'thread.items': vi.fn().mockResolvedValue({
             items: [LATER_USER_MESSAGE, LATER_ASSISTANT_DONE],
             nextCursor: null,
           }),
         },
         {
-          getThreadDashboard: vi.fn().mockResolvedValue({
+          'thread.dashboard': vi.fn().mockResolvedValue({
             turns: [HISTORICAL_EMPTY_FAILED_TURN, LATER_COMPLETED_TURN],
           }),
         }

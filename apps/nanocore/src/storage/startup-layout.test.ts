@@ -29,7 +29,11 @@ describe('NanoCore startup storage layout', () => {
       ensureLocalUser(coreDb);
 
       const app = createApp({ coreDb, dataRoot });
-      const res = await app.request('/api/workspaces');
+      const res = await app.request('/api/app/operations/workspace.list', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
 
       expect(res.status).toBe(200);
       expect(statSync(coreDbPath(dataRoot)).isFile()).toBe(true);

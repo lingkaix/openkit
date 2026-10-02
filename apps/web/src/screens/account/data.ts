@@ -7,7 +7,7 @@ import { accountAdmissionKey, myInvitationDecisionMutationKey, myInvitationsKey 
 
 /** One authorized Workspace summary returned by the protected account read. */
 export type AccountWorkspaceSummary = Awaited<
-  ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>
+  ReturnType<CoreClient['operations']['workspace.list']>
 >['items'][number];
 
 /** One owner-visible Workspace member. */
@@ -179,7 +179,7 @@ function useSelectedAccountWorkspace() {
   const queryClient = useQueryClient();
   const selectedWorkspaceId = useCurrentWorkspaceId();
   const admission =
-    queryClient.getQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
+    queryClient.getQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
       accountAdmissionKey
     );
 
@@ -381,7 +381,7 @@ export function useWorkspaceOwnerManagement() {
       }
     },
     onSuccess: ({ workspace }) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
+      queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
         accountAdmissionKey,
         (current) =>
           current
@@ -396,7 +396,7 @@ export function useWorkspaceOwnerManagement() {
     onError: (error) => {
       if (error.resource !== 'workspace' || !error.current) return;
       const workspace = error.current as AccountWorkspaceSummary;
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
+      queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
         accountAdmissionKey,
         (current) =>
           current
@@ -519,7 +519,7 @@ export function useSelfLeave() {
   /** Settles one exact membership projection into the protected authorized-Workspace cache. */
   function settleMembership(member: AccountWorkspaceMember) {
     const departed = member.status === 'removed' || member.effectiveRole === null;
-    queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listAuthorizedWorkspaces']>>>(
+    queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['workspace.list']>>>(
       accountAdmissionKey,
       (current) =>
         current

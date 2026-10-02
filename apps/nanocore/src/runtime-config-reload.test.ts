@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
-
-import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -113,7 +113,11 @@ describe('runtime config reload API', () => {
 
   it('keeps provider changes pending restart and exposes the live runtime status', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
-    const app = createApp({ dataRoot, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({
+      dataRoot,
+      runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
 
     writeServerConfig(dataRoot, 'openai/gpt-5.2');
     const reloadRes = await app.request('/api/admin/config/reload', {
@@ -251,9 +255,11 @@ describe('runtime config reload API', () => {
         expect.objectContaining({ path: 'providers' })
       );
 
-      const dashboardRes = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/dashboard'
-      );
+      const dashboardRes = await app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'ws_demo', threadId: 'th_demo' }),
+      });
       const dashboard = await dashboardRes.json();
       const sessionsAfterReload = store.listThreadAgentSessions('ws_demo', 'th_demo');
 

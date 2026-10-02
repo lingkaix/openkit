@@ -1829,20 +1829,34 @@ describe('createCoreClient', () => {
 
   it('routes core protocol calls through the core sub-client', async () => {
     const { client, requests } = createFakeClient({
-      'GET /api/workspaces': { body: { items: [workspace()] } },
+      'POST /api/app/operations/workspace.list': {
+        body: {
+          items: [
+            {
+              workspace: workspace(),
+              effectiveRole: 'owner',
+              membershipRevision: 1,
+              ownerUserId: 'user_local',
+              registryRevision: 1,
+            },
+          ],
+        },
+      },
       'POST /api/workspaces': { body: workspace() },
-      'GET /api/workspaces/ws_demo/resources': {
+      'POST /api/app/operations/workspace.resources': {
         body: { agents: [agent()], knowledge: [], models: [], skills: [] },
       },
-      'POST /api/workspaces/ws_demo/threads': { body: thread() },
+      'POST /api/app/operations/thread.create': { body: thread() },
       'POST /api/turns': { body: turn() },
       'GET /api/workspaces/ws_demo/artifacts/artifact_demo': { body: artifact() },
     });
 
-    await expect(client.core.listWorkspaces()).resolves.toEqual({ items: [workspace()] });
+    await expect(client.operations['workspace.list']({})).resolves.toMatchObject({
+      items: [{ workspace: workspace() }],
+    });
     await client.core.createWorkspace({ name: 'Demo' });
-    await client.core.getWorkspaceResources('ws_demo');
-    await client.core.createThread({ workspaceId: 'ws_demo', name: 'Demo thread' });
+    await client.operations['workspace.resources']({ workspaceId: 'ws_demo' });
+    await client.operations['thread.create']({ workspaceId: 'ws_demo', name: 'Demo thread' });
     await client.core.startTurn({ workspaceId: 'ws_demo', threadId: 'th_demo', input: 'Run' });
     await client.core.startTurn({
       workspaceId: 'ws_demo',
@@ -1853,16 +1867,17 @@ describe('createCoreClient', () => {
     await expect(client.core.getArtifact('ws_demo', 'artifact_demo')).resolves.toEqual(artifact());
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'GET /api/workspaces',
+      'POST /api/app/operations/workspace.list',
       'POST /api/workspaces',
-      'GET /api/workspaces/ws_demo/resources',
-      'POST /api/workspaces/ws_demo/threads',
+      'POST /api/app/operations/workspace.resources',
+      'POST /api/app/operations/thread.create',
       'POST /api/turns',
       'POST /api/turns',
       'GET /api/workspaces/ws_demo/artifacts/artifact_demo',
     ]);
     expect(requests[1]?.body).toMatchObject({ name: 'Demo', requestId: expect.any(String) });
-    expect(requests[3]?.body).toMatchObject({ name: 'Demo thread', requestId: expect.any(String) });
+    expect(requests[3]?.body).toMatchObject({ name: 'Demo thread', workspaceId: 'ws_demo' });
+    expect(requests[3]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(requests[4]?.body).toMatchObject({ input: 'Run', requestId: expect.any(String) });
     expect(requests[5]?.body).toMatchObject({
       turnId: 'tu_demo',
@@ -1889,10 +1904,10 @@ describe('createCoreClient', () => {
       'PATCH /api/workspaces/ws_demo/knowledge/mem_demo': { body: knowledge },
       'DELETE /api/workspaces/ws_demo/knowledge/mem_demo': { status: 204 },
       'GET /api/workspaces/ws_demo/threads': { body: { items: [thread()] } },
-      'GET /api/workspaces/ws_demo/threads/th_demo': { body: thread() },
+      'POST /api/app/operations/thread.read': { body: thread() },
       'PATCH /api/workspaces/ws_demo/threads/th_demo': { body: thread() },
       'POST /api/workspaces/ws_demo/threads/th_demo/archive': { body: thread() },
-      'GET /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo': {
+      'POST /api/app/operations/turn.read': {
         body: turnReadProjection(),
       },
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt': {
@@ -2137,7 +2152,7 @@ describe('createCoreClient', () => {
           createdAt: timestamp,
         },
       },
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/items?since=4&limit=10': {
+      'POST /api/app/operations/thread.items': {
         body: { items: [item], nextCursor: null },
       },
     });
@@ -2154,16 +2169,22 @@ describe('createCoreClient', () => {
     ).resolves.toEqual(knowledge);
     await expect(client.core.deleteKnowledge('ws_demo', 'mem_demo')).resolves.toBeUndefined();
     await expect(client.core.listThreads('ws_demo')).resolves.toEqual({ items: [thread()] });
-    await expect(client.core.getThread('ws_demo', 'th_demo')).resolves.toEqual(thread());
+    await expect(
+      client.operations['thread.read']({ workspaceId: 'ws_demo', threadId: 'th_demo' })
+    ).resolves.toEqual(thread());
     await expect(
       client.core.updateThread({ workspaceId: 'ws_demo', threadId: 'th_demo', name: 'Renamed' })
     ).resolves.toEqual(thread());
     await expect(
       client.core.archiveThread({ workspaceId: 'ws_demo', threadId: 'th_demo' })
     ).resolves.toEqual(thread());
-    await expect(client.core.getTurn('ws_demo', 'th_demo', 'turn_demo')).resolves.toEqual(
-      turnReadProjection()
-    );
+    await expect(
+      client.operations['turn.read']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_demo',
+      })
+    ).resolves.toEqual(turnReadProjection());
     await expect(
       client.core.interruptTurn({
         workspaceId: 'ws_demo',
@@ -2238,7 +2259,11 @@ describe('createCoreClient', () => {
       snapshot: { snapshotId: 'aepsnap_1' },
     });
     await expect(
-      client.core.listThreadItems('ws_demo', 'th_demo', { since: 4, limit: 10 })
+      client.operations['thread.items']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        ...{ since: 4, limit: 10 },
+      })
     ).resolves.toEqual({ items: [item], nextCursor: null });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
@@ -2250,10 +2275,10 @@ describe('createCoreClient', () => {
       'PATCH /api/workspaces/ws_demo/knowledge/mem_demo',
       'DELETE /api/workspaces/ws_demo/knowledge/mem_demo',
       'GET /api/workspaces/ws_demo/threads',
-      'GET /api/workspaces/ws_demo/threads/th_demo',
+      'POST /api/app/operations/thread.read',
       'PATCH /api/workspaces/ws_demo/threads/th_demo',
       'POST /api/workspaces/ws_demo/threads/th_demo/archive',
-      'GET /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo',
+      'POST /api/app/operations/turn.read',
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt',
       'GET /api/workspaces/ws_demo/artifacts',
       'GET /api/app/workspaces/ws_demo/workspace-sync/reviews',
@@ -2273,7 +2298,7 @@ describe('createCoreClient', () => {
       'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results/war_swr_1',
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots',
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots/aepsnap_1',
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/items?since=4&limit=10',
+      'POST /api/app/operations/thread.items',
     ]);
     expect(requests[2]?.body).toMatchObject({ status: 'archived', requestId: expect.any(String) });
     expect(requests[6]?.body).toMatchObject({ requestId: expect.any(String) });
@@ -2561,9 +2586,9 @@ describe('createCoreClient', () => {
       status?: number;
     }> = [
       {
-        body: null,
-        invoke: (client) => client.app.listAuthorizedWorkspaces(),
-        methodPath: 'GET /api/app/workspaces',
+        body: {},
+        invoke: (client) => client.operations['workspace.list']({}),
+        methodPath: 'POST /api/app/operations/workspace.list',
         response: { items: [summary] },
       },
       {
@@ -4188,7 +4213,7 @@ describe('createCoreClient', () => {
     const proposalDigest = `sha256:${'f'.repeat(64)}`;
     const { client, requests } = createFakeClient({
       'GET /api/app/workspaces/ws_demo/dashboard': { body: workspaceDashboard() },
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard': { body: threadDashboard() },
+      'POST /api/app/operations/thread.dashboard': { body: threadDashboard() },
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal': { body: threadGoalSummary() },
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal/plan': {
         body: {
@@ -4374,7 +4399,10 @@ describe('createCoreClient', () => {
     await expect(client.app.getWorkspaceDashboard('ws_demo')).resolves.toEqual(
       workspaceDashboard()
     );
-    const dashboard = await client.app.getThreadDashboard('ws_demo', 'th_demo');
+    const dashboard = await client.operations['thread.dashboard']({
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+    });
     expect(dashboard).not.toHaveProperty('activeSession');
     expect(dashboard.taskInputs).toEqual(threadDashboard().taskInputs);
     await expect(client.app.getThreadGoalSummary('ws_demo', 'th_demo')).resolves.toEqual(
@@ -4552,7 +4580,7 @@ describe('createCoreClient', () => {
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/app/workspaces/ws_demo/dashboard',
-      'GET /api/app/workspaces/ws_demo/threads/th_demo/dashboard',
+      'POST /api/app/operations/thread.dashboard',
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal',
       'GET /api/app/workspaces/ws_demo/threads/th_demo/goal/plan',
       'POST /api/app/workspaces/ws_demo/threads/th_demo/goal',

@@ -194,10 +194,15 @@ function createPassingTaskModeFixture(options) {
             return { review: { id: reviewId, status: 'rejected' } };
           },
         },
-        core: {
-          createThread: async () => ({ id: threadId }),
-          createWorkspace: async () => ({ id: workspaceId }),
-          listThreadItems: async () => ({
+        core: { createWorkspace: async () => ({ id: workspaceId }) },
+        repositories: {
+          setDefault: async () => {
+            throw new Error('repositories.setDefault must not configure Task Mode acceptance.');
+          },
+        },
+        operations: {
+          'thread.create': async () => ({ id: threadId }),
+          'thread.items': async () => ({
             items: [
               {
                 id: 'assistant_item',
@@ -207,11 +212,6 @@ function createPassingTaskModeFixture(options) {
               },
             ],
           }),
-        },
-        repositories: {
-          setDefault: async () => {
-            throw new Error('repositories.setDefault must not configure Task Mode acceptance.');
-          },
         },
       },
     },
@@ -249,17 +249,17 @@ function createDistinctTaskModeActorClients(options) {
       startTaskMode: refuse('admin client must not start Task Mode'),
       submitWorkspaceSyncReviewDecision: refuse('admin client must not submit review cleanup'),
     },
-    core: {
-      createThread: refuse('admin client must not create a Thread'),
-      createWorkspace: refuse('admin client must not create a Workspace'),
-      listThreadItems: refuse('admin client must not list thread items'),
-    },
+    core: { createWorkspace: refuse('admin client must not create a Workspace') },
     repositories: {
       setDefault: refuse('admin client must not set a repository'),
     },
     runtimeConfig: {
       createFile: track(fixture.clients.admin.runtimeConfig.createFile, adminCalls, 'createFile'),
       reload: track(fixture.clients.admin.runtimeConfig.reload, adminCalls, 'reload'),
+    },
+    operations: {
+      'thread.create': refuse('admin client must not create a Thread'),
+      'thread.items': refuse('admin client must not list thread items'),
     },
   };
   product.app.getDiagnostics = refuse('product client must not serve diagnostics');
@@ -284,14 +284,18 @@ function createDistinctTaskModeActorClients(options) {
     productCalls,
     'submitWorkspaceSyncReviewDecision'
   );
-  product.core.createThread = track(product.core.createThread, productCalls, 'createThread');
+  product.operations['thread.create'] = track(
+    product.operations['thread.create'],
+    productCalls,
+    'createThread'
+  );
   product.core.createWorkspace = track(
     product.core.createWorkspace,
     productCalls,
     'createWorkspace'
   );
-  product.core.listThreadItems = track(
-    product.core.listThreadItems,
+  product.operations['thread.items'] = track(
+    product.operations['thread.items'],
     productCalls,
     'listThreadItems'
   );
@@ -553,8 +557,8 @@ describe('real Task Mode worker L3 test policy', () => {
       calls.push('createWorkspace');
       return originalCreateWorkspace(...args);
     };
-    const originalCreateThread = fixture.clients.core.core.createThread;
-    fixture.clients.core.core.createThread = async (...args) => {
+    const originalCreateThread = fixture.clients.core.operations['thread.create'];
+    fixture.clients.core.operations['thread.create'] = async (...args) => {
       calls.push('createThread');
       return originalCreateThread(...args);
     };
@@ -1390,7 +1394,7 @@ describe('real Task Mode worker L3 test policy', () => {
       return listed;
     };
     const originalFailure = new Error('Product thread diagnostic failed.');
-    fixture.clients.core.core.listThreadItems = async () => {
+    fixture.clients.core.operations['thread.items'] = async () => {
       throw originalFailure;
     };
 

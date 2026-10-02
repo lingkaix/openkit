@@ -1,4 +1,4 @@
-import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { ProductOperation } from '../policy/workspace-access.js';
 
 /** Public authorization scope declared by one canonical operation. */
@@ -287,9 +287,7 @@ registerOperations(
     'listAgentCatalog',
     'getAgentCatalogEntry',
     'listInterruptedWorkers',
-    'listAuthorizedWorkspaces',
     'searchApp',
-    'GET /api/workspaces',
   ],
   {
     mutating: false,
@@ -389,7 +387,6 @@ registerOperations(
     'listWorkspaceReconciliationRecords',
     'listWorkspaceQuarantineRecords',
     'GET /api/workspaces/:workspaceId',
-    'GET /api/workspaces/:workspaceId/resources',
     'listLightApps',
     'listLightAppRecords',
     'getLightAppRecord',
@@ -459,7 +456,6 @@ registerOperations(
   catalog,
   [
     'createWorkspaceMaterial',
-    'POST /api/workspaces/:workspaceId/threads',
     'retireLightApp',
     'updateLightAppRecord',
     'batchLightAppRecords',
@@ -668,12 +664,8 @@ registerOperations(
   [
     'getThreadGoalSummary',
     'getThreadGoalPlan',
-    'getThreadDashboard',
-    'listThreadItems',
     'getThreadMaterial',
-    'GET /api/workspaces/:workspaceId/threads/:threadId',
     'GET /api/workspaces/:workspaceId/threads/:threadId/events',
-    'GET /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId',
   ],
   {
     mutating: false,
@@ -811,7 +803,7 @@ registerOperations(catalog, ['requestGitPushApproval', 'executeGitPush'], {
 });
 
 // Migrated declarations are projections, never a second contract or admission path.
-for (const [id, definition] of Object.entries(KERNEL_OPERATION_DEFINITIONS)) {
+for (const [id, definition] of Object.entries(PRODUCT_OPERATION_DEFINITIONS)) {
   registerOperations(catalog, [id], {
     mutating: definition.mutating,
     policyOperation: definition.policyOperation,

@@ -4,7 +4,6 @@ import {
   type ArchiveThreadRequestSchema,
   type ArtifactSchema,
   type CreateKnowledgeEntryRequestSchema,
-  type CreateThreadRequestSchema,
   type CreateWorkspaceRequestSchema,
   type DeleteKnowledgeEntryRequestSchema,
   GetArtifactResponseSchema,
@@ -12,23 +11,18 @@ import {
   KnowledgeEntrySchema,
   ListArtifactsResponseSchema,
   ListKnowledgeEntriesResponseSchema,
-  ListThreadItemsResponseSchema,
   ListThreadsResponseSchema,
-  ListWorkspacesResponseSchema,
   MetaResponseSchema,
   PendingRequestOutcomeSchema,
   ProductTurnSchema,
   type RespondToApprovalRequestSchema,
   type SubmitTurnInputRequestSchema,
   ThreadSchema,
-  TurnReadProjectionSchema,
   type UpdateKnowledgeEntryRequestSchema,
   type UpdateThreadRequestSchema,
   type UpdateWorkspaceRequestSchema,
   type WithdrawPendingRequestSchema,
   WorkspaceRecordSchema,
-  WorkspaceResourcesResponseSchema,
-  type WorkspaceResourcesSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { type SseEventEnvelope, subscribeTurnEvents } from './events.js';
@@ -38,12 +32,8 @@ import type { ClientTransport } from './transport.js';
 
 /** Metadata response used for discovery and capability flags. */
 export type MetaResponse = z.infer<typeof MetaResponseSchema>;
-/** Workspace list response. */
-export type ListWorkspacesResponse = z.infer<typeof ListWorkspacesResponseSchema>;
 /** Workspace record returned by Core routes. */
 export type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
-/** Workspace resources response. */
-export type WorkspaceResources = z.infer<typeof WorkspaceResourcesSchema>;
 /** Workspace create input. */
 export type CreateWorkspaceInput = OptionalRequestId<z.infer<typeof CreateWorkspaceRequestSchema>>;
 /** Workspace update input. */
@@ -68,16 +58,12 @@ export type DeleteKnowledgeInput = OptionalRequestId<
 export type ListThreadsResponse = z.infer<typeof ListThreadsResponseSchema>;
 /** Thread record. */
 export type Thread = z.infer<typeof ThreadSchema>;
-/** Thread create input. */
-export type CreateThreadInput = OptionalRequestId<z.infer<typeof CreateThreadRequestSchema>>;
 /** Thread update input. */
 export type UpdateThreadInput = OptionalRequestId<z.infer<typeof UpdateThreadRequestSchema>>;
 /** Thread archive input. */
 export type ArchiveThreadInput = OptionalRequestId<z.infer<typeof ArchiveThreadRequestSchema>>;
 /** Turn record. */
 export type Turn = z.infer<typeof ProductTurnSchema>;
-/** Turn read projection with nullable verified Context Package evidence. */
-export type TurnReadProjection = z.infer<typeof TurnReadProjectionSchema>;
 /** Turn start input. */
 export type StartTurnInput = OptionalRequestId<z.infer<typeof SubmitTurnInputRequestSchema>>;
 /** Turn interrupt input. */
@@ -108,29 +94,14 @@ export type ListArtifactsResponse = z.infer<typeof ListArtifactsResponseSchema>;
 export type Artifact = z.infer<typeof ArtifactSchema>;
 /** Artifact detail response. */
 export type GetArtifactResponse = z.infer<typeof GetArtifactResponseSchema>;
-/** Thread item replay response. */
-export type ListThreadItemsResponse = z.infer<typeof ListThreadItemsResponseSchema>;
-
-/** Options for listing durable thread items. */
-export interface ListThreadItemsOptions {
-  /** Optional sequence cursor. */
-  since?: number;
-  /** Optional result limit. */
-  limit?: number;
-}
-
 /** Core protocol HTTP and SSE projection client. */
 export interface CoreProjectionClient {
   /** Reads server metadata and protocol capability flags. */
   meta(): Promise<MetaResponse>;
-  /** Lists workspaces. */
-  listWorkspaces(): Promise<ListWorkspacesResponse>;
   /** Creates one workspace. */
   createWorkspace(input: CreateWorkspaceInput): Promise<WorkspaceRecord>;
   /** Reads one workspace. */
   getWorkspace(workspaceId: string): Promise<WorkspaceRecord>;
-  /** Reads one workspace resource bundle. */
-  getWorkspaceResources(workspaceId: string): Promise<WorkspaceResources>;
   /** Updates one workspace. */
   updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<WorkspaceRecord>;
   /** Lists workspace knowledge entries. */
@@ -151,18 +122,12 @@ export interface CoreProjectionClient {
   ): Promise<void>;
   /** Lists workspace threads. */
   listThreads(workspaceId: string): Promise<ListThreadsResponse>;
-  /** Creates one thread. */
-  createThread(input: CreateThreadInput): Promise<Thread>;
-  /** Reads one thread. */
-  getThread(workspaceId: string, threadId: string): Promise<Thread>;
   /** Updates one thread. */
   updateThread(input: UpdateThreadInput): Promise<Thread>;
   /** Archives one thread. */
   archiveThread(input: ArchiveThreadInput): Promise<Thread>;
   /** Starts or resumes a turn. */
   startTurn(input: StartTurnInput): Promise<Turn>;
-  /** Reads one turn. */
-  getTurn(workspaceId: string, threadId: string, turnId: string): Promise<TurnReadProjection>;
   /** Interrupts one turn. */
   interruptTurn(input: InterruptTurnInput): Promise<Turn>;
   /** Responds to one approval request. */
@@ -184,12 +149,6 @@ export interface CoreProjectionClient {
   listArtifacts(workspaceId: string): Promise<ListArtifactsResponse>;
   /** Reads one artifact. */
   getArtifact(workspaceId: string, artifactId: string): Promise<GetArtifactResponse>;
-  /** Lists durable items for one thread. */
-  listThreadItems(
-    workspaceId: string,
-    threadId: string,
-    options?: ListThreadItemsOptions
-  ): Promise<ListThreadItemsResponse>;
   /** Subscribes to one validated turn event stream. */
   subscribeTurnEvents(options: {
     workspaceId: string;
@@ -204,38 +163,12 @@ export function createCoreProjectionClient(
   transport: ClientTransport,
   eventSource?: EventSourceConstructor
 ): CoreProjectionClient {
-  const listThreadItemsPath = (
-    workspaceId: string,
-    threadId: string,
-    options?: ListThreadItemsOptions
-  ): string => {
-    const path = `/api/app/workspaces/${workspaceId}/threads/${threadId}/items`;
-    const params = new URLSearchParams();
-
-    if (options?.since !== undefined) {
-      params.set('since', String(options.since));
-    }
-
-    if (options?.limit !== undefined) {
-      params.set('limit', String(options.limit));
-    }
-
-    const query = params.toString();
-    return query ? `${path}?${query}` : path;
-  };
-
   return {
     meta: () => transport.getJson('/api/meta', MetaResponseSchema),
-    listWorkspaces: () => transport.getJson('/api/workspaces', ListWorkspacesResponseSchema),
     createWorkspace: (input) =>
       transport.postJson('/api/workspaces', withRequestId(input), WorkspaceRecordSchema),
     getWorkspace: (workspaceId) =>
       transport.getJson(`/api/workspaces/${workspaceId}`, WorkspaceRecordSchema),
-    getWorkspaceResources: (workspaceId) =>
-      transport.getJson(
-        `/api/workspaces/${workspaceId}/resources`,
-        WorkspaceResourcesResponseSchema
-      ),
     updateWorkspace: (workspaceId, input) =>
       transport.patchJson(
         `/api/workspaces/${workspaceId}`,
@@ -266,16 +199,6 @@ export function createCoreProjectionClient(
       ),
     listThreads: (workspaceId) =>
       transport.getJson(`/api/workspaces/${workspaceId}/threads`, ListThreadsResponseSchema),
-    createThread: (input) => {
-      const request = withRequestId(input);
-      return transport.postJson(
-        `/api/workspaces/${request.workspaceId}/threads`,
-        request,
-        ThreadSchema
-      );
-    },
-    getThread: (workspaceId, threadId) =>
-      transport.getJson(`/api/workspaces/${workspaceId}/threads/${threadId}`, ThreadSchema),
     updateThread: (input) => {
       const request = withRequestId(input);
       return transport.patchJson(
@@ -293,11 +216,6 @@ export function createCoreProjectionClient(
       );
     },
     startTurn: (input) => transport.postJson('/api/turns', withRequestId(input), ProductTurnSchema),
-    getTurn: (workspaceId, threadId, turnId) =>
-      transport.getJson(
-        `/api/workspaces/${workspaceId}/threads/${threadId}/turns/${turnId}`,
-        TurnReadProjectionSchema
-      ),
     interruptTurn: (input) => {
       const request = withRequestId(input);
       return transport.postJson(
@@ -330,11 +248,6 @@ export function createCoreProjectionClient(
       transport.getJson(
         `/api/workspaces/${workspaceId}/artifacts/${artifactId}`,
         GetArtifactResponseSchema
-      ),
-    listThreadItems: (workspaceId, threadId, options) =>
-      transport.getJson(
-        listThreadItemsPath(workspaceId, threadId, options),
-        ListThreadItemsResponseSchema
       ),
     subscribeTurnEvents: (subscribeOptions) =>
       subscribeTurnEvents({

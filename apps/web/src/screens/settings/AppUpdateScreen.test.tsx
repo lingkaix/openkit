@@ -69,7 +69,7 @@ const SUCCEEDED = {
   stage: 'succeeded' as const,
 };
 
-function makeClient(app: Partial<CoreClient['app']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
     app: {
       listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),

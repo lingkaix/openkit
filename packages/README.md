@@ -32,3 +32,5 @@ This directory holds reusable libraries, shared configuration packages, internal
 
 - Repository overview: [README.md](../README.md)
 - Cookbook index: [docs/cookbooks/README.md](../docs/cookbooks/README.md)
+
+The shared API schema package owns the Workspace, Thread and Turn operation family declarations. Core Client derives their correlated methods from the composed product table; NanoCore retains executable domain joins and current authority facts.

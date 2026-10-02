@@ -323,8 +323,8 @@ const SCHEDULER_CANCEL_MUTATION = CancelSchedulerAdmissionResponseSchema.parse({
 
 const ALL_WORKERS = [INTERRUPTED_WORKER, INSPECT_WORKER, WORKSPACE_B_WORKER];
 
-type AppOverrides = Partial<CoreClient['app']>;
-type CoreOverrides = Partial<CoreClient['core']>;
+type AppOverrides = Partial<CoreClient['app'] & CoreClient['operations']>;
+type CoreOverrides = Partial<CoreClient['core'] & CoreClient['operations']>;
 type User = ReturnType<typeof userEvent.setup>;
 
 /** Creates a caller-controlled promise for proving pre-settlement UI state. */
@@ -350,12 +350,10 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listWorkspaces: vi.fn().mockResolvedValue({ items: [WORKSPACE, WORKSPACE_B] }),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...core,
     },
     app: {
-      listAuthorizedWorkspaces: vi.fn().mockResolvedValue({ items: [] }),
       getWorkspaceDashboard: vi.fn().mockResolvedValue({ activeWork: [] }),
       listConversationNavigation: vi.fn().mockResolvedValue({ items: [] }),
       listInterruptedWorkers: vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
@@ -375,6 +373,35 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     },
     actionCenter: {
       listHumanAttention: vi.fn().mockResolvedValue({ items: [] }),
+    },
+
+    operations: {
+      ...core,
+      ...app,
+      'workspace.list': vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        })
+        .mockImplementation(
+          core['workspace.list'] ??
+            app['workspace.list'] ??
+            vi.fn().mockResolvedValue({
+              items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
+                workspace,
+                effectiveRole: 'owner',
+                membershipRevision: 1,
+                ownerUserId: 'user_local',
+                registryRevision: 1,
+              })),
+            })
+        ),
     },
   } as unknown as CoreClient;
 }
@@ -1594,7 +1621,20 @@ describe('Recovery and search', () => {
   });
 
   it('settles direct /recovery with zero authorized Workspaces into compact empty states', async () => {
-    const client = makeClient({}, { listWorkspaces: vi.fn().mockResolvedValue({ items: [] }) });
+    const client = makeClient(
+      {},
+      {
+        'workspace.list': vi.fn().mockResolvedValue({
+          items: [].map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
+      }
+    );
     renderApp('/recovery', client);
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Recovery' })).toBeInTheDocument();
@@ -1925,12 +1965,11 @@ describe('Recovery and search', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
     ).toBeInTheDocument();
-    await waitFor(() => expect(client.core.listWorkspaces).toHaveBeenCalled());
-    const discovered = await vi.mocked(client.core.listWorkspaces).mock.results[0]!.value;
-    expect(discovered.items.map((workspace: { id: string }) => workspace.id)).toEqual([
-      WORKSPACE.id,
-      WORKSPACE_B.id,
-    ]);
+    await waitFor(() => expect(client.operations['workspace.list']).toHaveBeenCalled());
+    const discovered = await vi.mocked(client.operations['workspace.list']).mock.results[0]!.value;
+    expect(
+      discovered.items.map((entry: { workspace: { id: string } }) => entry.workspace.id)
+    ).toEqual([WORKSPACE.id, WORKSPACE_B.id]);
     await submitSearch(user);
     expect(await screen.findByRole('button', { name: SEARCH_WORKSPACE.title })).toBeInTheDocument();
 
@@ -3078,7 +3117,9 @@ describe('Recovery and search', () => {
     },
   ])('does not navigate or read a $name under the wrong Workspace while authorized discovery is pending', async (scenario) => {
     const user = userEvent.setup();
-    const discovery = createDeferred<{ items: Array<{ id: string; name: string }> }>();
+    const discovery = createDeferred<{
+      items: Array<{ workspace: { id: string; name: string } }>;
+    }>();
     const events: string[] = [];
     const unsubscribe = useWorkspaceStore.subscribe((state) => {
       if (state.currentWorkspaceId === WORKSPACE_B.id) events.push('workspace');
@@ -3100,14 +3141,14 @@ describe('Recovery and search', () => {
     const client = makeClient(
       {
         search: vi.fn().mockResolvedValue({ items: scenario.items }),
-        getThreadDashboard,
+        'thread.dashboard': getThreadDashboard,
         getWorkspaceDashboard,
         listConversationNavigation,
       },
       {
-        listWorkspaces: vi.fn().mockReturnValue(discovery.promise),
-        getThread,
-        listThreadItems,
+        'workspace.list': vi.fn().mockReturnValue(discovery.promise),
+        'thread.read': getThread,
+        'thread.items': listThreadItems,
       }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
@@ -3142,16 +3183,18 @@ describe('Recovery and search', () => {
     expect(events).toEqual([]);
 
     await act(async () => {
-      discovery.resolve({ items: [WORKSPACE, WORKSPACE_B] });
+      discovery.resolve({ items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({ workspace })) });
       await discovery.promise;
     });
     await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE.id));
     const workspaceAReadsBeforeDestination = [
       getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
-      getThread.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      getThreadDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      listThreadItems.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
+      getThread.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id).length,
+      getThreadDashboard.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
+        .length,
+      listThreadItems.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
+        .length,
       listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
     ];
@@ -3165,9 +3208,11 @@ describe('Recovery and search', () => {
     expect([
       getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
-      getThread.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      getThreadDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
-      listThreadItems.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id).length,
+      getThread.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id).length,
+      getThreadDashboard.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
+        .length,
+      listThreadItems.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
+        .length,
       listConversationNavigation.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
         .length,
     ]).toEqual(workspaceAReadsBeforeDestination);
@@ -3175,9 +3220,17 @@ describe('Recovery and search', () => {
       await waitFor(() => expect(listConversationNavigation).toHaveBeenCalledWith(WORKSPACE_B.id));
     } else {
       await waitFor(() =>
-        expect(getThread).toHaveBeenCalledWith(WORKSPACE_B.id, SEARCH_CROSS_WORKSPACE.id)
+        expect(getThread).toHaveBeenCalledWith({
+          workspaceId: WORKSPACE_B.id,
+          threadId: SEARCH_CROSS_WORKSPACE.id,
+        })
       );
-      expect(getThreadDashboard).not.toHaveBeenCalledWith(WORKSPACE.id, expect.anything());
+      expect(
+        getThread.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE_B.id)
+      ).toHaveLength(1);
+      expect(getThreadDashboard).not.toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WORKSPACE.id })
+      );
     }
     unsubscribe();
     poisonDom();
@@ -3206,10 +3259,12 @@ describe('Recovery and search', () => {
     },
   ])('disables AppSearch hit buttons for a $name', async (scenario) => {
     const user = userEvent.setup();
-    const discovery = createDeferred<{ items: Array<{ id: string; name: string }> }>();
+    const discovery = createDeferred<{
+      items: Array<{ workspace: { id: string; name: string } }>;
+    }>();
     const client = makeClient(
       { search: vi.fn().mockResolvedValue({ items: [scenario.hit] }) },
-      { listWorkspaces: vi.fn().mockReturnValue(discovery.promise) }
+      { 'workspace.list': vi.fn().mockReturnValue(discovery.promise) }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });
     renderApp('/chat', client);
@@ -3227,7 +3282,7 @@ describe('Recovery and search', () => {
     ).toBeInTheDocument();
     if (scenario.admitted) {
       await act(async () => {
-        discovery.resolve({ items: scenario.admitted });
+        discovery.resolve({ items: scenario.admitted.map((workspace) => ({ workspace })) });
         await discovery.promise;
       });
     }

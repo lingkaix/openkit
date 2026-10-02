@@ -12,17 +12,19 @@ import { applyScopedMigrations } from './storage/migrate.js';
  * @param coreDb Deployment database, absent in purely in-memory local instances.
  * @param workspaceId Already authorized Workspace to inspect.
  * @param userId Authenticated actor whose immutable Thread audience must permit discovery.
+ * @param administratorEligible Current credential eligibility supplied by the unique authorizer.
  * @returns Deliverables without internal review evidence, preserving store order.
  */
 export function listOutputArtifacts(
   store: FsStore,
   coreDb: CoreDb | undefined,
   workspaceId: string,
-  userId: string | undefined
+  userId: string | undefined,
+  administratorEligible = false
 ) {
   const artifacts = store
     .listArtifacts(workspaceId)
-    .filter((artifact) => isArtifactVisible(store, artifact, userId));
+    .filter((artifact) => isArtifactVisible(store, artifact, userId, administratorEligible));
   if (!coreDb || artifacts.length === 0) return artifacts;
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
   try {

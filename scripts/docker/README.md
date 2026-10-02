@@ -5,3 +5,5 @@ These helpers read the single image catalog at `containers/images.json`. `build-
 Build and smoke the worker artifacts with `bash scripts/docker/build-image.sh worker-common`, `bash scripts/docker/build-image.sh worker-runtimes`, and their matching `smoke-image.sh` commands. Use the optional tag for isolated verification. Base smoke also builds a network-free throwaway derivation, adds one executable as root, returns to sandbox, checks the inherited baseline, and removes the temporary image.
 
 The test-image helpers own content-addressed `test-env` identification and anonymous inspection; `run-app.sh`, `e2e-app.sh`, and app smoke helpers own the app image. The release preflight consumes the same catalog and rejects singular runtime metadata and retired worker leaf ids. Installed binaries and catalog metadata grant no endpoint or credential authority.
+
+The persistence smoke reads the post-restart Workspace collection through the definition-derived `workspace.list` JSON binding and checks the nested Workspace record. Its pre/post-restart persistence observation is unchanged.

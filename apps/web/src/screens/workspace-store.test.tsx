@@ -44,8 +44,18 @@ function renderCurrentWorkspace(
   preferred?: string
 ) {
   const client = {
-    core: {
-      listWorkspaces: async () => ({ items }),
+    core: {},
+
+    operations: {
+      'workspace.list': async () => ({
+        items: items.map((workspace) => ({
+          workspace,
+          effectiveRole: 'owner',
+          membershipRevision: 1,
+          ownerUserId: 'user_local',
+          registryRevision: 1,
+        })),
+      }),
     },
   } as unknown as CoreClient;
   const queryClient = new QueryClient({
@@ -125,8 +135,18 @@ describe('workspace switcher persistence', () => {
       USER_A_QUICK_CHAT,
     ];
     const client = {
-      core: {
-        listWorkspaces: async () => ({ items }),
+      core: {},
+
+      operations: {
+        'workspace.list': async () => ({
+          items: items.map((workspace) => ({
+            workspace,
+            effectiveRole: 'owner',
+            membershipRevision: 1,
+            ownerUserId: 'user_local',
+            registryRevision: 1,
+          })),
+        }),
       },
     } as unknown as CoreClient;
     const queryClient = new QueryClient({

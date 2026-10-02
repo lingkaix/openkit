@@ -43,7 +43,7 @@ export type AttentionRow = Awaited<
 >['items'][number];
 /** Agent catalog entry from selected-Workspace resources. */
 export type AgentEntry = Awaited<
-  ReturnType<CoreClient['core']['getWorkspaceResources']>
+  ReturnType<CoreClient['operations']['workspace.resources']>
 >['agents'][number];
 /** Current Worker row from `client.app.listWorkspaceWorkers`. */
 export type WorkspaceWorkerRow = Awaited<
@@ -185,7 +185,9 @@ export function useAgents(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.agents(workspaceId ?? ''),
-    queryFn: async () => (await client.core.getWorkspaceResources(workspaceId as string)).agents,
+    queryFn: async () =>
+      (await client.operations['workspace.resources']({ workspaceId: workspaceId as string }))
+        .agents,
     enabled: Boolean(workspaceId),
   });
 }
