@@ -2323,8 +2323,8 @@ export function registerQuickAndChatModeRoutes({
             kind: 'goal-orchestrator',
             label: 'Goal Orchestrator',
             description: 'Steers the active Goal in this Thread.',
-            availability: goalOrchestrator ? 'available' : 'unavailable',
-            unavailableReason: goalOrchestrator ? null : 'No admitted logical model is configured.',
+            availability: 'unavailable',
+            unavailableReason: 'Goal mode is unavailable during the communication redesign.',
             threadId: requestedThreadId,
             profileId: null,
             logicalModels: goalOrchestrator?.logicalModels.map(conversationModelChoice) ?? [],
@@ -2752,6 +2752,10 @@ export function registerQuickAndChatModeRoutes({
     } catch (error) {
       if (error instanceof HTTPException) throw error;
       return asApiError('Conversation Thread is unavailable.', 'target_missing', 409);
+    }
+    // The Goal freeze precedes the command ledger so historical receipts cannot accept steering.
+    if (chatInput.targetRef.startsWith('goal-orchestrator:')) {
+      return asApiError('Goal mode is unavailable.', 'goal_mode_unavailable', 409);
     }
     const triggerActor = {
       kind: 'user',

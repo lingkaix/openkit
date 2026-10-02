@@ -11,23 +11,27 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
+import { createPendingUserTurnRecord } from './goal-steering-authority.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { createGoalRecord } from './runtime/goal-store.js';
+import { commandInputHash } from './runtime/idempotent-command.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
-import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { isTerminalWorkerTurnStage } from './runtime/worker-stage.js';
 import {
   isTerminalLeaseStatus,
   listSchedulerAdmissionEntriesForWorkspace,
   listSchedulerSessionLeasesForTurn,
 } from './scheduler-records.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { applyMigrations } from './storage/migrate.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { createInitialGoalIntentItem } from './test-support/goal-intent.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const STORAGE_REF = `wst_${'1'.repeat(32)}`;
@@ -283,6 +287,231 @@ async function waitForSelectedWorkerLoopCloseout(input: {
     }
   });
 }
+
+describe('Composer Goal freeze', () => {
+  /** Creates the research M5 retained Goal/Turn/checkpoint tuple in real SQLite. */
+  function retainedGoalFixture() {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-composer-goal-freeze-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const app = createApp({ coreDb, dataRoot, store });
+    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(workspaceDb);
+    const thread = store.createThread('ws_demo', 'Retained Goal', 'th_retained_goal');
+    const goalId = 'goal_retained';
+    const createdByItemId = createInitialGoalIntentItem({
+      store,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      objective: 'Fixture retained Goal',
+      userId: 'user_local',
+    });
+    createGoalRecord(workspaceDb, {
+      workspaceExists: (id) => id === 'ws_demo',
+      createdByItemId,
+      goalId,
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      title: 'Fixture retained Goal',
+      objective: 'Fixture retained Goal',
+      status: 'running',
+    });
+    const turn = store.createTurn(
+      'ws_demo',
+      thread.id,
+      'Retained active Goal worker',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { turnId: 'tu_retained_goal_worker' }
+    );
+    upsertWorkerCheckpoint(workspaceDb, {
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: turn.id,
+      goalId,
+      requestId: 'retained-worker-fixture',
+      requestInputHash: 'fixture-hash',
+      stage: 'running_worker',
+      iteration: 0,
+    });
+
+    /** Reads every product table so unchanged counts cannot hide updates to retained rows. */
+    function tables(database: CoreDb | WorkspaceDb) {
+      const names = database.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+        .all() as { name: string }[];
+      return Object.fromEntries(
+        names.map(({ name }) => [
+          name,
+          database.sqlite.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all(),
+        ])
+      );
+    }
+
+    return {
+      app,
+      store,
+      workspaceDb,
+      thread,
+      turn,
+      goalId,
+      targetRef: `goal-orchestrator:${goalId}`,
+      base: `/api/app/workspaces/ws_demo/threads/${thread.id}`,
+      snapshot: () => ({
+        core: tables(coreDb),
+        workspace: tables(workspaceDb),
+        items: store.listAllItems(),
+        turns: store.listThreadTurns('ws_demo', thread.id),
+        sessions: store.listThreadAgentSessions('ws_demo', thread.id),
+        receipts: store.listCommandRequests(),
+      }),
+      dispose: () => {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('keeps the Goal catalog target unavailable during the redesign without writes', async () => {
+    const fixture = retainedGoalFixture();
+    try {
+      const before = fixture.snapshot();
+      const response = await fixture.app.request(
+        `/api/app/workspaces/ws_demo/conversation-targets?threadId=${fixture.thread.id}`
+      );
+      expect(response.status).toBe(200);
+      const catalog = await response.json();
+      expect(
+        catalog.targets.find(
+          (target: { targetRef: string }) => target.targetRef === fixture.targetRef
+        )
+      ).toMatchObject({
+        kind: 'goal-orchestrator',
+        availability: 'unavailable',
+        unavailableReason: 'Goal mode is unavailable during the communication redesign.',
+      });
+      expect(fixture.snapshot()).toEqual(before);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it.each([
+    'dedicated',
+    'Composer',
+  ] as const)('refuses fresh %s steering without writes', async (entry) => {
+    const fixture = retainedGoalFixture();
+    try {
+      const requestId = '00000000-0000-4000-8000-000000000901';
+      const before = fixture.snapshot();
+      const response = await fixture.app.request(
+        `${fixture.base}/${entry === 'dedicated' ? 'goal/steering' : 'conversation-turns'}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body:
+            entry === 'dedicated'
+              ? JSON.stringify({ requestId, message: 'Please revise the objective.' })
+              : conversationBody({
+                  requestId,
+                  input: 'Please revise the objective.',
+                  targetRef: fixture.targetRef,
+                }),
+        }
+      );
+      expect.soft(response.status).toBe(409);
+      expect.soft(await response.json()).toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(fixture.snapshot()).toEqual(before);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it('refuses a previously recorded Composer steering receipt replay without writes', async () => {
+    const fixture = retainedGoalFixture();
+    try {
+      const requestId = '00000000-0000-4000-8000-000000000902';
+      const input = 'Please revise the objective.';
+      // Seed the complete historical accepted tuple without submitting through a frozen route.
+      const receivedAt = new Date().toISOString();
+      const pending = createPendingUserTurnRecord(fixture.workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: fixture.thread.id,
+        goalId: fixture.goalId,
+        activeTurnId: fixture.turn.id,
+        requestId,
+        input: { kind: 'message' },
+        receivedAt,
+      });
+      fixture.store.createItem({
+        id: pending.contentItemId,
+        workspaceId: 'ws_demo',
+        threadId: fixture.thread.id,
+        turnId: fixture.turn.id,
+        type: 'user-message',
+        status: 'completed',
+        actor: { kind: 'user', id: 'user_local' },
+        text: input,
+        parentItemId: null,
+        causationId: requestId,
+        createdAt: receivedAt,
+        completedAt: receivedAt,
+      });
+      fixture.store.recordCommandRequest(
+        {
+          command: 'goal.steering.send',
+          requestId,
+          scope: { workspaceId: 'ws_demo', threadId: fixture.thread.id },
+          inputHash: commandInputHash({ message: input }),
+          response: { kind: 'pending_user_turn', id: pending.pendingTurnId },
+        },
+        fixture.workspaceDb
+      );
+      fixture.store.recordCommandRequest({
+        command: 'conversation.submit',
+        requestId,
+        scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: fixture.thread.id },
+        inputHash: commandInputHash({
+          artifactRefs: [],
+          input,
+          logicalModelId: null,
+          targetRef: fixture.targetRef,
+          workerStorageChoice: undefined,
+        }),
+        response: {
+          kind: 'turn',
+          id: fixture.turn.id,
+          conversationMetadata: {
+            downstream: { kind: 'goal', goalId: fixture.goalId, turnId: fixture.turn.id },
+            targetRef: fixture.targetRef,
+            logicalModelId: null,
+            receivingWorkspaceId: 'ws_demo',
+            receivingThreadId: fixture.thread.id,
+            resultKind: 'goal-steering',
+            status: 202,
+          },
+        },
+      });
+      const before = fixture.snapshot();
+      const response = await fixture.app.request(`${fixture.base}/conversation-turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: conversationBody({ requestId, input, targetRef: fixture.targetRef }),
+      });
+      expect.soft(response.status).toBe(409);
+      expect.soft(await response.json()).toMatchObject({ code: 'goal_mode_unavailable' });
+      expect(fixture.snapshot()).toEqual(before);
+    } finally {
+      fixture.dispose();
+    }
+  });
+});
 
 describe('Assistant pending input', () => {
   it('hands a clarified task to a new shared Task Thread without command receipts', async () => {
