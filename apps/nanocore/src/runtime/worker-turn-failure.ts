@@ -69,11 +69,13 @@ export function terminalizeGovernedWorkerTurn(
     return reconcileCompletedTurn(input, initialTurn, initialTurn);
   }
 
+  // Exact callers may finish an already decided typed failure; they never replace its diagnostic.
   const recoveryOwnsOutcome = Boolean(
     initialTurn.status === input.outcome &&
       initialTurn.error &&
       typeof initialTurn.error.code === 'string' &&
-      isGovernedWorkerTerminalCode(initialTurn.error.code)
+      (isGovernedWorkerTerminalCode(initialTurn.error.code) ||
+        initialTurn.error.code === input.errorCode)
   );
   if (isSealedTurnTerminal(initialTurn.status) && !recoveryOwnsOutcome) {
     return initialTurn;
@@ -368,6 +370,7 @@ function turnMatchesOutcome(
 function isGovernedWorkerTerminalCode(errorCode: string): boolean {
   return (
     errorCode === 'worker_governance_turn_failed' ||
+    errorCode === 'delivery_unknown' ||
     errorCode === 'worker_governance_restart_recovery' ||
     errorCode === 'worker_governance_turn_cancelled' ||
     errorCode === 'unsupported_gateway_feature' ||

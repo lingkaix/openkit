@@ -63,6 +63,30 @@ function projectInterruption(store: FsStore) {
 }
 
 describe('governed worker turn failure projection', () => {
+  it('repairs a decided delivery_unknown failure after a cold restart without changing its outcome', () => {
+    const { dataRoot, store, turn } = createFixture();
+    store.updateTurn(turn.id, {
+      status: 'failed',
+      completedAt: '2026-07-15T00:00:30.000Z',
+      error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+    });
+    const decided = store.getTurnById(turn.id);
+    const restarted = new FsStore({ dataRoot });
+    projectFailure(restarted);
+    projectFailure(restarted);
+    expect(restarted.getTurnById(turn.id)).toEqual(decided);
+    expect(restarted.getAgentSession('as_worker_failure')).toMatchObject({
+      status: 'failed',
+      message: decided.error!.message,
+    });
+    expect(
+      restarted.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
+    ).toHaveLength(1);
+    expect(
+      restarted.getTurnEvents(turn.id).filter((event) => event.event === 'agent.session.updated')
+    ).toHaveLength(1);
+  });
+
   it('retains the first normalized explanation in cold reads, lists and terminal events', () => {
     const { dataRoot, store, turn } = createFixture();
     const explanation = {

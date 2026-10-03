@@ -335,6 +335,7 @@ const bootResult = await runBootPhases({
         });
         const recoveryRuntime = workerLifecycleRuntime;
         const recoveryInput = {
+          store: recoveryStore,
           cleanupBackendSession: recoveryRuntime.cleanupBackendSession,
           isTurnExecutionActive: recoveryRuntime.isTurnExecutionActive,
           projectRecoveredTurn: async (subject) => {

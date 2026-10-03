@@ -5,12 +5,21 @@ import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { createApp } from '../app.js';
+import { ensureLocalUser } from '../auth/identity.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   acceptSchedulerLeaseHeartbeat,
   acceptSchedulerLeaseHeartbeatByBinding,
   adoptSchedulerLeaseReconnect,
+  completeSchedulerTurnLease,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
   markSchedulerSessionLeaseReleasing,
@@ -22,8 +31,14 @@ import {
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+  recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage,
+} from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
@@ -42,6 +57,16 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
+import {
+  installPendingRequestAdmission,
+  raiseRecordedPendingRequest,
+  recoverPendingRequestsAtBoot,
+} from './pending-request-flow.js';
+import {
+  answerPendingRequest,
+  freezeReadyOutcomes,
+  readPendingRequest,
+} from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
@@ -61,7 +86,11 @@ import {
 } from './worker-backend-sessions.js';
 import { WorkerControlGateway, type WorkerControlLineage } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
-import { agentSessionCompatibilityKeyFromPackage } from './worker-governance-turn-executor.js';
+import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
+import {
+  agentSessionCompatibilityKeyFromPackage,
+  WorkerGovernanceTurnExecutor,
+} from './worker-governance-turn-executor.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -79,6 +108,805 @@ function createMigratedCoreDb() {
   applyMigrations(coreDb);
   return coreDb;
 }
+
+/** Persists the failed-start crash boundary, optionally with an outcome awaiting delivery. */
+function createFailedStartFixture(suffix: string, outcome = false, anchored = true) {
+  const coreDb = createMigratedCoreDb();
+  const dataRoot = coreDb.dataRoot;
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: 'ws_demo' });
+  const threadId = `thread_${suffix}`;
+  const turnId = `turn_${suffix}`;
+  const agentSessionId = `as_${suffix}`;
+  const packageSnapshotId = `aepsnap_turn_${suffix}_as_${suffix}`;
+  store.createThread('ws_demo', 'Recover failed start', threadId);
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+  applyScopedMigrations(workspaceDb);
+  if (outcome) {
+    const raising = store.createTurn(
+      'ws_demo',
+      threadId,
+      'Ask for input',
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { agentId: 'agent_codex_host', executorKind: 'worker' }
+    );
+    const questions = [
+      {
+        id: 'path',
+        header: 'Path',
+        question: 'Which path?',
+        options: null,
+        isOther: true,
+        isSecret: false,
+      },
+    ];
+    store.createItem({
+      id: `it_request_${suffix}`,
+      workspaceId: 'ws_demo',
+      threadId,
+      turnId: raising.id,
+      type: 'user-input-request',
+      responsibleUserId: LOCAL_USER_ID,
+      status: 'completed',
+      userInputRequestId: `input_${suffix}`,
+      prompt: 'Which path?',
+      questions,
+      createdAt: raising.startedAt!,
+      completedAt: raising.startedAt!,
+    });
+    raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+      requestId: `input_${suffix}`,
+      requestItemId: `it_request_${suffix}`,
+      workspaceId: 'ws_demo',
+      threadId,
+      raisingTurnId: raising.id,
+      kind: 'user-input',
+      requesterKind: 'worker',
+      agentId: 'agent_codex_host',
+      responsibleUserId: LOCAL_USER_ID,
+      questions,
+      questionDigest: `digest_${suffix}`,
+      now: new Date().toISOString(),
+    });
+    store.updateTurn(raising.id, { status: 'completed', completedAt: new Date().toISOString() });
+    answerPendingRequest(
+      workspaceDb.sqlite,
+      `input_${suffix}`,
+      { kind: 'user', id: LOCAL_USER_ID },
+      { path: ['src'] },
+      new Date().toISOString()
+    );
+  }
+  store.createAgentSession({
+    id: agentSessionId,
+    agentId: 'agent_codex_host',
+    workspaceId: 'ws_demo',
+    threadId,
+    status: 'busy',
+    message: null,
+    environmentPackageSnapshotId: packageSnapshotId,
+    createdAt: '2026-07-05T00:00:01.000Z',
+    updatedAt: '2026-07-05T00:00:01.000Z',
+  });
+  const turn = store.createTurn(
+    'ws_demo',
+    threadId,
+    'Deliver or run',
+    { kind: 'user', id: LOCAL_USER_ID },
+    null,
+    {
+      turnId,
+      agentId: 'agent_codex_host',
+      agentSessionId,
+      status: 'pending',
+      executorKind: 'worker',
+    }
+  );
+  if (outcome)
+    freezeReadyOutcomes(workspaceDb.sqlite, {
+      workspaceId: 'ws_demo',
+      threadId,
+      turnId,
+      executor: 'worker',
+      agentId: 'agent_codex_host',
+      cause: 'outcome',
+      now: new Date().toISOString(),
+    });
+  store.updateTurn(turnId, { status: 'running' });
+  dispatchLease(coreDb, suffix);
+  if (anchored) recordBackendSession(coreDb, suffix, 'cleaned');
+  else recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
+  completeSchedulerTurnLease(coreDb, {
+    workspaceId: 'ws_demo',
+    threadId,
+    turnId,
+    recoveryState: 'needs-evidence',
+    releaseReason: 'turn-start-failed',
+    terminalStatus: 'failed',
+  });
+  workspaceDb.sqlite.close();
+  coreDb.sqlite.close();
+  const restartedCore = openCoreDb(dataRoot);
+  const restartedStore = new FsStore({ dataRoot });
+  const workerDelivery = { startTurn: vi.fn(async () => {}) };
+  const pending = {
+    coreDb: restartedCore,
+    agentAuthority: () => true,
+    workerDelivery,
+    openWorkspace: (workspaceId: string) => {
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(db);
+      return db;
+    },
+  };
+  installPendingRequestAdmission(restartedStore, pending);
+  recoverPendingRequestsAtBoot(restartedStore, pending);
+  const input = {
+    store: restartedStore,
+    now: () => '2026-10-03T00:00:00.000Z',
+    projectRecoveredTurn: vi.fn(async () => ({ status: 'failed' as const })),
+  };
+  return {
+    coreDb: restartedCore,
+    store: restartedStore,
+    dataRoot,
+    threadId,
+    turnId,
+    agentSessionId,
+    input,
+    pending,
+    workerDelivery,
+    turn,
+  };
+}
+
+describe('terminal failed-start product recovery', () => {
+  it('settles unknown delivery and admits an Assistant conversation without claiming worker continuity', async () => {
+    const f = createFailedStartFixture('unknown_outcome', true);
+    try {
+      const recovery = await runSchedulerRestartRecovery(f.coreDb, f.input);
+      expect(f.store.getTurnById(f.turnId).status).toBe('running');
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, f.input);
+      expect(f.store.getTurnById(f.turnId)).toMatchObject({
+        status: 'failed',
+        completedAt: f.input.now(),
+        error: { code: 'delivery_unknown' },
+      });
+      // Failed is the existing AgentSession owner's terminal, non-reusable closure.
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('failed');
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      expect(readPendingRequest(db.sqlite, 'input_unknown_outcome')).toMatchObject({
+        delivery: 'delivery-unknown',
+        deliveryTurnId: f.turnId,
+      });
+      db.sqlite.close();
+      expect(
+        f.store
+          .listThreadTurns('ws_demo', f.threadId)
+          .every((turn) =>
+            ['completed', 'failed', 'cancelled', 'interrupted'].includes(turn.status)
+          )
+      ).toBe(true);
+      const executor = new SimulatedTurnExecutor();
+      const app = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        turnExecutor: executor,
+        agentManifests: [createTestAgentSetup().manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        llmPiAiClient: {
+          createChatCompletion: vi.fn(async () => ({
+            id: 'chatcmpl_recovered_thread',
+            object: 'chat.completion',
+            created: 1,
+            model: 'openai/gpt-5.2',
+            choices: [
+              {
+                index: 0,
+                message: { role: 'assistant', content: 'Fresh conversation admitted.' },
+                finish_reason: 'stop',
+              },
+            ],
+          })),
+        } as unknown as PiAiGatewayClient,
+        providerRegistry: new ProviderRegistry([
+          {
+            displayName: 'Fixture',
+            id: 'agent-openrouter',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+      const response = await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: f.threadId },
+          {
+            body: JSON.stringify({
+              requestId: 'fresh_after_failed_delivery',
+              targetRef: 'internal-role:assistant',
+              input: 'Continue with a fresh task.',
+            }),
+          }
+        )
+      );
+      const body = await response.json();
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      expect(body).toMatchObject({
+        receivingWorkspaceId: 'ws_demo',
+        receivingThreadId: f.threadId,
+        turn: {
+          workspaceId: 'ws_demo',
+          threadId: f.threadId,
+          triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        },
+      });
+      expect(body.turn.id).not.toBe(f.turnId);
+      expect(body.turn.agentSessionId).not.toBe(f.agentSessionId);
+      expect(f.store.getTurnById(body.turn.id).threadId).toBe(f.threadId);
+      recoverPendingRequestsAtBoot(f.store, f.pending);
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      const after = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      expect(readPendingRequest(after.sqlite, 'input_unknown_outcome')?.delivery).toBe(
+        'delivery-unknown'
+      );
+      after.sqlite.close();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('rejects a queued originating admission before changing outcome delivery or product state', async () => {
+    const f = createFailedStartFixture('queued_admission', true, false);
+    f.coreDb.sqlite
+      .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
+      .run(f.turnId);
+    const turn = f.store.getTurnById(f.turnId);
+    const session = f.store.getAgentSession(f.agentSessionId);
+    const events = f.store.getTurnEvents(f.turnId);
+    const admission = f.coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_admission_entries WHERE turn_id = ?')
+      .get(f.turnId);
+    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    const delivery = readPendingRequest(db.sqlite, 'input_queued_admission');
+    db.sqlite.close();
+    try {
+      await expect(runRestartRecoveryThroughMaintenance(f.coreDb, f.input)).rejects.toThrow(
+        /recovery_required/
+      );
+      expect(f.store.getTurnById(f.turnId)).toEqual(turn);
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+      expect(f.store.getTurnEvents(f.turnId)).toEqual(events);
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM scheduler_admission_entries WHERE turn_id = ?')
+          .get(f.turnId)
+      ).toEqual(admission);
+      const after = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      expect(readPendingRequest(after.sqlite, 'input_queued_admission')).toEqual(delivery);
+      after.sqlite.close();
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('recovers real worker conversation admission and successor continuity on the same Thread', async () => {
+    const f = createFailedStartFixture('worker_conversation', true);
+    const setup = createTestAgentSetup();
+    admitTestNativeEnvironment(f.coreDb, setup.manifest);
+    prepareReconnectLease(f.coreDb, 'worker_conversation_sibling');
+    const recoveryInput = {
+      ...f.input,
+      now: () => '2026-07-05T00:01:00.000Z',
+      restoreBackendSession: async () => {},
+    };
+    const recovery = await runSchedulerRestartRecovery(f.coreDb, recoveryInput);
+    const live = requireSchedulerSessionLease(f.coreDb, 'lease_worker_conversation_sibling');
+    let finishLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => {
+      finishLaunch = resolve;
+    });
+    const backend: WorkerGovernanceBackend = {
+      describeCapabilities: async () => ({
+        capabilities: ['container', 'transcript-sink', 'worker-control'],
+        dynamicCapabilities: [],
+        kind: 'openshell',
+        version: 'test',
+      }),
+      validatePackage: async () => [],
+      planSession: (pkg) => ({
+        agentSessionId: pkg.scope.agentSessionId,
+        backendKind: 'openshell',
+        backendSessionId: testNanoHostBackendSessionId(pkg.scope.turnId),
+        deploymentId: 'deployment-test',
+        packageSnapshotId: pkg.snapshotId,
+        runtimeTargetId: 'runtime-target-test',
+        stagingDirectoryRef: `server/runtime/worker-backend-sessions/${pkg.snapshotId}`,
+        transientProviderInstanceId: null,
+      }),
+      prepareAgentSessionContinuity: vi.fn(async () => 'absent' as const),
+      materialize: vi.fn(async (pkg) => ({
+        backendKind: 'openshell',
+        backendStatus: {
+          gatewayEndpoint: null,
+          gatewayName: 'openshell',
+          health: 'ready',
+          version: 'test',
+        },
+        command: {
+          argv: pkg.runtime.command.argv,
+          workingDirectory: pkg.runtime.command.workingDirectory,
+        },
+        controlMode: pkg.control.mode,
+        packageId: pkg.packageId,
+        packageSnapshotId: pkg.snapshotId,
+        requiredCapabilities: pkg.backend.requiredCapabilities,
+        workspaceInputs: pkg.workspace.inputs.map((input) => {
+          const sessionWorkspace = (
+            pkg.extensions.openkit as {
+              sessionWorkspace: {
+                layout: { slots: Array<{ id: string; path: string }> };
+                materialization: { inputs: Array<{ inputId: string; slotId: string }> };
+              };
+            }
+          ).sessionWorkspace;
+          const slotId = sessionWorkspace.materialization.inputs.find(
+            (entry) => entry.inputId === input.id
+          )?.slotId;
+          const target = sessionWorkspace.layout.slots.find((slot) => slot.id === slotId)?.path;
+          if (!target) throw new Error(`Fixture workspace target missing for ${input.id}.`);
+          return { access: input.access, id: input.id, kind: input.kind, target };
+        }),
+        sandbox: {
+          name: testNanoHostBackendSessionId(pkg.scope.turnId),
+          source: 'openkit/worker-codex:dev',
+          state: 'created',
+        },
+      })),
+      launch: vi.fn(async () => {
+        await launchGate;
+        return { data: {}, kind: 'fixture.launch', timestamp: recoveryInput.now() };
+      }),
+      cleanupSession: vi.fn(async () => {}),
+      update: async () => [],
+      collectEvidence: async () => [],
+      collectProviderRefreshStatuses: async () => [],
+      collectTranscript: async () => ({ itemsJsonl: '' }),
+      collectWorkspaceChanges: async () => [],
+    };
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb: f.coreDb });
+    const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+    const starts = vi.spyOn(executor, 'startTurn');
+    const app = createApp({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+      turnExecutor: executor,
+      runtimeConfigManager: createRuntimeConfigManager({
+        dataRoot: f.dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot: f.dataRoot,
+          agentManifests: [setup.manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              displayName: 'Fixture',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          workspaceConfigs: [
+            {
+              workspaceId: 'ws_demo',
+              path: join(f.dataRoot, 'workspaces/ws_demo/config/workspace.jsonc'),
+              config: {
+                schemaVersion: 1,
+                workspace: { name: 'Demo Workspace', defaultAgentId: setup.manifest.id },
+              },
+            },
+          ],
+        }),
+      }),
+    });
+    const submit = (requestId: string) =>
+      app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: f.threadId },
+          {
+            body: JSON.stringify({
+              requestId,
+              targetRef: `warm-worker:${setup.manifest.id}:default`,
+              input: 'Implement the bounded recovery follow-up.',
+            }),
+          }
+        )
+      );
+    try {
+      const refused = await submit('worker_before_settlement');
+      expect(refused.status, await refused.clone().text()).toBe(409);
+      expect(await refused.json()).toMatchObject({
+        code: 'recovery_required',
+        message: 'The current AgentSession still owns an active Turn.',
+      });
+      expect(prepare).toHaveBeenCalled();
+      expect(backend.prepareAgentSessionContinuity).not.toHaveBeenCalled();
+      expect(starts).not.toHaveBeenCalled();
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, recoveryInput);
+      expect(f.store.getTurnById(f.turnId)).toMatchObject({
+        status: 'failed',
+        error: { code: 'delivery_unknown' },
+      });
+      const admitted = await submit('worker_after_settlement');
+      const body = await admitted.json();
+      expect(admitted.status, JSON.stringify(body)).toBe(202);
+      expect(body).toMatchObject({
+        receivingWorkspaceId: 'ws_demo',
+        receivingThreadId: f.threadId,
+        turn: {
+          workspaceId: 'ws_demo',
+          threadId: f.threadId,
+          agentId: setup.manifest.id,
+          triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        },
+      });
+      expect(body.turn.id).not.toBe(f.turnId);
+      // Product responses omit private AgentSession lineage; read its durable Turn and lease owners.
+      let successorAgentSessionId: string | null | undefined;
+      await vi.waitFor(
+        () => {
+          successorAgentSessionId = f.store.getTurnById(body.turn.id).agentSessionId;
+          expect(successorAgentSessionId).toBeTruthy();
+          expect(
+            f.store.getAgentSession(successorAgentSessionId!),
+            JSON.stringify(f.store.getTurnById(body.turn.id).error)
+          ).toMatchObject({
+            id: successorAgentSessionId,
+            status: 'busy',
+            workspaceId: 'ws_demo',
+            threadId: f.threadId,
+            agentId: setup.manifest.id,
+          });
+        },
+        { timeout: 10000 }
+      );
+      expect(successorAgentSessionId).not.toBe(f.agentSessionId);
+      expect(backend.prepareAgentSessionContinuity).toHaveBeenCalled();
+      expect(starts).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(backend.launch).toHaveBeenCalledTimes(1), { timeout: 10000 });
+      expect(backend.materialize).toHaveBeenCalledTimes(1);
+      const launchedPackage = vi.mocked(backend.materialize).mock.calls[0]![0];
+      expect(launchedPackage.scope).toMatchObject({
+        workspaceId: 'ws_demo',
+        threadId: f.threadId,
+        turnId: body.turn.id,
+        agentSessionId: successorAgentSessionId,
+        requestId: 'worker_after_settlement',
+      });
+      const lease = f.coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_session_leases WHERE turn_id = ?')
+        .get(body.turn.id) as { agent_session_id: string; workspace_id: string; thread_id: string };
+      expect(lease).toMatchObject({
+        agent_session_id: successorAgentSessionId,
+        workspace_id: 'ws_demo',
+        thread_id: f.threadId,
+      });
+      recoverPendingRequestsAtBoot(f.store, f.pending);
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      expect(readPendingRequest(db.sqlite, 'input_worker_conversation')).toMatchObject({
+        delivery: 'delivery-unknown',
+        deliveryTurnId: f.turnId,
+      });
+      expect(
+        db.sqlite
+          .prepare('SELECT request_id FROM pending_requests WHERE delivery_turn_id = ?')
+          .all(body.turn.id)
+      ).toEqual([]);
+      db.sqlite.close();
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      expect(requireSchedulerSessionLease(f.coreDb, live.leaseId)).toEqual(live);
+    } finally {
+      finishLaunch();
+      await Promise.allSettled(starts.mock.results.map((result) => result.value));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      prepare.mockRestore();
+      starts.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    true,
+    false,
+  ])('settles an ordinary failed-start worker with anchored cleanup %s', async (anchored) => {
+    const f = createFailedStartFixture(`ordinary_${anchored}`, false, anchored);
+    try {
+      await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
+      expect(f.store.getTurnById(f.turnId)).toMatchObject({
+        status: 'failed',
+        error: { code: 'worker_governance_turn_failed' },
+      });
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('failed');
+      expect(f.input.projectRecoveredTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('finishes a crash after the decided delivery failure without replacing its bytes or duplicating publications', async () => {
+    const f = createFailedStartFixture('partial_delivery', true);
+    f.store.updateTurn(f.turnId, {
+      status: 'failed',
+      completedAt: '2026-10-02T23:59:00.000Z',
+      error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+    });
+    const decided = f.store.getTurnById(f.turnId);
+    try {
+      await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
+      await runSchedulerRecoveryMaintenance(f.coreDb, 9, f.input);
+      expect(f.store.getTurnById(f.turnId)).toEqual(decided);
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('failed');
+      const events = f.store.getTurnEvents(f.turnId);
+      expect(events.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
+      expect(events.find((event) => event.event === 'turn.completed')?.data).toMatchObject({
+        stopReason: 'error',
+        turn: decided,
+      });
+      expect(events.filter((event) => event.event === 'agent.session.updated')).toHaveLength(1);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'package',
+    'request',
+    'route-token',
+    'anchor',
+    'runtime-binding',
+    'stale-session',
+  ] as const)('leaves contradictory %s lineage recovery-required without product writes', async (contradiction) => {
+    const f = createFailedStartFixture(
+      `contradictory_${contradiction}`,
+      false,
+      ['package', 'request', 'runtime-binding'].includes(contradiction)
+    );
+    if (contradiction === 'package')
+      f.store.updateAgentSession(f.agentSessionId, {
+        environmentPackageSnapshotId: 'aepsnap_other',
+      });
+    if (contradiction === 'request')
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_admission_entries SET request_id = ? WHERE turn_id = ?')
+        .run('request_other', f.turnId);
+    if (contradiction === 'route-token')
+      f.coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_session_leases SET worker_control_token_hash = ? WHERE turn_id = ?'
+        )
+        .run('a'.repeat(64), f.turnId);
+    if (contradiction === 'anchor')
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE scheduler_session_leases SET backend_anchor_state = 'anchored' WHERE turn_id = ?"
+        )
+        .run(f.turnId);
+    if (contradiction === 'stale-session')
+      f.store.updateAgentSession(f.agentSessionId, { stale: true });
+    if (contradiction === 'runtime-binding') {
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO sandbox_runtime_records
+        (sandbox_runtime_id, runtime_target_id, origin_physical_epoch, sandbox_binding_ref,
+         sandbox_integration_binding_ref, sandbox_compatibility_key, image_digest, environment_class,
+         max_open_sessions, max_harnesses, max_active_turns, lifecycle_state, health_state, drain_state,
+         cleanup_state, created_at, updated_at)
+        VALUES ('sandbox_contradictory', 'runtime-target-test', ?, 'sandbox-binding-contradictory',
+         'integration-binding-contradictory', ?, ?, 'test', 2, 2, 1, 'open', 'ready', 'accepting', 'unknown', ?, ?)`)
+        .run('a'.repeat(64), 'a'.repeat(64), 'a'.repeat(64), f.input.now(), f.input.now());
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO harness_instance_records
+        (harness_instance_id, sandbox_runtime_id, harness_binding_ref, harness_compatibility_key,
+         runtime_family, adapter_id, adapter_version, protocol_version, capabilities_json, max_open_sessions,
+         max_active_turns, open_session_count, active_turn_count, lifecycle_state, drain_state, next_sequence,
+         operation_state, created_at, updated_at)
+        VALUES ('harness_contradictory', 'sandbox_contradictory', 'harness-binding-contradictory', ?,
+         'codex', 'codex', 'test', 1, '[]', 2, 1, 1, 1, 'open', 'accepting', 1, 'idle', ?, ?)`)
+        .run('a'.repeat(64), f.input.now(), f.input.now());
+      f.coreDb.sqlite
+        .prepare(`INSERT INTO agent_session_runtime_bindings
+      (agent_session_runtime_binding_id, harness_instance_id, agent_session_id, workspace_id, thread_id,
+       agent_session_compatibility_key, effective_setup_generation, native_handle_state, lifecycle_state,
+       current_turn_id, current_lease_id, next_turn_sequence, cleanup_state, created_at, updated_at, image_digest)
+      VALUES (?, ?, ?, ?, ?, ?, 1, 'absent', 'active', ?, ?, 1, 'unknown', ?, ?, ?)`)
+        .run(
+          'binding_contradictory',
+          'harness_contradictory',
+          f.agentSessionId,
+          'ws_demo',
+          f.threadId,
+          'a'.repeat(64),
+          f.turnId,
+          `lease_contradictory_${contradiction}`,
+          f.input.now(),
+          f.input.now(),
+          'a'.repeat(64)
+        );
+    }
+    const before = f.store.getTurnById(f.turnId);
+    try {
+      await expect(runRestartRecoveryThroughMaintenance(f.coreDb, f.input)).rejects.toThrow(
+        /recovery_required/
+      );
+      expect(f.store.getTurnById(f.turnId)).toEqual(before);
+      expect(f.store.getAgentSession(f.agentSessionId).status).toBe('busy');
+      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'session',
+    'terminal-event',
+  ] as const)('retries a real failed %s write after the Turn decision survives a product-store reload', async (missing) => {
+    const f = createFailedStartFixture(`write_failure_${missing}`, true);
+    const emit = f.store.emitTurnEvent.bind(f.store);
+    const fault =
+      missing === 'session'
+        ? vi.spyOn(f.store, 'updateAgentSession').mockImplementationOnce(() => {
+            throw new Error('Injected session write failure.');
+          })
+        : vi.spyOn(f.store, 'emitTurnEvent').mockImplementation((...args) => {
+            if (args[1].event === 'turn.completed')
+              throw new Error('Injected terminal event failure.');
+            return emit(...args);
+          });
+    try {
+      const recovery = await runSchedulerRestartRecovery(f.coreDb, f.input);
+      await expect(
+        runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, f.input)
+      ).rejects.toThrow(
+        /recovery_required: Governed worker turn terminalization encountered partial persistence errors/
+      );
+      const decided = f.store.getTurnById(f.turnId);
+      expect(decided).toMatchObject({ status: 'failed', error: { code: 'delivery_unknown' } });
+      fault.mockRestore();
+      const restarted = new FsStore({ dataRoot: f.dataRoot });
+      const input = { ...f.input, store: restarted };
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, input);
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, input);
+      expect(restarted.getTurnById(f.turnId)).toEqual(decided);
+      expect(restarted.getAgentSession(f.agentSessionId).status).toBe('failed');
+      expect(
+        restarted.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      expect(
+        restarted.getTurnEvents(f.turnId).filter((event) => event.event === 'agent.session.updated')
+      ).toHaveLength(1);
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      fault.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves an authoritative typed refusal and proved outcome delivery while repairing publication', async () => {
+    const f = createFailedStartFixture('typed_refusal', true);
+    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    db.sqlite
+      .prepare(
+        "UPDATE pending_requests SET delivery = 'delivered', held_result_json = NULL WHERE delivery_turn_id = ?"
+      )
+      .run(f.turnId);
+    const proved = readPendingRequest(db.sqlite, 'input_typed_refusal');
+    db.sqlite.close();
+    f.store.updateTurn(f.turnId, {
+      status: 'failed',
+      completedAt: '2026-10-02T23:59:00.000Z',
+      error: { code: 'native_admission_refused', message: 'An authoritative native refusal.' },
+    });
+    const decided = f.store.getTurnById(f.turnId);
+    try {
+      await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
+      await runSchedulerRecoveryMaintenance(f.coreDb, 9, f.input);
+      expect(f.store.getTurnById(f.turnId)).toEqual(decided);
+      expect(f.store.getAgentSession(f.agentSessionId)).toMatchObject({
+        status: 'failed',
+        message: decided.error!.message,
+      });
+      expect(
+        f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      const after = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      expect(readPendingRequest(after.sqlite, 'input_typed_refusal')).toEqual(proved);
+      after.sqlite.close();
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves a live sibling and its exact awaiting-reconnect attempt', async () => {
+    const f = createFailedStartFixture('beside_live');
+    f.input.now = () => '2026-07-05T00:01:00.000Z';
+    prepareReconnectLease(f.coreDb, 'surviving_sibling');
+    const live = requireSchedulerSessionLease(f.coreDb, 'lease_surviving_sibling');
+    try {
+      const input = { ...f.input, restoreBackendSession: async () => {} };
+      const recovery = await runSchedulerRestartRecovery(f.coreDb, input);
+      const armed = requireSchedulerSessionLease(f.coreDb, live.leaseId);
+      expect(armed).toMatchObject({ status: 'active', recoveryState: 'awaiting-reconnect' });
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, input);
+      expect(requireSchedulerSessionLease(f.coreDb, live.leaseId)).toEqual(armed);
+      expect(f.store.getTurnById(f.turnId).status).toBe('failed');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'checkpoint',
+    'accepted-final',
+    'live-owner',
+  ] as const)('leaves an existing %s with its owner', async (owner) => {
+    const suffix = `existing_${owner}`;
+    const f = createFailedStartFixture(suffix);
+    if (owner === 'checkpoint') {
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      db.sqlite
+        .prepare(`INSERT INTO worker_turn_checkpoints
+        (checkpoint_id, workspace_id, thread_id, turn_id, request_id, request_input_hash, stage, iteration, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'running_worker', 1, ?, ?)`)
+        .run(
+          `checkpoint_${suffix}`,
+          'ws_demo',
+          f.threadId,
+          f.turnId,
+          `request_${suffix}`,
+          'a'.repeat(64),
+          f.input.now(),
+          f.input.now()
+        );
+      db.sqlite.close();
+    }
+    if (owner === 'accepted-final')
+      recordWorkerControlAcceptedRecord(f.coreDb, {
+        acceptedAt: f.input.now(),
+        lineage: {
+          agentSessionId: f.agentSessionId,
+          packageSnapshotId: `aepsnap_turn_${suffix}_as_${suffix}`,
+          requestId: `request_${suffix}`,
+          threadId: f.threadId,
+          turnId: f.turnId,
+          workspaceId: 'ws_demo',
+        },
+        operation: 'final_status',
+        record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+        recordKey: '1',
+        sandboxBindingRef: `lease-binding:lease_${suffix}`,
+        sequence: 1,
+      });
+    const before = f.store.getTurnById(f.turnId);
+    const session = f.store.getAgentSession(f.agentSessionId);
+    try {
+      await runRestartRecoveryThroughMaintenance(f.coreDb, {
+        ...f.input,
+        isTurnExecutionActive: () => owner === 'live-owner',
+      });
+      expect(f.store.getTurnById(f.turnId)).toEqual(before);
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+      expect(f.store.getTurnEvents(f.turnId)).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+});
 
 /** Runs the effect-free boot scan followed by one ordinary post-listener drain. */
 async function runRestartRecoveryThroughMaintenance(

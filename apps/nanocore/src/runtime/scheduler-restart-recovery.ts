@@ -2,13 +2,17 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { recordServerAuditEvent } from '../audit-events.js';
+import type { FsStore } from '../lib/store.js';
 import {
   completeSchedulerSessionLease,
+  requireSchedulerAdmissionEntry,
+  requireSchedulerSessionLease,
   requireSchedulerSessionLeaseAdmissionContext,
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { markFrozenDeliveryUnknown, readPendingRequest } from './pending-requests.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
   getWorkerBackendSession,
@@ -20,6 +24,7 @@ import {
 } from './worker-backend-sessions.js';
 import { getWorkerControlAcceptedFinalStatus } from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
+import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 const WORKER_RECONNECT_WINDOW_MS = 300_000;
 
@@ -74,6 +79,8 @@ export interface PreAnchorRecoveryContext {
 
 /** Input for scheduler restart recovery. */
 export interface RunSchedulerRestartRecoveryInput {
+  /** Product owner used by ordinary maintenance to finish terminal failed-start attempts. */
+  readonly store?: FsStore;
   /** Physically destroys one exact durable backend identity. */
   readonly cleanupBackendSession?: (
     session: WorkerGovernanceBackendSessionIdentity
@@ -264,7 +271,266 @@ export async function runSchedulerRecoveryMaintenance(
     }
   }
 
+  const candidates = coreDb.sqlite
+    .prepare(
+      `SELECT lease_id AS leaseId FROM scheduler_session_leases
+       WHERE status = 'failed' AND release_reason = 'turn-start-failed'
+         AND recovery_state = 'needs-evidence' ORDER BY lease_id`
+    )
+    .all() as Array<{ leaseId: string }>;
+  for (const { leaseId } of candidates) {
+    try {
+      if (!input.store) throw new Error('Failed-start product store is unavailable.');
+      settleTerminalFailedStart(coreDb, leaseId, input.store, input, timestamp);
+    } catch (error) {
+      failures.push({
+        leaseId,
+        error: new Error(
+          `recovery_required: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error }
+        ),
+      });
+    }
+  }
+
   throwRecoveryFailures(failures);
+}
+
+/** Proves one failed-start attempt has no remaining execution owner before asking its product owner to finish publication. */
+function settleTerminalFailedStart(
+  coreDb: CoreDb,
+  leaseId: string,
+  store: FsStore,
+  input: RunSchedulerRestartRecoveryInput,
+  timestamp: string
+): void {
+  const lease = requireSchedulerSessionLease(coreDb, leaseId);
+  if (input.isTurnExecutionActive?.(lease.turnId)) return;
+  const turn = store.getTurnById(lease.turnId);
+  if (['completed', 'interrupted', 'cancelled'].includes(turn.status)) return;
+  const session = store.getAgentSession(lease.agentSessionId);
+  const anchor = coreDb.sqlite
+    .prepare(
+      'SELECT backend_anchor_state AS backendAnchorState FROM scheduler_session_leases WHERE lease_id = ?'
+    )
+    .get(leaseId) as { backendAnchorState: LeaseRecoveryRow['backendAnchorState'] };
+  const row = { ...lease, ...anchor };
+  const workspace = openRecoveryWorkspace(coreDb, row);
+  try {
+    const plan = coreDb.sqlite
+      .prepare(
+        `SELECT queue_entry_id AS queueEntryId, workspace_id AS workspaceId, thread_id AS threadId,
+       turn_id AS turnId, selected_target_id AS targetId, selected_pool_id AS poolId,
+       scheduler_epoch AS schedulerEpoch, status FROM scheduler_placement_plans WHERE plan_id = ?`
+      )
+      .get(lease.planId) as
+      | {
+          queueEntryId: string;
+          workspaceId: string;
+          threadId: string;
+          turnId: string;
+          targetId: string;
+          poolId: string;
+          schedulerEpoch: number;
+          status: string;
+        }
+      | undefined;
+    if (!plan) throw new Error('Failed-start placement is missing.');
+    const admission = requireSchedulerAdmissionEntry(coreDb, plan.queueEntryId);
+    const pkg = workspace.environmentPackage;
+    const scope = pkg.scope;
+    const sameLineage = [turn, session, plan, admission, scope].every(
+      (owner) => owner.workspaceId === lease.workspaceId && owner.threadId === lease.threadId
+    );
+    if (
+      !sameLineage ||
+      turn.agentSessionId !== lease.agentSessionId ||
+      plan.turnId !== lease.turnId ||
+      admission.turnId !== lease.turnId ||
+      admission.status !== 'admitted' ||
+      scope.turnId !== lease.turnId ||
+      scope.agentSessionId !== lease.agentSessionId ||
+      scope.requestId !== admission.requestId ||
+      !admission.requestId ||
+      session.environmentPackageSnapshotId !== lease.packageSnapshotId ||
+      session.stale ||
+      session.agentId !== turn.agentId ||
+      admission.requestedAgentId !== turn.agentId ||
+      pkg.agent.agentId !== turn.agentId ||
+      !isDeepStrictEqual(turn.triggerActor, admission.triggerActor) ||
+      plan.status !== 'completed' ||
+      plan.schedulerEpoch !== lease.schedulerEpoch ||
+      plan.targetId !== lease.targetId ||
+      plan.poolId !== lease.poolId
+    ) {
+      throw new Error('Failed-start product, admission, placement or package lineage disagrees.');
+    }
+    const leases = coreDb.sqlite
+      .prepare('SELECT lease_id FROM scheduler_session_leases WHERE turn_id = ?')
+      .all(lease.turnId);
+    const competing = coreDb.sqlite
+      .prepare(
+        `SELECT lease_id FROM scheduler_session_leases WHERE agent_session_id = ? AND lease_id <> ?
+       AND status IN ('planned', 'acquired', 'starting', 'active', 'idle', 'stale', 'releasing')`
+      )
+      .get(lease.agentSessionId, leaseId);
+    const otherPlan = coreDb.sqlite
+      .prepare(
+        "SELECT plan_id FROM scheduler_placement_plans WHERE turn_id = ? AND plan_id <> ? AND status = 'executing'"
+      )
+      .get(lease.turnId, lease.planId);
+    const admissions = coreDb.sqlite
+      .prepare('SELECT queue_entry_id FROM scheduler_admission_entries WHERE turn_id = ?')
+      .all(lease.turnId);
+    const otherBackend = coreDb.sqlite
+      .prepare(
+        `SELECT lease_id FROM worker_backend_sessions WHERE (turn_id = ? OR agent_session_id = ?)
+       AND lease_id <> ? AND state NOT IN ('physical-cleaned', 'cleaned')`
+      )
+      .get(lease.turnId, lease.agentSessionId, leaseId);
+    const turns = store.listThreadTurns(lease.workspaceId, lease.threadId);
+    if (
+      leases.length !== 1 ||
+      admissions.length !== 1 ||
+      competing ||
+      otherPlan ||
+      otherBackend ||
+      turns.some(
+        (other) =>
+          other.id !== turn.id &&
+          other.agentSessionId === lease.agentSessionId &&
+          !['completed', 'failed', 'cancelled', 'interrupted'].includes(other.status)
+      )
+    )
+      throw new Error('Failed-start attempt has a competing execution owner.');
+    if (
+      workspace.db.sqlite
+        .prepare('SELECT turn_id FROM worker_turn_checkpoints WHERE turn_id = ?')
+        .get(lease.turnId) ||
+      coreDb.sqlite
+        .prepare(
+          "SELECT turn_id FROM worker_control_records WHERE turn_id = ? AND operation = 'final_status'"
+        )
+        .get(lease.turnId)
+    )
+      return;
+    const bindings = coreDb.sqlite
+      .prepare(
+        `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
+       agent_session_compatibility_key AS compatibilityKey,
+       lifecycle_state AS lifecycleState, cleanup_state AS cleanupState,
+       current_turn_id AS currentTurnId, current_lease_id AS currentLeaseId
+       FROM agent_session_runtime_bindings WHERE agent_session_id = ? OR current_turn_id = ? OR current_lease_id = ?`
+      )
+      .all(lease.agentSessionId, lease.turnId, leaseId) as Array<{
+      workspaceId: string;
+      threadId: string;
+      agentSessionId: string;
+      compatibilityKey: string;
+      lifecycleState: string;
+      cleanupState: string;
+      currentTurnId: string | null;
+      currentLeaseId: string | null;
+    }>;
+    if (
+      bindings.some(
+        (binding) =>
+          binding.workspaceId !== lease.workspaceId ||
+          binding.threadId !== lease.threadId ||
+          binding.agentSessionId !== lease.agentSessionId ||
+          binding.compatibilityKey !== lease.sessionCompatibilityKey ||
+          binding.currentTurnId !== null ||
+          binding.currentLeaseId !== null ||
+          !['open', 'closed', 'failed'].includes(binding.lifecycleState) ||
+          binding.cleanupState !== 'clean'
+      )
+    ) {
+      throw new Error('Failed-start runtime binding has unproved execution ownership.');
+    }
+    const backend = getWorkerBackendSession(coreDb, leaseId);
+    if (backend) {
+      if (
+        anchor.backendAnchorState !== 'anchored' ||
+        !sameRecoveryLineage(row, backend) ||
+        backend.sandboxBindingRef !== lease.sandboxBindingRef ||
+        !['physical-cleaned', 'cleaned'].includes(backend.state) ||
+        !backend.physicalCleanedAt
+      ) {
+        throw new Error('Failed-start backend cleanup is not definite for this exact attempt.');
+      }
+      assertEnvironmentPackageMatchesSession(pkg, backend);
+    } else if (
+      anchor.backendAnchorState !== 'unanchored' ||
+      bindings.length !== 0 ||
+      lease.lastAcceptedHeartbeatAt !== null ||
+      lease.lastWorkerSequence !== null ||
+      lease.workerProcessKeyHash !== null ||
+      lease.workerControlTokenHash !== null ||
+      lease.workerInferenceTokenHash !== null ||
+      lease.workerCapabilityTokenHash !== null
+    ) {
+      throw new Error('Failed-start attempt has no positive pre-effect proof.');
+    }
+    const deliveryRows = workspace.db.sqlite
+      .prepare('SELECT request_id AS requestId FROM pending_requests WHERE delivery_turn_id = ?')
+      .all(turn.id) as Array<{ requestId: string }>;
+    const outcomes = deliveryRows.map(({ requestId }) => {
+      const record = readPendingRequest(workspace.db.sqlite, requestId);
+      if (
+        !record ||
+        record.workspaceId !== lease.workspaceId ||
+        record.threadId !== lease.threadId ||
+        record.agentId !== turn.agentId ||
+        record.deliveryCause === null ||
+        !['frozen', 'delivered', 'delivery-unknown'].includes(record.delivery)
+      ) {
+        throw new Error('Failed-start outcome delivery lineage or proof disagrees.');
+      }
+      return record;
+    });
+    const unknown = outcomes.some((record) => record.delivery !== 'delivered');
+    // A terminal row is a decision, not proof that its session and events were durably published.
+    const errorCode =
+      turn.status === 'failed'
+        ? turn.error?.code
+        : unknown
+          ? 'delivery_unknown'
+          : 'worker_governance_turn_failed';
+    const message =
+      turn.status === 'failed'
+        ? turn.error?.message
+        : unknown
+          ? 'Outcome delivery could not be proved after the worker failed to start.'
+          : 'The worker attempt failed to start.';
+    if (!errorCode || !message)
+      throw new Error('Failed-start terminal failure has no authoritative diagnostic.');
+    const terminalEvents = store
+      .getTurnEvents(turn.id)
+      .filter((event) => event.event === 'turn.completed');
+    if (
+      terminalEvents.some(
+        (event) =>
+          event.data.type !== 'turn-completed' ||
+          event.data.stopReason !== 'error' ||
+          !isDeepStrictEqual(event.data.turn, turn)
+      )
+    ) {
+      throw new Error('Failed-start terminal publication contradicts its decided Turn.');
+    }
+    if (unknown) markFrozenDeliveryUnknown(workspace.db.sqlite, turn.id, timestamp);
+    terminalizeGovernedWorkerTurn({
+      store,
+      turnId: turn.id,
+      agentSessionId: session.id,
+      requestId: admission.requestId,
+      completedAt: timestamp,
+      errorCode,
+      message,
+      outcome: 'failed',
+    });
+  } finally {
+    workspace.db.sqlite.close();
+  }
 }
 
 /** Throws one aggregate after every independent recovery candidate was attempted. */
