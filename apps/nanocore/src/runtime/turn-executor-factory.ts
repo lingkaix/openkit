@@ -38,6 +38,11 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import {
+  createNanoHostEffectRequest,
+  nanoHostSandboxIdFromBackendSessionId,
+  stableNanoHostEffectJson,
+} from './nanohost-effect-identity.js';
+import {
   copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -61,7 +66,6 @@ import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target.js
 import type {
   NanoHostEffectOperation,
   NanoHostSessionDispatch,
-  NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
@@ -3364,39 +3368,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     return requireNanoHostResultObject(
       await this.sessionDispatch.effect(
-        this.createEffectRequest(identity, leaseId, operation, input)
+        createNanoHostEffectRequest(identity, leaseId, operation, input)
       )
     );
-  }
-
-  /** Re-derives one exact effect request without dispatching it. */
-  private createEffectRequest(
-    identity: WorkerGovernanceBackendSessionIdentity,
-    leaseId: string,
-    operation: NanoHostEffectOperation,
-    input: Readonly<Record<string, unknown>>
-  ): NanoHostSessionEffectRequest {
-    const commandInput =
-      operation === 'bridge.open' || operation === 'image.inspect'
-        ? input
-        : {
-            backendSessionId: identity.backendSessionId,
-            leaseId,
-            packageSnapshotId: identity.packageSnapshotId,
-            ...input,
-          };
-    const requestId = createHash('sha256')
-      .update(
-        stableNanoHostEffectJson({
-          backendSessionId: identity.backendSessionId,
-          input: commandInput,
-          leaseId,
-          operation,
-          packageSnapshotId: identity.packageSnapshotId,
-        })
-      )
-      .digest('hex');
-    return { input: commandInput, kind: operation, requestId };
   }
 
   /** Creates one bounded cleanup expectation set containing no command or token. */
@@ -3414,7 +3388,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       sandboxId: nanoHostSandboxIdFromBackendSessionId(identity.backendSessionId),
     };
     const expectations = (['bridge.close', 'sandbox.delete'] as const).map((operation) => {
-      const request = this.createEffectRequest(identity, leaseId, operation, cleanupInput);
+      const request = createNanoHostEffectRequest(identity, leaseId, operation, cleanupInput);
       return { kind: operation, originPhysicalEpoch, requestId: request.requestId! };
     });
     return this.sessionDispatch.expectResultOnly(expectations);
@@ -4109,20 +4083,6 @@ function nanoHostEffectEvidence(
   return { data, kind, timestamp };
 }
 
-/** Serializes deterministic request identity input with recursive key ordering. */
-function stableNanoHostEffectJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableNanoHostEffectJson(item)).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableNanoHostEffectJson(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
 /** Validates runtime environment credentials retained only until exact private Turn dispatch. */
 function nanoHostRuntimeEnvironment(
   credentials: readonly WorkerGovernanceRuntimeEnvCredential[]
@@ -4259,14 +4219,6 @@ function nanoHostSandboxCompatibilityKey(
 /** Derives the NanoHost-facing physical Sandbox identity from its reuse key. */
 function nanoHostSandboxId(sandboxCompatibilityKey: string): string {
   return `nh-${sandboxCompatibilityKey.slice(0, 16)}`;
-}
-
-/** Recovers the embedded physical Sandbox identity from one backend attempt identity. */
-function nanoHostSandboxIdFromBackendSessionId(backendSessionId: string): string {
-  if (!/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/.test(backendSessionId)) {
-    throw new Error('NanoHost backend session identity is invalid.');
-  }
-  return backendSessionId.slice(0, 19);
 }
 
 /** Hashes the process-static adapter and Integration configuration of one Harness. */

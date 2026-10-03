@@ -19,6 +19,10 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  createNanoHostEffectRequest,
+  nanoHostSandboxIdFromBackendSessionId,
+} from './nanohost-effect-identity.js';
+import {
   dispatchNanoHostHarnessOperation,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
@@ -30,6 +34,7 @@ import {
   requireStoredNanoHostPhysicalEpoch,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
+import { listWorkerBackendSessions } from './worker-backend-sessions.js';
 import {
   readWorkerImageSettlement,
   type WorkerImageSettlement,
@@ -197,7 +202,7 @@ export interface NanoHostResultOnlySettlement {
 
 /** Dependencies for authoritative session dispatch. */
 export interface CreateNanoHostSessionDispatchInput {
-  /** Server database required only for preparation-image settlement. */
+  /** Existing server database used for preparation-image settlement and cleaned-delete correlation. */
   readonly coreDb?: CoreDb | undefined;
   /** Optional direct handler used by lower-level dispatcher checks. */
   readonly effectHandler?: (request: NanoHostSessionEffectRequest) => Promise<unknown>;
@@ -386,6 +391,50 @@ export function createNanoHostSessionDispatch(
       throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
     }
     return readiness.physicalEpoch;
+  };
+
+  /** Checks disposal eligibility only; cleaned state is not proof of prior dispatch or settlement. */
+  const canDiscardCleanedDeleteResult = (
+    physicalConnection: object,
+    requestId: string,
+    result: Readonly<Record<string, unknown>>
+  ): boolean => {
+    const coreDb = input.coreDb;
+    const readiness = readyPhysicalConnections.get(physicalConnection);
+    if (
+      !coreDb ||
+      !readiness ||
+      readiness.runtimeTarget.coreDb !== coreDb ||
+      !/^[0-9a-f]{64}$/.test(requestId) ||
+      Object.keys(result).length !== 2 ||
+      typeof result.sandboxId !== 'string' ||
+      result.state !== 'deleted'
+    )
+      return false;
+    requireCurrentReadiness(readiness);
+    const matches = listWorkerBackendSessions(coreDb).filter((row) => {
+      if (
+        row.backendKind !== 'openshell' ||
+        row.deploymentId !== readiness.runtimeTarget.deploymentId ||
+        row.runtimeTargetId !== readiness.runtimeTarget.targetId
+      )
+        return false;
+      if (!row.leaseId.trim() || !row.packageSnapshotId.trim()) {
+        throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
+      }
+      const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
+      return (
+        sandboxId === result.sandboxId &&
+        createNanoHostEffectRequest(row, row.leaseId, 'sandbox.delete', {
+          leaseId: row.leaseId,
+          sandboxId,
+        }).requestId === requestId
+      );
+    });
+    return (
+      matches.length === 1 &&
+      (matches[0]!.state === 'physical-cleaned' || matches[0]!.state === 'cleaned')
+    );
   };
 
   return {
@@ -790,6 +839,17 @@ export function createNanoHostSessionDispatch(
           }
           return;
         }
+        if (operation === 'sandbox.delete' && completed?.requestId === requestId) {
+          throw effectTransportError(
+            409,
+            'NanoHost delete result conflicts with its completed outcome.'
+          );
+        }
+        if (
+          operation === 'sandbox.delete' &&
+          canDiscardCleanedDeleteResult(physicalConnection, requestId, resultBody)
+        )
+          return;
         throw new Error('NanoHost effect result does not match a pending request.');
       }
       if ((!pending.accepted && !pending.resultOnlyGroup) || pending.requestId !== requestId) {
@@ -840,6 +900,16 @@ export function createNanoHostSessionDispatch(
         });
         pending.reject(effectTransportError(500, 'NanoHost effect failed: effect_failed.'));
         return;
+      }
+      if (
+        operation === 'sandbox.delete' &&
+        pending.command &&
+        (Object.keys(resultBody).length !== 2 ||
+          resultBody.sandboxId !== pending.command.sandboxId ||
+          typeof resultBody.sandboxId !== 'string' ||
+          resultBody.state !== 'deleted')
+      ) {
+        throw effectTransportError(409, 'NanoHost delete result disagrees with its command.');
       }
       if (operation === 'bridge.open') {
         if (!pending.command) {

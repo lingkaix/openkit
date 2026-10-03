@@ -49,6 +49,7 @@ import {
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -949,24 +950,6 @@ describe('createConfiguredTurnExecutor', () => {
         runtimeTarget
       );
 
-      const runtime = createConfiguredWorkerLifecycleRuntime({
-        coreDb,
-        env: {},
-        nanoHostSessionDispatch: dispatch,
-        workerControlGateway: new WorkerControlGateway(),
-      });
-      const requestBuilder = (
-        runtime.turnExecutor as unknown as {
-          readonly backend: {
-            createEffectRequest(
-              identity: WorkerGovernanceBackendSessionIdentity,
-              leaseId: string,
-              operation: 'image.inspect' | 'sandbox.create',
-              input: Readonly<Record<string, unknown>>
-            ): NanoHostSessionEffectRequest;
-          };
-        }
-      ).backend;
       const identity: WorkerGovernanceBackendSessionIdentity = {
         agentSessionId: 'as_effect_carriage',
         backendKind: 'openshell',
@@ -978,13 +961,13 @@ describe('createConfiguredTurnExecutor', () => {
         transientProviderInstanceId: null,
       };
       const imageDigest = `sha256:${'d'.repeat(64)}`;
-      const imageInspection = requestBuilder.createEffectRequest(
+      const imageInspection = createNanoHostEffectRequest(
         identity,
         'lease_effect_carriage',
         'image.inspect',
         { imageDigest }
       );
-      const otherLeaseInspection = requestBuilder.createEffectRequest(
+      const otherLeaseInspection = createNanoHostEffectRequest(
         identity,
         'lease_effect_carriage_other',
         'image.inspect',
@@ -1007,7 +990,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       await expect(pendingInspection).resolves.toEqual({ digest: imageDigest });
 
-      const sandboxCreate = requestBuilder.createEffectRequest(
+      const sandboxCreate = createNanoHostEffectRequest(
         identity,
         'lease_effect_carriage',
         'sandbox.create',
@@ -1372,10 +1355,19 @@ describe('createConfiguredTurnExecutor', () => {
       expect(launchSource).toContain(requiredImportOwner);
     }
     expect(launchSource).toContain("'bridge.open'");
-    const effectSource = backendSource?.split('private async effect(')[1];
-    expect(effectSource).toContain('stableNanoHostEffectJson');
-    expect(effectSource).toContain('operation');
-    expect(effectSource).toContain("operation === 'bridge.open'");
+    const effectSource = backendSource
+      ?.split('private async effect(')[1]
+      ?.split('private createCleanupRecoveryResult(')[0];
+    expect(effectSource).toContain(
+      'createNanoHostEffectRequest(identity, leaseId, operation, input)'
+    );
+    const identitySource = readFileSync(
+      new URL('./nanohost-effect-identity.ts', import.meta.url),
+      'utf8'
+    );
+    expect(identitySource).toContain('stableNanoHostEffectJson');
+    expect(identitySource).toContain('operation');
+    expect(identitySource).toContain("operation === 'bridge.open'");
     for (const bootstrapField of [
       'harnessBindingRef',
       'integrationReady',
