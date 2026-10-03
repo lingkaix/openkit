@@ -22,6 +22,7 @@ import {
   packageReleaseAssets,
   verifyOperationsSkillArchive,
 } from '../scripts/package-release-assets.mjs';
+import { parseNanoHostHostManifest } from '../scripts/release-preflight.mjs';
 
 test('release packager archives the complete Skill and writes its SHA-256', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-release-assets-'));
@@ -516,13 +517,46 @@ test('NanoHost ELF checks accept a load segment ending exactly at the signed add
   assert.match(verified.stdout, /package=pass[\s\S]*staged-only/u);
 });
 
-test('NanoHost packager projects the promoted Docker and slirp4netns identities', () => {
+test('NanoHost release inputs reject missing or malformed Git identities', () => {
+  const manifest = JSON.parse(
+    readFileSync(join(process.cwd(), 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
+  );
+  assert.deepEqual(parseNanoHostHostManifest(JSON.stringify(manifest)), manifest);
+  for (const git of [
+    undefined,
+    { path: '/other/git', version: 'git version 2.43.0' },
+    { path: '/usr/bin/git', version: '' },
+    { path: '/usr/bin/git', version: 243 },
+  ]) {
+    const invalid = structuredClone(manifest);
+    invalid.commands.git = git;
+    assert.throws(
+      () => parseNanoHostHostManifest(JSON.stringify(invalid)),
+      /NanoHost promoted host manifest is invalid/u
+    );
+  }
+});
+
+test('NanoHost packager projects every promoted prerequisite identity including Git', () => {
   const packaged = packageNanoHostFixture();
   const extractedRoot = extractArchive(packaged.archive, packaged.prefix);
   const generatedManifest = readFileSync(join(extractedRoot, 'MANIFEST.json'), 'utf8');
   const hostManifest = JSON.parse(
     readFileSync(join(packaged.fixture.repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
   );
+  const prerequisites = JSON.parse(generatedManifest).prerequisites;
+  assert.deepEqual(prerequisites.files, [
+    '/usr/bin/containerd',
+    '/usr/bin/dockerd',
+    '/usr/bin/docker',
+    '/usr/bin/git',
+    '/usr/bin/slirp4netns',
+  ]);
+  assert.deepEqual(prerequisites.identities, {
+    docker: hostManifest.commands.docker,
+    git: hostManifest.commands.git,
+    slirp4netns: hostManifest.commands.slirp4netns,
+  });
   for (const expected of [
     hostManifest.commands.docker.version,
     hostManifest.commands.slirp4netns.version,
@@ -530,31 +564,56 @@ test('NanoHost packager projects the promoted Docker and slirp4netns identities'
   ]) {
     assert.match(generatedManifest, new RegExp(escapeRegExp(expected), 'u'));
   }
-  const mutationDir = join(packaged.fixture.repoRoot, 'dist', 'host-identity-substitution');
-  mkdirSync(mutationDir);
-  const mutatedArchive = join(mutationDir, packaged.archiveName);
-  rewriteArchive(packaged.archive, mutatedArchive, packaged.prefix, {
-    mutateRoot(root) {
-      const manifestPath = join(root, 'MANIFEST.json');
-      writeFileSync(
-        manifestPath,
-        readFileSync(manifestPath, 'utf8').replace(
-          hostManifest.commands.docker.version,
-          `${hostManifest.commands.docker.version}-mismatch`
-        )
-      );
-      refreshInnerChecksums(root);
-    },
-  });
-  const result = runVerifierWithFreshChecksum(
-    join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs'),
-    mutatedArchive,
-    packaged.archiveName,
-    packaged.fixture.repoRoot,
-    join(packaged.fixture.repoRoot, 'stage-host-identity-substitution')
-  );
-  assert.notEqual(result.status, 0, 'verifier accepted a substituted generated host identity');
-  assert.match(result.stderr, /host manifest|prerequisite|identity/i);
+  for (const [label, mutate] of [
+    [
+      'docker-version',
+      (manifest) => {
+        manifest.prerequisites.identities.docker.version += '-mismatch';
+      },
+    ],
+    [
+      'git-version',
+      (manifest) => {
+        manifest.prerequisites.identities.git.version += '-mismatch';
+      },
+    ],
+    [
+      'git-identity',
+      (manifest) => {
+        delete manifest.prerequisites.identities.git;
+      },
+    ],
+    [
+      'git-file',
+      (manifest) => {
+        manifest.prerequisites.files = manifest.prerequisites.files.filter(
+          (path) => path !== '/usr/bin/git'
+        );
+      },
+    ],
+  ]) {
+    const mutationDir = join(packaged.fixture.repoRoot, 'dist', `host-identity-${label}`);
+    mkdirSync(mutationDir);
+    const mutatedArchive = join(mutationDir, packaged.archiveName);
+    rewriteArchive(packaged.archive, mutatedArchive, packaged.prefix, {
+      mutateRoot(root) {
+        const manifestPath = join(root, 'MANIFEST.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        mutate(manifest);
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        refreshInnerChecksums(root);
+      },
+    });
+    const result = runVerifierWithFreshChecksum(
+      join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs'),
+      mutatedArchive,
+      packaged.archiveName,
+      packaged.fixture.repoRoot,
+      join(packaged.fixture.repoRoot, `stage-host-identity-${label}`)
+    );
+    assert.notEqual(result.status, 0, `verifier accepted ${label} prerequisite drift`);
+    assert.match(result.stderr, /host manifest|prerequisite|identity/i);
+  }
 });
 
 test('NanoHost packager rejects incomplete and non-loadable ELF64 AArch64 executables', () => {
@@ -789,6 +848,7 @@ function makeNanoHostReleaseFixture() {
         cgroupMode: 'unified-v2',
         commands: {
           docker: { path: '/usr/bin/docker', version: 'Docker fixture version' },
+          git: { path: '/usr/bin/git', version: 'git version 2.43.0' },
           slirp4netns: {
             path: '/usr/bin/slirp4netns',
             version: 'slirp4netns fixture version',

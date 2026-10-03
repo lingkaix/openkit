@@ -168,6 +168,7 @@ export function assertOpenShellSdkRevision(release, cargoToml, cargoLock) {
 export function parseNanoHostHostManifest(source) {
   const manifest = JSON.parse(source);
   const docker = manifest.commands?.docker;
+  const git = manifest.commands?.git;
   const slirp4netns = manifest.commands?.slirp4netns;
   if (
     manifest.schemaVersion !== 1 ||
@@ -177,6 +178,9 @@ export function parseNanoHostHostManifest(source) {
     docker?.path !== '/usr/bin/docker' ||
     typeof docker.version !== 'string' ||
     docker.version.length === 0 ||
+    git?.path !== '/usr/bin/git' ||
+    typeof git.version !== 'string' ||
+    git.version.length === 0 ||
     slirp4netns?.path !== '/usr/bin/slirp4netns' ||
     typeof slirp4netns.version !== 'string' ||
     slirp4netns.version.length === 0 ||

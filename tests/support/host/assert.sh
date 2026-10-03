@@ -37,7 +37,7 @@ collect_remote_facts() {
       if (result.status !== 0) process.exit(1);
       return result.stdout.split(/\r?\n/u)[0].trim();
     };
-    const versionArgs = { bash: ["--version"], curl: ["--version"], docker: ["--version"], node: ["--version"], sha256sum: ["--version"], slirp4netns: ["--version"], sudo: ["--version"], systemctl: ["--version"], tar: ["--version"], timeout: ["--version"] };
+    const versionArgs = { bash: ["--version"], curl: ["--version"], docker: ["--version"], git: ["--version"], node: ["--version"], sha256sum: ["--version"], slirp4netns: ["--version"], sudo: ["--version"], systemctl: ["--version"], tar: ["--version"], timeout: ["--version"] };
     const commands = {};
     for (const [name, args] of Object.entries(versionArgs)) {
       const path = run("/usr/bin/bash", ["-c", "type -P -- \"$1\"", "bash", name]);

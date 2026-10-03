@@ -133,14 +133,20 @@ export function verifyNanoHostRelease(input) {
     const hostManifest = parseNanoHostHostManifest(
       readFileSync(join(repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
     );
+    const prerequisiteIdentities = {
+      docker: hostManifest.commands.docker,
+      git: hostManifest.commands.git,
+      slirp4netns: hostManifest.commands.slirp4netns,
+    };
     const expectedPrerequisites = {
       architecture: 'aarch64',
-      files: ['/usr/bin/containerd', '/usr/bin/dockerd', '/usr/bin/docker', '/usr/bin/slirp4netns'],
+      files: [
+        '/usr/bin/containerd',
+        '/usr/bin/dockerd',
+        ...Object.values(prerequisiteIdentities).map(({ path }) => path),
+      ],
       systemd: true,
-      identities: {
-        docker: hostManifest.commands.docker,
-        slirp4netns: hostManifest.commands.slirp4netns,
-      },
+      identities: prerequisiteIdentities,
     };
     if (
       manifest.schemaVersion !== 1 ||

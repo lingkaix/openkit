@@ -90,10 +90,11 @@ write_bundle_manifest() {
   },
   "prerequisites": {
     "architecture": "aarch64",
-    "files": ["/usr/bin/containerd", "/usr/bin/dockerd", "/usr/bin/docker", "/usr/bin/slirp4netns"],
+    "files": ["/usr/bin/containerd", "/usr/bin/dockerd", "/usr/bin/docker", "/usr/bin/git", "/usr/bin/slirp4netns"],
     "systemd": true,
     "identities": {
       "docker": {"path": "/usr/bin/docker", "version": "$docker_version"},
+      "git": {"path": "/usr/bin/git", "version": "git version 2.43.0"},
       "slirp4netns": {"path": "/usr/bin/slirp4netns", "version": "$slirp_version", "sha256": "$slirp_sha"}
     }
   }
@@ -138,9 +139,10 @@ new_case() {
     chmod 0755 "$STUBS/$command"
   done
   printf '#!/bin/sh\nprintf "Docker fixture version\\n"\n' >"$STUBS/docker"
+  printf '#!/bin/sh\nprintf "git version 2.43.0\\n"\n' >"$STUBS/git"
   printf '#!/bin/sh\nprintf "slirp4netns fixture version\\ncommit: fixture\\nlibslirp: fixture\\n"\n' >"$STUBS/slirp4netns"
   printf '#!/bin/sh\nprintf "aarch64\\n"\n' >"$STUBS/uname"
-  chmod 0755 "$STUBS/docker" "$STUBS/slirp4netns" "$STUBS/uname"
+  chmod 0755 "$STUBS/docker" "$STUBS/git" "$STUBS/slirp4netns" "$STUBS/uname"
   local slirp_sha
   slirp_sha="$(sha256sum "$STUBS/slirp4netns" | cut -d' ' -f1)"
   write_bundle_manifest 'Docker fixture version' 'slirp4netns fixture version' "$slirp_sha"
@@ -166,6 +168,7 @@ namespace_command() {
     --ro-bind "$STUBS/containerd" /usr/bin/containerd
     --ro-bind "$STUBS/dockerd" /usr/bin/dockerd
     --ro-bind "$STUBS/docker" /usr/bin/docker
+    --ro-bind "$STUBS/git" /usr/bin/git
     --ro-bind "$STUBS/slirp4netns" /usr/bin/slirp4netns
     --chdir "$BUNDLE"
   )
@@ -235,6 +238,14 @@ test_exact_host_identities() {
   ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong Docker identity reported host prerequisites pass'
 
   new_case
+  printf '#!/bin/sh\nprintf "git version 0.0.0\\n"\n' >"$STUBS/git"
+  chmod 0755 "$STUBS/git"
+  run_case wrong-git '' --check
+  expect_status 1 wrong-git
+  [[ "$ERROR" == 'host-prerequisite=git-identity' ]] || fail "wrong Git identity reached the wrong refusal: stderr=$ERROR"
+  ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong Git identity reported host prerequisites pass'
+
+  new_case
   printf '#!/bin/sh\nprintf "wrong slirp version\\n"\n' >"$STUBS/slirp4netns"
   chmod 0755 "$STUBS/slirp4netns"
   local slirp_sha
@@ -261,7 +272,7 @@ test_other_host_prerequisites_and_ancestors() {
   [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong host architecture'
   ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong architecture reported host prerequisites pass'
 
-  for prerequisite in containerd dockerd; do
+  for prerequisite in containerd dockerd git; do
     new_case
     chmod 0644 "$STUBS/$prerequisite"
     run_case "missing-$prerequisite" '' --check

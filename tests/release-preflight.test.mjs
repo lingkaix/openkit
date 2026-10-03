@@ -458,6 +458,10 @@ function makeReleaseFixture(options = {}) {
           path: options.hostDockerPath ?? '/usr/bin/docker',
           version: 'Docker fixture version',
         },
+        git: {
+          path: '/usr/bin/git',
+          version: 'git version 2.43.0',
+        },
         slirp4netns: {
           path: '/usr/bin/slirp4netns',
           sha256: '1'.repeat(64),
