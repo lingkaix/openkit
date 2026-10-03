@@ -4817,14 +4817,6 @@ mod tests {
         String::from_utf8_lossy(&delivery.body()).into_owned()
     }
 
-    struct RestoreMode(PathBuf);
-
-    impl Drop for RestoreMode {
-        fn drop(&mut self) {
-            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
-        }
-    }
-
     struct ClearEnv(&'static str);
 
     impl Drop for ClearEnv {
@@ -5149,9 +5141,14 @@ mod tests {
         let base = collector.retain_worktree_as_base();
         write_file(&fixture.worktree().join("a"), b"CLEANUP_SECRET", 0o644);
         let attempt = collector.git.attempt.clone();
-        let _restore = RestoreMode(attempt.clone());
+        let retained_attempt = fixture.root.join("retained-attempt");
+        let blocked_path = attempt.clone();
+        let retained_path = retained_attempt.clone();
         collector.hooks.before_cleanup = Some(Box::new(move || {
-            fs::set_permissions(&attempt, fs::Permissions::from_mode(0o555)).unwrap();
+            // A regular file makes remove_dir_all fail even for the root service identity.
+            // Keep the real attempt objects intact so the existing retention assertions still apply.
+            fs::rename(&blocked_path, &retained_path).unwrap();
+            fs::write(&blocked_path, b"cleanup obstruction").unwrap();
         }));
         let mut command = command_for(&base, &base);
         command.runtime_env = vec!["CLEANUP_SECRET".to_string()];
@@ -5159,6 +5156,10 @@ mod tests {
         assert_outcome(&delivery, &failed_json());
         assert!(!rendered(&delivery).contains("credential_hit"));
         assert!(!rendered(&delivery).contains("CLEANUP_SECRET"));
+        assert!(attempt.is_file());
+        assert!(count_files(&retained_attempt) > 0);
+        fs::remove_file(&attempt).unwrap();
+        fs::rename(&retained_attempt, &attempt).unwrap();
         assert!(collector.git.attempt.exists());
         assert_eq!(collector.state.as_ref().unwrap().head, base);
         assert!(collector.object_exists(&base.tree));
@@ -5310,12 +5311,9 @@ mod tests {
         let fixture = Fixture::new();
         let repo = fixture.root.join("ignore-repo");
         fs::create_dir_all(&repo).unwrap();
-        let init = Command::new("/usr/bin/git")
-            .current_dir(&repo)
-            .args(["init", "-q"])
-            .status()
-            .unwrap();
-        assert!(init.success());
+        // A concurrent hostile-environment test mutates process-wide Git variables.
+        // Use the existing isolated fixture setup so capture always gets its own repository.
+        worker_git(&repo, &["init", "-q"]);
         fs::write(repo.join(".gitignore"), b"*\n").unwrap();
         let mut stdin = Vec::new();
         for index in 0..1500 {
@@ -5504,18 +5502,18 @@ mod tests {
         assert_outcome(&unavailable, &recovery("snapshot_unavailable"));
         assert_eq!(collector.state.as_ref().unwrap().head, base);
 
-        fs::set_permissions(
-            fixture.worktree().join("a"),
-            fs::Permissions::from_mode(0o000),
-        )
-        .unwrap();
+        let file = fixture.worktree().join("a");
+        let unavailable_file = fixture.root.join("unavailable-a");
+        let listed_path = file.clone();
+        let unavailable_path = unavailable_file.clone();
+        collector.hooks.before_file_open = Some(Box::new(move || {
+            // Removing the listed leaf before openat produces ENOENT for root and non-root alike.
+            fs::rename(&listed_path, &unavailable_path).unwrap();
+        }));
         let metadata = collector.collect(&command_for(&base, &base));
         assert_outcome(&metadata, &recovery("metadata_unavailable"));
-        fs::set_permissions(
-            fixture.worktree().join("a"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .unwrap();
+        collector.hooks.before_file_open = None;
+        fs::rename(&unavailable_file, &file).unwrap();
         assert_eq!(collector.state.as_ref().unwrap().head, base);
 
         let empty = collector.mktree(b"").unwrap();

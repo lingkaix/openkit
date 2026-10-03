@@ -1195,7 +1195,7 @@ struct PendingSeedHardlink {
 }
 
 fn extract_seed_archive(mut reader: impl Read, root: &Path) -> io::Result<u32> {
-    reject_extended_metadata(root)?;
+    reject_extended_metadata(root, Path::new("."))?;
     let mut entries = 0_u64;
     let mut bytes = 0_u64;
     let mut root_mode = None;
@@ -1508,7 +1508,8 @@ fn finalize_seed_root(path: &Path, uid: u32, gid: u32, mode: u32) -> io::Result<
     File::open(path)?.sync_all()
 }
 
-fn reject_extended_metadata(path: &Path) -> io::Result<()> {
+/// Refuses all Linux xattrs, reporting only bounded names and the caller's seed-relative path.
+fn reject_extended_metadata(path: &Path, relative: &Path) -> io::Result<()> {
     let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| io::Error::other("seed metadata path invalid"))?;
     #[cfg(target_os = "linux")]
@@ -1519,19 +1520,51 @@ fn reject_extended_metadata(path: &Path) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
         if length > 0 {
-            return Err(io::Error::other("extended seed metadata rejected"));
+            // Bound the diagnostic read independently of a changing filesystem's reported length.
+            let mut names = vec![0_u8; length.min(65_536) as usize];
+            // SAFETY: path is NUL-terminated and names is writable for exactly its stated length.
+            let read =
+                unsafe { libc::llistxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+            let summary = if read > 0 {
+                seed_attribute_names(&names[..read as usize])
+            } else {
+                // The first query already established refusal; a race/read failure cannot admit it.
+                "names unavailable (...)".to_string()
+            };
+            return Err(io::Error::other(format!(
+                "extended seed metadata rejected at {relative:?}: {summary}"
+            )));
         }
         Ok(())
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = path;
+        let _ = (path, relative);
         Ok(())
     }
 }
 
+/// Formats at most four names, each limited to 64 raw bytes, without accessing attribute values.
+#[cfg(target_os = "linux")]
+fn seed_attribute_names(bytes: &[u8]) -> String {
+    let mut names = bytes
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty());
+    let mut shown = Vec::new();
+    for name in names.by_ref().take(4) {
+        let text = String::from_utf8_lossy(&name[..name.len().min(64)]);
+        let elision = if name.len() > 64 { "..." } else { "" };
+        // Debug quoting escapes control bytes so a name cannot inject another diagnostic line.
+        shown.push(format!("{text:?}{elision}"));
+    }
+    if names.next().is_some() {
+        shown.push("...".to_string());
+    }
+    format!("[{}]", shown.join(", "))
+}
+
 fn validate_seed_tree(root: &Path) -> io::Result<()> {
-    reject_extended_metadata(root)?;
+    reject_extended_metadata(root, Path::new("."))?;
     let mut stack = vec![(root.to_path_buf(), PathBuf::new())];
     let mut entries = 0_u64;
     let mut bytes = 0_u64;
@@ -1544,8 +1577,8 @@ fn validate_seed_tree(root: &Path) -> io::Result<()> {
                 .filter(|entries| *entries <= MAX_SEED_ENTRIES)
                 .ok_or_else(|| io::Error::other("seed entry bound exceeded"))?;
             let metadata = fs::symlink_metadata(entry.path())?;
-            reject_extended_metadata(&entry.path())?;
             let entry_relative = relative.join(entry.file_name());
+            reject_extended_metadata(&entry.path(), &entry_relative)?;
             if metadata.file_type().is_dir() {
                 stack.push((entry.path(), entry_relative));
             } else if metadata.file_type().is_file() {
@@ -2161,12 +2194,71 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_metadata_refusal_names_attributes_without_values() {
+        let root = temporary_root();
+        fs::create_dir_all(root.join("nested")).unwrap();
+        let file = root.join("nested/file");
+        fs::write(&file, b"seed bytes").unwrap();
+        let path = CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
+        let name = c"user.openkit_seed_test";
+        let value = b"XATTR_VALUE_MUST_STAY_PRIVATE_9a";
+        // SAFETY: the path/name are NUL-terminated and value is valid for its stated length.
+        let result = unsafe {
+            libc::lsetxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ENOTSUP) {
+                // Only this Linux filesystem capability precondition permits a skip.
+                eprintln!(
+                    "SKIPPED: seed metadata refusal test filesystem rejects user. attributes with ENOTSUP"
+                );
+                fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            panic!("could not set seed test attribute: {error}");
+        }
+        let error = reject_extended_metadata(&file, Path::new("nested/file")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let message = error.to_string();
+        assert!(message.contains("user.openkit_seed_test"), "{message}");
+        assert!(message.contains("nested/file"), "{message}");
+        assert!(!message.contains(root.to_str().unwrap()), "{message}");
+        assert!(!message.contains(std::str::from_utf8(value).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_attribute_diagnostics_bound_names_and_render_lossy_utf8() {
+        let mut names = b"user.invalid-\xff\n\0".to_vec();
+        names.extend_from_slice(format!("user.{}\0", "a".repeat(80)).as_bytes());
+        names.extend_from_slice(b"user.third\0user.fourth\0user.not-shown\0");
+        let message = seed_attribute_names(&names);
+        assert!(message.contains("user.invalid-\u{fffd}\\n"), "{message}");
+        assert!(!message.contains('\n'));
+        assert!(message.contains(&format!("user.{}\"...", "a".repeat(59))));
+        assert!(!message.contains(&"a".repeat(60)));
+        assert!(message.contains("user.fourth"));
+        assert!(!message.contains("user.not-shown"));
+        assert!(message.ends_with(", ...]"), "{message}");
+        assert!(message.len() < 256, "{}", message.len());
+    }
+
+    #[test]
     fn seed_validation_preserves_symlink_bytes_without_following_them() {
         let root = temporary_root();
         fs::create_dir(&root).unwrap();
         symlink("../../outside", root.join("relative")).unwrap();
         symlink("/opt/runtime/bin/python", root.join("absolute")).unwrap();
-        assert!(validate_seed_tree(&root).is_ok());
+        validate_seed_tree(&root).expect("safe seed symlinks must validate");
         assert_eq!(
             fs::read_link(root.join("relative")).unwrap(),
             Path::new("../../outside")
@@ -2186,7 +2278,7 @@ pub(crate) mod tests {
         fs::create_dir(&outside).unwrap();
         fs::write(root.join("first"), b"same inode").unwrap();
         fs::hard_link(root.join("first"), root.join("second")).unwrap();
-        assert!(validate_seed_tree(&root).is_ok());
+        validate_seed_tree(&root).expect("internal seed hardlinks must validate");
 
         fs::write(outside.join("external"), b"outside inode").unwrap();
         fs::hard_link(outside.join("external"), root.join("external-link")).unwrap();

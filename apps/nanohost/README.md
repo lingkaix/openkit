@@ -128,6 +128,10 @@ cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt
 ```
 
+The deterministic Cargo suite runs as root in the CI test image and also supports a non-root caller. Collection failure fixtures use filesystem substitutions at the existing cleanup/open hooks, because root bypasses ordinary permission modes. Worker Git fixture setup removes ambient Git repository/configuration variables so concurrently tested hostile environments cannot redirect another fixture's repository initialization.
+
+Linux seed validation refuses every extended attribute and reports the affected seed-relative path plus at most four attribute names, each limited to 64 raw bytes with an elision marker. Names use lossy UTF-8 and escaped diagnostic quoting; values are never read or reported. Diagnostic listing failure still refuses the seed. The Linux attribute regression may skip only when setting its `user.` fixture attribute returns `ENOTSUP`, with an explicit reason printed by that test.
+
 ## Related documentation
 
 - Spec: [docs/specs/20260802-nanohost_runtime_and_transport.md](../../docs/specs/20260802-nanohost_runtime_and_transport.md)
