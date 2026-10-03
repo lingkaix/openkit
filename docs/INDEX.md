@@ -148,7 +148,7 @@ and are not listed here.
 - `docs/specs/20260930-pending_requests.md` — Accepted, Not Started — The pending request concept for approval requests and user-input requests: its definition, its durable record, and its lifecycle of raise, resolve, end, and de…
 - `docs/specs/20261002-goal.md` — Accepted, Partial — The Goal, its work-intent cards, its immutable Plan versions, the wake marker, the completion disposition, and the Goal operations.
 - `docs/specs/20261002-operation_definition.md` — Accepted, Partial — The declarative definition of each public operation, the exact implementation join, and the derivation of its projections.
-- `docs/specs/20261002-remote_mcp_interface.md` — Accepted, Implemented — The remote MCP endpoint on the configured public origin, its Streamable HTTP posture, and static-bearer admission.
+- `docs/specs/20261002-remote_mcp_interface.md` — Accepted, Partial — The remote MCP endpoint on the configured public origin, its Streamable HTTP posture, and static-bearer admission.
 
 ## Terminal Specifications
 

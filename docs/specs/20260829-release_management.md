@@ -97,7 +97,7 @@ The current release bundle contains exactly these controlled assets:
 | Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over both attached Skill archives and the NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
-The assets above and the post-publication checks below are the current release procedure. Once the remote MCP endpoint covers the user-facing Skill, that Skill is retired under [OpenKit Agent Skill Interface](20260713-openkit_agent_skill_interface.md). The end-user Skill archive then leaves this composition, and the public Skill CLI local-operation-discovery check is replaced by verification of the operator CLI derived from the operation definitions in [Operation Definition](20261002-operation_definition.md). This amendment does not change the current assets, checksum, or verification steps.
+The assets above and the post-publication checks below are the current release procedure. Once the [first-release retirement coverage condition](20260713-openkit_agent_skill_interface.md#live-product-use-and-acceptance) is demonstrated, the user-facing Skill is retired under OpenKit Agent Skill Interface. The end-user Skill archive then leaves this composition, and the public Skill CLI local-operation-discovery check is replaced by verification of the operator CLI derived from the operation definitions in [Operation Definition](20261002-operation_definition.md). This amendment does not change the current assets, checksum, or verification steps.
 
 GitHub-generated source archives are convenience snapshots and are not controlled release artifacts or checksum authorities.
 
@@ -186,6 +186,8 @@ The workflow MUST download every controlled GitHub Release attachment and verify
 The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, NanoHost target and current R001 runtime status, and portable-asset checksum.
 
 ## Current Implementation Projection
+
+The first-release Skill retirement coverage condition and the consequent release-composition transition above are decided and not yet implemented.
 
 The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation.
 

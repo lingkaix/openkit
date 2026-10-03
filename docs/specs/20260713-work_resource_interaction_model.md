@@ -491,6 +491,8 @@ Without either a strict accepted Turn-owned immutable S39 Context Package trace 
 
 An authorized human-facing App API client may read and edit a restricted Material revision, but `sensitivity=restricted` forbids exact content transfer through the transport-neutral Agent Skill and worker delivery. The Agent Skill catalog may expose `listWorkspaceMaterials`, `getWorkspaceMaterial`, `listWorkspaceMaterialRevisions`, `getThreadMaterial`, `bindThreadMaterial`, `unbindThreadMaterial`, `excludeThreadMaterial`, and `restoreThreadMaterial` for restricted Materials because their closed inputs and responses contain no canonical content. Its `getWorkspaceMaterialRevision` and `saveWorkspaceMaterialRevision` handlers MUST preflight the Material metadata and return `409 sensitive_content` without calling the content-bearing route when sensitivity is restricted; `createWorkspaceMaterial` likewise rejects caller input with `sensitivity=restricted`. Public and internal Materials may use those three content-capable operations normally. The catalog MUST NOT add an alternate raw route, generic call, or CLI escape that bypasses this boundary.
 
+Remote MCP and the retained administrator CLI are subject to the same exact-content prohibition as the Agent Skill; administrator credentials do not bypass this delivery restriction. After Workspace authorization, revision read and save preflight canonical Material metadata and refuse restricted content with sensitive_content, corresponding to HTTP 409, before content access or mutation; restricted creation is likewise refused before creation. Remote MCP returns that refusal as a tool result. Restricted metadata operations remain available, public and internal content retain their ordinary behavior, and authorized human-facing App API exact read/edit remains available. The entry point determines the channel; caller input and credential privilege cannot relabel it. Material records remain the authority; the preflight stores nothing, so a preflight-record creation, update, termination, retry or recovery lifecycle does not apply. Existing conflict, missing and inconsistent-record failures remain authoritative; failure to obtain authorized metadata prevents content invocation, and every new attempt after failure or restart repeats the checks. Acceptance proves these outcomes for ordinary and administrator MCP callers, the CLI guard, worker delivery refusal, and successful authorized human exact read/edit, without a generic-call bypass.
+
 ### Command surface
 
 The Phase 1 mutation names and canonical caller inputs are closed:
@@ -518,6 +520,10 @@ An imported or existing Artifact enters a conversation only as the exact `{ arti
 Typed reads cover Artifact and Material lookup, exact revision list and content retrieval, client-side comparison of immutable revisions, Thread material projection, and Artifact Review projection. Reads do not mutate authority or enter the command ledger.
 
 Web and Agent Skill Interface consumers MUST use governed public operations instead of NanoCore storage.
+
+## Current Implementation Projection
+
+The remote MCP restricted-Material preflight above is decided and not yet implemented. The administrator CLI retains its existing restricted-content guard.
 
 ## Alternatives Considered
 

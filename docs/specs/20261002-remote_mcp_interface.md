@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Implemented
+implementation: Partial
 kind: boundary
 date: "2026-10-02"
 updated: "2026-10-02"
@@ -99,6 +99,8 @@ After successful verification, the Token's last-used summary records the channel
 
 An admitted request invokes the operation through [Operation Definition](20261002-operation_definition.md), with the actor above.
 
+Remote MCP is a model-facing delivery channel and applies the restricted-Material preflight owned by [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#public-material-read-models) before content invocation; authenticating as the Token's human owner does not convert the delivery into a human-facing App API read.
+
 A credential limit stays in force. A `workspace-readonly` Token that calls a mutating operation receives the existing typed authorization refusal as a tool result. The protected effect does not run.
 
 An operation that returns a one-time secret stays unreachable. [Operation Definition](20261002-operation_definition.md) owns that exclusion. This endpoint does not dispatch the operation. The refusal is a tool result.
@@ -134,6 +136,8 @@ A missing or unusable credential fails closed before MCP dispatch. A stale or re
 The externally observable acceptance predicates are Testing Strategy / Acceptance Criteria.
 
 ## Current Implementation Projection
+
+The restricted-Material preflight at the server-owned `/mcp` entry is decided and not yet implemented.
 
 The App listener serves stateless Streamable HTTP at `/mcp` from `apps/nanocore/src/remote-mcp-routes.ts`, registered in `apps/nanocore/src/app.ts` behind the existing authentication middleware. Admission accepts only an `Authorization: Bearer` Token through the existing Token verifier, in both local and server mode. A missing or unusable credential, a query, body or cookie credential, a browser session, and implicit local authority receive HTTP 401 with `WWW-Authenticate: Bearer` and no MCP dispatch. Non-loopback plaintext is refused from the Node socket before verification. Successful verification records last-used channel and source `remote-mcp` before any caller channel or source header is read. The tools are `search`, `describe`, `guide`, and `call`, derived from the composed operation definition tables with no maintained operation list. `call` uses the native operation invocation with the presented Token actor, and product refusals are tool results. A definition whose output schema is the access-token issuance or rotation schema is refused before dispatch, and the bootstrap response schema is that issuance schema; a new secret-returning output contract must join that predicate before it joins the tables. Request audit is an existing server AuditEvent recording the Token user, the Token id, and `remote-mcp`, without tool arguments or results. The endpoint has no MCP session store, refresh token, protected-resource metadata, or browser OAuth route.
 
