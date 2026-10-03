@@ -1367,7 +1367,7 @@ describe('nanocore server', () => {
     writeFileSync(join(dataRoot, 'server', 'quarantine', '1-core.sqlite'), 'demo');
     const app = createApp({ dataRoot });
 
-    const res = await app.request('/api/app/storage/layout-report');
+    const res = await app.request(...operationRequest('storage.layout-report', {}));
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -1394,7 +1394,9 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
     const app = createApp({ dataRoot });
 
-    const createRes = await app.request('/api/app/data-root/backups', { method: 'POST' });
+    const createRes = await app.request(
+      ...operationRequest('backup.create', {}, { method: 'POST' })
+    );
 
     expect(createRes.status).toBe(200);
     const created = DataRootBackupCreateResponseSchema.parse(await createRes.json());
@@ -1408,11 +1410,17 @@ describe('nanocore server', () => {
     expect(created.checkedFiles).toContain('server/db/core.sqlite');
     expect(JSON.stringify(created)).not.toContain(dataRoot);
 
-    const verifyRes = await app.request(`/api/app/data-root/backups/${created.backupId}/verify`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ backupId: created.backupId }),
-    });
+    const verifyRes = await app.request(
+      ...operationRequest(
+        'backup.verify',
+        { backupId: created.backupId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ backupId: created.backupId }),
+        }
+      )
+    );
 
     expect(verifyRes.status).toBe(200);
     const verified = DataRootBackupVerifyResponseSchema.parse(await verifyRes.json());
@@ -4094,19 +4102,19 @@ describe('nanocore server', () => {
       openapi: '3.1.0',
       'x-openkit-protocol-version': PROTOCOL_VERSION,
       paths: {
-        '/api/app/storage/layout-report': {
-          get: {
-            operationId: 'getStorageLayoutReport',
+        '/api/app/operations/storage.layout-report': {
+          post: {
+            operationId: 'storage.layout-report',
           },
         },
-        '/api/app/data-root/backups': {
+        '/api/app/operations/backup.create': {
           post: {
-            operationId: 'createDataRootBackup',
+            operationId: 'backup.create',
           },
         },
-        '/api/app/data-root/backups/{backupId}/verify': {
+        '/api/app/operations/backup.verify': {
           post: {
-            operationId: 'verifyDataRootBackup',
+            operationId: 'backup.verify',
           },
         },
         '/api/app/workspaces/{workspaceId}/export': {

@@ -32,8 +32,10 @@ function makeClient(): CoreClient {
   return {
     app: {
       listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
-      createDataRootBackup: vi.fn().mockResolvedValue(RESPONSE),
-      verifyDataRootBackup: vi.fn().mockResolvedValue(RESPONSE),
+    },
+    operations: {
+      'backup.create': vi.fn().mockResolvedValue(RESPONSE),
+      'backup.verify': vi.fn().mockResolvedValue(RESPONSE),
     },
   } as unknown as CoreClient;
 }
@@ -67,11 +69,11 @@ describe('Deployment data-root backup', () => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
     const create = await screen.findByRole('button', { name: 'Create backup' });
-    expect(client.app.createDataRootBackup).not.toHaveBeenCalled();
+    expect(client.operations['backup.create']).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Verify backup' })).toBeDisabled();
     await userEvent.click(create);
     expect(await screen.findByText('Backup created')).toBeInTheDocument();
-    expect(client.app.createDataRootBackup).toHaveBeenCalledExactlyOnceWith();
+    expect(client.operations['backup.create']).toHaveBeenCalledExactlyOnceWith({});
     expect(screen.getByDisplayValue(BACKUP_ID)).toBeInTheDocument();
     for (const value of [
       'hot',
@@ -86,7 +88,9 @@ describe('Deployment data-root backup', () => {
     }
     await userEvent.click(screen.getByRole('button', { name: 'Verify backup' }));
     expect(await screen.findByText('Backup verified')).toBeInTheDocument();
-    expect(client.app.verifyDataRootBackup).toHaveBeenCalledExactlyOnceWith(BACKUP_ID);
+    expect(client.operations['backup.verify']).toHaveBeenCalledExactlyOnceWith({
+      backupId: BACKUP_ID,
+    });
     expect(container.innerHTML).not.toContain(POISON);
     expect(container.innerHTML).not.toContain('another-private-file');
     expect(
@@ -109,8 +113,10 @@ describe('Deployment data-root backup', () => {
     await userEvent.type(input, `  ${BACKUP_ID}  `);
     await userEvent.click(screen.getByRole('button', { name: 'Verify backup' }));
     expect(await screen.findByText('Backup verified')).toBeInTheDocument();
-    expect(client.app.verifyDataRootBackup).toHaveBeenCalledExactlyOnceWith(BACKUP_ID);
-    expect(client.app.createDataRootBackup).not.toHaveBeenCalled();
+    expect(client.operations['backup.verify']).toHaveBeenCalledExactlyOnceWith({
+      backupId: BACKUP_ID,
+    });
+    expect(client.operations['backup.create']).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -126,30 +132,30 @@ describe('Deployment data-root backup', () => {
     expect(container.innerHTML).not.toContain(POISON);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('button', { name: 'Create backup' })).toBeInTheDocument();
-    expect(client.app.createDataRootBackup).not.toHaveBeenCalled();
+    expect(client.operations['backup.create']).not.toHaveBeenCalled();
   });
 
   it.each([
-    'createDataRootBackup',
-    'verifyDataRootBackup',
+    'backup.create',
+    'backup.verify',
   ] as const)('clears prior records on %s denial; Retry never replays a mutation', async (method) => {
     const client = makeClient();
     const { container } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
     await screen.findByText('Backup created');
-    vi.mocked(client.app[method]).mockRejectedValueOnce(new ApiCallError(403, POISON));
+    vi.mocked(client.operations[method]).mockRejectedValueOnce(new ApiCallError(403, POISON));
     await userEvent.click(
       screen.getByRole('button', {
-        name: method === 'createDataRootBackup' ? 'Create backup' : 'Verify backup',
+        name: method === 'backup.create' ? 'Create backup' : 'Verify backup',
       })
     );
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(container.innerHTML).not.toContain(BACKUP_ID);
     expect(container.innerHTML).not.toContain(POISON);
-    const calls = vi.mocked(client.app[method]).mock.calls.length;
+    const calls = vi.mocked(client.operations[method]).mock.calls.length;
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByRole('button', { name: 'Create backup' });
-    expect(client.app[method]).toHaveBeenCalledTimes(calls);
+    expect(client.operations[method]).toHaveBeenCalledTimes(calls);
     expect(screen.queryByText('Backup created')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Create backup' }));
     expect(await screen.findByText('Backup created')).toBeInTheDocument();
@@ -176,9 +182,9 @@ describe('Deployment data-root backup', () => {
 
   it('blocks duplicate or overlapping actions while creation is pending', async () => {
     const client = makeClient();
-    let resolve: (value: Awaited<ReturnType<CoreClient['app']['createDataRootBackup']>>) => void =
+    let resolve: (value: Awaited<ReturnType<CoreClient['operations']['backup.create']>>) => void =
       () => {};
-    vi.mocked(client.app.createDataRootBackup).mockImplementationOnce(
+    vi.mocked(client.operations['backup.create']).mockImplementationOnce(
       () =>
         new Promise((done) => {
           resolve = done;
@@ -192,10 +198,10 @@ describe('Deployment data-root backup', () => {
     expect(screen.getByRole('button', { name: 'Verify backup' })).toBeDisabled();
     expect(screen.getByLabelText('Backup ID')).toBeDisabled();
     await act(async () =>
-      resolve(RESPONSE as unknown as Awaited<ReturnType<CoreClient['app']['createDataRootBackup']>>)
+      resolve(RESPONSE as unknown as Awaited<ReturnType<CoreClient['operations']['backup.create']>>)
     );
     expect(await screen.findByText('Backup created')).toBeInTheDocument();
-    expect(client.app.createDataRootBackup).toHaveBeenCalledTimes(1);
+    expect(client.operations['backup.create']).toHaveBeenCalledTimes(1);
   });
 
   it('retries an authority-check failure without leaking its raw message', async () => {
@@ -210,13 +216,13 @@ describe('Deployment data-root backup', () => {
 
   it('uses a safe retryable error without automatically repeating create', async () => {
     const client = makeClient();
-    vi.mocked(client.app.createDataRootBackup).mockRejectedValueOnce(new Error(POISON));
+    vi.mocked(client.operations['backup.create']).mockRejectedValueOnce(new Error(POISON));
     const { container } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
     expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument();
     expect(container.innerHTML).not.toContain(POISON);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(client.app.createDataRootBackup).toHaveBeenCalledTimes(1);
+    expect(client.operations['backup.create']).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole('button', { name: 'Create backup' }));
     expect(await screen.findByText('Backup created')).toBeInTheDocument();
   });

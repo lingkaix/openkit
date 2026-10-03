@@ -1,12 +1,19 @@
-import { mkdtempSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataRootBackupCreateResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -59,53 +66,117 @@ describe('data-root admin routes', () => {
 
     try {
       const adminHeaders = { authorization: `Bearer ${serverAdmin.secret}` };
-      const adminLayout = await app.request('/api/app/storage/layout-report', {
-        headers: adminHeaders,
-      });
-      const adminCreate = await app.request('/api/app/data-root/backups', {
-        method: 'POST',
-        headers: adminHeaders,
-      });
+      const adminLayout = await app.request(
+        ...operationRequest(
+          'storage.layout-report',
+          {},
+          {
+            headers: adminHeaders,
+          }
+        )
+      );
+      const adminCreate = await app.request(
+        ...operationRequest(
+          'backup.create',
+          {},
+          {
+            method: 'POST',
+            headers: adminHeaders,
+          }
+        )
+      );
       expect(adminCreate.status).toBe(200);
       const { backupId } = DataRootBackupCreateResponseSchema.parse(await adminCreate.json());
-      const adminVerify = await app.request(`/api/app/data-root/backups/${backupId}/verify`, {
-        method: 'POST',
-        headers: adminHeaders,
-      });
+      const adminVerify = await app.request(
+        ...operationRequest(
+          'backup.verify',
+          { backupId: backupId },
+          {
+            method: 'POST',
+            headers: adminHeaders,
+          }
+        )
+      );
 
       expect(adminLayout.status).toBe(200);
       expect(adminVerify.status).toBe(200);
 
       const sessionResponses = await Promise.all([
-        app.request('/api/app/storage/layout-report'),
-        app.request('/api/app/data-root/backups', { method: 'POST' }),
-        app.request(`/api/app/data-root/backups/${backupId}/verify`, { method: 'POST' }),
+        app.request(...operationRequest('storage.layout-report', {})),
+        app.request(...operationRequest('backup.create', {}, { method: 'POST' })),
+        app.request(
+          ...operationRequest('backup.verify', { backupId: backupId }, { method: 'POST' })
+        ),
       ]);
       for (const response of sessionResponses) {
         expect(response.status).toBe(403);
         await expect(response.json()).resolves.toMatchObject({
-          code: 'data_root_admin_forbidden',
+          code: 'deployment_admin_required',
         });
       }
 
       for (const token of [workspace, readonly]) {
         const headers = { authorization: `Bearer ${token.secret}` };
         const responses = await Promise.all([
-          app.request('/api/app/storage/layout-report', { headers }),
-          app.request('/api/app/data-root/backups', { method: 'POST', headers }),
-          app.request(`/api/app/data-root/backups/${backupId}/verify`, {
-            method: 'POST',
-            headers,
-          }),
+          app.request(...operationRequest('storage.layout-report', {}, { headers })),
+          app.request(...operationRequest('backup.create', {}, { method: 'POST', headers })),
+          app.request(
+            ...operationRequest(
+              'backup.verify',
+              { backupId: backupId },
+              {
+                method: 'POST',
+                headers,
+              }
+            )
+          ),
         ]);
 
         for (const response of responses) {
           expect(response.status).toBe(403);
         }
         await expect(responses[0]?.json()).resolves.toMatchObject({
-          code: 'data_root_admin_forbidden',
+          code: 'deployment_admin_required',
         });
       }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves the HTTP 500 body on an unexpected storage read failure without changing retained bytes or Core users', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-unexpected-failure-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const admin = createOpenKitAccessTokenRecord(coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_local',
+        scope: 'server-admin',
+        workspaceIds: [],
+      });
+      const app = createApp({ coreDb, dataRoot, mode: 'server' });
+      // Corruption is introduced after startup so the real request reaches the layout reader's SQLite failure.
+      const damagedDbDirectory = join(dataRoot, 'users', 'user_storage_failure', 'db');
+      mkdirSync(damagedDbDirectory, { recursive: true });
+      const damagedDb = join(damagedDbDirectory, 'user.sqlite');
+      const damagedBytes = Buffer.from('retained malformed SQLite fixture');
+      writeFileSync(damagedDb, damagedBytes);
+      const usersBefore = coreDb.sqlite.prepare('SELECT * FROM users').all();
+      const response = await app.request(
+        ...operationRequest(
+          'storage.layout-report',
+          {},
+          { headers: { authorization: `Bearer ${admin.secret}` } }
+        )
+      );
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe('Internal Server Error');
+      expect(readFileSync(damagedDb)).toEqual(damagedBytes);
+      expect(readdirSync(damagedDbDirectory)).toEqual(['user.sqlite']);
+      expect(coreDb.sqlite.prepare('SELECT * FROM users').all()).toEqual(usersBefore);
+      expect(existsSync(`${dataRoot}.backups`)).toBe(false);
     } finally {
       coreDb.sqlite.close();
     }

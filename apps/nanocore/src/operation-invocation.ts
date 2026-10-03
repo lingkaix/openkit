@@ -29,6 +29,11 @@ import {
 } from './artifact-operations.js';
 import type { Actor } from './auth/identity.js';
 import {
+  createNanoHostOperationImplementations,
+  NanoHostOperationError,
+} from './auth/nanohost-operations.js';
+import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
+import {
   assertAuthorizedWorkspaceLineage,
   authorizedWorkspaceSet,
   authorizeWorkspace,
@@ -60,13 +65,16 @@ import {
 } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
-import { readConfiguredNanoHostRuntimeTargetStatus } from './runtime/nanohost-runtime-target.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import {
   PendingRequestCommandError,
   readPendingRequestLineage,
 } from './runtime/pending-requests.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
+import {
+  createDataRootAdminOperationImplementations,
+  DataRootAdminOperationError,
+} from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createThread } from './thread-routes.js';
 import { readTurn } from './turn-routes.js';
@@ -132,9 +140,13 @@ export interface OperationInvocationDependencies {
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
   }) => Promise<ReturnType<FsStore['getTurnById']>>;
-  /** Existing configured RuntimeTarget observation owner inputs, used only by the administration read. */
+  /** Existing NanoHost lifecycle and configured RuntimeTarget observation owner inputs. */
   readonly mode?: CoreMode;
-  readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
+  readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'> &
+    Partial<OpenKitNanoHostConfig>;
+  /** Trusted deployment storage path and process-local transport fencing owner. */
+  readonly dataRoot?: string | null;
+  readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
 }
 
 /** Typed boundary failure; output failure never implies effect rollback. */
@@ -376,20 +388,15 @@ function createOperationImplementations(
       ...dependencies.pendingRequestServices!,
       store: dependencies.store!,
     }),
-    'nanohost.runtime-target': () => {
-      const observation = readConfiguredNanoHostRuntimeTargetStatus({
-        coreDb: dependencies.coreDb,
-        mode: dependencies.mode ?? 'local',
-        ...(dependencies.nanoHostConfig ? { nanoHostConfig: dependencies.nanoHostConfig } : {}),
-      });
-      if (!observation.ok)
-        throw new OperationInvocationError(
-          observation.code,
-          observation.message,
-          observation.httpStatus
-        );
-      return observation.status;
-    },
+    ...createNanoHostOperationImplementations({
+      coreDb: dependencies.coreDb,
+      mode: dependencies.mode ?? 'local',
+      ...(dependencies.nanoHostConfig ? { nanoHostConfig: dependencies.nanoHostConfig } : {}),
+      ...(dependencies.nanoHostSessionAuthority
+        ? { sessionAuthority: dependencies.nanoHostSessionAuthority }
+        : {}),
+    }),
+    ...createDataRootAdminOperationImplementations(dependencies.dataRoot ?? null),
   } satisfies OperationImplementations;
 }
 
@@ -436,7 +443,15 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
               : context.actor.tokenScope === 'server-admin'
                 ? 'deployment-administrator'
                 : 'user-bearer';
-    if (!(definition.credentials as readonly string[]).includes(credential)) throw denied();
+    if (!(definition.credentials as readonly string[]).includes(credential)) {
+      if (definition.scope.kind === 'server')
+        throw new OperationInvocationError(
+          'deployment_admin_required',
+          'Current deployment administrator authority is required.',
+          403
+        );
+      throw denied();
+    }
     const actor =
       context.kind === 'worker'
         ? context.actor
@@ -445,14 +460,14 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
     let workspaceIds: readonly string[] = [];
     if (definition.scope.kind === 'server') {
       if (context.kind !== 'public') throw denied();
-      if (!coreDb)
+      if (!coreDb && context.actor.kind !== 'local')
         throw new OperationInvocationError(
           'nanohost_transport_storage_unavailable',
           'NanoHost transport storage is unavailable.',
           503
         );
       try {
-        requireCurrentDeploymentAdmin(coreDb, context.actor);
+        if (coreDb) requireCurrentDeploymentAdmin(coreDb, context.actor);
       } catch (error) {
         if (error instanceof DeploymentAdminRequiredError)
           throw new OperationInvocationError('deployment_admin_required', error.message, 403);
@@ -594,6 +609,8 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       return validated.data as OperationOutput<K> | PreparedTaskKnowledgeContext;
     } catch (error) {
       if (
+        error instanceof NanoHostOperationError ||
+        error instanceof DataRootAdminOperationError ||
         error instanceof KnowledgeOperationError ||
         error instanceof ArtifactOperationError ||
         error instanceof HumanAttentionReadError ||

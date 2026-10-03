@@ -26,7 +26,8 @@ export interface CreateAdministrationNanoHostRuntimeTargetToolInput {
 export function createAdministrationNanoHostRuntimeTargetTool(
   input: CreateAdministrationNanoHostRuntimeTargetToolInput
 ): AgentTool {
-  const [id, definition] = Object.entries(ADMINISTRATION_OPERATION_DEFINITIONS)[0]!;
+  const id = 'nanohost.runtime-target';
+  const definition = ADMINISTRATION_OPERATION_DEFINITIONS[id];
   const invoke = createOperationInvocation(input);
   return {
     name: id,
@@ -34,11 +35,7 @@ export function createAdministrationNanoHostRuntimeTargetTool(
     inputSchema: z.toJSONSchema(definition.inputSchema),
     execute: async (value): Promise<AgentToolResult> => {
       try {
-        const output = await invoke(
-          id as keyof typeof ADMINISTRATION_OPERATION_DEFINITIONS,
-          value,
-          { kind: 'public', actor: input.actor }
-        );
+        const output = await invoke(id, value, { kind: 'public', actor: input.actor });
         return {
           content: [{ type: 'text', text: JSON.stringify(output) }],
           details: {

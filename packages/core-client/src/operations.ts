@@ -1,21 +1,21 @@
 import {
+  OPERATION_DEFINITIONS,
+  type OperationId,
   type OperationOutput,
   operationHttpPath,
-  PRODUCT_OPERATION_DEFINITIONS,
-  type ProductOperationId,
 } from '@openkit/app-api-schemas';
 import type { z } from 'zod';
 import { createRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
 /** Caller arguments retain schema defaults; handlers consume the parsed output type. */
-type OperationArguments<K extends ProductOperationId> = z.input<
-  (typeof PRODUCT_OPERATION_DEFINITIONS)[K]['inputSchema']
+type OperationArguments<K extends OperationId> = z.input<
+  (typeof OPERATION_DEFINITIONS)[K]['inputSchema']
 >;
 
 /** Typed operation methods derived solely from the shared definition table. */
 export type OperationClient = {
-  readonly [K in ProductOperationId]: (
+  readonly [K in OperationId]: (
     input: OperationArguments<K> extends { requestId: string }
       ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
       : OperationArguments<K>
@@ -25,7 +25,7 @@ export type OperationClient = {
 /** Projects definition-driven JSON methods onto the existing shared client transport. */
 export function createOperationClient(transport: ClientTransport): OperationClient {
   return Object.fromEntries(
-    Object.entries(PRODUCT_OPERATION_DEFINITIONS).map(([id, definition]) => [
+    Object.entries(OPERATION_DEFINITIONS).map(([id, definition]) => [
       id,
       async (value: Record<string, unknown>) => {
         const parsed = definition.inputSchema.parse(

@@ -351,10 +351,10 @@ export function getNanoHostRuntimeTarget(
 }
 
 /**
- * Reads the startup-configured NanoHost RuntimeTarget as the public redacted readiness projection.
+ * Reads the startup-configured NanoHost RuntimeTarget as the redacted readiness observation shared by the canonical JSON operation and internal administration Tool.
  *
- * @param input Server-mode Core, startup NanoHost config, and storage handle used by the GET route.
- * @returns Ready or unready status fields, or the same missing/config/storage/server-mode failures as GET.
+ * @param input Server-mode Core, startup NanoHost configuration, and storage handle for the shared observation.
+ * @returns Ready or unready status fields, or the configured observation's missing, configuration, storage or server-mode failure.
  */
 export function readConfiguredNanoHostRuntimeTargetStatus(input: {
   readonly coreDb: CoreDb | undefined;

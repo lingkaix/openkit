@@ -86,7 +86,7 @@ exit 0
 set -u
 input=$(cat)
 printf '%s\n%s\n' "$*" "$input" >>"$OPENKIT_HOST_STUB_CURL_LOG"
-if [[ "$*" == *"/api/app/nanohost/runtime-target"* ]]; then
+if [[ "$*" == *"/api/app/operations/nanohost.runtime-target"* ]]; then
   printf 'readiness\n' >>"$OPENKIT_HOST_STUB_EVENT_LOG"
   if [[ "$OPENKIT_HOST_STUB_READINESS" == blocking && ! -e "$OPENKIT_HOST_STUB_BLOCK_MARKER" ]]; then
     : >"$OPENKIT_HOST_STUB_BLOCK_MARKER"
@@ -104,7 +104,7 @@ if [[ "$*" == *"/api/app/nanohost/runtime-target"* ]]; then
   else
     printf '{"identityId":"other-identity","deploymentId":"%s","connectionGeneration":1,"predecessorFenced":true,"ready":true,"freshEmpty":true,"observedAt":"2026-08-15T00:00:00Z"}\n' "$OPENKIT_HOST_NANOHOST_DEPLOYMENT_ID"
   fi
-elif [[ "$*" == *"/api/app/nanohost/decommission"* ]]; then
+elif [[ "$*" == *"/api/app/operations/nanohost.decommission"* ]]; then
   printf 'decommission\n' >>"$OPENKIT_HOST_STUB_EVENT_LOG"
   exit "$OPENKIT_HOST_STUB_DECOMMISSION_EXIT"
 else
@@ -265,7 +265,9 @@ for (const [label, rendezvousUrl] of [
     const { curlLog, result, sshLog } = runA1ScriptWithStubs('teardown.sh', rendezvousUrl);
     assert.equal(result.status, 0, result.stderr);
     assert.match(sshLog, /systemctl stop openkit-nanohost\.service/u);
-    assert.match(curlLog, /\/api\/app\/nanohost\/decommission/u);
+    assert.match(curlLog, /\/api\/app\/operations\/nanohost\.decommission/u);
+    assert.match(curlLog, /--request POST/u);
+    assert.match(curlLog, /--data \{\}/u);
     assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(testAdminToken, 'u'));
   });
 }
@@ -279,10 +281,10 @@ test('loopback HTTP passes HTTP/2 prior knowledge to readiness and decommission;
   assert.equal(loopbackResult.status, 0, loopbackResult.stderr);
   const loopbackLines = curlUrlLines(loopbackLog);
   const loopbackReadiness = loopbackLines.find((line) =>
-    line.includes('/api/app/nanohost/runtime-target')
+    line.includes('/api/app/operations/nanohost.runtime-target')
   );
   const loopbackDecommission = loopbackLines.find((line) =>
-    line.includes('/api/app/nanohost/decommission')
+    line.includes('/api/app/operations/nanohost.decommission')
   );
   assert.match(
     loopbackReadiness ?? '',
@@ -302,10 +304,10 @@ test('loopback HTTP passes HTTP/2 prior knowledge to readiness and decommission;
   assert.equal(httpsResult.status, 0, httpsResult.stderr);
   const httpsLines = curlUrlLines(httpsLog);
   const httpsReadiness = httpsLines.find((line) =>
-    line.includes('/api/app/nanohost/runtime-target')
+    line.includes('/api/app/operations/nanohost.runtime-target')
   );
   const httpsDecommission = httpsLines.find((line) =>
-    line.includes('/api/app/nanohost/decommission')
+    line.includes('/api/app/operations/nanohost.decommission')
   );
   assert.ok(httpsReadiness, `missing HTTPS readiness curl:\n${httpsLog}`);
   assert.ok(httpsDecommission, `missing HTTPS decommission curl:\n${httpsLog}`);
@@ -364,7 +366,7 @@ test('host assertion failure still invokes teardown and credential cleanup', () 
   );
   assert.deepEqual(
     {
-      credentialCleanupInvoked: curlLog.includes('/api/app/nanohost/decommission'),
+      credentialCleanupInvoked: curlLog.includes('/api/app/operations/nanohost.decommission'),
       exitStatus: result.status,
       secretEmitted: `${result.stdout}${result.stderr}`.includes(testAdminToken),
       teardownInvoked: sshLog.includes('systemctl stop openkit-nanohost.service'),

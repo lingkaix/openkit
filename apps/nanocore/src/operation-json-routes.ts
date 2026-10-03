@@ -1,4 +1,4 @@
-import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
@@ -13,7 +13,7 @@ import {
 } from './operation-invocation.js';
 import { GoalCommandError } from './runtime/goal-owner.js';
 
-/** Projects every implemented JSON product definition onto native invocation, with trusted actor and header identity. */
+/** Projects every implemented JSON operation definition onto native invocation, with trusted actor and header identity. */
 export function registerOperationJsonRoutes(
   dependencies: OperationInvocationDependencies & {
     app: Hono<{ Variables: AuthVariables }>;
@@ -21,8 +21,8 @@ export function registerOperationJsonRoutes(
   }
 ): void {
   const { app, requestStore } = dependencies;
-  for (const [id, definition] of Object.entries(PRODUCT_OPERATION_DEFINITIONS)) {
-    registerAppApiRoute(app, id as keyof typeof PRODUCT_OPERATION_DEFINITIONS, async (c) => {
+  for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+    registerAppApiRoute(app, id as keyof typeof OPERATION_DEFINITIONS, async (c) => {
       try {
         const body: unknown = await c.req.json().catch(() => null);
         if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -56,7 +56,7 @@ export function registerOperationJsonRoutes(
             successStatus = status;
           },
         });
-        const output = await invoke(id as keyof typeof PRODUCT_OPERATION_DEFINITIONS, input, {
+        const output = await invoke(id as keyof typeof OPERATION_DEFINITIONS, input, {
           kind: 'public',
           actor: c.get('actor'),
         });
@@ -67,6 +67,8 @@ export function registerOperationJsonRoutes(
           return asApiError(error.message, error.code, error.status);
         if (error instanceof GoalCommandError)
           return asApiError(error.message, error.code, error.status);
+        // Administration preserves the HTTP framework's unexpected-error response.
+        if (definition.scope.kind === 'server') throw error;
         if (id.startsWith('kernel.')) return asKernelApiError(error);
         return asCommandError(error, definition.mutating ? 'thread_create_failed' : 'not_found');
       }

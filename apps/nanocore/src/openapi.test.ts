@@ -5,8 +5,8 @@ import {
   CreateProviderSubscriptionAccountRequestSchema,
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
   operationHttpPath,
-  PRODUCT_OPERATION_DEFINITIONS,
   SubscriptionProviderIdSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -347,12 +347,12 @@ describe('app api openapi projection', () => {
     );
     expect(document.info.description).toContain('Generated projection from OpenKit Zod schemas');
     expect(document['x-openkit-source-digest']).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(document.components.schemas.StorageLayoutReportResponse).toMatchObject({
+    expect(document.components.schemas['storage.layout-report.output']).toMatchObject({
       type: 'object',
       required: ['dataRoot', 'serverDb', 'users', 'workspaces', 'quarantineEntries'],
     });
-    expect(document.paths['/api/app/storage/layout-report']?.get).toMatchObject({
-      operationId: 'getStorageLayoutReport',
+    expect(document.paths['/api/app/operations/storage.layout-report']?.post).toMatchObject({
+      operationId: 'storage.layout-report',
       tags: ['storage'],
       security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
@@ -360,7 +360,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/StorageLayoutReportResponse',
+                $ref: '#/components/schemas/storage.layout-report.output',
               },
             },
           },
@@ -1433,29 +1433,29 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/data-root/backups']?.post).toMatchObject({
-      operationId: 'createDataRootBackup',
-      tags: ['storage'],
+    expect(document.paths['/api/app/operations/backup.create']?.post).toMatchObject({
+      operationId: 'backup.create',
+      tags: ['backup'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/DataRootBackupCreateResponse',
+                $ref: '#/components/schemas/backup.create.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/data-root/backups/{backupId}/verify']?.post).toMatchObject({
-      operationId: 'verifyDataRootBackup',
-      tags: ['storage'],
+    expect(document.paths['/api/app/operations/backup.verify']?.post).toMatchObject({
+      operationId: 'backup.verify',
+      tags: ['backup'],
       requestBody: {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/DataRootBackupVerifyRequest',
+              $ref: '#/components/schemas/backup.verify.input',
             },
           },
         },
@@ -1702,7 +1702,9 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/storage/layout-report']?.get.responses.default).toMatchObject({
+    expect(
+      document.paths['/api/app/operations/storage.layout-report']?.post.responses.default
+    ).toMatchObject({
       content: {
         'application/json': {
           schema: {
@@ -2386,7 +2388,7 @@ describe('app api openapi projection', () => {
         ({ operation }) =>
           typeof operation.operationId !== 'string' ||
           (!/^[a-z][A-Za-z0-9]*$/.test(operation.operationId) &&
-            !Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, operation.operationId))
+            !Object.hasOwn(OPERATION_DEFINITIONS, operation.operationId))
       )
       .map(({ route }) => route);
     const duplicateOperationIds = operationIds.filter(
@@ -2454,17 +2456,19 @@ describe('app api openapi projection', () => {
   it('registers runtime handlers from shared openapi route definitions', async () => {
     const app = new Hono();
 
-    registerAppApiRoute(app, 'getStorageLayoutReport', (c) => c.json({ ok: true }));
+    registerAppApiRoute(app, 'storage.layout-report', (c) => c.json({ ok: true }));
 
     expect(app.routes.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: 'GET', path: '/api/app/storage/layout-report' },
+      { method: 'POST', path: '/api/app/operations/storage.layout-report' },
     ]);
-    expect(getRegisteredAppApiOperationIds(app)).toEqual(['getStorageLayoutReport']);
-    const response = await app.request('/api/app/storage/layout-report');
+    expect(getRegisteredAppApiOperationIds(app)).toEqual(['storage.layout-report']);
+    const response = await app.request('/api/app/operations/storage.layout-report', {
+      method: 'POST',
+    });
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(() =>
-      registerAppApiRoute(app, 'getStorageLayoutReport', (c) => c.json({ ok: true }))
-    ).toThrow('App API operation is already registered: getStorageLayoutReport');
+      registerAppApiRoute(app, 'storage.layout-report', (c) => c.json({ ok: true }))
+    ).toThrow('App API operation is already registered: storage.layout-report');
     expect(() =>
       registerAppApiRoute(app, 'missingOperation' as never, (c) => c.json({ ok: true }))
     ).toThrow('Unknown App API operationId: missingOperation');
@@ -2562,14 +2566,6 @@ describe('app api openapi projection', () => {
       'rotateOpenKitAccessToken',
       'listMyAdminAccessTokens',
       'setMyAdminAccessTokenDefault',
-      'enrollNanoHost',
-      'getNanoHostRuntimeTargetStatus',
-      'listNanoHostTransportTokens',
-      'issueNanoHostTransportToken',
-      'revokeNanoHostTransportToken',
-      'rotateNanoHostTransportToken',
-      'abortNanoHostTransportTokenRotation',
-      'decommissionNanoHost',
       'createWorkspaceVaultSecret',
       'rotateWorkspaceVaultSecret',
       'revokeWorkspaceVaultSecret',
@@ -2597,9 +2593,6 @@ describe('app api openapi projection', () => {
       'getProviderSubscriptionAccountAutoTopup',
       'getAppDiagnostics',
       'getSetupDiagnostics',
-      'getStorageLayoutReport',
-      'createDataRootBackup',
-      'verifyDataRootBackup',
       'prepareAppUpdate',
       'startAppUpdate',
       'getAppUpdateStatus',
@@ -2701,7 +2694,7 @@ describe('app api openapi projection', () => {
       'recoverWorkspaceAccess',
       'disableUser',
       'submitTurnFeedback',
-      ...Object.keys(PRODUCT_OPERATION_DEFINITIONS),
+      ...Object.keys(OPERATION_DEFINITIONS),
       'listWorkspaceSyncReviews',
       'getWorkspaceSyncReview',
       'submitWorkspaceSyncReviewDecision',

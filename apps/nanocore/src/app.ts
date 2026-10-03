@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   AppDiagnosticsResponseSchema,
   type BootReadinessSnapshot,
-  PRODUCT_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
   SetupDiagnosticsResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -51,7 +51,6 @@ import {
   isLoopbackHost,
 } from './auth/middleware.js';
 import { registerNanoHostTransportAdmissionRoutes } from './auth/nanohost-transport-admission.js';
-import { registerNanoHostTransportRoutes } from './auth/nanohost-transport-routes.js';
 import {
   createNanoHostTransportSessionAuthority,
   type NanoHostTransportSessionAuthority,
@@ -188,7 +187,6 @@ import {
 } from './scheduler-records.js';
 import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
-import { registerDataRootAdminRoutes } from './storage/data-root-admin-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -315,9 +313,8 @@ function requireDiagnosticsAdminActor(actor: AuthVariables['actor'] | undefined)
 function isProductWorkAdmissionRequest(method: string, path: string): boolean {
   if (method === 'POST' && path.startsWith('/api/app/operations/')) {
     const id = path.slice('/api/app/operations/'.length);
-    if (Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, id)) {
-      return PRODUCT_OPERATION_DEFINITIONS[id as keyof typeof PRODUCT_OPERATION_DEFINITIONS]
-        .mutating;
+    if (Object.hasOwn(OPERATION_DEFINITIONS, id)) {
+      return OPERATION_DEFINITIONS[id as keyof typeof OPERATION_DEFINITIONS].mutating;
     }
   }
 
@@ -1428,13 +1425,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     isActiveWorkspaceMember,
     mode,
   });
-  registerNanoHostTransportRoutes({
-    app,
-    coreDb: options.coreDb,
-    mode,
-    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
-    sessionAuthority: nanohostTransportSessionAuthority,
-  });
   registerNanoHostTransportAdmissionRoutes({
     app,
     coreDb: options.coreDb,
@@ -1548,11 +1538,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })
       )
     );
-  });
-
-  registerDataRootAdminRoutes({
-    app,
-    dataRoot,
   });
 
   const appUpdateTransport =
@@ -2049,6 +2034,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     requestStore,
     goalServices: goalServices(),
+    mode,
+    ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+    dataRoot,
+    nanoHostSessionAuthority: nanohostTransportSessionAuthority,
   });
 
   registerRemoteMcpRoutes({
@@ -2067,6 +2056,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workspaceMutationAdmission,
     mode,
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
+    dataRoot,
+    nanoHostSessionAuthority: nanohostTransportSessionAuthority,
   });
 
   registerWorkspaceSyncRoutes({

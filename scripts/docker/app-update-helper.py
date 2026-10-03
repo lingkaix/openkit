@@ -208,10 +208,14 @@ class CommandEffects:
 
         time.sleep(seconds)
 
-    def http_get(
-        self, url: str, headers: Optional[Mapping[str, str]] = None, timeout: Optional[float] = None
+    def http_json(
+        self, url: str, headers: Optional[Mapping[str, str]] = None, timeout: Optional[float] = None, method: str = "GET", body: Optional[Any] = None
     ) -> Tuple[int, Any]:
-        request = urllib.request.Request(url, headers=dict(headers or {}), method="GET")
+        request_headers = dict(headers or {})
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        if data is not None:
+            request_headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=timeout or 15) as response:
                 raw = response.read(RECEIPT_LIMIT_BYTES + 1)
@@ -1194,7 +1198,7 @@ class AppUpdateHelper:
             raise HelperError("app_update_unavailable", stderr or "Candidate image smoke failed.")
 
     def _live_applied_migrations(self) -> List[str]:
-        status, body = self._authorized_get("/api/diagnostics")
+        status, body = self._authorized_json("/api/diagnostics")
         if status != 200 or not isinstance(body, dict):
             raise HelperError("app_update_unavailable", "Live applied migrations could not be read.")
         applied = ((body.get("migrations") or {}) if isinstance(body.get("migrations"), dict) else {}).get("applied")
@@ -1430,7 +1434,7 @@ class AppUpdateHelper:
     def _observe_boot(
         self, image_id: Optional[str], source_commit: Optional[str]
     ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
-        status, body = self._authorized_get("/api/app/diagnostics")
+        status, body = self._authorized_json("/api/app/diagnostics")
         if status != 200:
             return None
         parsed = self._parse_boot_readiness(body)
@@ -1481,7 +1485,7 @@ class AppUpdateHelper:
         )
 
     def _snapshot_nanohost(self, receipt: Dict[str, Any]) -> None:
-        status, body = self._authorized_get("/api/app/nanohost/runtime-target")
+        status, body = self._authorized_json("/api/app/operations/nanohost.runtime-target", method="POST", body={})
         if self._typed_nanohost_absent(status, body):
             receipt["previousNanoHost"] = None
             return
@@ -1519,7 +1523,7 @@ class AppUpdateHelper:
             )
 
     def _snapshot_retained_auth(self, receipt: Dict[str, Any]) -> None:
-        status, body = self._authorized_get("/api/app/auth/tokens")
+        status, body = self._authorized_json("/api/app/auth/tokens")
         if status != 200:
             raise HelperError("app_update_unavailable", "Retained auth-store identity could not be read.")
         receipt["retainedAuthSnapshot"] = self._auth_store_identity(body)
@@ -1597,7 +1601,7 @@ class AppUpdateHelper:
         }
 
     def _retained_auth_read(self, receipt: Mapping[str, Any]) -> bool:
-        status, body = self._authorized_get("/api/app/auth/tokens")
+        status, body = self._authorized_json("/api/app/auth/tokens")
         if status != 200:
             return False
         try:
@@ -1648,11 +1652,11 @@ class AppUpdateHelper:
         previous_nanohost = receipt.get("previousNanoHost")
         nanohost_ok: Optional[bool]
         if previous_nanohost:
-            status, body = self._authorized_get("/api/app/nanohost/runtime-target")
+            status, body = self._authorized_json("/api/app/operations/nanohost.runtime-target", method="POST", body={})
             nanohost_ok = self._nanohost_successor_ready(previous_nanohost, status, body)
         else:
             nanohost_ok = None
-        helper_status, helper_body = self._authorized_get("/api/app/app-update/%s" % receipt["requestId"])
+        helper_status, helper_body = self._authorized_json("/api/app/app-update/%s" % receipt["requestId"])
         helper_ok = (
             helper_status == 200
             and isinstance(helper_body, dict)
@@ -1715,7 +1719,7 @@ class AppUpdateHelper:
             return candidate["published_digest"] in running["repo_digest_ids"]
         return running["id"] == candidate["image_id"]
 
-    def _authorized_get(self, path: str) -> Tuple[int, Any]:
+    def _authorized_json(self, path: str, method: str = "GET", body: Optional[Any] = None) -> Tuple[int, Any]:
         headers = {}
         token_file = self.config.get("adminTokenFile")
         if token_file:
@@ -1727,7 +1731,7 @@ class AppUpdateHelper:
             if token:
                 headers["Authorization"] = "Bearer %s" % token
         url = self.config["appBaseUrl"].rstrip("/") + path
-        return self.effects.http_get(url, headers=headers, timeout=15)
+        return self.effects.http_json(url, headers=headers, timeout=15, method=method, body=body)
 
     def _sleep(self, seconds: float) -> None:
         sleeper = getattr(self.effects, "sleep", None)

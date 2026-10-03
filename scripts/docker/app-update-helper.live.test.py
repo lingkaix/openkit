@@ -164,12 +164,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"boot": fixture["boot"]})
         elif path == "/api/app/auth/tokens":
             self._send(200, {"items": [fixture["token"]]})
-        elif path == "/api/app/nanohost/runtime-target":
-            self._send(404, {"protocolVersion": "0.5.0", "code": "nanohost_runtime_target_not_found", "message": "Configured NanoHost RuntimeTarget is unavailable."})
         elif path == "/api/app/workspaces":
             self._send(403)
         elif path.startswith("/api/app/app-update/") and path.split("/")[-1]:
             self._send(200, {"requestId": path.split("/")[-1]})
+        else:
+            self._send(404)
+    def do_POST(self):
+        if self.path == "/api/app/operations/nanohost.runtime-target":
+            self._send(404, {"protocolVersion": "0.5.0", "code": "nanohost_runtime_target_not_found", "message": "Configured NanoHost RuntimeTarget is unavailable."})
         else:
             self._send(404)
 HTTPServer(("127.0.0.1", port), Handler).serve_forever()
@@ -691,7 +694,7 @@ class FixtureAdmissionTests(unittest.TestCase):
         closed_port = closed.getsockname()[1]
         closed.close()
         helper.config = {"appBaseUrl": "http://127.0.0.1:%s" % closed_port, "adminTokenFile": str(token_path)}
-        closed_wait = wait_fixture_auth_tokens(helper._authorized_get, timeout=0.4)
+        closed_wait = wait_fixture_auth_tokens(helper._authorized_json, timeout=0.4)
         self.assertEqual(closed_wait["status"], 0)
         self.assertIsNone(closed_wait["body"])
 
@@ -723,7 +726,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                     "appBaseUrl": "http://127.0.0.1:%s" % port,
                     "adminTokenFile": str(token_path),
                 }
-                ready = wait_fixture_auth_tokens(helper._authorized_get, timeout=0.3)
+                ready = wait_fixture_auth_tokens(helper._authorized_json, timeout=0.3)
                 if ready["status"] == 200:
                     break
             if proc.poll() is not None:
@@ -734,9 +737,9 @@ class FixtureAdmissionTests(unittest.TestCase):
             self.assertEqual(helper._auth_store_identity(ready["body"])[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
             import urllib.error
             import urllib.request
-            target_url = "http://127.0.0.1:%s/api/app/nanohost/runtime-target" % port
+            target_url = "http://127.0.0.1:%s/api/app/operations/nanohost.runtime-target" % port
             try:
-                urllib.request.urlopen(urllib.request.Request(target_url, method="GET"), timeout=2)
+                urllib.request.urlopen(urllib.request.Request(target_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST"), timeout=2)
                 self.fail("no-NanoHost runtime-target must not be HTTP 200")
             except urllib.error.HTTPError as error:
                 self.assertEqual(error.code, 404)
@@ -744,7 +747,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                 self.assertEqual(err_body.get("code"), "nanohost_runtime_target_not_found")
                 self.assertNotEqual(err_body.get("code"), "nanohost_transport_admin_server_mode_required")
                 self.assertEqual(err_body.get("protocolVersion"), "0.5.0")
-            diag_status, diag_body = helper._authorized_get("/api/app/diagnostics")
+            diag_status, diag_body = helper._authorized_json("/api/app/diagnostics")
             self.assertEqual(diag_status, 200)
             parsed_ready = helper._parse_boot_readiness(diag_body)
             self.assertIsNotNone(parsed_ready)
@@ -795,13 +798,13 @@ class FixtureAdmissionTests(unittest.TestCase):
                     "appBaseUrl": "http://127.0.0.1:%s" % cand_port,
                     "adminTokenFile": str(token_path),
                 }
-                cand_ready = wait_fixture_auth_tokens(helper._authorized_get, timeout=0.3)
+                cand_ready = wait_fixture_auth_tokens(helper._authorized_json, timeout=0.3)
                 if cand_ready["status"] == 200:
                     break
             if cand_proc.poll() is not None:
                 err = cand_proc.stderr.read() if cand_proc.stderr else ""
                 self.fail("candidate entrypoint exited before listen: rc=%s stderr=%s" % (cand_proc.returncode, err))
-            cand_status, cand_diag = helper._authorized_get("/api/app/diagnostics")
+            cand_status, cand_diag = helper._authorized_json("/api/app/diagnostics")
             self.assertEqual(cand_status, 200)
             parsed_fail = helper._parse_boot_readiness(cand_diag)
             self.assertIsNotNone(parsed_fail)
@@ -830,7 +833,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                 "appBaseUrl": "http://127.0.0.1:%s" % server.server_address[1],
                 "adminTokenFile": str(token_path),
             }
-            unauth = wait_fixture_auth_tokens(helper._authorized_get, timeout=0.4)
+            unauth = wait_fixture_auth_tokens(helper._authorized_json, timeout=0.4)
             self.assertEqual(unauth["status"], 401)
             self.assertIsNone(unauth["body"])
             self.assertNotEqual(closed_wait["status"], unauth["status"])
@@ -1006,7 +1009,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
         http_helper = object.__new__(self.module.AppUpdateHelper)
         http_helper.effects = self.module.CommandEffects()
         http_helper.config = config
-        observed = wait_fixture_auth_tokens(http_helper._authorized_get)
+        observed = wait_fixture_auth_tokens(http_helper._authorized_json)
         self.evidence["fixtureHttpReady"] = observed
         self._write_report()
         if observed["status"] != 200:

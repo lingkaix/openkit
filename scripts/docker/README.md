@@ -7,3 +7,5 @@ Build and smoke the worker artifacts with `bash scripts/docker/build-image.sh wo
 The test-image helpers own content-addressed `test-env` identification and anonymous inspection; `run-app.sh`, `e2e-app.sh`, and app smoke helpers own the app image. The release preflight consumes the same catalog and rejects singular runtime metadata and retired worker leaf ids. Installed binaries and catalog metadata grant no endpoint or credential authority.
 
 The persistence smoke reads the post-restart Workspace collection through the definition-derived `workspace.list` JSON binding and checks the nested Workspace record. Its pre/post-restart persistence observation is unchanged.
+
+The App-update helper observes configured NanoHost readiness through `POST /api/app/operations/nanohost.runtime-target` with an empty JSON object, preserving bounded JSON HTTP error handling and configured identity checks.

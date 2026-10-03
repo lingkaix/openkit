@@ -3091,6 +3091,545 @@
         }
       }
     },
+    "/api/app/operations/nanohost.enroll": {
+      "post": {
+        "operationId": "nanohost.enroll",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Enroll the configured NanoHost through an exclusive named-slot credential write.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.enroll.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Enroll the configured NanoHost through an exclusive named-slot credential write.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.enroll.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.runtime-target": {
+      "post": {
+        "operationId": "nanohost.runtime-target",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Read the configured NanoHost execution-host RuntimeTarget readiness. NanoHost is not an LLM Provider. Input must be an empty object; this Tool cannot select a host, deployment, or scope. The result is Core's stored projection at observedAt, not a live host probe.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.runtime-target.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read the configured NanoHost execution-host RuntimeTarget readiness. NanoHost is not an LLM Provider. Input must be an empty object; this Tool cannot select a host, deployment, or scope. The result is Core's stored projection at observedAt, not a live host probe.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.runtime-target.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.token-list": {
+      "post": {
+        "operationId": "nanohost.token-list",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "List redacted NanoHost transport Token records.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.token-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List redacted NanoHost transport Token records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.token-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.token-issue": {
+      "post": {
+        "operationId": "nanohost.token-issue",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Issue a NanoHost transport Token through a proved configured-slot write.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.token-issue.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Issue a NanoHost transport Token through a proved configured-slot write.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.token-issue.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.token-revoke": {
+      "post": {
+        "operationId": "nanohost.token-revoke",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Revoke a NanoHost transport Token and fence its authority.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.token-revoke.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoke a NanoHost transport Token and fence its authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.token-revoke.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.token-rotate": {
+      "post": {
+        "operationId": "nanohost.token-rotate",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Rotate a NanoHost transport Token into the opposite configured slot.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.token-rotate.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotate a NanoHost transport Token into the opposite configured slot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.token-rotate.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.token-rotation-abort": {
+      "post": {
+        "operationId": "nanohost.token-rotation-abort",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Abort a NanoHost transport Token rotation and clear the successor slot.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.token-rotation-abort.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Abort a NanoHost transport Token rotation and clear the successor slot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.token-rotation-abort.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/nanohost.decommission": {
+      "post": {
+        "operationId": "nanohost.decommission",
+        "tags": [
+          "nanohost"
+        ],
+        "summary": "Decommission the configured NanoHost identity and clear both credential slots.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/nanohost.decommission.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decommission the configured NanoHost identity and clear both credential slots.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/nanohost.decommission.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/backup.create": {
+      "post": {
+        "operationId": "backup.create",
+        "tags": [
+          "backup"
+        ],
+        "summary": "Create a hot data-root backup with server-managed local handles and declared coverage.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/backup.create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create a hot data-root backup with server-managed local handles and declared coverage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/backup.create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/backup.verify": {
+      "post": {
+        "operationId": "backup.verify",
+        "tags": [
+          "backup"
+        ],
+        "summary": "Verify a server-managed data-root backup and its exact inventory.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/backup.verify.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verify a server-managed data-root backup and its exact inventory.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/backup.verify.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/storage.layout-report": {
+      "post": {
+        "operationId": "storage.layout-report",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Read the deployment storage layout report.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/storage.layout-report.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read the deployment storage layout report.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/storage.layout-report.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/workspaces/{workspaceId}/members": {
       "get": {
         "operationId": "listWorkspaceMembers",
@@ -4006,45 +4545,6 @@
         }
       }
     },
-    "/api/app/storage/layout-report": {
-      "get": {
-        "operationId": "getStorageLayoutReport",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Read the NanoCore storage layout report.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Storage layout report.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StorageLayoutReportResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/diagnostics": {
       "get": {
         "operationId": "getAppDiagnostics",
@@ -4426,379 +4926,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SetMyAdminAccessTokenDefaultResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/enroll": {
-      "post": {
-        "operationId": "enrollNanoHost",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Enroll a NanoHost identity and first transport token.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EnrollNanoHostRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Redacted NanoHost enrollment result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EnrollNanoHostResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/runtime-target": {
-      "get": {
-        "operationId": "getNanoHostRuntimeTargetStatus",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Read the configured NanoHost RuntimeTarget readiness status.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Read the configured NanoHost RuntimeTarget readiness status.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NanoHostRuntimeTargetStatusResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/tokens": {
-      "get": {
-        "operationId": "listNanoHostTransportTokens",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "List redacted NanoHost transport token records.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Redacted NanoHost transport token records.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListNanoHostTransportTokensResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "issueNanoHostTransportToken",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Issue a NanoHost transport token and deliver it through a named safe sink.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IssueNanoHostTransportTokenRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Issued NanoHost transport token and redacted record.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IssueNanoHostTransportTokenResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/tokens/{tokenId}/revoke": {
-      "post": {
-        "operationId": "revokeNanoHostTransportToken",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Revoke a NanoHost transport token immediately.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "tokenId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Revoked NanoHost transport token record.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RevokeNanoHostTransportTokenResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/tokens/{tokenId}/rotate": {
-      "post": {
-        "operationId": "rotateNanoHostTransportToken",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Rotate a NanoHost transport token and deliver the successor through a named safe sink.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "tokenId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RotateNanoHostTransportTokenRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Rotated NanoHost transport token records and named-sink slot result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RotateNanoHostTransportTokenResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/tokens/{tokenId}/rotation/abort": {
-      "post": {
-        "operationId": "abortNanoHostTransportTokenRotation",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Abort a pending NanoHost transport token rotation.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "tokenId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Redacted NanoHost transport rotation abort result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AbortNanoHostTransportRotationResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/nanohost/decommission": {
-      "post": {
-        "operationId": "decommissionNanoHost",
-        "tags": [
-          "nanohost"
-        ],
-        "summary": "Decommission the configured NanoHost identity.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Redacted configured NanoHost decommission result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DecommissionNanoHostResponse"
                 }
               }
             }
@@ -10179,105 +10306,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetAgentEnvironmentPackageSnapshotResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/data-root/backups": {
-      "post": {
-        "operationId": "createDataRootBackup",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Create and verify one server-managed hot data-root backup.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Data-root backup manifest and verification summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DataRootBackupCreateResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/data-root/backups/{backupId}/verify": {
-      "post": {
-        "operationId": "verifyDataRootBackup",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Verify one server-managed data-root backup.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "backupId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DataRootBackupVerifyRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Data-root backup verification summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DataRootBackupVerifyResponse"
                 }
               }
             }
@@ -40641,7 +40669,1179 @@
         ],
         "additionalProperties": false
       },
-      "AbortNanoHostTransportRotationResponse": {
+      "nanohost.enroll.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "targetSlot": {
+            "default": "A",
+            "type": "string",
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "targetSlot",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.enroll.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deploymentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "credentialRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetSlot": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "slotResult": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "string",
+                "enum": [
+                  "A",
+                  "B"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "const": "written"
+              },
+              "issuanceGeneration": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "slot",
+              "status",
+              "issuanceGeneration"
+            ],
+            "additionalProperties": false
+          },
+          "record": {
+            "type": "object",
+            "properties": {
+              "tokenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerNanoHostIdentityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tokenType": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "deploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked",
+                  "rotated"
+                ]
+              },
+              "issuedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "predecessorTokenId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rotationOverlapExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "responsibleServerAdminActorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastUsedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedChannel": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedSource": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "tokenId",
+              "ownerNanoHostIdentityId",
+              "tokenType",
+              "scope",
+              "deploymentId",
+              "status",
+              "issuedAt",
+              "expiresAt",
+              "revokedAt",
+              "predecessorTokenId",
+              "rotationOverlapExpiresAt",
+              "responsibleServerAdminActorId",
+              "lastUsedAt",
+              "lastUsedChannel",
+              "lastUsedSource"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "identityId",
+          "deploymentId",
+          "credentialRef",
+          "targetSlot",
+          "slotResult",
+          "record"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.runtime-target.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "nanohost.runtime-target.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deploymentId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "connectionGeneration": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "predecessorFenced": {
+            "type": "boolean"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "freshEmpty": {
+            "type": "boolean"
+          },
+          "observedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "identityId",
+          "deploymentId",
+          "connectionGeneration",
+          "predecessorFenced",
+          "ready",
+          "freshEmpty",
+          "observedAt"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "nanohost.token-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tokenId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ownerNanoHostIdentityId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tokenType": {
+                  "type": "string",
+                  "enum": [
+                    "nanohost-transport"
+                  ]
+                },
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "nanohost-transport"
+                  ]
+                },
+                "deploymentId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "expired",
+                    "revoked",
+                    "rotated"
+                  ]
+                },
+                "issuedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "revokedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "predecessorTokenId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "rotationOverlapExpiresAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "responsibleServerAdminActorId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "lastUsedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lastUsedChannel": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lastUsedSource": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "tokenId",
+                "ownerNanoHostIdentityId",
+                "tokenType",
+                "scope",
+                "deploymentId",
+                "status",
+                "issuedAt",
+                "expiresAt",
+                "revokedAt",
+                "predecessorTokenId",
+                "rotationOverlapExpiresAt",
+                "responsibleServerAdminActorId",
+                "lastUsedAt",
+                "lastUsedChannel",
+                "lastUsedSource"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-issue.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "targetSlot": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "targetSlot",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-issue.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "credentialRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetSlot": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "slotResult": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "string",
+                "enum": [
+                  "A",
+                  "B"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "const": "written"
+              },
+              "issuanceGeneration": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "slot",
+              "status",
+              "issuanceGeneration"
+            ],
+            "additionalProperties": false
+          },
+          "record": {
+            "type": "object",
+            "properties": {
+              "tokenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerNanoHostIdentityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tokenType": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "deploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked",
+                  "rotated"
+                ]
+              },
+              "issuedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "predecessorTokenId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rotationOverlapExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "responsibleServerAdminActorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastUsedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedChannel": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedSource": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "tokenId",
+              "ownerNanoHostIdentityId",
+              "tokenType",
+              "scope",
+              "deploymentId",
+              "status",
+              "issuedAt",
+              "expiresAt",
+              "revokedAt",
+              "predecessorTokenId",
+              "rotationOverlapExpiresAt",
+              "responsibleServerAdminActorId",
+              "lastUsedAt",
+              "lastUsedChannel",
+              "lastUsedSource"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "credentialRef",
+          "targetSlot",
+          "slotResult",
+          "record"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-revoke.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "tokenId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "tokenId"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-revoke.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "record": {
+            "type": "object",
+            "properties": {
+              "tokenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerNanoHostIdentityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tokenType": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "deploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked",
+                  "rotated"
+                ]
+              },
+              "issuedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "predecessorTokenId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rotationOverlapExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "responsibleServerAdminActorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastUsedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedChannel": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedSource": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "tokenId",
+              "ownerNanoHostIdentityId",
+              "tokenType",
+              "scope",
+              "deploymentId",
+              "status",
+              "issuedAt",
+              "expiresAt",
+              "revokedAt",
+              "predecessorTokenId",
+              "rotationOverlapExpiresAt",
+              "responsibleServerAdminActorId",
+              "lastUsedAt",
+              "lastUsedChannel",
+              "lastUsedSource"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-rotate.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "overlapSeconds": {
+            "default": 86400,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tokenId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "overlapSeconds",
+          "tokenId"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-rotate.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "credentialRef": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetSlot": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B"
+            ]
+          },
+          "slotResult": {
+            "type": "object",
+            "properties": {
+              "slot": {
+                "type": "string",
+                "enum": [
+                  "A",
+                  "B"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "const": "written"
+              },
+              "issuanceGeneration": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "slot",
+              "status",
+              "issuanceGeneration"
+            ],
+            "additionalProperties": false
+          },
+          "record": {
+            "type": "object",
+            "properties": {
+              "tokenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerNanoHostIdentityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tokenType": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "deploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked",
+                  "rotated"
+                ]
+              },
+              "issuedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "predecessorTokenId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rotationOverlapExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "responsibleServerAdminActorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastUsedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedChannel": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedSource": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "tokenId",
+              "ownerNanoHostIdentityId",
+              "tokenType",
+              "scope",
+              "deploymentId",
+              "status",
+              "issuedAt",
+              "expiresAt",
+              "revokedAt",
+              "predecessorTokenId",
+              "rotationOverlapExpiresAt",
+              "responsibleServerAdminActorId",
+              "lastUsedAt",
+              "lastUsedChannel",
+              "lastUsedSource"
+            ],
+            "additionalProperties": false
+          },
+          "rotatedRecord": {
+            "type": "object",
+            "properties": {
+              "tokenId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerNanoHostIdentityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tokenType": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "nanohost-transport"
+                ]
+              },
+              "deploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "expired",
+                  "revoked",
+                  "rotated"
+                ]
+              },
+              "issuedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "predecessorTokenId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rotationOverlapExpiresAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "responsibleServerAdminActorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastUsedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedChannel": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastUsedSource": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "tokenId",
+              "ownerNanoHostIdentityId",
+              "tokenType",
+              "scope",
+              "deploymentId",
+              "status",
+              "issuedAt",
+              "expiresAt",
+              "revokedAt",
+              "predecessorTokenId",
+              "rotationOverlapExpiresAt",
+              "responsibleServerAdminActorId",
+              "lastUsedAt",
+              "lastUsedChannel",
+              "lastUsedSource"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "credentialRef",
+          "targetSlot",
+          "slotResult",
+          "record",
+          "rotatedRecord"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-rotation-abort.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "tokenId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "tokenId"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.token-rotation-abort.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -40927,6 +42127,682 @@
         "required": [
           "predecessor",
           "successor"
+        ],
+        "additionalProperties": false
+      },
+      "nanohost.decommission.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "nanohost.decommission.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revokedTokenCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "status": {
+            "type": "string",
+            "const": "decommissioned"
+          }
+        },
+        "required": [
+          "identityId",
+          "revokedTokenCount",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "backup.create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "backup.create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backupId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordType": {
+                "type": "string",
+                "const": "data-root-backup"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "server"
+              },
+              "lineage": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redactionLevel": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "redacted",
+                  "full"
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "extensions": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "backupStartedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "backupCompletedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "backupMode": {
+                "type": "string",
+                "enum": [
+                  "cold",
+                  "hot"
+                ]
+              },
+              "consistency": {
+                "type": "string",
+                "enum": [
+                  "clean",
+                  "crash-consistent"
+                ]
+              },
+              "backupFormatVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "contentInventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "recordType",
+              "id",
+              "ownerScope",
+              "lineage",
+              "createdAt",
+              "updatedAt",
+              "contentDigest",
+              "redactionLevel",
+              "sensitivity",
+              "requiredFeatures",
+              "extensions",
+              "sourceDeploymentId",
+              "backupStartedAt",
+              "backupCompletedAt",
+              "backupMode",
+              "consistency",
+              "backupFormatVersion",
+              "contentInventory"
+            ],
+            "additionalProperties": false
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "checkedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "backupId",
+          "manifest",
+          "fileCount",
+          "totalBytes",
+          "checkedFiles"
+        ],
+        "additionalProperties": false
+      },
+      "backup.verify.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backupId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "backupId"
+        ],
+        "additionalProperties": false
+      },
+      "backup.verify.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "backupId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordType": {
+                "type": "string",
+                "const": "data-root-backup"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "server"
+              },
+              "lineage": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redactionLevel": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "redacted",
+                  "full"
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "extensions": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "backupStartedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "backupCompletedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "backupMode": {
+                "type": "string",
+                "enum": [
+                  "cold",
+                  "hot"
+                ]
+              },
+              "consistency": {
+                "type": "string",
+                "enum": [
+                  "clean",
+                  "crash-consistent"
+                ]
+              },
+              "backupFormatVersion": {
+                "type": "number",
+                "const": 1
+              },
+              "contentInventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "recordType",
+              "id",
+              "ownerScope",
+              "lineage",
+              "createdAt",
+              "updatedAt",
+              "contentDigest",
+              "redactionLevel",
+              "sensitivity",
+              "requiredFeatures",
+              "extensions",
+              "sourceDeploymentId",
+              "backupStartedAt",
+              "backupCompletedAt",
+              "backupMode",
+              "consistency",
+              "backupFormatVersion",
+              "contentInventory"
+            ],
+            "additionalProperties": false
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "checkedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "backupId",
+          "manifest",
+          "fileCount",
+          "totalBytes",
+          "checkedFiles"
+        ],
+        "additionalProperties": false
+      },
+      "storage.layout-report.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "storage.layout-report.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "dataRoot": {
+            "type": "string",
+            "minLength": 1
+          },
+          "serverDb": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exists": {
+                "type": "boolean"
+              },
+              "appliedMigrations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "path",
+              "exists",
+              "appliedMigrations"
+            ],
+            "additionalProperties": false
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "userDb": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "exists": {
+                      "type": "boolean"
+                    },
+                    "appliedMigrations": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "exists",
+                    "appliedMigrations"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "userId",
+                "userDb"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceDb": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "exists": {
+                      "type": "boolean"
+                    },
+                    "appliedMigrations": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "exists",
+                    "appliedMigrations"
+                  ],
+                  "additionalProperties": false
+                },
+                "indexesDir": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "exists": {
+                      "type": "boolean"
+                    },
+                    "entryCount": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "exists",
+                    "entryCount"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "workspaceId",
+                "workspaceDb",
+                "indexesDir"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "quarantineEntries": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "const": "server"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "path",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "const": "user"
+                    },
+                    "userId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "userId",
+                    "path",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "const": "workspace"
+                    },
+                    "workspaceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "workspaceId",
+                    "path",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "dataRoot",
+          "serverDb",
+          "users",
+          "workspaces",
+          "quarantineEntries"
         ],
         "additionalProperties": false
       },
@@ -51173,648 +53049,6 @@
         ],
         "additionalProperties": false
       },
-      "DataRootBackupCreateResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "backupId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "manifest": {
-            "type": "object",
-            "properties": {
-              "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              },
-              "recordType": {
-                "type": "string",
-                "const": "data-root-backup"
-              },
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerScope": {
-                "type": "string",
-                "const": "server"
-              },
-              "lineage": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "updatedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "contentDigest": {
-                "type": "string",
-                "minLength": 1
-              },
-              "redactionLevel": {
-                "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
-              },
-              "sensitivity": {
-                "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
-              },
-              "requiredFeatures": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "extensions": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              },
-              "sourceDeploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "backupStartedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "backupCompletedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "backupMode": {
-                "type": "string",
-                "enum": [
-                  "cold",
-                  "hot"
-                ]
-              },
-              "consistency": {
-                "type": "string",
-                "enum": [
-                  "clean",
-                  "crash-consistent"
-                ]
-              },
-              "backupFormatVersion": {
-                "type": "number",
-                "const": 1
-              },
-              "contentInventory": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "digest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "digest",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "schemaVersion",
-              "recordType",
-              "id",
-              "ownerScope",
-              "lineage",
-              "createdAt",
-              "updatedAt",
-              "contentDigest",
-              "redactionLevel",
-              "sensitivity",
-              "requiredFeatures",
-              "extensions",
-              "sourceDeploymentId",
-              "backupStartedAt",
-              "backupCompletedAt",
-              "backupMode",
-              "consistency",
-              "backupFormatVersion",
-              "contentInventory"
-            ],
-            "additionalProperties": false
-          },
-          "fileCount": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "totalBytes": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "checkedFiles": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        },
-        "required": [
-          "backupId",
-          "manifest",
-          "fileCount",
-          "totalBytes",
-          "checkedFiles"
-        ],
-        "additionalProperties": false
-      },
-      "DataRootBackupVerifyRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "backupId": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.:-]+$"
-          }
-        },
-        "required": [
-          "backupId"
-        ],
-        "additionalProperties": false
-      },
-      "DataRootBackupVerifyResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "backupId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "manifest": {
-            "type": "object",
-            "properties": {
-              "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              },
-              "recordType": {
-                "type": "string",
-                "const": "data-root-backup"
-              },
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerScope": {
-                "type": "string",
-                "const": "server"
-              },
-              "lineage": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "updatedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "contentDigest": {
-                "type": "string",
-                "minLength": 1
-              },
-              "redactionLevel": {
-                "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
-              },
-              "sensitivity": {
-                "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
-              },
-              "requiredFeatures": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "extensions": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              },
-              "sourceDeploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "backupStartedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "backupCompletedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "backupMode": {
-                "type": "string",
-                "enum": [
-                  "cold",
-                  "hot"
-                ]
-              },
-              "consistency": {
-                "type": "string",
-                "enum": [
-                  "clean",
-                  "crash-consistent"
-                ]
-              },
-              "backupFormatVersion": {
-                "type": "number",
-                "const": 1
-              },
-              "contentInventory": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "digest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "digest",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "schemaVersion",
-              "recordType",
-              "id",
-              "ownerScope",
-              "lineage",
-              "createdAt",
-              "updatedAt",
-              "contentDigest",
-              "redactionLevel",
-              "sensitivity",
-              "requiredFeatures",
-              "extensions",
-              "sourceDeploymentId",
-              "backupStartedAt",
-              "backupCompletedAt",
-              "backupMode",
-              "consistency",
-              "backupFormatVersion",
-              "contentInventory"
-            ],
-            "additionalProperties": false
-          },
-          "fileCount": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "totalBytes": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "checkedFiles": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        },
-        "required": [
-          "backupId",
-          "manifest",
-          "fileCount",
-          "totalBytes",
-          "checkedFiles"
-        ],
-        "additionalProperties": false
-      },
-      "DecommissionNanoHostResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "identityId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "revokedTokenCount": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "status": {
-            "type": "string",
-            "const": "decommissioned"
-          }
-        },
-        "required": [
-          "identityId",
-          "revokedTokenCount",
-          "status"
-        ],
-        "additionalProperties": false
-      },
-      "EnrollNanoHostRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "targetSlot": {
-            "default": "A",
-            "type": "string",
-            "enum": [
-              "A",
-              "B"
-            ]
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-          }
-        },
-        "required": [
-          "targetSlot",
-          "expiresAt"
-        ],
-        "additionalProperties": false
-      },
-      "EnrollNanoHostResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "identityId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "deploymentId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "credentialRef": {
-            "type": "string",
-            "minLength": 1
-          },
-          "targetSlot": {
-            "type": "string",
-            "enum": [
-              "A",
-              "B"
-            ]
-          },
-          "slotResult": {
-            "type": "object",
-            "properties": {
-              "slot": {
-                "type": "string",
-                "enum": [
-                  "A",
-                  "B"
-                ]
-              },
-              "status": {
-                "type": "string",
-                "const": "written"
-              },
-              "issuanceGeneration": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              }
-            },
-            "required": [
-              "slot",
-              "status",
-              "issuanceGeneration"
-            ],
-            "additionalProperties": false
-          },
-          "record": {
-            "type": "object",
-            "properties": {
-              "tokenId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerNanoHostIdentityId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenType": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "deploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "expired",
-                  "revoked",
-                  "rotated"
-                ]
-              },
-              "issuedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "revokedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "predecessorTokenId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "rotationOverlapExpiresAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "responsibleServerAdminActorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastUsedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedChannel": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedSource": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "tokenId",
-              "ownerNanoHostIdentityId",
-              "tokenType",
-              "scope",
-              "deploymentId",
-              "status",
-              "issuedAt",
-              "expiresAt",
-              "revokedAt",
-              "predecessorTokenId",
-              "rotationOverlapExpiresAt",
-              "responsibleServerAdminActorId",
-              "lastUsedAt",
-              "lastUsedChannel",
-              "lastUsedSource"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "identityId",
-          "deploymentId",
-          "credentialRef",
-          "targetSlot",
-          "slotResult",
-          "record"
-        ],
-        "additionalProperties": false
-      },
       "GetAgentCatalogEntryResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -53543,219 +54777,6 @@
         ],
         "additionalProperties": false
       },
-      "IssueNanoHostTransportTokenRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "targetSlot": {
-            "type": "string",
-            "enum": [
-              "A",
-              "B"
-            ]
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-          }
-        },
-        "required": [
-          "targetSlot",
-          "expiresAt"
-        ],
-        "additionalProperties": false
-      },
-      "IssueNanoHostTransportTokenResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "credentialRef": {
-            "type": "string",
-            "minLength": 1
-          },
-          "targetSlot": {
-            "type": "string",
-            "enum": [
-              "A",
-              "B"
-            ]
-          },
-          "slotResult": {
-            "type": "object",
-            "properties": {
-              "slot": {
-                "type": "string",
-                "enum": [
-                  "A",
-                  "B"
-                ]
-              },
-              "status": {
-                "type": "string",
-                "const": "written"
-              },
-              "issuanceGeneration": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              }
-            },
-            "required": [
-              "slot",
-              "status",
-              "issuanceGeneration"
-            ],
-            "additionalProperties": false
-          },
-          "record": {
-            "type": "object",
-            "properties": {
-              "tokenId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerNanoHostIdentityId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenType": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "deploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "expired",
-                  "revoked",
-                  "rotated"
-                ]
-              },
-              "issuedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "revokedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "predecessorTokenId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "rotationOverlapExpiresAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "responsibleServerAdminActorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastUsedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedChannel": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedSource": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "tokenId",
-              "ownerNanoHostIdentityId",
-              "tokenType",
-              "scope",
-              "deploymentId",
-              "status",
-              "issuedAt",
-              "expiresAt",
-              "revokedAt",
-              "predecessorTokenId",
-              "rotationOverlapExpiresAt",
-              "responsibleServerAdminActorId",
-              "lastUsedAt",
-              "lastUsedChannel",
-              "lastUsedSource"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "credentialRef",
-          "targetSlot",
-          "slotResult",
-          "record"
-        ],
-        "additionalProperties": false
-      },
       "ListAgentCatalogResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -54557,201 +55578,6 @@
         },
         "required": [
           "items"
-        ],
-        "additionalProperties": false
-      },
-      "ListNanoHostTransportTokensResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "tokenId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "ownerNanoHostIdentityId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "tokenType": {
-                  "type": "string",
-                  "enum": [
-                    "nanohost-transport"
-                  ]
-                },
-                "scope": {
-                  "type": "string",
-                  "enum": [
-                    "nanohost-transport"
-                  ]
-                },
-                "deploymentId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "active",
-                    "expired",
-                    "revoked",
-                    "rotated"
-                  ]
-                },
-                "issuedAt": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                },
-                "expiresAt": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                },
-                "revokedAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "predecessorTokenId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "rotationOverlapExpiresAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "responsibleServerAdminActorId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "lastUsedAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "lastUsedChannel": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "lastUsedSource": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "tokenId",
-                "ownerNanoHostIdentityId",
-                "tokenType",
-                "scope",
-                "deploymentId",
-                "status",
-                "issuedAt",
-                "expiresAt",
-                "revokedAt",
-                "predecessorTokenId",
-                "rotationOverlapExpiresAt",
-                "responsibleServerAdminActorId",
-                "lastUsedAt",
-                "lastUsedChannel",
-                "lastUsedSource"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
-      "NanoHostRuntimeTargetStatusResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "identityId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "deploymentId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "connectionGeneration": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
-          },
-          "predecessorFenced": {
-            "type": "boolean"
-          },
-          "ready": {
-            "type": "boolean"
-          },
-          "freshEmpty": {
-            "type": "boolean"
-          },
-          "observedAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-          }
-        },
-        "required": [
-          "identityId",
-          "deploymentId",
-          "connectionGeneration",
-          "predecessorFenced",
-          "ready",
-          "freshEmpty",
-          "observedAt"
         ],
         "additionalProperties": false
       },
@@ -63229,155 +64055,6 @@
         ],
         "additionalProperties": false
       },
-      "RevokeNanoHostTransportTokenResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "record": {
-            "type": "object",
-            "properties": {
-              "tokenId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerNanoHostIdentityId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenType": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "deploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "expired",
-                  "revoked",
-                  "rotated"
-                ]
-              },
-              "issuedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "revokedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "predecessorTokenId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "rotationOverlapExpiresAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "responsibleServerAdminActorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastUsedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedChannel": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedSource": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "tokenId",
-              "ownerNanoHostIdentityId",
-              "tokenType",
-              "scope",
-              "deploymentId",
-              "status",
-              "issuedAt",
-              "expiresAt",
-              "revokedAt",
-              "predecessorTokenId",
-              "rotationOverlapExpiresAt",
-              "responsibleServerAdminActorId",
-              "lastUsedAt",
-              "lastUsedChannel",
-              "lastUsedSource"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "record"
-        ],
-        "additionalProperties": false
-      },
       "RevokeOpenKitAccessTokenResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -63517,352 +64194,6 @@
         },
         "required": [
           "record"
-        ],
-        "additionalProperties": false
-      },
-      "RotateNanoHostTransportTokenRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "overlapSeconds": {
-            "default": 86400,
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          }
-        },
-        "required": [
-          "overlapSeconds"
-        ],
-        "additionalProperties": false
-      },
-      "RotateNanoHostTransportTokenResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "credentialRef": {
-            "type": "string",
-            "minLength": 1
-          },
-          "targetSlot": {
-            "type": "string",
-            "enum": [
-              "A",
-              "B"
-            ]
-          },
-          "slotResult": {
-            "type": "object",
-            "properties": {
-              "slot": {
-                "type": "string",
-                "enum": [
-                  "A",
-                  "B"
-                ]
-              },
-              "status": {
-                "type": "string",
-                "const": "written"
-              },
-              "issuanceGeneration": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              }
-            },
-            "required": [
-              "slot",
-              "status",
-              "issuanceGeneration"
-            ],
-            "additionalProperties": false
-          },
-          "record": {
-            "type": "object",
-            "properties": {
-              "tokenId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerNanoHostIdentityId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenType": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "deploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "expired",
-                  "revoked",
-                  "rotated"
-                ]
-              },
-              "issuedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "revokedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "predecessorTokenId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "rotationOverlapExpiresAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "responsibleServerAdminActorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastUsedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedChannel": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedSource": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "tokenId",
-              "ownerNanoHostIdentityId",
-              "tokenType",
-              "scope",
-              "deploymentId",
-              "status",
-              "issuedAt",
-              "expiresAt",
-              "revokedAt",
-              "predecessorTokenId",
-              "rotationOverlapExpiresAt",
-              "responsibleServerAdminActorId",
-              "lastUsedAt",
-              "lastUsedChannel",
-              "lastUsedSource"
-            ],
-            "additionalProperties": false
-          },
-          "rotatedRecord": {
-            "type": "object",
-            "properties": {
-              "tokenId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerNanoHostIdentityId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "tokenType": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "scope": {
-                "type": "string",
-                "enum": [
-                  "nanohost-transport"
-                ]
-              },
-              "deploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "expired",
-                  "revoked",
-                  "rotated"
-                ]
-              },
-              "issuedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "expiresAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "revokedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "predecessorTokenId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "rotationOverlapExpiresAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "responsibleServerAdminActorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastUsedAt": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedChannel": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastUsedSource": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "tokenId",
-              "ownerNanoHostIdentityId",
-              "tokenType",
-              "scope",
-              "deploymentId",
-              "status",
-              "issuedAt",
-              "expiresAt",
-              "revokedAt",
-              "predecessorTokenId",
-              "rotationOverlapExpiresAt",
-              "responsibleServerAdminActorId",
-              "lastUsedAt",
-              "lastUsedChannel",
-              "lastUsedSource"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "credentialRef",
-          "targetSlot",
-          "slotResult",
-          "record",
-          "rotatedRecord"
         ],
         "additionalProperties": false
       },
@@ -71828,246 +72159,6 @@
         ],
         "additionalProperties": false
       },
-      "StorageLayoutReportResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "dataRoot": {
-            "type": "string",
-            "minLength": 1
-          },
-          "serverDb": {
-            "type": "object",
-            "properties": {
-              "path": {
-                "type": "string",
-                "minLength": 1
-              },
-              "exists": {
-                "type": "boolean"
-              },
-              "appliedMigrations": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              }
-            },
-            "required": [
-              "path",
-              "exists",
-              "appliedMigrations"
-            ],
-            "additionalProperties": false
-          },
-          "users": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "userId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "userDb": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "exists": {
-                      "type": "boolean"
-                    },
-                    "appliedMigrations": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "exists",
-                    "appliedMigrations"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "userId",
-                "userDb"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "workspaces": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceDb": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "exists": {
-                      "type": "boolean"
-                    },
-                    "appliedMigrations": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "exists",
-                    "appliedMigrations"
-                  ],
-                  "additionalProperties": false
-                },
-                "indexesDir": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "exists": {
-                      "type": "boolean"
-                    },
-                    "entryCount": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "exists",
-                    "entryCount"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "workspaceId",
-                "workspaceDb",
-                "indexesDir"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "quarantineEntries": {
-            "type": "array",
-            "items": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "scope": {
-                      "type": "string",
-                      "const": "server"
-                    },
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "scope",
-                    "path",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "scope": {
-                      "type": "string",
-                      "const": "user"
-                    },
-                    "userId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "scope",
-                    "userId",
-                    "path",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "scope": {
-                      "type": "string",
-                      "const": "workspace"
-                    },
-                    "workspaceId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "scope",
-                    "workspaceId",
-                    "path",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                }
-              ]
-            }
-          }
-        },
-        "required": [
-          "dataRoot",
-          "serverDb",
-          "users",
-          "workspaces",
-          "quarantineEntries"
-        ],
-        "additionalProperties": false
-      },
       "SubmitSkillCandidateRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -74475,5 +74566,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:43180cdbec9113ffb68b98c47a32f6828b15175142ea461a78d4fd2387c67815"
+  "x-openkit-source-digest": "sha256:b1a860d976172d028124d8043f60ad863f29b1ec9ba93c4ca2b4c136654f3208"
 }

@@ -577,9 +577,9 @@ async function runSystemDockerBuildNetworkSmoke(config) {
 async function readRuntimeTarget(config) {
   const target = await appRequest(
     config,
-    'GET',
-    '/api/app/nanohost/runtime-target',
-    undefined,
+    'POST',
+    '/api/app/operations/nanohost.runtime-target',
+    {},
     'admin'
   );
   if (

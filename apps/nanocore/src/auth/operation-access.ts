@@ -1,4 +1,4 @@
-import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { ProductOperation } from '../policy/workspace-access.js';
 
 /** Public authorization scope declared by one canonical operation. */
@@ -112,7 +112,6 @@ const catalog: Record<string, PublicOperationAccess> = {};
 registerOperations(
   catalog,
   [
-    'getStorageLayoutReport',
     'getAppDiagnostics',
     'getSetupDiagnostics',
     'listOpenKitAccessTokens',
@@ -128,12 +127,9 @@ registerOperations(
     'getProviderSubscriptionAccountAutoTopup',
     'listServerAuditEvents',
     'listServerPermissionDecisions',
-    'verifyDataRootBackup',
     'getAppUpdateStatus',
     'getVaultAdminStatus',
     'listServerVaultUseRecords',
-    'getNanoHostRuntimeTargetStatus',
-    'listNanoHostTransportTokens',
   ],
   {
     authentication: 'deployment-admin',
@@ -159,7 +155,6 @@ registerOperations(
     'startProviderSubscriptionAccountLogin',
     'cancelProviderSubscriptionAccountLogin',
     'logoutProviderSubscriptionAccount',
-    'createDataRootBackup',
     'prepareAppUpdate',
     'prepareWorkerEnvironment',
     'activateWorkerEnvironment',
@@ -168,12 +163,6 @@ registerOperations(
     'lockVaultAdminBackend',
     'bootstrapCodexAuthJsonVaultReference',
     'setProviderApiKey',
-    'enrollNanoHost',
-    'issueNanoHostTransportToken',
-    'revokeNanoHostTransportToken',
-    'rotateNanoHostTransportToken',
-    'abortNanoHostTransportTokenRotation',
-    'decommissionNanoHost',
   ],
   {
     authentication: 'deployment-admin',
@@ -629,13 +618,24 @@ registerOperations(catalog, ['rebindWorkspaceVaultReference'], {
 });
 
 // Migrated declarations are projections, never a second contract or admission path.
-for (const [id, definition] of Object.entries(PRODUCT_OPERATION_DEFINITIONS)) {
-  registerOperations(catalog, [id], {
-    mutating: definition.mutating,
-    policyOperation: definition.policyOperation,
-    resolver: definition.scope.kind,
-    scope: 'workspace',
-  });
+for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+  registerOperations(
+    catalog,
+    [id],
+    definition.scope.kind === 'server'
+      ? {
+          authentication: 'deployment-admin',
+          mutating: definition.mutating,
+          policyOperation: definition.policyOperation,
+          scope: 'server',
+        }
+      : {
+          mutating: definition.mutating,
+          policyOperation: definition.policyOperation,
+          resolver: definition.scope.kind,
+          scope: 'workspace',
+        }
+  );
 }
 
 /** Canonical access metadata for every public App API and direct Core/Gateway operation. */

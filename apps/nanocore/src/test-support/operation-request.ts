@@ -1,12 +1,12 @@
-import { PRODUCT_OPERATION_DEFINITIONS, type ProductOperationId } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, type OperationId } from '@openkit/app-api-schemas';
 
 /** Projects explicit operation test selectors and supplied request bytes without authority, data or request defaults. */
 export function operationRequest(
-  id: ProductOperationId,
+  id: OperationId,
   selectors: Record<string, unknown>,
   options: RequestInit = {}
 ): [string, RequestInit] {
-  const definition = PRODUCT_OPERATION_DEFINITIONS[id];
+  const definition = OPERATION_DEFINITIONS[id];
   const headers = new Headers(options.headers);
   let body: unknown = {};
   if (typeof options.body === 'string') {

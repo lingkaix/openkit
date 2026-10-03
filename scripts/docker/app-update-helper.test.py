@@ -411,7 +411,7 @@ class RecordingEffects:
             archive.addfile(info, io.BytesIO(script))
         return 0, "", ""
 
-    def http_get(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None):
+    def http_json(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None, method: str = "GET", body=None):
         self.http_calls.append(url)
         if url.endswith("/api/app/diagnostics"):
             if self.diagnostics_status != 200:
@@ -445,7 +445,9 @@ class RecordingEffects:
             if self.replaced and self.tokens_after is not None:
                 return 200, self.tokens_after
             return 200, self.tokens
-        if url.endswith("/api/app/nanohost/runtime-target"):
+        if url.endswith("/api/app/operations/nanohost.runtime-target"):
+            if method != "POST" or body != {}:
+                raise AssertionError("RuntimeTarget must use its canonical JSON binding.")
             if self.nanohost_http is not None:
                 return self.nanohost_http
             identity = self.nanohost_identity
@@ -2282,7 +2284,7 @@ class ReviewFindingTests(unittest.TestCase):
         payload = api_error("nanohost_runtime_target_not_found")
         url, closer = _serve_json(404, payload)
         try:
-            status, body = module.CommandEffects().http_get(url, timeout=2)
+            status, body = module.CommandEffects().http_json(url, timeout=2)
         finally:
             closer()
         self.assertIsInstance(body, dict)

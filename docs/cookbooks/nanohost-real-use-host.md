@@ -32,7 +32,7 @@ OPENKIT_HOST_NANOHOST_DEPLOYMENT_ID="deployment-a1" \
 pnpm host:nanohost:bring-up a1
 ```
 
-The command starts only `openkit-nanohost.service`, polls only authenticated `GET /api/app/nanohost/runtime-target`, accepts only the configured identity and deployment with a positive current generation and all three readiness booleans true, and runs teardown on success, failure, interruption, or timeout. Teardown stops the service and calls the existing decommission endpoint, which fences the identity and clears both configured credential slots.
+The command starts only `openkit-nanohost.service`, polls only authenticated `POST /api/app/operations/nanohost.runtime-target`, accepts only the configured identity and deployment with a positive current generation and all three readiness booleans true, and runs teardown on success, failure, interruption, or timeout. Teardown stops the service and calls the existing decommission endpoint, which fences the identity and clears both configured credential slots.
 
 Run teardown again after any caller-side failure; it is idempotent:
 

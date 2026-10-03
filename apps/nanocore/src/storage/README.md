@@ -74,3 +74,5 @@ Scheduler admission rows carry optional canonical `reasoning_effort` through del
 CapabilityCall archives use the ledger’s canonical extension validation to preserve safe stored namespaces across scope remapping and import. Live protocol and App audit projections retain their stricter unknown-namespace omission; this does not add an archive format or a second persistence path.
 
 Workspace migrations drop retired host repository and Git push tables after replaying unchanged historical setup DDL. No schema module or live repository store remains; archive codecs validate historical metadata without restoring authority.
+
+`data-root-admin-operations.ts` joins `backup.create`, `backup.verify` and `storage.layout-report` to the existing hot-backup, inventory verifier and layout owners without HTTP context. The common definition projections enforce current deployment-administrator admission; local backup handles, SQLite coverage and recovery limits remain with the storage owner.

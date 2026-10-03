@@ -39,6 +39,7 @@ import {
   ListThreadItemsResponseSchema,
   ThreadDashboardResponseSchema,
 } from './dashboard.js';
+import { DATA_ROOT_ADMIN_OPERATION_DEFINITIONS } from './data-root-admin-operations.js';
 import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
 import {
   KnowledgeDerivedIndexesResponseSchema,
@@ -84,7 +85,7 @@ import {
   SubmitArtifactReviewDecisionRequestSchema,
   SubmitArtifactReviewDecisionResponseSchema,
 } from './material.js';
-import { NanoHostRuntimeTargetStatusResponseSchema } from './nanohost.js';
+import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
 import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 
@@ -156,19 +157,10 @@ export type KernelOperationOutput<K extends KernelOperationId> = z.infer<
   (typeof KERNEL_OPERATION_DEFINITIONS)[K]['outputSchema']
 >;
 
-/** One existing administration read used to prove the real internal assembly seam. */
+/** Statically composed deployment administration; bootstrap retains its separate authentication procedure. */
 export const ADMINISTRATION_OPERATION_DEFINITIONS = {
-  'nanohost.runtime-target': {
-    description:
-      "Read the configured NanoHost execution-host RuntimeTarget readiness. NanoHost is not an LLM Provider. Input must be an empty object; this Tool cannot select a host, deployment, or scope. The result is Core's stored projection at observedAt, not a live host probe.",
-    inputSchema: z.object({}).strict(),
-    outputSchema: NanoHostRuntimeTargetStatusResponseSchema,
-    credentials: ['local-user', 'user-session', 'deployment-administrator'],
-    scope: { kind: 'server' },
-    target: { kind: 'configured-runtime-target' },
-    policyOperation: 'api.call',
-    mutating: false,
-  },
+  ...NANOHOST_OPERATION_DEFINITIONS,
+  ...DATA_ROOT_ADMIN_OPERATION_DEFINITIONS,
 } as const;
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -709,7 +701,7 @@ export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
   },
 } as const;
 
-/** JSON product operations; administration's private Tool retains its separate public transport. */
+/** Statically composed product contracts. */
 export const PRODUCT_OPERATION_DEFINITIONS = {
   ...KERNEL_OPERATION_DEFINITIONS,
   ...WORKSPACE_OPERATION_DEFINITIONS,

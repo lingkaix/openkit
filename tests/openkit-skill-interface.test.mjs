@@ -638,7 +638,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.equal(operationCatalog.filter((entry) => entry.id.startsWith('oauth.')).length, 0);
 
   for (const entry of operationCatalog) {
-    if (Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)) {
+    if (Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id)) {
       assert.match(entry.id, /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/);
     } else {
       assert.match(entry.id, /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/);
@@ -660,22 +660,22 @@ test('one catalog covers the checked App API and public Core projection', async 
     } else {
       assert.equal(typeof resolvePath(client, entry.clientMethod), 'function');
       assert.ok(
-        Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)
+        Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id)
           ? entry.clientMethod === `operations.${entry.id}` &&
               String(entry.handler).includes('client.operations[id]')
           : String(entry.handler).includes(`client.${entry.clientMethod}`),
         `${entry.id} handler must invoke ${entry.clientMethod}`
       );
     }
-    if (Object.hasOwn(appSchemas.PRODUCT_OPERATION_DEFINITIONS, entry.id)) {
+    if (Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id)) {
       assert.deepEqual(
         entry.inputSchema.shape,
-        appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema.shape,
+        appSchemas.OPERATION_DEFINITIONS[entry.id].inputSchema.shape,
         `${entry.id} strict CLI view must preserve shared fields`
       );
       assert.equal(
         entry.inputSchema.def.checks,
-        appSchemas.PRODUCT_OPERATION_DEFINITIONS[entry.id].inputSchema.def.checks,
+        appSchemas.OPERATION_DEFINITIONS[entry.id].inputSchema.def.checks,
         `${entry.id} strict CLI view must preserve shared refinements`
       );
       assert.equal(
@@ -698,8 +698,8 @@ test('one catalog covers the checked App API and public Core projection', async 
   }
 
   const runtimeTarget = operationCatalog.find((entry) => entry.id === 'nanohost.runtime-target');
-  assert.equal(runtimeTarget?.appOperationId, 'getNanoHostRuntimeTargetStatus');
-  assert.equal(runtimeTarget?.clientMethod, 'app.getNanoHostRuntimeTargetStatus');
+  assert.equal(runtimeTarget?.appOperationId, 'nanohost.runtime-target');
+  assert.equal(runtimeTarget?.clientMethod, 'operations.nanohost.runtime-target');
   assert.equal(runtimeTarget?.mutating, false);
   assert.equal(runtimeTarget?.group, 'nanohost');
 

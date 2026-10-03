@@ -2641,8 +2641,8 @@ describe('createCoreClient', () => {
     const proposalPageDigest = `sha256:${'e'.repeat(64)}`;
     const { client, requests } = createFakeClient({
       'GET /api/app/diagnostics': { body: appDiagnostics() },
-      'GET /api/app/storage/layout-report': { body: storageLayoutReport() },
-      'POST /api/app/data-root/backups': { body: dataRootBackupResponse() },
+      'POST /api/app/operations/storage.layout-report': { body: storageLayoutReport() },
+      'POST /api/app/operations/backup.create': { body: dataRootBackupResponse() },
       'POST /api/app/app-update/prepare': { body: appUpdatePrepared() },
       'POST /api/app/app-update/start': { body: appUpdateStatus() },
       'GET /api/app/app-update/11111111-1111-4111-8111-111111111111': { body: appUpdateStatus() },
@@ -2666,7 +2666,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'POST /api/app/data-root/backups/drb_demo/verify': { body: dataRootBackupResponse() },
+      'POST /api/app/operations/backup.verify': { body: dataRootBackupResponse() },
       'POST /api/app/workspaces/ws_demo/export': { body: workspaceExportResponse() },
       'POST /api/app/workspace-imports/dry-run': { body: workspaceImportDryRunResponse() },
       'POST /api/app/workspace-imports': { body: workspaceImportResponse() },
@@ -3257,8 +3257,10 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.app.getDiagnostics()).resolves.toEqual(appDiagnostics());
-    await expect(client.app.getStorageLayoutReport()).resolves.toEqual(storageLayoutReport());
-    await expect(client.app.createDataRootBackup()).resolves.toEqual(dataRootBackupResponse());
+    await expect(client.operations['storage.layout-report']({})).resolves.toEqual(
+      storageLayoutReport()
+    );
+    await expect(client.operations['backup.create']({})).resolves.toEqual(dataRootBackupResponse());
     await expect(
       client.app.prepareAppUpdate({
         expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
@@ -3292,7 +3294,7 @@ describe('createCoreClient', () => {
       token: 'okt_owner_secret',
       record: { ownerUserId: 'user_owner', scope: 'server-admin' },
     });
-    await expect(client.app.verifyDataRootBackup('drb_demo')).resolves.toEqual(
+    await expect(client.operations['backup.verify']({ backupId: 'drb_demo' })).resolves.toEqual(
       dataRootBackupResponse()
     );
     await expect(client.app.exportWorkspace('ws_demo')).resolves.toEqual(workspaceExportResponse());
@@ -3657,13 +3659,13 @@ describe('createCoreClient', () => {
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
       'GET /api/app/diagnostics',
-      'GET /api/app/storage/layout-report',
-      'POST /api/app/data-root/backups',
+      'POST /api/app/operations/storage.layout-report',
+      'POST /api/app/operations/backup.create',
       'POST /api/app/app-update/prepare',
       'POST /api/app/app-update/start',
       'GET /api/app/app-update/11111111-1111-4111-8111-111111111111',
       'POST /api/app/auth/bootstrap/consume',
-      'POST /api/app/data-root/backups/drb_demo/verify',
+      'POST /api/app/operations/backup.verify',
       'POST /api/app/workspaces/ws_demo/export',
       'POST /api/app/workspace-imports/dry-run',
       'POST /api/app/workspace-imports',
@@ -4375,27 +4377,27 @@ describe('createCoreClient', () => {
   it('reads the exact public NanoHost RuntimeTarget admin response', async () => {
     const payload = nanoHostRuntimeTargetStatus();
     const { client, requests } = createFakeClient({
-      'GET /api/app/nanohost/runtime-target': { body: payload },
+      'POST /api/app/operations/nanohost.runtime-target': { body: payload },
     });
 
-    await expect(client.app.getNanoHostRuntimeTargetStatus()).resolves.toEqual(payload);
+    await expect(client.operations['nanohost.runtime-target']({})).resolves.toEqual(payload);
     expect(requests).toEqual([
       expect.objectContaining({
-        hasBody: false,
-        method: 'GET',
-        path: '/api/app/nanohost/runtime-target',
+        hasBody: true,
+        method: 'POST',
+        path: '/api/app/operations/nanohost.runtime-target',
       }),
     ]);
   });
 
   it('rejects extra fields on the NanoHost RuntimeTarget admin response', async () => {
     const { client } = createFakeClient({
-      'GET /api/app/nanohost/runtime-target': {
+      'POST /api/app/operations/nanohost.runtime-target': {
         body: { ...nanoHostRuntimeTargetStatus(), targetId: 'caller-selected' },
       },
     });
 
-    await expect(client.app.getNanoHostRuntimeTargetStatus()).rejects.toBeInstanceOf(
+    await expect(client.operations['nanohost.runtime-target']({})).rejects.toBeInstanceOf(
       ProtocolValidationError
     );
   });

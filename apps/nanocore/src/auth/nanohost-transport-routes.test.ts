@@ -1,10 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
+import { createCoreClient } from '../../../../packages/core-client/src/index.js';
 import { createApp } from '../app.js';
 import { listServerAuditEvents } from '../audit-events.js';
+import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
@@ -12,6 +22,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { createOpenKitAccessTokenRecord } from './access-token-store.js';
 import type { BetterAuthServer } from './middleware.js';
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
@@ -122,13 +133,19 @@ describe('NanoHost transport App API safe-sink routes', () => {
         dataRoot,
         mode: 'server',
       });
-      const response = await app.request('/api/app/nanohost/runtime-target', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.runtime-target',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
 
       expect(response.status).toBe(403);
       await expect(response.json()).resolves.toMatchObject({
-        code: 'nanohost_transport_admin_forbidden',
+        code: 'deployment_admin_required',
       });
     } finally {
       coreDb.sqlite.close();
@@ -165,7 +182,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
           response: await createApp({
             mode: 'local',
             turnExecutor: new SimulatedTurnExecutor(),
-          }).request('/api/app/nanohost/runtime-target'),
+          }).request(...operationRequest('nanohost.runtime-target', {})),
           status: 404,
         },
         {
@@ -175,31 +192,48 @@ describe('NanoHost transport App API safe-sink routes', () => {
             mode: 'server',
             openKitConfig: { nanohost: config },
             turnExecutor: new SimulatedTurnExecutor(),
-          }).request('/api/app/nanohost/runtime-target', {
-            headers: { [OWNER_SESSION_HEADER]: '1' },
-          }),
+          }).request(
+            ...operationRequest(
+              'nanohost.runtime-target',
+              {},
+              {
+                headers: { [OWNER_SESSION_HEADER]: '1' },
+              }
+            )
+          ),
           status: 503,
         },
         {
           name: 'missing-config',
           response: await createApp({ auth: ownerSessionAuth(), coreDb, mode: 'server' }).request(
-            '/api/app/nanohost/runtime-target',
-            { headers: adminHeaders }
+            ...operationRequest('nanohost.runtime-target', {}, { headers: adminHeaders })
           ),
           status: 503,
         },
         {
           name: 'derived-session-absent-target',
-          response: await configuredApp.request('/api/app/nanohost/runtime-target', {
-            headers: { [OWNER_SESSION_HEADER]: '1' },
-          }),
+          response: await configuredApp.request(
+            ...operationRequest(
+              'nanohost.runtime-target',
+              {},
+              {
+                headers: { [OWNER_SESSION_HEADER]: '1' },
+              }
+            )
+          ),
           status: 404,
         },
         {
           name: 'absent-target',
-          response: await configuredApp.request('/api/app/nanohost/runtime-target', {
-            headers: adminHeaders,
-          }),
+          response: await configuredApp.request(
+            ...operationRequest(
+              'nanohost.runtime-target',
+              {},
+              {
+                headers: adminHeaders,
+              }
+            )
+          ),
           status: 404,
         },
       ]) {
@@ -212,9 +246,15 @@ describe('NanoHost transport App API safe-sink routes', () => {
         deploymentId: config.deploymentId,
         observedAt: '2026-08-15T01:02:02.000Z',
       });
-      const unreadyResponse = await configuredApp.request('/api/app/nanohost/runtime-target', {
-        headers: adminHeaders,
-      });
+      const unreadyResponse = await configuredApp.request(
+        ...operationRequest(
+          'nanohost.runtime-target',
+          {},
+          {
+            headers: adminHeaders,
+          }
+        )
+      );
       expect(unreadyResponse.status).toBe(200);
       await expect(unreadyResponse.json()).resolves.toEqual({
         identityId: config.identityId,
@@ -237,12 +277,24 @@ describe('NanoHost transport App API safe-sink routes', () => {
         observedAt: '2026-08-15T01:02:03.000Z',
       });
 
-      const response = await configuredApp.request('/api/app/nanohost/runtime-target', {
-        headers: adminHeaders,
-      });
-      const sessionResponse = await configuredApp.request('/api/app/nanohost/runtime-target', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const response = await configuredApp.request(
+        ...operationRequest(
+          'nanohost.runtime-target',
+          {},
+          {
+            headers: adminHeaders,
+          }
+        )
+      );
+      const sessionResponse = await configuredApp.request(
+        ...operationRequest(
+          'nanohost.runtime-target',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
 
       expect(response.status).toBe(200);
@@ -268,9 +320,15 @@ describe('NanoHost transport App API safe-sink routes', () => {
         coreDb.sqlite
           .prepare(`UPDATE nanohost_runtime_targets SET ${mismatch.column} = ?`)
           .run(mismatch.value);
-        const mismatchResponse = await configuredApp.request('/api/app/nanohost/runtime-target', {
-          headers: adminHeaders,
-        });
+        const mismatchResponse = await configuredApp.request(
+          ...operationRequest(
+            'nanohost.runtime-target',
+            {},
+            {
+              headers: adminHeaders,
+            }
+          )
+        );
         const mismatchBody = (await mismatchResponse.json()) as Record<string, unknown>;
         expect
           .soft(
@@ -321,17 +379,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         companionPath: join(slotRoot, 'A.meta'),
       };
 
-      const response = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
 
       expect(response.status).toBe(201);
@@ -359,17 +423,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
       ]);
 
-      const duplicate = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const duplicate = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       expect(duplicate.status).toBe(409);
     } finally {
       coreDb.sqlite.close();
@@ -407,17 +477,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         mode: 'server',
         openKitConfig: { nanohost: configuredNanoHost(slotRoot) },
       });
-      const response = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
 
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(readFileSync(join(slotRoot, 'A.token'), 'utf8')).toBe(occupiedSecret);
@@ -464,17 +540,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
       });
 
-      const response = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
       const rows = coreDb.sqlite
         .prepare('SELECT token_id, status FROM nanohost_transport_tokens')
@@ -523,43 +605,61 @@ describe('NanoHost transport App API safe-sink routes', () => {
         openKitConfig: { nanohost: configuredNanoHost(slotRoot) },
       });
 
-      const enrolled = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const enrolled = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       expect(enrolled.status).toBe(201);
       const enrollBody = (await enrolled.json()) as {
         record: { tokenId: string };
       };
 
       // Revoke the enrollment token so a later issue can create a fresh usable secret.
-      await app.request(`/api/app/nanohost/tokens/${enrollBody.record.tokenId}/revoke`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      await app.request(
+        ...operationRequest(
+          'nanohost.token-revoke',
+          { tokenId: enrollBody.record.tokenId },
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
 
       const issueSink = {
         secretPath: join(slotRoot, 'A.token'),
         companionPath: join(slotRoot, 'A.meta'),
       };
-      const issued = await app.request('/api/app/nanohost/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const issued = await app.request(
+        ...operationRequest(
+          'nanohost.token-issue',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const issueBody = (await issued.json()) as Record<string, unknown> & {
         record: { tokenId: string };
         slotResult: { issuanceGeneration: number; slot: string; status: string };
@@ -598,17 +698,20 @@ describe('NanoHost transport App API safe-sink routes', () => {
         companionPath: join(slotRoot, 'B.meta'),
       };
       const rotated = await app.request(
-        `/api/app/nanohost/tokens/${issueBody.record.tokenId}/rotate`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${admin.secret}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            overlapSeconds: 60,
-          }),
-        }
+        ...operationRequest(
+          'nanohost.token-rotate',
+          { tokenId: issueBody.record.tokenId },
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              overlapSeconds: 60,
+            }),
+          }
+        )
       );
       const rotateBody = (await rotated.json()) as Record<string, unknown>;
 
@@ -636,18 +739,30 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(syntheticSuccessor.status).toBe(409);
       expect(existsSync(issueSink.secretPath)).toBe(true);
 
-      const abort = await app.request(`/api/app/nanohost/tokens/${rotateTokenId}/rotation/abort`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const abort = await app.request(
+        ...operationRequest(
+          'nanohost.token-rotation-abort',
+          { tokenId: rotateTokenId },
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       expect(abort.status).toBe(200);
       expect(existsSync(issueSink.secretPath)).toBe(true);
       expect(existsSync(rotateSink.secretPath)).toBe(false);
 
-      const decommission = await app.request('/api/app/nanohost/decommission', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const decommission = await app.request(
+        ...operationRequest(
+          'nanohost.decommission',
+          {},
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       expect(decommission.status).toBe(200);
       expect(existsSync(issueSink.secretPath)).toBe(false);
       expect(existsSync(rotateSink.secretPath)).toBe(false);
@@ -683,25 +798,34 @@ describe('NanoHost transport App API safe-sink routes', () => {
         authorization: `Bearer ${admin.secret}`,
         'content-type': 'application/json',
       };
-      const enrolled = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const enrolled = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const enrolledBody = (await enrolled.json()) as { record: { tokenId: string } };
       expect(enrolled.status).toBe(201);
       const predecessorSlotSecret = readFileSync(config.credentialSlots.A.secretPath, 'utf8');
 
       const rotated = await app.request(
-        `/api/app/nanohost/tokens/${enrolledBody.record.tokenId}/rotate`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ overlapSeconds: 60 }),
-        }
+        ...operationRequest(
+          'nanohost.token-rotate',
+          { tokenId: enrolledBody.record.tokenId },
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ overlapSeconds: 60 }),
+          }
+        )
       );
       const rotatedBody = (await rotated.json()) as {
         record: { predecessorTokenId: string | null; tokenId: string };
@@ -710,11 +834,14 @@ describe('NanoHost transport App API safe-sink routes', () => {
       expect(rotatedBody.record.predecessorTokenId).toBe(enrolledBody.record.tokenId);
       const successorSlotSecret = readFileSync(config.credentialSlots.B.secretPath, 'utf8');
       const revokePredecessor = await app.request(
-        `/api/app/nanohost/tokens/${enrolledBody.record.tokenId}/revoke`,
-        {
-          method: 'POST',
-          headers: { authorization: `Bearer ${admin.secret}` },
-        }
+        ...operationRequest(
+          'nanohost.token-revoke',
+          { tokenId: enrolledBody.record.tokenId },
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
       );
       expect(revokePredecessor.status).toBe(200);
       const retainedTokens = coreDb.sqlite
@@ -768,10 +895,16 @@ describe('NanoHost transport App API safe-sink routes', () => {
       }>;
       expect(foreignTokenHashes).toHaveLength(2);
 
-      const decommission = await app.request('/api/app/nanohost/decommission', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const decommission = await app.request(
+        ...operationRequest(
+          'nanohost.decommission',
+          {},
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       const decommissionBody = (await decommission.json()) as {
         identityId: string;
         revokedTokenCount: number;
@@ -898,12 +1031,19 @@ describe('NanoHost transport App API safe-sink routes', () => {
           .get(token.tokenId)
       ).toEqual({ last_used_at: null, last_used_channel: null, last_used_source: null });
 
-      const response = await app.request('/api/app/nanohost/decommission', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.decommission',
+          {},
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe('Internal Server Error');
       expect(coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()).toEqual(
         []
       );
@@ -961,17 +1101,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         openKitConfig: { nanohost: config },
       });
 
-      const response = await app.request('/api/app/nanohost/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'B',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.token-issue',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'B',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
 
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(
@@ -1025,14 +1171,20 @@ describe('NanoHost transport App API safe-sink routes', () => {
         authorization: `Bearer ${admin.secret}`,
         'content-type': 'application/json',
       };
-      const enrolled = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const enrolled = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       expect(enrolled.status).toBe(201);
 
       if (failure === 'database') {
@@ -1048,11 +1200,18 @@ describe('NanoHost transport App API safe-sink routes', () => {
         mkdirSync(config.credentialSlots.B.secretPath);
       }
 
-      const decommission = await app.request('/api/app/nanohost/decommission', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
-      expect(decommission.status).toBeGreaterThanOrEqual(400);
+      const decommission = await app.request(
+        ...operationRequest(
+          'nanohost.decommission',
+          {},
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
+      expect(decommission.status).toBe(500);
+      expect(await decommission.text()).toBe('Internal Server Error');
       expect(
         listServerAuditEvents(coreDb).filter(
           (event) =>
@@ -1116,17 +1275,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
       });
 
-      const response = await app.request('/api/app/nanohost/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'B',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.token-issue',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'B',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
       const rows = coreDb.sqlite
         .prepare('SELECT status FROM nanohost_transport_tokens')
@@ -1187,17 +1352,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         mode: 'server',
         openKitConfig: { nanohost: config },
       });
-      const response = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
 
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -1249,17 +1420,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         nanohostTransportSessionAuthority: createNanoHostTransportSessionAuthority(),
         openKitConfig: { nanohost: config },
       });
-      const enrolled = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const enrolled = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       expect(enrolled.status).toBe(201);
       const enrollBody = (await enrolled.json()) as { record: { tokenId: string } };
       const occupiedSecret = 'okt_revoked_opposite_slot_secret_aaaaaaaaaaaaaaaa';
@@ -1274,15 +1451,18 @@ describe('NanoHost transport App API safe-sink routes', () => {
       writeFileSync(join(slotRoot, 'B.meta'), occupiedCompanion, { mode: 0o600 });
 
       const rotated = await app.request(
-        `/api/app/nanohost/tokens/${enrollBody.record.tokenId}/rotate`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${admin.secret}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({ overlapSeconds: 60 }),
-        }
+        ...operationRequest(
+          'nanohost.token-rotate',
+          { tokenId: enrollBody.record.tokenId },
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ overlapSeconds: 60 }),
+          }
+        )
       );
       const rotateBody = (await rotated.json()) as {
         record: { tokenId: string };
@@ -1331,14 +1511,20 @@ describe('NanoHost transport App API safe-sink routes', () => {
         'content-type': 'application/json',
       };
       const enroll = () =>
-        app.request('/api/app/nanohost/enroll', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            targetSlot: 'A',
-            expiresAt: '2026-09-08T00:00:00.000Z',
-          }),
-        });
+        app.request(
+          ...operationRequest(
+            'nanohost.enroll',
+            {},
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                targetSlot: 'A',
+                expiresAt: '2026-09-08T00:00:00.000Z',
+              }),
+            }
+          )
+        );
 
       const first = await enroll();
       expect(first.status).toBe(201);
@@ -1356,10 +1542,16 @@ describe('NanoHost transport App API safe-sink routes', () => {
         status: string;
       };
 
-      const decommissioned = await app.request('/api/app/nanohost/decommission', {
-        method: 'POST',
-        headers,
-      });
+      const decommissioned = await app.request(
+        ...operationRequest(
+          'nanohost.decommission',
+          {},
+          {
+            method: 'POST',
+            headers,
+          }
+        )
+      );
       expect(decommissioned.status).toBe(200);
 
       const reenrolled = await enroll();
@@ -1445,17 +1637,23 @@ describe('NanoHost transport App API safe-sink routes', () => {
         mode: 'server',
         openKitConfig: { nanohost: config },
       });
-      const response = await app.request('/api/app/nanohost/enroll', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          targetSlot: 'A',
-          expiresAt: '2026-09-08T00:00:00.000Z',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'nanohost.enroll',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              targetSlot: 'A',
+              expiresAt: '2026-09-08T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const body = (await response.json()) as Record<string, unknown>;
 
       expect(response.status).toBeGreaterThanOrEqual(400);
@@ -1476,6 +1674,346 @@ describe('NanoHost transport App API safe-sink routes', () => {
       ]);
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+});
+
+/** Supplies explicit deployment authority, configured sinks and a real typed client for the cutover checks. */
+function administrationFixture(acceptingProductWork = true) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projections-'));
+  const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projection-slots-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  insertTokenOwnerUser(coreDb);
+  const config = configuredNanoHost(slotRoot);
+  const admin = createOpenKitAccessTokenRecord(coreDb, {
+    expiresAt: '2999-01-01T00:00:00.000Z',
+    ownerUserId: 'user_owner',
+    scope: 'server-admin',
+    workspaceIds: [],
+  });
+  const headers = { authorization: `Bearer ${admin.secret}` };
+  const app = createApp({
+    auth: ownerSessionAuth(),
+    coreDb,
+    dataRoot,
+    mode: 'server',
+    openKitConfig: { nanohost: config },
+    getBootReadiness: () => ({ ...createBootReadinessSnapshot(), acceptingProductWork }),
+  });
+  const client = createCoreClient({
+    baseUrl: 'http://127.0.0.1',
+    headers,
+    fetch: (input, init) => app.request(new Request(input, init)),
+  });
+  /** Parses the actual MCP envelope; no Response object is treated as a JSON result. */
+  async function mcp(name: string, args: unknown, requestHeaders = headers) {
+    const response = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        ...requestHeaders,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.error).toBeUndefined();
+    return {
+      result: JSON.parse(body.result.content[0].text),
+      isError: body.result.isError === true,
+    };
+  }
+  return { dataRoot, slotRoot, coreDb, config, admin, headers, app, client, mcp };
+}
+
+describe('definition-derived deployment administration cutover', () => {
+  it('executes the family across client and MCP with redacted sinks, derived CLI metadata and CLI inventory execution', async () => {
+    const f = administrationFixture();
+    try {
+      // The internal Tool is still the fixed RuntimeTarget read; growing the tables never selects enrollment.
+      const generation = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+        targetId: f.config.identityId,
+        identityId: f.config.identityId,
+        deploymentId: f.config.deploymentId,
+        observedAt: '2026-10-03T00:00:00.000Z',
+      });
+      const target = await f.client.operations['nanohost.runtime-target']({});
+      expect(target.connectionGeneration).toBe(generation.connectionGeneration);
+      expect(
+        (await f.mcp('call', { operation: 'nanohost.runtime-target', input: {} })).result
+      ).toEqual(target);
+      const enrolled = await f.mcp('call', {
+        operation: 'nanohost.enroll',
+        input: { expiresAt: '2999-01-01T00:00:00.000Z' },
+      });
+      expect(enrolled.isError).toBe(false);
+      const initial = enrolled.result.record.tokenId as string;
+      const initialSecret = readFileSync(f.config.credentialSlots.A.secretPath, 'utf8');
+      expect(initialSecret).toMatch(/^okt_/);
+      expect(JSON.stringify(enrolled.result)).not.toContain(initialSecret.trim());
+      expect(statSync(f.config.credentialSlots.A.secretPath).mode & 0o777).toBe(0o600);
+      expect(statSync(f.config.credentialSlots.A.companionPath).mode & 0o777).toBe(0o600);
+      expect(await f.client.operations['nanohost.token-list']({})).toEqual({
+        items: [enrolled.result.record],
+      });
+      const rotated = await f.mcp('call', {
+        operation: 'nanohost.token-rotate',
+        input: { tokenId: initial },
+      });
+      expect(rotated.isError).toBe(false);
+      expect(rotated.result.targetSlot).toBe('B');
+      expect(readFileSync(f.config.credentialSlots.A.secretPath, 'utf8')).toBe(initialSecret);
+      const successorSecret = readFileSync(f.config.credentialSlots.B.secretPath, 'utf8');
+      expect(JSON.stringify(rotated.result)).not.toContain(successorSecret.trim());
+      const aborted = await f.client.operations['nanohost.token-rotation-abort']({
+        tokenId: rotated.result.record.tokenId,
+      });
+      expect(aborted.predecessor.status).toBe('active');
+      expect(aborted.successor.status).toBe('revoked');
+      expect(existsSync(f.config.credentialSlots.B.secretPath)).toBe(false);
+      expect(
+        (await f.client.operations['nanohost.token-revoke']({ tokenId: initial })).record.status
+      ).toBe('revoked');
+      const issued = await f.mcp('call', {
+        operation: 'nanohost.token-issue',
+        input: { targetSlot: 'B', expiresAt: '2999-01-01T00:00:00.000Z' },
+      });
+      expect(issued.isError).toBe(false);
+      expect(issued.result.slotResult.slot).toBe('B');
+      expect(statSync(f.config.credentialSlots.B.secretPath).mode & 0o777).toBe(0o600);
+      expect(JSON.stringify(issued.result)).not.toContain(
+        readFileSync(f.config.credentialSlots.B.secretPath, 'utf8').trim()
+      );
+      const layout = await f.client.operations['storage.layout-report']({});
+      expect(
+        (await f.mcp('call', { operation: 'storage.layout-report', input: {} })).result
+      ).toEqual(layout);
+      const created = await f.mcp('call', { operation: 'backup.create', input: {} });
+      expect(created.isError).toBe(false);
+      expect(created.result.manifest.consistency).toBe('crash-consistent');
+      expect(created.result.checkedFiles).toContain('server/db/core.sqlite');
+      expect(JSON.stringify(created.result)).not.toContain(f.dataRoot);
+      expect(
+        await f.client.operations['backup.verify']({ backupId: created.result.backupId })
+      ).toEqual(created.result);
+      // @ts-expect-error The bundled CLI catalog is JavaScript.
+      const { operationCatalog } = await import('../../../../skills/openkit-operations.mjs');
+      for (const [id, definition] of Object.entries(ADMINISTRATION_OPERATION_DEFINITIONS)) {
+        const row = operationCatalog.find((entry: { id: string }) => entry.id === id)!;
+        expect(row.appOperationId).toBe(id);
+        expect(row.clientMethod).toBe(`operations.${id}`);
+        expect(row.inputSchema.def.checks).toBe(definition.inputSchema.def.checks);
+        expect(row.inputSchema.def.catchall?.def.type).toBe('never');
+        expect(row.requiredAccess).toContain('deployment admin');
+      }
+      const listed = await operationCatalog
+        .find((entry: { id: string }) => entry.id === 'nanohost.token-list')!
+        .handler({ client: f.client }, {});
+      expect(listed).toEqual(await f.client.operations['nanohost.token-list']({}));
+      const decommissioned = await f.client.operations['nanohost.decommission']({});
+      expect(decommissioned.status).toBe('decommissioned');
+      expect(existsSync(f.config.credentialSlots.A.secretPath)).toBe(false);
+      expect(existsSync(f.config.credentialSlots.B.secretPath)).toBe(false);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('removes every authenticated former binding without touching Token rows or sink files', async () => {
+    const f = administrationFixture();
+    try {
+      const before = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      for (const [method, path] of [
+        ['POST', '/api/app/nanohost/enroll'],
+        ['GET', '/api/app/nanohost/runtime-target'],
+        ['GET', '/api/app/nanohost/tokens'],
+        ['POST', '/api/app/nanohost/tokens'],
+        ['POST', '/api/app/nanohost/tokens/token_old/revoke'],
+        ['POST', '/api/app/nanohost/tokens/token_old/rotate'],
+        ['POST', '/api/app/nanohost/tokens/token_old/rotation/abort'],
+        ['POST', '/api/app/nanohost/decommission'],
+        ['GET', '/api/app/storage/layout-report'],
+        ['POST', '/api/app/data-root/backups'],
+        ['POST', '/api/app/data-root/backups/drb_old/verify'],
+      ]) {
+        const response = await f.app.request(path!, {
+          method,
+          headers: f.headers,
+          body: method === 'POST' ? '{}' : undefined,
+        });
+        expect(response.status, `${method} ${path}`).toBe(404);
+        expect(await response.text()).toBe('404 Not Found');
+      }
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+        before
+      );
+      expect(readdirSync(f.slotRoot)).toEqual([]);
+      expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('gates every new HTTP and MCP mutation before Token, identity, sink or backup effects', async () => {
+    const f = administrationFixture(false);
+    try {
+      for (const [id, input] of Object.entries({
+        'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
+        'nanohost.token-issue': { targetSlot: 'A', expiresAt: '2999-01-01T00:00:00.000Z' },
+        'nanohost.token-revoke': { tokenId: 'token_gated' },
+        'nanohost.token-rotate': { tokenId: 'token_gated' },
+        'nanohost.token-rotation-abort': { tokenId: 'token_gated' },
+        'nanohost.decommission': {},
+        'backup.create': {},
+      })) {
+        const response = await f.app.request(`/api/app/operations/${id}`, {
+          method: 'POST',
+          headers: { ...f.headers, 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        expect(response.status, id).toBe(503);
+        expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
+        expect(await f.mcp('call', { operation: id, input })).toMatchObject({
+          isError: true,
+          result: { code: 'product_work_unavailable' },
+        });
+      }
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual([]);
+      expect(
+        f.coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()
+      ).toEqual([]);
+      expect(readdirSync(f.slotRoot)).toEqual([]);
+      expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
+      expect((await f.mcp('call', { operation: 'nanohost.token-list', input: {} })).result).toEqual(
+        { items: [] }
+      );
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses every operation under a readonly bearer before changing retained Token rows, identity or sinks', async () => {
+    const f = administrationFixture();
+    try {
+      const enrolled = await f.client.operations['nanohost.enroll']({
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const readonly = createOpenKitAccessTokenRecord(f.coreDb, {
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerUserId: 'user_owner',
+        scope: 'workspace-readonly',
+        workspaceIds: ['ws_demo'],
+      });
+      const headers = { authorization: `Bearer ${readonly.secret}` };
+      const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      const identitiesBefore = f.coreDb.sqlite
+        .prepare('SELECT * FROM nanohost_integration_identities')
+        .all();
+      const sinkBefore = readFileSync(f.config.credentialSlots.A.secretPath);
+      const companionBefore = readFileSync(f.config.credentialSlots.A.companionPath);
+      for (const [id, input] of Object.entries({
+        'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
+        'nanohost.runtime-target': {},
+        'nanohost.token-list': {},
+        'nanohost.token-issue': { targetSlot: 'B', expiresAt: '2999-01-01T00:00:00.000Z' },
+        'nanohost.token-revoke': { tokenId: enrolled.record.tokenId },
+        'nanohost.token-rotate': { tokenId: enrolled.record.tokenId },
+        'nanohost.token-rotation-abort': { tokenId: enrolled.record.tokenId },
+        'nanohost.decommission': {},
+        'backup.create': {},
+        'backup.verify': { backupId: 'drb_readonly' },
+        'storage.layout-report': {},
+      })) {
+        const response = await f.app.request(`/api/app/operations/${id}`, {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        expect(response.status, id).toBe(403);
+        expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
+        expect(await f.mcp('call', { operation: id, input }, headers)).toMatchObject({
+          isError: true,
+          result: { code: 'deployment_admin_required' },
+        });
+      }
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+        tokensBefore
+      );
+      expect(
+        f.coreDb.sqlite.prepare('SELECT * FROM nanohost_integration_identities').all()
+      ).toEqual(identitiesBefore);
+      expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(sinkBefore);
+      expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
+      expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
+      expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    { refusal: 'unproved-slot', status: 409, code: 'nanohost_transport_predecessor_slot_unproved' },
+    { refusal: 'missing-token', status: 404, code: 'nanohost_transport_token_not_found' },
+  ])('preserves the $refusal rotation refusal on HTTP and MCP without changing Token rows or slot bytes', async ({
+    refusal,
+    status,
+    code,
+  }) => {
+    const f = administrationFixture();
+    try {
+      insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
+      const retained = createNanoHostTransportTokenRecord(f.coreDb, {
+        deploymentId: f.config.deploymentId,
+        expiresAt: '2999-01-01T00:00:00.000Z',
+        ownerNanoHostIdentityId: f.config.identityId,
+        responsibleServerAdminActorId: 'user_owner',
+      });
+      const tokenId = refusal === 'unproved-slot' ? retained.tokenId : 'token_missing';
+      const companionTokenId = 'token_missing';
+      writeFileSync(f.config.credentialSlots.A.secretPath, retained.secret, { mode: 0o600 });
+      writeFileSync(
+        f.config.credentialSlots.A.companionPath,
+        [
+          `token_id=${companionTokenId}`,
+          'issuance_generation=1',
+          `identity_id=${f.config.identityId}`,
+          `deployment_id=${f.config.deploymentId}`,
+          '',
+        ].join('\n'),
+        { mode: 0o600 }
+      );
+      const tokensBefore = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
+      const secretBefore = readFileSync(f.config.credentialSlots.A.secretPath);
+      const companionBefore = readFileSync(f.config.credentialSlots.A.companionPath);
+      const response = await f.app.request(
+        ...operationRequest('nanohost.token-rotate', { tokenId }, { headers: f.headers })
+      );
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ code });
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+        tokensBefore
+      );
+      expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(secretBefore);
+      expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
+      expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
+      expect(
+        await f.mcp('call', { operation: 'nanohost.token-rotate', input: { tokenId } })
+      ).toMatchObject({ isError: true, result: { code } });
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(
+        tokensBefore
+      );
+      expect(readFileSync(f.config.credentialSlots.A.secretPath)).toEqual(secretBefore);
+      expect(readFileSync(f.config.credentialSlots.A.companionPath)).toEqual(companionBefore);
+      expect(readdirSync(f.slotRoot).sort()).toEqual(['A.meta', 'A.token']);
+    } finally {
+      f.coreDb.sqlite.close();
     }
   });
 });

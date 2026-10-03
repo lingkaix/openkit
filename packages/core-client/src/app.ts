@@ -1,6 +1,4 @@
 import {
-  type AbortNanoHostTransportRotationResponse,
-  AbortNanoHostTransportRotationResponseSchema,
   type AcceptWorkspaceInvitationRequest,
   AcceptWorkspaceInvitationRequestSchema,
   type ActivateWorkerEnvironmentRequest,
@@ -53,24 +51,14 @@ import {
   CreateWorkspaceVaultGrantRequestSchema,
   type CreateWorkspaceVaultSecretRequest,
   CreateWorkspaceVaultSecretRequestSchema,
-  type DataRootBackupCreateResponse,
-  DataRootBackupCreateResponseSchema,
-  type DataRootBackupVerifyResponse,
-  DataRootBackupVerifyResponseSchema,
   type DeclineWorkspaceInvitationRequest,
   DeclineWorkspaceInvitationRequestSchema,
-  type DecommissionNanoHostResponse,
-  DecommissionNanoHostResponseSchema,
   type DeleteWorkspaceRequest,
   DeleteWorkspaceRequestSchema,
   type DisableUserRequest,
   DisableUserRequestSchema,
   type DisableUserResponse,
   DisableUserResponseSchema,
-  type EnrollNanoHostRequest,
-  EnrollNanoHostRequestSchema,
-  type EnrollNanoHostResponse,
-  EnrollNanoHostResponseSchema,
   type ExcludeThreadMaterialRequest,
   ExcludeThreadMaterialRequestSchema,
   type ExcludeThreadMaterialResponse,
@@ -97,10 +85,6 @@ import {
   GetWorkspaceMaterialRevisionResponseSchema,
   type GetWorkspaceSyncReviewResponse,
   GetWorkspaceSyncReviewResponseSchema,
-  type IssueNanoHostTransportTokenRequest,
-  IssueNanoHostTransportTokenRequestSchema,
-  type IssueNanoHostTransportTokenResponse,
-  IssueNanoHostTransportTokenResponseSchema,
   type KnowledgeManagerAnswerRequest,
   type KnowledgeManagerDraftProposalRequest,
   type KnowledgeManagerHealthCheckRequest,
@@ -126,8 +110,6 @@ import {
   ListLightAppsResponseSchema,
   type ListMyAdminAccessTokensResponse,
   ListMyAdminAccessTokensResponseSchema,
-  type ListNanoHostTransportTokensResponse,
-  ListNanoHostTransportTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
   type ListSchedulerAdmissionsResponse,
@@ -186,8 +168,6 @@ import {
   ListWorkspaceVaultInjectionReceiptsResponseSchema,
   type ListWorkspaceVaultUseRecordsResponse,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  type NanoHostRuntimeTargetStatusResponse,
-  NanoHostRuntimeTargetStatusResponseSchema,
   type PrepareAppUpdateRequest,
   PrepareAppUpdateRequestSchema,
   type PrepareAppUpdateResponse,
@@ -239,16 +219,10 @@ import {
   type RetrySchedulerAdmissionResponse,
   RetrySchedulerAdmissionResponseSchema,
   type ReverseKnowledgeProposalRequest,
-  type RevokeNanoHostTransportTokenResponse,
-  RevokeNanoHostTransportTokenResponseSchema,
   type RevokeOpenKitAccessTokenResponse,
   RevokeOpenKitAccessTokenResponseSchema,
   type RevokeWorkspaceInvitationRequest,
   RevokeWorkspaceInvitationRequestSchema,
-  type RotateNanoHostTransportTokenRequest,
-  RotateNanoHostTransportTokenRequestSchema,
-  type RotateNanoHostTransportTokenResponse,
-  RotateNanoHostTransportTokenResponseSchema,
   type RotateOpenKitAccessTokenRequest,
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
@@ -275,8 +249,6 @@ import {
   SetupDiagnosticsResponseSchema,
   type StartAppUpdateRequest,
   StartAppUpdateRequestSchema,
-  type StorageLayoutReportResponse,
-  StorageLayoutReportResponseSchema,
   type SubmitAdministrationConversationRequest,
   SubmitAdministrationConversationRequestSchema,
   type SubmitAdministrationConversationResponse,
@@ -447,15 +419,6 @@ export type SetMyAdminAccessTokenDefaultInput = SetMyAdminAccessTokenDefaultRequ
 export interface RotateOpenKitAccessTokenInput {
   /** Optional grace period before the rotated token fully expires. */
   graceSeconds?: RotateOpenKitAccessTokenRequest['graceSeconds'];
-}
-/** NanoHost enrollment input. */
-export type EnrollNanoHostInput = EnrollNanoHostRequest;
-/** NanoHost transport token issue input. */
-export type IssueNanoHostTransportTokenInput = IssueNanoHostTransportTokenRequest;
-/** NanoHost transport token rotation input. */
-export interface RotateNanoHostTransportTokenInput {
-  /** Optional overlap window before the rotated predecessor fully expires. */
-  overlapSeconds?: RotateNanoHostTransportTokenRequest['overlapSeconds'];
 }
 /** Vault admin unlock input. */
 export type VaultAdminUnlockInput = VaultAdminUnlockRequest;
@@ -813,10 +776,6 @@ export interface AppApiClient {
   ): Promise<SetProviderApiKeyResponse>;
   /** Reads setup diagnostics. */
   getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
-  /** Reads the NanoCore storage layout report. */
-  getStorageLayoutReport(): Promise<StorageLayoutReportResponse>;
-  /** Creates and verifies one server-managed hot data-root backup. */
-  createDataRootBackup(): Promise<DataRootBackupCreateResponse>;
   /** Prepares one closed App-update source without replacing the running App. */
   prepareAppUpdate(input: PrepareAppUpdateRequest): Promise<PrepareAppUpdateResponse>;
   /** Starts one prepared App-update receipt after explicit maintenance consent. */
@@ -846,29 +805,6 @@ export interface AppApiClient {
   setMyAdminAccessTokenDefault(
     input: SetMyAdminAccessTokenDefaultInput
   ): Promise<SetMyAdminAccessTokenDefaultResponse>;
-  /** Enrolls one NanoHost identity and first transport token. */
-  enrollNanoHost(input: EnrollNanoHostInput): Promise<EnrollNanoHostResponse>;
-  /** Reads the configured NanoHost RuntimeTarget readiness status. */
-  getNanoHostRuntimeTargetStatus(): Promise<NanoHostRuntimeTargetStatusResponse>;
-  /** Lists redacted NanoHost transport token records. */
-  listNanoHostTransportTokens(): Promise<ListNanoHostTransportTokensResponse>;
-  /** Issues one NanoHost transport token through a proved named safe-sink write. */
-  issueNanoHostTransportToken(
-    input: IssueNanoHostTransportTokenInput
-  ): Promise<IssueNanoHostTransportTokenResponse>;
-  /** Revokes one NanoHost transport token. */
-  revokeNanoHostTransportToken(tokenId: string): Promise<RevokeNanoHostTransportTokenResponse>;
-  /** Rotates one NanoHost transport token through a proved named safe-sink write. */
-  rotateNanoHostTransportToken(
-    tokenId: string,
-    input: RotateNanoHostTransportTokenInput
-  ): Promise<RotateNanoHostTransportTokenResponse>;
-  /** Aborts one pending NanoHost transport token rotation. */
-  abortNanoHostTransportTokenRotation(
-    tokenId: string
-  ): Promise<AbortNanoHostTransportRotationResponse>;
-  /** Decommissions the configured NanoHost identity and clears both credential slots. */
-  decommissionNanoHost(): Promise<DecommissionNanoHostResponse>;
   /** Creates a workspace secret using request-only material. */
   createWorkspaceVaultSecret(
     workspaceId: string,
@@ -902,8 +838,6 @@ export interface AppApiClient {
   bootstrapCodexAuthJsonVaultReference(
     input: VaultAdminBootstrapCodexAuthJsonInput
   ): Promise<VaultAdminBootstrapCodexAuthJsonResponse>;
-  /** Verifies one server-managed data-root backup by id. */
-  verifyDataRootBackup(backupId: string): Promise<DataRootBackupVerifyResponse>;
   /** Reads workspace capability-call and usage evidence. */
   getCapabilityUsage(workspaceId: string): Promise<CapabilityUsageResponse>;
   /** Lists workspace evidence bundles. */
@@ -1465,10 +1399,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       ),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
-    getStorageLayoutReport: () =>
-      transport.getJson('/api/app/storage/layout-report', StorageLayoutReportResponseSchema),
-    createDataRootBackup: () =>
-      transport.postJson('/api/app/data-root/backups', {}, DataRootBackupCreateResponseSchema),
     prepareAppUpdate: (input) =>
       transport.postJson(
         '/api/app/app-update/prepare',
@@ -1520,45 +1450,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SetMyAdminAccessTokenDefaultRequestSchema.parse(input),
         SetMyAdminAccessTokenDefaultResponseSchema
       ),
-    enrollNanoHost: (input) =>
-      transport.postJson(
-        '/api/app/nanohost/enroll',
-        EnrollNanoHostRequestSchema.parse(input),
-        EnrollNanoHostResponseSchema
-      ),
-    getNanoHostRuntimeTargetStatus: () =>
-      transport.getJson(
-        '/api/app/nanohost/runtime-target',
-        NanoHostRuntimeTargetStatusResponseSchema
-      ),
-    listNanoHostTransportTokens: () =>
-      transport.getJson('/api/app/nanohost/tokens', ListNanoHostTransportTokensResponseSchema),
-    issueNanoHostTransportToken: (input) =>
-      transport.postJson(
-        '/api/app/nanohost/tokens',
-        IssueNanoHostTransportTokenRequestSchema.parse(input),
-        IssueNanoHostTransportTokenResponseSchema
-      ),
-    revokeNanoHostTransportToken: (tokenId) =>
-      transport.postJson(
-        `/api/app/nanohost/tokens/${tokenId}/revoke`,
-        {},
-        RevokeNanoHostTransportTokenResponseSchema
-      ),
-    rotateNanoHostTransportToken: (tokenId, input) =>
-      transport.postJson(
-        `/api/app/nanohost/tokens/${tokenId}/rotate`,
-        RotateNanoHostTransportTokenRequestSchema.parse(input),
-        RotateNanoHostTransportTokenResponseSchema
-      ),
-    abortNanoHostTransportTokenRotation: (tokenId) =>
-      transport.postJson(
-        `/api/app/nanohost/tokens/${tokenId}/rotation/abort`,
-        {},
-        AbortNanoHostTransportRotationResponseSchema
-      ),
-    decommissionNanoHost: () =>
-      transport.postJson('/api/app/nanohost/decommission', {}, DecommissionNanoHostResponseSchema),
     createWorkspaceVaultSecret: (workspaceId, input) =>
       transport.postJson(
         `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets`,
@@ -1604,12 +1495,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         '/api/app/vault/bootstrap/codex-auth-json',
         VaultAdminBootstrapCodexAuthJsonRequestSchema.parse(input),
         VaultAdminBootstrapCodexAuthJsonResponseSchema
-      ),
-    verifyDataRootBackup: (backupId) =>
-      transport.postJson(
-        `/api/app/data-root/backups/${backupId}/verify`,
-        { backupId },
-        DataRootBackupVerifyResponseSchema
       ),
     getCapabilityUsage: (workspaceId) =>
       transport.getJson(

@@ -17,3 +17,5 @@ The external path of all four consumers requires exactly one explicit SSH alias 
 The Unit F blocked-create runner establishes a fresh NanoHost epoch through the ordinary stop, epoch-absence, recovery, and prior-root-absence sequence before it pauses dockerd and starts the fault Task. A projected `freshEmpty` RuntimeTarget alone does not prove that an idle Sandbox from an earlier scenario is physically absent.
 
 F1 captures its process-continuity baseline after the Task reaches its durable post-launch barrier and before restarting NanoCore. Its initial epoch observation remains available for cleanup if Task lineage cannot be resolved; prior Task sandbox replacement is outside the restart interval.
+
+Configured readiness and decommission use the definition-derived JSON bindings `POST /api/app/operations/nanohost.runtime-target` and `POST /api/app/operations/nanohost.decommission` with empty JSON objects. Credential delivery stays in curl stdin configuration and the existing attempt-local sink lifecycle. The Unit F runner reads the same canonical readiness operation.

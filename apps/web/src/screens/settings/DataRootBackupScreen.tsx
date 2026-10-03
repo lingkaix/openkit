@@ -47,8 +47,8 @@ export function DataRootBackupScreen() {
     mutationFn: async (action: { kind: 'create' } | { kind: 'verify'; backupId: string }) => {
       const response =
         action.kind === 'create'
-          ? await client.app.createDataRootBackup()
-          : await client.app.verifyDataRootBackup(action.backupId);
+          ? await client.operations['backup.create']({})
+          : await client.operations['backup.verify']({ backupId: action.backupId });
       return { kind: action.kind, ...backupSummary(response) };
     },
     retry: false,

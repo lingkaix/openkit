@@ -249,7 +249,7 @@ Shared Modal surfaces stay within the padded viewport and scroll long content so
 
 ### Deployment backup
 
-Settings **Deployment backup** at `/settings/data-root-backup` creates and verifies deployment data-root backups through `client.app.createDataRootBackup()` and `client.app.verifyDataRootBackup(backupId)`, independently of Workspace selection. It uses session-derived deployment-admin authority with access-denied retry and no Token plaintext. Creation is explicit; verification accepts the returned ID or a known ID. Summaries whitelist the backup ID, mode, consistency, start/completion timestamps, file count, total bytes, and checked-file count; inventory paths and raw errors are omitted. Retry never automatically repeats creation.
+Settings **Deployment backup** at `/settings/data-root-backup` creates and verifies deployment data-root backups through `client.operations['backup.create']({})` and `client.operations['backup.verify']({ backupId })`, independently of Workspace selection. It uses session-derived deployment-admin authority with access-denied retry and no Token plaintext. Creation is explicit; verification accepts the returned ID or a known ID. Summaries whitelist the backup ID, mode, consistency, start/completion timestamps, file count, total bytes, and checked-file count; inventory paths and raw errors are omitted. Retry never automatically repeats creation.
 
 ### Workspace access recovery and disable user
 

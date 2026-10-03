@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 
 import {
-  AbortNanoHostTransportRotationResponseSchema,
   AcceptWorkspaceInvitationRequestSchema,
   ActivateWorkerEnvironmentRequestSchema,
   ActivateWorkerEnvironmentResponseSchema,
@@ -35,17 +34,11 @@ import {
   CreateWorkspaceMaterialResponseSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
-  DataRootBackupCreateResponseSchema,
-  DataRootBackupVerifyRequestSchema,
-  DataRootBackupVerifyResponseSchema,
   DecideSkillCandidateRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
-  DecommissionNanoHostResponseSchema,
   DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
-  EnrollNanoHostRequestSchema,
-  EnrollNanoHostResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
   GenerativePresentationDataModelResponseSchema,
@@ -65,8 +58,6 @@ import {
   ImportPluginResponseSchema,
   ImportSkillRequestSchema,
   ImportSkillResponseSchema,
-  IssueNanoHostTransportTokenRequestSchema,
-  IssueNanoHostTransportTokenResponseSchema,
   LeaveWorkspaceRequestSchema,
   LightAppBatchRequestSchema,
   LightAppBatchResponseSchema,
@@ -79,7 +70,6 @@ import {
   ListLightAppsResponseSchema,
   ListMcpCatalogResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
-  ListNanoHostTransportTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
@@ -110,15 +100,14 @@ import {
   ListWorkspaceVaultInjectionPlansResponseSchema,
   ListWorkspaceVaultInjectionReceiptsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
-  NanoHostRuntimeTargetStatusResponseSchema,
+  OPERATION_DEFINITIONS,
+  type OperationId,
   operationHttpPath,
   operationModelInput,
-  PRODUCT_OPERATION_DEFINITIONS,
   PrepareAppUpdateRequestSchema,
   PrepareAppUpdateResponseSchema,
   PrepareWorkerEnvironmentRequestSchema,
   PrepareWorkerEnvironmentResponseSchema,
-  type ProductOperationId,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
   ProviderSubscriptionAutoTopupSchema,
@@ -142,11 +131,8 @@ import {
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
-  RevokeNanoHostTransportTokenResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
-  RotateNanoHostTransportTokenRequestSchema,
-  RotateNanoHostTransportTokenResponseSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
@@ -174,7 +160,6 @@ import {
   SkillCandidateResponseSchema,
   StartAppUpdateRequestSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
-  StorageLayoutReportResponseSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
   SubmitGenerativePresentationActionRequestSchema,
@@ -584,15 +569,16 @@ function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['ope
 }
 
 /** Derives the migrated JSON bindings and their contract references. */
-function productOperationPaths() {
+function operationPaths() {
   return Object.fromEntries(
-    Object.entries(PRODUCT_OPERATION_DEFINITIONS).map(([id, definition]) => [
+    Object.entries(OPERATION_DEFINITIONS).map(([id, definition]) => [
       operationHttpPath(id),
       {
         post: appJsonOperation({
           operationId: id,
           tag: id.split('.')[0]!,
           summary: definition.description,
+          ...(definition.scope.kind === 'server' ? { security: DEPLOYMENT_ADMIN_SECURITY } : {}),
           requestSchema: `${id}.input`,
           responseSchema: `${id}.output`,
           responseStatus:
@@ -611,7 +597,7 @@ function productOperationPaths() {
       },
     ])
   ) as {
-    [K in ProductOperationId as `/api/app/operations/${K}`]: {
+    [K in OperationId as `/api/app/operations/${K}`]: {
       post: ReturnType<typeof appJsonOperation<K>>;
     };
   };
@@ -633,7 +619,7 @@ export function createAppOpenApiDocument() {
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
-      ...productOperationPaths(),
+      ...operationPaths(),
 
       '/api/app/workspaces/{workspaceId}/members': {
         get: appJsonOperation({
@@ -841,32 +827,6 @@ export function createAppOpenApiDocument() {
           parameters: [USER_ID_PARAMETER],
           security: DEPLOYMENT_ADMIN_SECURITY,
         }),
-      },
-      '/api/app/storage/layout-report': {
-        get: {
-          operationId: 'getStorageLayoutReport',
-          tags: ['storage'],
-          summary: 'Read the NanoCore storage layout report.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Storage layout report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/StorageLayoutReportResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
       },
       '/api/app/diagnostics': {
         get: {
@@ -1108,245 +1068,6 @@ export function createAppOpenApiDocument() {
           requestSchema: 'SetMyAdminAccessTokenDefaultRequest',
           security: SESSION_COOKIE_SECURITY,
         }),
-      },
-      '/api/app/nanohost/enroll': {
-        post: {
-          operationId: 'enrollNanoHost',
-          tags: ['nanohost'],
-          summary: 'Enroll a NanoHost identity and first transport token.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/EnrollNanoHostRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Redacted NanoHost enrollment result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/EnrollNanoHostResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/nanohost/runtime-target': {
-        get: appJsonOperation({
-          operationId: 'getNanoHostRuntimeTargetStatus',
-          tag: 'nanohost',
-          summary: 'Read the configured NanoHost RuntimeTarget readiness status.',
-          responseStatus: '200',
-          responseSchema: 'NanoHostRuntimeTargetStatusResponse',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-        }),
-      },
-      '/api/app/nanohost/tokens': {
-        get: {
-          operationId: 'listNanoHostTransportTokens',
-          tags: ['nanohost'],
-          summary: 'List redacted NanoHost transport token records.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted NanoHost transport token records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListNanoHostTransportTokensResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'issueNanoHostTransportToken',
-          tags: ['nanohost'],
-          summary: 'Issue a NanoHost transport token and deliver it through a named safe sink.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/IssueNanoHostTransportTokenRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Issued NanoHost transport token and redacted record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/IssueNanoHostTransportTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/nanohost/tokens/{tokenId}/revoke': {
-        post: {
-          operationId: 'revokeNanoHostTransportToken',
-          tags: ['nanohost'],
-          summary: 'Revoke a NanoHost transport token immediately.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'tokenId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Revoked NanoHost transport token record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RevokeNanoHostTransportTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/nanohost/tokens/{tokenId}/rotate': {
-        post: {
-          operationId: 'rotateNanoHostTransportToken',
-          tags: ['nanohost'],
-          summary:
-            'Rotate a NanoHost transport token and deliver the successor through a named safe sink.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'tokenId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: false,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RotateNanoHostTransportTokenRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Rotated NanoHost transport token records and named-sink slot result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RotateNanoHostTransportTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/nanohost/tokens/{tokenId}/rotation/abort': {
-        post: {
-          operationId: 'abortNanoHostTransportTokenRotation',
-          tags: ['nanohost'],
-          summary: 'Abort a pending NanoHost transport token rotation.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'tokenId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Redacted NanoHost transport rotation abort result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AbortNanoHostTransportRotationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/nanohost/decommission': {
-        post: {
-          operationId: 'decommissionNanoHost',
-          tags: ['nanohost'],
-          summary: 'Decommission the configured NanoHost identity.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted configured NanoHost decommission result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/DecommissionNanoHostResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
       },
       '/api/admin/config/agent-environment': {
         get: {
@@ -3621,74 +3342,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/data-root/backups': {
-        post: {
-          operationId: 'createDataRootBackup',
-          tags: ['storage'],
-          summary: 'Create and verify one server-managed hot data-root backup.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Data-root backup manifest and verification summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/DataRootBackupCreateResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/data-root/backups/{backupId}/verify': {
-        post: {
-          operationId: 'verifyDataRootBackup',
-          tags: ['storage'],
-          summary: 'Verify one server-managed data-root backup.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'backupId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/DataRootBackupVerifyRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Data-root backup verification summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/DataRootBackupVerifyResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/app-update/prepare': {
         post: {
           operationId: 'prepareAppUpdate',
@@ -4704,16 +4357,13 @@ export function createAppOpenApiDocument() {
       },
       schemas: {
         ...Object.fromEntries(
-          Object.entries(PRODUCT_OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
+          Object.entries(OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
             [
               `${id}.input`,
               toJsonSchema(operationModelInput(definition.inputSchema, ['requestId'])),
             ],
             [`${id}.output`, toJsonSchema(definition.outputSchema)],
           ])
-        ),
-        AbortNanoHostTransportRotationResponse: toJsonSchema(
-          AbortNanoHostTransportRotationResponseSchema
         ),
         AcceptWorkspaceInvitationRequest: toJsonSchema(AcceptWorkspaceInvitationRequestSchema),
         ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
@@ -4838,12 +4488,6 @@ export function createAppOpenApiDocument() {
         CreateProviderSubscriptionAccountRequest: toJsonSchema(
           CreateProviderSubscriptionAccountRequestSchema
         ),
-        DataRootBackupCreateResponse: toJsonSchema(DataRootBackupCreateResponseSchema),
-        DataRootBackupVerifyRequest: toJsonSchema(DataRootBackupVerifyRequestSchema),
-        DataRootBackupVerifyResponse: toJsonSchema(DataRootBackupVerifyResponseSchema),
-        DecommissionNanoHostResponse: toJsonSchema(DecommissionNanoHostResponseSchema),
-        EnrollNanoHostRequest: toJsonSchema(EnrollNanoHostRequestSchema),
-        EnrollNanoHostResponse: toJsonSchema(EnrollNanoHostResponseSchema),
         GetAgentCatalogEntryResponse: toJsonSchema(GetAgentCatalogEntryResponseSchema),
         GetAgentEnvironmentPackageSnapshotResponse: toJsonSchema(
           GetAgentEnvironmentPackageSnapshotResponseSchema
@@ -4852,10 +4496,6 @@ export function createAppOpenApiDocument() {
         GetWorkspaceApplyResultResponse: toJsonSchema(GetWorkspaceApplyResultResponseSchema),
         GetWorkspaceCatalogResponse: toJsonSchema(GetWorkspaceCatalogResponseSchema),
         GetWorkspaceSyncReviewResponse: toJsonSchema(GetWorkspaceSyncReviewResponseSchema),
-        IssueNanoHostTransportTokenRequest: toJsonSchema(IssueNanoHostTransportTokenRequestSchema),
-        IssueNanoHostTransportTokenResponse: toJsonSchema(
-          IssueNanoHostTransportTokenResponseSchema
-        ),
         ListAgentCatalogResponse: toJsonSchema(ListAgentCatalogResponseSchema),
         ListAgentEnvironmentPackageSnapshotsResponse: toJsonSchema(
           ListAgentEnvironmentPackageSnapshotsResponseSchema
@@ -4863,12 +4503,6 @@ export function createAppOpenApiDocument() {
         ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
         ListInterruptedWorkerStatesResponse: toJsonSchema(
           ListInterruptedWorkerStatesResponseSchema
-        ),
-        ListNanoHostTransportTokensResponse: toJsonSchema(
-          ListNanoHostTransportTokensResponseSchema
-        ),
-        NanoHostRuntimeTargetStatusResponse: toJsonSchema(
-          NanoHostRuntimeTargetStatusResponseSchema
         ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
@@ -4949,16 +4583,7 @@ export function createAppOpenApiDocument() {
         ProviderSubscriptionAutoTopup: toJsonSchema(ProviderSubscriptionAutoTopupSchema),
         ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
         ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
-        RevokeNanoHostTransportTokenResponse: toJsonSchema(
-          RevokeNanoHostTransportTokenResponseSchema
-        ),
         RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
-        RotateNanoHostTransportTokenRequest: toJsonSchema(
-          RotateNanoHostTransportTokenRequestSchema
-        ),
-        RotateNanoHostTransportTokenResponse: toJsonSchema(
-          RotateNanoHostTransportTokenResponseSchema
-        ),
         RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),
         RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
         RuntimeConfigFileListResponse: toJsonSchema(RuntimeConfigFileListResponseSchema),
@@ -5010,7 +4635,6 @@ export function createAppOpenApiDocument() {
           StartProviderSubscriptionAccountLoginRequestSchema
         ),
         SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
-        StorageLayoutReportResponse: toJsonSchema(StorageLayoutReportResponseSchema),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
         SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),

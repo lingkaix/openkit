@@ -2360,8 +2360,8 @@ test('default driver admits only exact F1 through F4 identities into their real 
     const entered = calls.splice(0);
     assert.deepEqual(entered[0], { tunnel: 'start' });
     assert.deepEqual(entered[1], {
-      method: 'GET',
-      path: '/api/app/nanohost/runtime-target',
+      method: 'POST',
+      path: '/api/app/operations/nanohost.runtime-target',
     });
     assert.deepEqual(entered[2], { tunnel: 'stop' });
     assert.equal(entered.length, 3);

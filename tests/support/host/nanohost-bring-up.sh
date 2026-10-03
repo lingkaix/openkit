@@ -58,9 +58,9 @@ ssh "$ssh_alias" /usr/bin/sudo -n /usr/bin/systemctl start openkit-nanohost.serv
 read_runtime_target() {
   local http2_arg=
   [[ "$validatedOrigin" == http://* ]] && http2_arg=--http2-prior-knowledge
-  printf 'header = "authorization: Bearer %s"\n' "$adminToken" |
+  printf 'header = "authorization: Bearer %s"\nheader = "content-type: application/json"\n' "$adminToken" |
     curl --config - ${http2_arg} --connect-timeout 5 --max-time 5 --fail --silent --show-error \
-      --url "$validatedOrigin/api/app/nanohost/runtime-target"
+      --request POST --data '{}' --url "$validatedOrigin/api/app/operations/nanohost.runtime-target"
 }
 
 for _ in {1..90}; do

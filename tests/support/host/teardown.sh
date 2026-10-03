@@ -18,7 +18,7 @@ admin_decommission() {
   [[ "$url" == http://* ]] && http2_arg=--http2-prior-knowledge
   printf 'header = "authorization: Bearer %s"\nheader = "content-type: application/json"\n' "$token" |
     curl --config - ${http2_arg} --fail --silent --show-error --request POST \
-      --url "${url%/}/api/app/nanohost/decommission" --data '{}'
+      --url "${url%/}/api/app/operations/nanohost.decommission" --data '{}'
 }
 
 if [[ $# -eq 1 && $1 == fixture && -n ${OPENKIT_HOST_FIXTURE_ROOT:-} ]]; then

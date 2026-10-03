@@ -1,4 +1,4 @@
-import { operationHttpPath, PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, operationHttpPath } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { createCoreClient } from './client.js';
 
@@ -12,8 +12,8 @@ describe('definition-derived client operations', () => {
         return new Response('{}');
       },
     });
-    expect(Object.keys(client.operations)).toEqual(Object.keys(PRODUCT_OPERATION_DEFINITIONS));
-    for (const [id, definition] of Object.entries(PRODUCT_OPERATION_DEFINITIONS)) {
+    expect(Object.keys(client.operations)).toEqual(Object.keys(OPERATION_DEFINITIONS));
+    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
       if (!definition.inputSchema.safeParse({}).success)
         await expect(
           client.operations[id as keyof typeof client.operations]({} as never)

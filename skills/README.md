@@ -50,10 +50,12 @@ Public native environment administration uses `runtime.agent-environment-read` a
 
 `runtime.file-delete` projects deployment-admin Provider profile removal through `client.runtimeConfig.deleteFile`. It requires the exact file ID, `kind: provider` and current revision. Subscription account removal remains a separate operation. Both preserve configuration references; Provider activation follows the existing reload and restart workflow.
 
-The Workspace, Thread and Turn JSON operations are derived from `PRODUCT_OPERATION_DEFINITIONS`, including their strict inputs, output codecs and `client.operations[id]` handlers. Their settled CLI ids are unchanged; no handwritten catalog entries, old SDK method aliases or lower-fidelity Workspace list exclusion remain. Turn streaming remains a transport exclusion.
+The Workspace, Thread and Turn JSON operations are derived from `OPERATION_DEFINITIONS`, including their strict inputs, output codecs and `client.operations[id]` handlers. Their settled CLI ids are unchanged; no handwritten catalog entries, old SDK method aliases or lower-fidelity Workspace list exclusion remain. Turn streaming remains a transport exclusion.
 
 Knowledge CLI discovery and invocation derive all 19 Knowledge and four retained entry operations from the shared definition tables. Canonical dotted ids replace the former hyphenated CLI spellings without aliases; `knowledge.retrieval` retains its settled semantic id.
 
 Artifact CLI discovery and execution derive the six entries from `ARTIFACT_OPERATION_DEFINITIONS`. `artifact.review-list` retains its settled semantic id; `artifact.review.decide` uses the existing domain command id instead of the former CLI spelling `artifact.review-decide`, with no alias.
 
 The Conversation, Task, Attention and Pending Request CLI entries derive from the shared product tables. Semantic ids remain `question.answer` and `pending-request.withdraw`; durable command receipt spellings remain `user_input.answer` and `pending_request.withdraw`.
+
+The NanoHost, backup and storage-report rows derive from the same composed table as product operations. Their access text is deployment-administrator authority; `strictShared` preserves complete input refinements and the generic client handler. NanoHost credential writes remain Core-owned exclusive sinks with redacted CLI and MCP results.
