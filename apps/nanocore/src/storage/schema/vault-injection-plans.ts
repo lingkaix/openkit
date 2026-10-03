@@ -1,13 +1,7 @@
 import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
-/** Durable injection visibility classes. */
-export type InjectionVisibility =
-  | 'gateway-only'
-  | 'backend-provider'
-  | 'runtime-file'
-  | 'runtime-env'
-  | 'runtime-token'
-  | 'external-handle';
+/** Durable injection visibility classes derived from the shared schema. */
+export type InjectionVisibility = import('@openkit/app-api-schemas').InjectionVisibility;
 
 /** Durable injection plan lifecycle statuses. */
 export type VaultInjectionPlanStatus = 'active' | 'revoked' | 'expired';
