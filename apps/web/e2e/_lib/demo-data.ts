@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -15,8 +16,8 @@ import {
 export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void> {
   seedSharedDemoWorkspaceDataRoot(dataRoot);
   await seedSimulatorInferenceConfig(dataRoot);
-  await seedSimulatorAgent(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
+  await seedSimulatorAgent(dataRoot);
 }
 
 /**
@@ -126,14 +127,18 @@ export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promi
 /**
  * Installs one resolvable non-simulator Agent manifest for the internal simulator executor.
  *
- * The simulator remains the executor; this authored identity only satisfies the same Agent setup
- * resolution boundary used by a production Turn.
+ * The simulator remains the executor; explicit synthetic image/default evidence satisfies the production Agent setup resolution boundary without claiming real image qualification.
  *
  * @param dataRoot NanoCore data root to seed.
- * @returns Resolves after the manifest is durable.
- * @throws When the config directory or manifest cannot be written.
+ * @returns Resolves after the manifest and confirmed synthetic image defaults are durable.
+ * @throws When the manifest or production settlement/admission writes fail.
  */
 async function seedSimulatorAgent(dataRoot: string): Promise<void> {
+  const runtimeImage = {
+    kind: 'reference',
+    ref: 'openkit/worker-codex:dev',
+    pullPolicy: 'if-not-present',
+  };
   const agentsRoot = join(dataRoot, 'config', 'agents');
   await mkdir(agentsRoot, { recursive: true });
   await writeFile(
@@ -148,11 +153,7 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
           kind: 'codex',
           adapter: 'codex',
           version: 'test',
-          image: {
-            kind: 'reference',
-            ref: 'openkit/worker-codex:dev',
-            pullPolicy: 'if-not-present',
-          },
+          image: runtimeImage,
           binaries: [
             { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
             { id: 'node', path: '/usr/local/bin/node' },
@@ -182,4 +183,39 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
       2
     )}\n`
   );
+  // Match the Worker MCP smoke's confirmed synthetic image seam; production admission remains enabled.
+  const [
+    { openCoreDb },
+    { commandInputHash },
+    { admitWorkerImageEnvironment, writeWorkerImageSettlement },
+  ] = await Promise.all([
+    import('../../../nanocore/dist/storage/db.js'),
+    import('../../../nanocore/dist/runtime/idempotent-command.js'),
+    import('../../../nanocore/dist/runtime/worker-image-settlements.js'),
+  ]);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    const inputDigest = commandInputHash(runtimeImage);
+    const requestId = createHash('sha256').update(`web-e2e:${inputDigest}`).digest('hex');
+    const imageDigest = `sha256:${'a'.repeat(64)}`;
+    const candidate = {
+      authoredArtifactId: `ar_web_e2e_${requestId}`,
+      authoredArtifactVersion: 1 as const,
+      authoredContentDigest: inputDigest,
+      inputDigest,
+    };
+    writeWorkerImageSettlement(coreDb, {
+      ...candidate,
+      requestId,
+      operation: 'image.acquire',
+      outcome: { kind: 'success', imageDigest },
+    });
+    admitWorkerImageEnvironment(coreDb, candidate, {
+      imageDigest,
+      defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+      values: {},
+    });
+  } finally {
+    coreDb.sqlite.close();
+  }
 }

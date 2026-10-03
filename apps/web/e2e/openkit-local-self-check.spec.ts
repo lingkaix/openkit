@@ -209,8 +209,10 @@ async function materialRevision(
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
   await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Message' }).fill(input);
-  const turnResponse = page.waitForResponse((response) =>
-    response.url().endsWith('/api/app/operations/conversation.submit')
+  const turnResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
   const response = await turnResponse;
@@ -251,8 +253,11 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toHaveText(revisionOne.revisionId);
 
   await startTaskTurn(page, threadId, 'Create a summary from the exact first release revision.');
-  const materialProjectionResponse = page.waitForResponse((response) =>
-    response.url().endsWith(`/api/app/workspaces/ws_demo/threads/${threadId}/material`)
+  const materialProjectionResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname ===
+        `/api/app/workspaces/ws_demo/threads/${threadId}/material`
   );
   await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   const projectionResponse = await materialProjectionResponse;
@@ -271,9 +276,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   const saveResponse = page.waitForResponse(
     (response) =>
       response.request().method() === 'POST' &&
-      response
-        .url()
-        .endsWith(`/api/app/workspaces/ws_demo/materials/${primary.materialId}/revisions`)
+      new URL(response.url()).pathname ===
+        `/api/app/workspaces/ws_demo/materials/${primary.materialId}/revisions`
   );
   await page.getByRole('button', { name: /^Save$/ }).click();
   const revisionTwoSave = await saveResponse;

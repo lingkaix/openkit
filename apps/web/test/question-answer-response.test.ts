@@ -40,4 +40,16 @@ it.each([
       url: () => 'http://nanocore.test/api/app/operations/turn.start',
     })
   ).toBe(false);
+  for (const [method, path] of [
+    ['GET', '/api/app/operations/question.answer'],
+    ['POST', '/other/api/app/operations/question.answer'],
+    ['POST', '/api/app/operations/question.answer-extra'],
+  ] as const) {
+    expect(
+      isQuestionAnswerResponse({
+        request: () => ({ method: () => method }),
+        url: () => `http://nanocore.test${path}`,
+      })
+    ).toBe(false);
+  }
 });

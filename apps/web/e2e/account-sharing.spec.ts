@@ -104,7 +104,8 @@ async function signUp(page: Page, account: { email: string; name: string }): Pro
   await page.getByLabel('Password').fill(password);
   const response = page.waitForResponse(
     (candidate) =>
-      candidate.url().endsWith('/api/auth/sign-up/email') && candidate.request().method() === 'POST'
+      new URL(candidate.url()).pathname === '/api/auth/sign-up/email' &&
+      candidate.request().method() === 'POST'
   );
   await page.getByRole('button', { name: 'Sign up' }).last().click();
   const body = (await (await response).json()) as { user: { id: string } };
@@ -149,7 +150,7 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
   await page.getByRole('textbox', { name: 'Name' }).fill(workspaceName);
   const response = page.waitForResponse(
     (candidate) =>
-      candidate.url().endsWith('/api/app/operations/workspace.create') &&
+      new URL(candidate.url()).pathname === '/api/app/operations/workspace.create' &&
       candidate.request().method() === 'POST'
   );
   await page.getByRole('button', { name: 'Create workspace' }).click();
@@ -166,7 +167,7 @@ async function invite(page: Page, email: string): Promise<void> {
   const responsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === 'POST' &&
-      new URL(response.url()).pathname.endsWith('/invitations')
+      new URL(response.url()).pathname === '/api/app/operations/workspace.invitation-create'
   );
   await invitations.getByRole('button', { name: 'Create invitation' }).click();
   const response = await responsePromise;

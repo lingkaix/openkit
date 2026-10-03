@@ -1,4 +1,6 @@
 // openkit-test-platform: posix
+
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   promises as fsPromises,
@@ -16,6 +18,25 @@ import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
+
+/** Resolves the authored fixture Agent through production digest-bound image admission. */
+async function readFixtureNativeEnvironment(dataRoot: string) {
+  const [{ openCoreDb }, { AuthoredAgentConfigSchema }, { resolvePublicNativeEnvironment }] =
+    await Promise.all([
+      import('../../../nanocore/dist/storage/db.js'),
+      import('../../../nanocore/dist/agents/manifest.js'),
+      import('../../../nanocore/dist/runtime/native-environment.js'),
+    ]);
+  const manifest = AuthoredAgentConfigSchema.parse(
+    JSON.parse(readFileSync(join(dataRoot, 'config', 'agents', 'codex.agent.jsonc'), 'utf8'))
+  );
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    return resolvePublicNativeEnvironment(coreDb, manifest);
+  } finally {
+    coreDb.sqlite.close();
+  }
+}
 
 /**
  * Reads isolated fixture `target_local` and closes the Core handle before stack cleanup.
@@ -45,6 +66,12 @@ test('restarts Core on the same port and data root before final cleanup', async 
 
   try {
     const firstPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
+    const beforeEnvironment = await readFixtureNativeEnvironment(dataRoot);
+    expect(beforeEnvironment).toEqual({
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+      values: {},
+    });
     const beforeTarget = await readFixtureLocalRuntimeTarget(dataRoot);
     expect(beforeTarget).toMatchObject({
       freshEmpty: true,
@@ -56,6 +83,7 @@ test('restarts Core on the same port and data root before final cleanup', async 
     await stack.restartCore();
     const secondPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
     const afterTarget = await readFixtureLocalRuntimeTarget(dataRoot);
+    expect(await readFixtureNativeEnvironment(dataRoot)).toEqual(beforeEnvironment);
 
     expect(stack.coreUrl).toBe(coreUrl);
     expect(stack.dataRoot).toBe(dataRoot);
