@@ -69,7 +69,7 @@ import {
 } from '../storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
-  ensureLayout,
+  ensureLayoutDirectories,
   ensureWorkspaceLayout,
   ensureWorkspaceLayoutRoot,
   LOCAL_USER_ID,
@@ -1420,7 +1420,7 @@ export class FsStore {
       return;
     }
 
-    ensureLayout(this.dataRoot);
+    ensureLayoutDirectories(this.dataRoot);
 
     const workspaceId = records.workspace.id;
     const finalRoot = this.workspaceRootPath(workspaceId);

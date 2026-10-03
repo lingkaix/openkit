@@ -264,7 +264,7 @@ replace_app() {
     --env "CADDY_HTTP_PORT=${HOST_PORT}" \
     --env OPENKIT_CORE_MODE=server \
     --env OPENKIT_DATA_ROOT=/data/openkit \
-    --health-cmd 'curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/ | grep -Fq "<div id=\"root\"></div>"' \
+    --health-cmd 'curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/ | grep -Fq "<div id=\"root\"></div>" && curl -fsS -H "Host: ai.simonxu.net" http://127.0.0.1:7080/api/health | grep -Eq "\"status\"[[:space:]]*:[[:space:]]*\"ok\""' \
     --health-interval 30s \
     --health-timeout 5s \
     --health-retries 3 \

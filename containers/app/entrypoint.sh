@@ -63,4 +63,6 @@ done
 
 caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
 caddy_pid="$!"
-wait "${caddy_pid}"
+# Either service exiting must stop tini so the container restart policy can recover both.
+wait -n "${nanocore_pid}" "${caddy_pid}" || exit "$?"
+exit 1

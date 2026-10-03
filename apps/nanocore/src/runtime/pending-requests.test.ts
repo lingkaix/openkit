@@ -1147,6 +1147,137 @@ describe('pending requests', () => {
   });
 
   it.each([
+    ['terminal-barrier', 'permanent'],
+    ['boot-resume', 'permanent'],
+    ['terminal-barrier', 'transient'],
+    ['boot-resume', 'transient'],
+    ['terminal-barrier', 'refusal-release'],
+    ['boot-resume', 'initial-lookup'],
+  ] as const)('contains delivery and Workspace opener failures at %s with fault %s', async (site, fault) => {
+    const { coreDb, dataRoot, store } = openPendingApp('agent_demo');
+    let unavailable = false;
+    const recovers = fault !== 'permanent';
+    let submissions = 0;
+    let lookup: ReturnType<typeof vi.spyOn> | undefined;
+    let outcomeTurnId: string | undefined;
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const dependencies = {
+      openWorkspace: (workspaceId: string) => {
+        if (unavailable) {
+          if (recovers) unavailable = false;
+          throw new Error('Workspace unavailable during delivery');
+        }
+        return openWorkspaceDb(dataRoot, workspaceId);
+      },
+    };
+    const workerDelivery = {
+      async startTurn(_store: FsStore, turnId: string) {
+        outcomeTurnId = turnId;
+        submissions++;
+        unavailable = true;
+        if (fault === 'refusal-release')
+          throw new TurnStartValidationError('agent_not_found', 'Agent is unavailable.', 409);
+        throw new Error('Native submission result unknown');
+      },
+    };
+    installPendingRequestAdmission(store, {
+      ...dependencies,
+      ...(site === 'terminal-barrier' ? { workerDelivery } : {}),
+    });
+    const turn = store.createTurn(
+      'ws_demo',
+      'th_demo',
+      'Delivery failure',
+      { kind: 'user', id: 'user_local' },
+      null,
+      { agentId: 'agent_demo' }
+    );
+    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    applyScopedMigrations(db);
+    try {
+      const input = approvalRaise(turn.id, 'ap_delivery_failure', 'failure');
+      store.createItem({
+        id: input.requestItemId,
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        type: 'approval-request',
+        status: 'completed',
+        approvalRequestId: input.requestId,
+        title: input.approval!.title,
+        description: input.approval!.description,
+        kind: 'permission',
+        createdAt: NOW,
+        completedAt: NOW,
+      });
+      raiseRecordedPendingRequest(store, db.sqlite, input);
+      db.sqlite
+        .prepare(
+          "UPDATE pending_requests SET state='resolved', resolution='denied', disposition='denied-not-executed', deciding_actor_kind='user', deciding_actor_id='user_local', decided_at=? WHERE request_id=?"
+        )
+        .run(NOW, input.requestId);
+      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      if (site === 'boot-resume') {
+        if (fault === 'initial-lookup') {
+          outcomeTurnId = readPendingRequest(db.sqlite, input.requestId)!.deliveryTurnId!;
+          const getTurn = store.getTurnById.bind(store);
+          let reads = 0;
+          lookup = vi.spyOn(store, 'getTurnById').mockImplementation((id) => {
+            // The census reads the pending Turn first; the next lookup belongs to detached delivery.
+            if (id === outcomeTurnId && ++reads === 2)
+              throw new Error('Outcome Turn lookup unavailable');
+            return getTurn(id);
+          });
+        }
+        installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      expect(outcomeTurnId).toBeDefined();
+      expect(logged.mock.calls.some((call) => String(call[0]).includes(outcomeTurnId!))).toBe(true);
+      if (fault === 'initial-lookup') {
+        expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe('frozen');
+        expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
+        expect(logged.mock.calls[0]?.[0]).toBe(
+          `Outcome delivery for Turn ${outcomeTurnId} failed before submission; leaving it for boot resume.`
+        );
+      } else if (recovers) {
+        const refused = fault === 'refusal-release';
+        expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe(
+          refused ? 'undelivered' : 'delivery-unknown'
+        );
+        expect(store.getTurnById(outcomeTurnId!)).toMatchObject({
+          status: 'failed',
+          error: { code: refused ? 'agent_not_found' : 'delivery_unknown' },
+        });
+        expect(logged.mock.calls[0]?.[0]).toBe(
+          `Recording the outcome delivery result failed for Turn ${outcomeTurnId}.`
+        );
+      } else {
+        expect(store.getTurnById(outcomeTurnId!).status).toBe('pending');
+      }
+      if (fault === 'transient') {
+        const later = store.createTurn(
+          'ws_demo',
+          'th_demo',
+          'Later user message',
+          { kind: 'user', id: 'user_local' },
+          null,
+          { agentId: 'agent_demo' }
+        );
+        store.updateTurn(later.id, { status: 'completed', completedAt: new Date().toISOString() });
+        installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
+      }
+      expect(submissions).toBe(fault === 'initial-lookup' ? 0 : 1);
+    } finally {
+      unavailable = false;
+      lookup?.mockRestore();
+      logged.mockRestore();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     'accepted',
     'agent-removed',
   ] as const)('submits a pending frozen boot admission once when its worker service is installed: %s', async (mode) => {

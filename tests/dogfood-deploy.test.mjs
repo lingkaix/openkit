@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -159,6 +167,32 @@ replace_app openkit/app:fixture fixture
   assert.ok(existsSync(join(root, 'data.backups')));
   const args = readFileSync(join(root, 'argv'), 'utf8').split('\0').slice(0, -1);
   assert.equal(args.at(-1), 'openkit/app:fixture');
+  const healthCommand = args[args.indexOf('--health-cmd') + 1];
+  const bin = join(root, 'bin');
+  mkdirSync(bin);
+  const curl = join(bin, 'curl');
+  writeFileSync(
+    curl,
+    `#!/bin/sh
+case "$*" in
+  */api/health) [ "$FIXTURE_HEALTH" = down ] && exit 22; printf '%s' "$FIXTURE_HEALTH" ;;
+  *) printf '%s' '<div id="root"></div>' ;;
+esac
+`
+  );
+  chmodSync(curl, 0o755);
+  for (const [health, expected] of [
+    ['{"status":"ok","service":"nanocore"}', true],
+    ['down', false],
+    ['{"status":"failed","service":"nanocore"}', false],
+  ]) {
+    const observed = spawnSync('/bin/sh', ['-c', healthCommand], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, FIXTURE_HEALTH: health },
+      encoding: 'utf8',
+    });
+    assert.equal(observed.status === 0, expected, `${health}: ${observed.stderr}`);
+  }
+
   for (const [option, value] of [
     ['--volume', `${root}/data:/data/openkit`],
     ['--volume', `${root}/data.backups:/data/openkit.backups`],

@@ -8,6 +8,7 @@ import { resolveDataRoot } from '../config/data-root.js';
 import {
   coreDbPath,
   ensureLayout,
+  ensureLayoutDirectories,
   ensureUserLayout,
   ensureWorkspaceLayout,
   ensureWorkspaceLayoutRoot,
@@ -71,7 +72,7 @@ let singleton: CoreDb | undefined;
  * @returns Raw SQLite and Drizzle handles for the database.
  */
 export function openCoreDb(dataRoot: string): CoreDb {
-  ensureLayout(dataRoot);
+  ensureLayoutDirectories(dataRoot);
 
   const sqlite = new Database(coreDbPath(dataRoot));
 
@@ -138,16 +139,16 @@ export function verifyAndMigrateExistingScopedDatabases(dataRoot: string): void 
 }
 
 /**
- * Lists existing workspace database scopes in stable boot order.
+ * Lists existing workspace database scopes without re-running boot verification.
  *
  * @param dataRoot Data root whose existing workspace directories should be scanned.
  * @returns Workspace ids for every existing workspace scope.
- * @throws When the data root is not a valid owner-independent layout.
+ * @throws When a required layout directory or marker is unsafe or incompatible.
  */
 export function listExistingWorkspaceDatabaseScopes(
   dataRoot: string
 ): Array<{ readonly workspaceId: string }> {
-  ensureLayout(dataRoot);
+  ensureLayoutDirectories(dataRoot);
   return listChildDirectories(join(dataRoot, 'workspaces')).map((workspaceId) => ({ workspaceId }));
 }
 

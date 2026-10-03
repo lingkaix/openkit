@@ -918,50 +918,103 @@ function admitNextOutcome(
   });
 }
 
+/**
+ * Delivers an outcome without allowing submission or recovery failures to reject detached callers.
+ *
+ * @param store Store that owns the outcome Turn.
+ * @param dependencies Workspace storage and executor delivery owners.
+ * @param turnId Outcome Turn identity, included in recovery diagnostics.
+ */
 async function deliverWorkerOutcome(
   store: FsStore,
   dependencies: PendingAdmissionDependencies,
   turnId: string
 ): Promise<void> {
-  const turn = store.getTurnById(turnId);
+  let refusal: TurnStartValidationError | undefined;
+  let submitted = false;
   try {
-    const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
-    const delivery =
-      executor === 'coordinator'
-        ? dependencies.coordinatorDelivery
-        : executor === 'assistant'
-          ? dependencies.assistantDelivery
-          : dependencies.workerDelivery;
-    if (!delivery) return;
-    await delivery.startTurn(store, turnId);
-    // The worker execution owner records delivery at native acceptance, before completion.
-  } catch (error) {
-    const now = new Date().toISOString();
-    if (error instanceof TurnStartValidationError && error.code === 'scheduler_admission_deferred')
-      return;
-    if (error instanceof TurnStartValidationError) {
-      refusedOutcomeTurns.add(turnId);
+    const turn = store.getTurnById(turnId);
+    try {
+      const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
+      const delivery =
+        executor === 'coordinator'
+          ? dependencies.coordinatorDelivery
+          : executor === 'assistant'
+            ? dependencies.assistantDelivery
+            : dependencies.workerDelivery;
+      if (!delivery) return;
+      submitted = true;
+      await delivery.startTurn(store, turnId);
+      // The worker execution owner records delivery at native acceptance, before completion.
+    } catch (error) {
+      const now = new Date().toISOString();
+      if (
+        error instanceof TurnStartValidationError &&
+        error.code === 'scheduler_admission_deferred'
+      )
+        return;
+      if (error instanceof TurnStartValidationError) {
+        refusal = error;
+        refusedOutcomeTurns.add(turnId);
+        withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+          releaseFrozenOutcomes(sqlite, turnId, now);
+        });
+        if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
+          store.updateTurn(turnId, {
+            status: 'failed',
+            completedAt: now,
+            error: { code: error.code, message: error.message },
+          });
+        closeoutUnavailableRequests(store, dependencies, turn.workspaceId, turn.threadId);
+        return;
+      }
       withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
-        releaseFrozenOutcomes(sqlite, turnId, now);
+        markFrozenDeliveryUnknown(sqlite, turnId, now);
       });
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
         store.updateTurn(turnId, {
           status: 'failed',
           completedAt: now,
-          error: { code: error.code, message: error.message },
+          error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
         });
-      closeoutUnavailableRequests(store, dependencies, turn.workspaceId, turn.threadId);
+    }
+  } catch (error) {
+    if (!submitted && !refusal) {
+      console.error(
+        `Outcome delivery for Turn ${turnId} failed before submission; leaving it for boot resume.`,
+        error
+      );
       return;
     }
-    withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
-      markFrozenDeliveryUnknown(sqlite, turnId, now);
-    });
-    if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-      store.updateTurn(turnId, {
-        status: 'failed',
-        completedAt: now,
-        error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+    // Preserve a proved refusal when its bookkeeping fails; only an uncertain submission is unknown.
+    console.error(`Recording the outcome delivery result failed for Turn ${turnId}.`, error);
+    const now = new Date().toISOString();
+    try {
+      const turn = store.getTurnById(turnId);
+      withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+        if (refusal) releaseFrozenOutcomes(sqlite, turnId, now);
+        else markFrozenDeliveryUnknown(sqlite, turnId, now);
       });
+    } catch (storageError) {
+      console.error(
+        refusal
+          ? `Could not release refused outcomes for Turn ${turnId}.`
+          : `Could not mark delivery unknown for Turn ${turnId}.`,
+        storageError
+      );
+    }
+    try {
+      if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
+        store.updateTurn(turnId, {
+          status: 'failed',
+          completedAt: now,
+          error: refusal
+            ? { code: refusal.code, message: refusal.message }
+            : { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+        });
+    } catch (storageError) {
+      console.error(`Could not fail outcome Turn ${turnId}.`, storageError);
+    }
   }
 }
 

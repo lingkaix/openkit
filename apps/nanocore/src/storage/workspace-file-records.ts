@@ -58,7 +58,12 @@ import type {
   KnowledgeProposalReviewRecord,
   KnowledgeSourceRecord,
 } from '../lib/store.js';
-import { coreDbPath, ensureLayout, ensureWorkspaceLayoutRoot, LOCAL_USER_ID } from './fs-layout.js';
+import {
+  coreDbPath,
+  ensureLayoutDirectories,
+  ensureWorkspaceLayoutRoot,
+  LOCAL_USER_ID,
+} from './fs-layout.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
@@ -978,7 +983,7 @@ export function readPublishedAgentSessionIds(
  * @throws Error when record lineage is invalid or a global id collides.
  */
 export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
-  const workspacesRoot = ensureLayout(dataRoot).workspaces;
+  const workspacesRoot = ensureLayoutDirectories(dataRoot).workspaces;
   assertCanonicalDirectory(workspacesRoot);
   rmSync(join(workspacesRoot, '.staging'), { recursive: true, force: true });
 

@@ -31,15 +31,6 @@ const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set([
   'openai-codex-subscription.provider.jsonc',
 ]);
 const DATA_ROOT_LAYOUT_VERSION = 2;
-const DATA_ROOT_TEXT_RECORD_EXTENSIONS = new Set([
-  '.json',
-  '.jsonc',
-  '.jsonl',
-  '.md',
-  '.txt',
-  '.yaml',
-  '.yml',
-]);
 const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
   'data-root-backup',
   'thread',
@@ -201,6 +192,22 @@ export interface WorkspaceLayoutPaths {
  * @returns Absolute or relative paths for the created layout.
  */
 export function ensureLayout(root: string): FsLayoutPaths {
+  const paths = ensureLayoutDirectories(root);
+  verifyNoLegacyOwnershipViolations(root);
+  verifyCanonicalDatabaseOwnership(root);
+  verifyCanonicalRecordEnvelopeSupport(root);
+  return paths;
+}
+
+/**
+ * Creates the data-root directories and templates without walking stored records.
+ *
+ * Boot and stopped-process migration own tree verification; request callers only prepare their directories.
+ *
+ * @param root Data root directory to initialize.
+ * @returns Paths for the initialized layout.
+ */
+export function ensureLayoutDirectories(root: string): FsLayoutPaths {
   const serverRoot = resolveDataRootPath(root, 'server');
   const paths: FsLayoutPaths = {
     root,
@@ -239,10 +246,6 @@ export function ensureLayout(root: string): FsLayoutPaths {
   }
   ensureEncryptedFileVaultStoreDirectory({ storeDir: paths.serverVault });
 
-  verifyNoLegacyOwnershipViolations(root);
-  verifyCanonicalDatabaseOwnership(root);
-  verifyCanonicalRecordEnvelopeSupport(root);
-  verifyNoEmbeddedDataRootPaths(root);
   ensureUserLayout(root, LOCAL_USER_ID);
   ensureConfigTemplateSurface(root);
 
@@ -360,14 +363,15 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
 }
 
 /**
- * Creates the canonical subtree for one workspace.
+ * Creates only the root directories and canonical subtree for one workspace without walking records.
  *
  * @param root Data root directory.
  * @param workspaceId Workspace id whose subtree should exist.
  * @returns Paths created for the workspace subtree.
  */
 export function ensureWorkspaceLayout(root: string, workspaceId: string): WorkspaceLayoutPaths {
-  ensureLayout(root);
+  ensureLayoutDirectory(root, true);
+  ensureLayoutDirectory(resolveDataRootPath(root, 'workspaces'));
   return ensureWorkspaceLayoutRoot(resolveDataRootPath(root, 'workspaces', workspaceId));
 }
 
@@ -673,66 +677,6 @@ function isRecordEnvelopeCandidate(value: unknown): boolean {
  */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Fails closed when canonical product records embed the current absolute DATA_ROOT path.
- *
- * The provenance writer stores verbatim streams under `evidence/backend/<bundleId>/raw/`;
- * bundle-root manifest and native-index siblings remain product-record locations.
- * Authored Skill and Plugin snapshot trees under scoped `catalog/` are retained verbatim.
- *
- * @param root Data root directory.
- * @throws Error when a canonical product record contains an absolute DATA_ROOT path.
- */
-function verifyNoEmbeddedDataRootPaths(root: string): void {
-  const dataRoot = resolve(root);
-
-  for (const path of listDescendantFiles(root)) {
-    const reportPath = toDataRootReportPath(root, path);
-
-    if (!isCanonicalProductRecordLocation(reportPath)) {
-      continue;
-    }
-
-    if (readFileSync(path, 'utf8').includes(dataRoot)) {
-      throw new Error(`DATA_ROOT text record embeds absolute DATA_ROOT path: ${reportPath}`);
-    }
-  }
-}
-
-/**
- * Returns whether a data-root report path is a canonical product-record location.
- *
- * Verbatim payloads are only server- or Workspace-scoped backend raw streams and catalog Skill or Plugin snapshot trees.
- *
- * @param path Slash-separated path relative to DATA_ROOT.
- * @returns True when embedded DATA_ROOT path scanning applies.
- */
-function isCanonicalProductRecordLocation(path: string): boolean {
-  return (
-    isTextRecordPath(path) &&
-    !/^(?:server|workspaces\/[^/]+)\/(?:evidence\/backend\/[^/]+\/raw\/|catalog\/(?:skill|plugin)-snapshots\/)/.test(
-      path
-    )
-  );
-}
-
-/**
- * Returns whether a data-root report path is a text record checked during migration validation.
- *
- * @param path Slash-separated path relative to DATA_ROOT.
- * @returns True when the path is a text record.
- */
-function isTextRecordPath(path: string): boolean {
-  const fileName = path.split('/').at(-1) ?? '';
-  const extensionStart = fileName.lastIndexOf('.');
-
-  if (extensionStart < 0) {
-    return false;
-  }
-
-  return DATA_ROOT_TEXT_RECORD_EXTENSIONS.has(fileName.slice(extensionStart));
 }
 
 /**

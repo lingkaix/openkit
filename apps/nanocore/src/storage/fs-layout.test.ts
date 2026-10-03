@@ -14,7 +14,7 @@ import { join, relative } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   coreDbPath,
   ensureConfigTemplateSurface,
@@ -341,198 +341,50 @@ describe('ensureLayout', () => {
     expect(() => ensureLayout(root)).toThrow(/unsupported requiredFeatures/);
   });
 
-  it('fails closed when text records embed absolute data-root paths', async () => {
+  it.each([
+    [
+      'aep-snapshot',
+      'workspaces/ws_mention/runtime/agent-sessions/session/aep-snapshots/snapshot.json',
+    ],
+    ['workspace-markdown', 'workspaces/ws_mention/files/README.md'],
+    [
+      'backend-raw-stream',
+      'workspaces/ws_mention/evidence/backend/evb_stream/raw/stream-0000.jsonl',
+    ],
+    [
+      'workspace-skill-snapshot',
+      'workspaces/ws_mention/catalog/skill-snapshots/skill_demo/deadbeef/SKILL.md',
+    ],
+    ['server-skill-snapshot', 'server/catalog/skill-snapshots/skill_server/cafe/SKILL.md'],
+    [
+      'workspace-plugin-snapshot',
+      'workspaces/ws_mention/catalog/plugin-snapshots/plugin_demo/deadbeef/plugin.json',
+    ],
+    ['server-plugin-snapshot', 'server/catalog/plugin-snapshots/plugin_server/babe/plugin.json'],
+  ] as const)('allows a data-root mention in %s content during verification and Workspace open', async (kind, relativePath) => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'threads'), { recursive: true });
-    writeFileSync(
-      join(root, 'workspaces', 'ws_1', 'threads', 'thread.json'),
-      `${JSON.stringify({ leakedPath: join(root, 'server', 'db', 'core.sqlite') })}\n`
-    );
-
-    expect(() => ensureLayout(root)).toThrow(/absolute DATA_ROOT path/);
-  });
-
-  it('preserves backend raw stream bytes that embed the data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const streamPath = join(
-      root,
-      'workspaces',
-      'ws_1',
-      'evidence',
-      'backend',
-      'evb_stream',
-      'raw',
-      'stream-0000.jsonl'
-    );
-    const streamBytes = `${JSON.stringify({
-      item: { aggregated_output: `cwd ${root} under /data/openkit` },
-    })}\n`;
-
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'evidence', 'backend', 'evb_stream', 'raw'), {
-      recursive: true,
-    });
-    writeFileSync(streamPath, streamBytes);
-
+    ensureWorkspaceLayout(root, 'ws_mention');
+    const record = join(root, relativePath);
+    const content =
+      kind === 'aep-snapshot'
+        ? JSON.stringify({
+            snapshot: {
+              extensions: { openkit: { turnInput: `The deployment data root is ${root}.` } },
+            },
+          })
+        : relativePath.endsWith('.md')
+          ? `# Deployment\nThe deployment data root is ${root}.\n`
+          : `${JSON.stringify({ cwd: root })}\n`;
+    mkdirSync(join(record, '..'), { recursive: true });
+    writeFileSync(record, content);
     expect(() => ensureLayout(root)).not.toThrow();
-    expect(readFileSync(streamPath, 'utf8')).toBe(streamBytes);
-  });
-
-  it('fails closed when a backend bundle manifest sibling embeds an absolute data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'evidence', 'backend', 'evb_stream'), {
-      recursive: true,
-    });
-    writeFileSync(
-      join(root, 'workspaces', 'ws_1', 'evidence', 'backend', 'evb_stream', 'raw-streams.json'),
-      `${JSON.stringify({ leakedPath: root })}\n`
-    );
-
-    expect(() => ensureLayout(root)).toThrow(/absolute DATA_ROOT path/);
-  });
-
-  it('preserves authored Skill snapshot bytes that embed the data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const skillPath = join(
-      root,
-      'workspaces',
-      'ws_1',
-      'catalog',
-      'skill-snapshots',
-      'skill_demo',
-      'deadbeef',
-      'SKILL.md'
-    );
-    const skillBytes = `# Skill\nRun from ${root}.\n`;
-
-    mkdirSync(
-      join(root, 'workspaces', 'ws_1', 'catalog', 'skill-snapshots', 'skill_demo', 'deadbeef'),
-      { recursive: true }
-    );
-    writeFileSync(skillPath, skillBytes);
-
-    expect(() => ensureLayout(root)).not.toThrow();
-    expect(readFileSync(skillPath, 'utf8')).toBe(skillBytes);
-  });
-
-  it('preserves server catalog Skill and Plugin snapshot bytes that embed the data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const skillPath = join(
-      root,
-      'server',
-      'catalog',
-      'skill-snapshots',
-      'skill_server',
-      'cafe',
-      'SKILL.md'
-    );
-    const pluginPath = join(
-      root,
-      'server',
-      'catalog',
-      'plugin-snapshots',
-      'plugin_server',
-      'babe',
-      'plugin.json'
-    );
-    const skillBytes = `# Server skill\n${root}\n`;
-    const pluginBytes = `${JSON.stringify({ cwd: root })}\n`;
-
-    mkdirSync(join(skillPath, '..'), { recursive: true });
-    mkdirSync(join(pluginPath, '..'), { recursive: true });
-    writeFileSync(skillPath, skillBytes);
-    writeFileSync(pluginPath, pluginBytes);
-
-    expect(() => ensureLayout(root)).not.toThrow();
-    expect(readFileSync(skillPath, 'utf8')).toBe(skillBytes);
-    expect(readFileSync(pluginPath, 'utf8')).toBe(pluginBytes);
-  });
-
-  it('preserves workspace Plugin snapshot bytes that embed the data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const pluginPath = join(
-      root,
-      'workspaces',
-      'ws_1',
-      'catalog',
-      'plugin-snapshots',
-      'plugin_demo',
-      'deadbeef',
-      'plugin.json'
-    );
-    const pluginBytes = `${JSON.stringify({ cwd: root })}\n`;
-
-    mkdirSync(join(pluginPath, '..'), { recursive: true });
-    writeFileSync(pluginPath, pluginBytes);
-
-    expect(() => ensureLayout(root)).not.toThrow();
-    expect(readFileSync(pluginPath, 'utf8')).toBe(pluginBytes);
-  });
-
-  it('fails closed when a nested misleading catalog or raw path embeds an absolute data-root path', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-    const nestedSkill = join(
-      root,
-      'workspaces',
-      'ws_1',
-      'threads',
-      'th_1',
-      'catalog',
-      'skill-snapshots',
-      'SKILL.md'
-    );
-    const nestedRaw = join(
-      root,
-      'workspaces',
-      'ws_1',
-      'files',
-      'evidence',
-      'backend',
-      'evb_nested',
-      'raw',
-      'stream-0000.jsonl'
-    );
-
-    mkdirSync(join(nestedSkill, '..'), { recursive: true });
-    writeFileSync(nestedSkill, `# Nested\n${root}\n`);
-    expect(() => ensureLayout(root)).toThrow(/absolute DATA_ROOT path/);
-
-    rmSync(join(root, 'workspaces', 'ws_1', 'threads'), { recursive: true, force: true });
-    mkdirSync(join(nestedRaw, '..'), { recursive: true });
-    writeFileSync(nestedRaw, `${JSON.stringify({ leakedPath: root })}\n`);
-    expect(() => ensureLayout(root)).toThrow(/absolute DATA_ROOT path/);
-  });
-
-  it('fails closed when product-safe evidence records embed absolute data-root paths', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-
-    mkdirSync(join(root, 'workspaces', 'ws_1', 'evidence', 'bundles', 'evb_index'), {
-      recursive: true,
-    });
-    writeFileSync(
-      join(
-        root,
-        'workspaces',
-        'ws_1',
-        'evidence',
-        'bundles',
-        'evb_index',
-        'runtime-origin-index.jsonl'
-      ),
-      `${JSON.stringify({ leakedPath: root })}\n`
-    );
-
-    expect(() => ensureLayout(root)).toThrow(/absolute DATA_ROOT path/);
-  });
-
-  it('does not scan SQLite databases for absolute data-root path text', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
-
-    mkdirSync(join(root, 'server', 'db'), { recursive: true });
-    writeFileSync(join(root, 'server', 'db', 'core.sqlite'), join(root, 'server'));
-
-    expect(() => ensureLayout(root)).not.toThrow(/absolute DATA_ROOT path/);
+    const db = openWorkspaceDb(root, 'ws_mention');
+    try {
+      expect(db.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
+      expect(readFileSync(record, 'utf8')).toBe(content);
+    } finally {
+      db.sqlite.close();
+    }
   });
 
   it('creates the target server-owned runtime tree', async () => {

@@ -17,6 +17,7 @@ import { ItemSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { FsStore } from '../lib/store.js';
+import { ensureLayout } from './fs-layout.js';
 import { parseCanonicalWorkspaceHistory } from './workspace-file-records.js';
 
 /**
@@ -137,7 +138,10 @@ describe('workspace file-record write and load boundaries', () => {
     expect(existsSync(canonicalRoot)).toBe(false);
     expect(existsSync(join(ownerNestedRoot, 'workspace-record.json'))).toBe(true);
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/owner-nested Workspace tree/);
+    expect(() => ensureLayout(dataRoot)).toThrow(/owner-nested Workspace tree/);
+    expect(
+      new FsStore({ dataRoot }).listWorkspaces().map((candidate) => candidate.id)
+    ).not.toContain(workspace.id);
   });
 
   it.each([

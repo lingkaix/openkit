@@ -85,8 +85,29 @@ test('preserves a nonzero Caddy exit and stops NanoCore', async () => {
   assert.equal(result.nodeStop, 'stopped\n', result.output);
 });
 
+test('exits 1 and stops NanoCore when Caddy exits 0', async () => {
+  const result = await runEntrypoint({ caddyExit: '0', readiness: 'immediate', signal: null });
+  assert.equal(result.close?.code, 1, result.output);
+  assert.equal(result.nodeStop, 'stopped\n', result.output);
+});
+
+for (const nodeExit of ['0', '19']) {
+  test(`exits nonzero and stops Caddy when NanoCore exits ${nodeExit} after readiness`, async () => {
+    const result = await runEntrypoint({ nodeExit, readiness: 'immediate', signal: null });
+    assert.notEqual(result.close, null, result.output);
+    assert.equal(result.close.code, nodeExit === '0' ? 1 : Number(nodeExit), result.output);
+    assert.equal(result.caddyStop, 'stopped\n', result.output);
+  });
+}
+
 /** Runs one isolated entrypoint lifecycle. */
-async function runEntrypoint({ caddyExit = '', readiness, signal, signalAt = 'caddy' }) {
+async function runEntrypoint({
+  caddyExit = '',
+  nodeExit = '',
+  readiness,
+  signal,
+  signalAt = 'caddy',
+}) {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'openkit-app-entrypoint-'));
   const binRoot = join(fixtureRoot, 'bin');
   const caddyRecord = join(fixtureRoot, 'caddy-argv.txt');
@@ -103,6 +124,11 @@ async function runEntrypoint({ caddyExit = '', readiness, signal, signalAt = 'ca
       join(binRoot, 'node'),
       `#!/bin/sh
 trap 'printf "stopped\\n" > "$OPENKIT_TEST_NODE_STOP_RECORD"; exit 0' TERM INT
+if [ -n "$OPENKIT_TEST_NODE_EXIT" ]; then
+  while [ ! -f "$OPENKIT_TEST_CADDY_RECORD" ]; do /bin/sleep 0.01; done
+  /bin/sleep 0.1
+  exit "$OPENKIT_TEST_NODE_EXIT"
+fi
 while :; do
   /bin/sleep 1
 done
@@ -164,6 +190,7 @@ done
       OPENKIT_TEST_CURL_STARTED: curlStarted,
       OPENKIT_TEST_HEALTH_URL: healthUrl,
       OPENKIT_TEST_NODE_STOP_RECORD: nodeStopRecord,
+      OPENKIT_TEST_NODE_EXIT: nodeExit,
       OPENKIT_TEST_READINESS: readiness,
       PATH: `${binRoot}:/usr/bin:/bin`,
       PORT: httpPort,

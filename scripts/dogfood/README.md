@@ -1,5 +1,7 @@
 # A2 Dogfood Deployment
 
+The App container health command requires both the Web root and a successful `/api/health` response through Caddy. It uses curl and grep available in the App image and requires no jq inside that image.
+
 `deploy.sh` is the repository-owned copy of the existing A2 helper for `ai.simonxu.net`. It updates that prepared deployment from public `origin/main`; it is not a general installer. The [persistent deployment cookbook](../../docs/cookbooks/persistent-live-acceptance.md) describes coordination and observation around an authorized update. The [NanoHost specification](../../docs/specs/20260802-nanohost_runtime_and_transport.md) owns image identities and session environment inputs.
 
 ## Host Prerequisites

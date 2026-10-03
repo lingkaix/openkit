@@ -1,5 +1,7 @@
 # nanocore
 
+Workspace database opens prepare only their safe local directories; ownership and canonical-envelope tree verification stays at boot and stopped-process migration. Outcome delivery contains submission, initial lookup, and recovery failures and logs the Turn identity. A refusal whose bookkeeping fails is retried as a release and recorded with its refusal code; an unknown submission records `delivery_unknown` when writable without being retried, while a failure before submission leaves the frozen outcome and pending Turn for boot resume.
+
 Harness result acknowledgement retries retain the exact prior receipt while a successor operation is queued. An identical replay only returns the acknowledgement; it neither mutates the successor nor notifies its producer. Dispatching the successor clears the prior receipt, after which stale or changed results remain conflicts.
 
 The authorized Thread dashboard derives taskInputs objective summaries through the existing full Context Package verifier and exact request Item. Invalid or missing provenance omits only that summary; stored messages and runtime identity remain unchanged.

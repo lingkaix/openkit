@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
@@ -6,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +22,7 @@ import {
   openWorkspaceDb,
   verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
-import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
 import {
   applyMigrations,
   applyScopedMigrations,
@@ -118,6 +120,48 @@ describe('scoped storage databases', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
+  });
+
+  it.each([
+    'workspaces',
+    'workspace-root',
+  ] as const)('refuses a linked %s boundary on Workspace open', (boundary) => {
+    const dataRoot = createDataRoot();
+    const outside = createDataRoot();
+    const workspaces = join(dataRoot, 'workspaces');
+    if (boundary === 'workspace-root') mkdirSync(workspaces);
+    symlinkSync(outside, boundary === 'workspaces' ? workspaces : join(workspaces, 'ws_1'), 'dir');
+    expect(() => openWorkspaceDb(dataRoot, 'ws_1')).toThrow(/symbolic link/);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it.each([
+    'workspaces',
+    'workspace-root',
+  ] as const)('refuses a non-directory %s boundary on Workspace open', (boundary) => {
+    const dataRoot = createDataRoot();
+    const workspaces = join(dataRoot, 'workspaces');
+    if (boundary === 'workspace-root') mkdirSync(workspaces);
+    writeFileSync(
+      boundary === 'workspaces' ? workspaces : join(workspaces, 'ws_1'),
+      'retained bytes'
+    );
+    expect(() => openWorkspaceDb(dataRoot, 'ws_1')).toThrow(/must be a directory/);
+  });
+
+  it('opens a Workspace without repeating boot verification of unrelated records', () => {
+    const dataRoot = createDataRoot();
+    ensureLayout(dataRoot);
+    const violation = join(dataRoot, 'users', 'user_bad', 'workspaces');
+    mkdirSync(violation, { recursive: true });
+    expect(() => ensureLayout(dataRoot)).toThrow(/Unsupported owner-nested Workspace tree/);
+    const db = openWorkspaceDb(dataRoot, 'ws_1');
+    try {
+      expect(db.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
+    } finally {
+      db.sqlite.close();
+    }
+    expect(() => ensureLayout(dataRoot)).toThrow(/Unsupported owner-nested Workspace tree/);
   });
 
   it('reopens only an existing boot-verified Workspace database without creating layout', () => {

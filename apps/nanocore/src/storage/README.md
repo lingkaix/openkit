@@ -16,7 +16,7 @@ One record family must have one durable authority. Do not add aggregate workspac
 
 ## Boundaries
 
-- `fs-layout.ts` owns safe paths and accepted directory placement.
+- `fs-layout.ts` owns safe paths and accepted directory placement. `ensureLayout` verifies the ownership tree, database placement, canonical envelopes, and layout marker at boot and during stopped-process migration. Request paths use directory preparation without tree verification; `ensureWorkspaceLayout` creates only the root and Workspace directories needed by its caller.
 - `db.ts` and `migrate.ts` own database opening, integrity validation, and native per-scope Drizzle journals under `drizzle/{core,user,workspace,app}`.
 - Authoritative SQLite integrity failure stops boot and leaves the original database file unchanged; only derived indexes may rebuild automatically.
 - `workspace-file-records.ts` owns canonical workspace record serialization and boot loading.
@@ -43,10 +43,10 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 
 ## File Record Rules
 
+- Writers store DATA_ROOT-relative path references. User and authored content may mention an absolute data root; layout verification does not scan text for that substring.
 - Replace JSON records through a same-directory temporary file and rename.
 - Append item and event revisions to JSONL; readers select the latest item revision by id and preserve event sequence.
 - Fail closed on malformed canonical records, invalid lineage, unsupported required features, path escapes, and legacy authority files.
-- `ensureLayout` rejects absolute DATA_ROOT paths only in canonical product-record locations. Verbatim exceptions are anchored to `server/` or `workspaces/<workspaceId>/`: backend streams under `evidence/backend/<bundleId>/raw/`, and Skill or Plugin snapshot trees under `catalog/skill-snapshots/` and `catalog/plugin-snapshots/`. Backend bundle manifest and native-index siblings remain scanned; nested misleading names, unsafe links, ownership, envelope, and canonical-path checks still apply.
 - Export V2 preserves complete canonical history and exact portable file bytes; V1 exports are intentionally rejected.
 - Portable evidence keeps admitted restricted originals as verified binary bytes under their EvidenceBundle, separate from canonical UTF-8 records. Import remints owner references, preserves body digests and retention, and stages bytes before publishing the Workspace. Unpublished observation chunks and expired body bytes stay excluded.
 - Current Goal portability retains intent history, card revisions, exact immutable Plan bytes and pointers, Task admission citations and Task terminal facts in `records/goal-state.json`. Import remints Workspace, Thread and Turn owners, keeps immutable Plan identities and bytes, binds responsibility to the importing actor and imports no grants. Retired Goal-owned rows are absent; shared historical Goal ids remain opaque lineage.
