@@ -61,10 +61,6 @@ import {
   listExportableAgentEnvironmentPackageSnapshots,
 } from '../runtime/aep-snapshot-ledger.js';
 import {
-  importWorkspaceGitPushRecords,
-  listExportableGitPushRecords,
-} from '../runtime/git-push-records.js';
-import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
 } from '../runtime/mcp-tool-schema-snapshots.js';
@@ -116,10 +112,6 @@ import {
   importVaultInjectionReceipts,
   listExportableVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
-import {
-  importWorkspaceRepositoryResources,
-  listExportableWorkspaceRepositoryResources,
-} from '../workspace/repository-store.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from './db.js';
@@ -467,7 +459,6 @@ function collectWorkspaceExportRows(
       agentEnvironmentPackageSnapshots: [],
       capabilityCalls: [],
       evidenceBundles: [],
-      gitPushRecords: [],
       mcpToolSchemaSnapshots: [],
       permissionDecisions: [],
       resolvedAgentSetups: [],
@@ -480,7 +471,6 @@ function collectWorkspaceExportRows(
       workspaceApplyResults: [],
       workspaceReconciliationRecords: [],
       workspaceQuarantineRecords: [],
-      workspaceRepositories: [],
       workspaceSyncRecords: {
         backendWorkspaceHandles: [],
         changeSets: [],
@@ -509,7 +499,6 @@ function collectWorkspaceExportRows(
         ),
         capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId),
         evidenceBundles: listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId),
-        gitPushRecords: listExportableGitPushRecords(workspaceDb, workspaceId),
         mcpToolSchemaSnapshots: listExportableMcpToolSchemaSnapshots(workspaceDb, workspaceId),
         permissionDecisions: listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId),
         resolvedAgentSetups: listExportableResolvedAgentSetups(workspaceDb, workspaceId),
@@ -534,7 +523,6 @@ function collectWorkspaceExportRows(
           workspaceDb,
           workspaceId
         ),
-        workspaceRepositories: listExportableWorkspaceRepositoryResources(workspaceDb, workspaceId),
         workspaceMaterialRows,
         workspaceSyncRecords,
         generativePresentations: listExportableGenerativePresentations(workspaceDb),
@@ -619,11 +607,6 @@ function importWorkspaceDatabaseRows({
     });
     importWorkspaceEvidenceBundles(workspaceDb, snapshot.evidenceBundles);
     importWorkspaceRuntimeEvidence(workspaceDb, snapshot.runtimeEvidence);
-    importWorkspaceRepositoryResources(
-      workspaceDb,
-      importedWorkspaceId,
-      snapshot.workspaceRepositories
-    );
     importWorkspaceSyncRecords(workspaceDb, {
       backendWorkspaceHandles: snapshot.backendWorkspaceHandles,
       changeSets: snapshot.workspaceChangeSets,
@@ -679,7 +662,6 @@ function importWorkspaceDatabaseRows({
     importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
     importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
     importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
-    importWorkspaceGitPushRecords(workspaceDb, snapshot.gitPushRecords);
     importAgentEnvironmentPackageSnapshots(workspaceDb, snapshot.agentEnvironmentPackageSnapshots);
     recordWorkspaceAuditEvent({
       workspaceDb,
@@ -1107,7 +1089,6 @@ export function createVerifiedWorkspaceExport({
     agentEnvironmentPackageSnapshots: workspaceRowFamilies.agentEnvironmentPackageSnapshots,
     capabilityCalls: workspaceRowFamilies.capabilityCalls,
     evidenceBundles: workspaceRowFamilies.evidenceBundles,
-    gitPushRecords: workspaceRowFamilies.gitPushRecords,
     vaultInjectionPlans: workspaceVaultInjectionPlans,
     vaultInjectionReceipts: coreDb
       ? listExportableVaultInjectionReceipts(
@@ -1138,7 +1119,6 @@ export function createVerifiedWorkspaceExport({
     workspaceInputSnapshots: workspaceRowFamilies.workspaceSyncRecords.inputSnapshots,
     workspaceMaterializationRecords:
       workspaceRowFamilies.workspaceSyncRecords.materializationRecords,
-    workspaceRepositories: workspaceRowFamilies.workspaceRepositories,
     vaultGrants: workspaceVaultGrants,
     vaultReferences: coreDb
       ? listWorkspaceVaultReferences(coreDb, workspaceId).map((reference) => ({

@@ -568,22 +568,6 @@ describe('server auth flow', () => {
 
       seedWritableGitRepository(firstRepositoryPath);
       seedWritableGitRepository(secondRepositoryPath);
-      await app.request(`/api/app/workspaces/${firstScope.workspaceId}/repositories/default`, {
-        method: 'PUT',
-        headers: { cookie: sessionCookie(firstSignUp), 'content-type': 'application/json' },
-        body: JSON.stringify({
-          displayName: 'First user repository',
-          localPath: firstRepositoryPath,
-        }),
-      });
-      await app.request(`/api/app/workspaces/${secondScope.workspaceId}/repositories/default`, {
-        method: 'PUT',
-        headers: { cookie: sessionCookie(secondSignUp), 'content-type': 'application/json' },
-        body: JSON.stringify({
-          displayName: 'Second user repository',
-          localPath: secondRepositoryPath,
-        }),
-      });
 
       const firstRequest = app.request('/api/turns', {
         method: 'POST',

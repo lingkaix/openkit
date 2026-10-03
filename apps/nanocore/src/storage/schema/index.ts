@@ -16,8 +16,6 @@ export type {
 } from './evidence-bundles.js';
 export { evidenceBundles } from './evidence-bundles.js';
 export { generativePresentations } from './generative-presentations.js';
-export type { GitPushRecordOutcome } from './git-push-records.js';
-export { gitPushRecords } from './git-push-records.js';
 export * from './goals.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
@@ -133,12 +131,7 @@ export {
 } from './workspace-membership.js';
 export { workspaceQuarantineRecords } from './workspace-quarantine-records.js';
 export { workspaceReconciliationRecords } from './workspace-reconciliation-records.js';
-export type {
-  WorkspaceRepositoryDiagnosticsStatus,
-  WorkspaceRepositoryResourceType,
-  WorkspaceRepositoryStagingStrategy,
-} from './workspace-repositories.js';
-export { workspaceRepositoryResources } from './workspace-repositories.js';
+
 export {
   workspaceSnapshotCollections,
   workspaceSnapshotCursors,

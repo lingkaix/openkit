@@ -52,23 +52,17 @@ export function projectApprovalEffect(input: {
     const intent = record.serverId
       ? JSON.parse(record.canonicalArgumentsJson!)
       : record.governedIntent;
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent))
+      return { status: 'unavailable', reason: 'Complete captured effect could not be loaded.' };
     // Project only effect fields, never transport configuration, credentials or runtime context.
-    const effect =
-      record.serverId && record.serverId !== 'openkit-repository'
-        ? {
-            serverId: record.serverId,
-            toolName: record.toolName,
-            argumentsDigest: record.argumentsDigest,
-            arguments: intent,
-          }
-        : record.serverId === 'openkit-repository' || intent.resourceId
-          ? {
-              repository: intent.resourceId,
-              sourceRef: intent.sourceRef,
-              commitIds: intent.commitIds,
-              targetBranch: intent.targetBranch,
-            }
-          : intent;
+    const effect = record.serverId
+      ? {
+          serverId: record.serverId,
+          toolName: record.toolName,
+          argumentsDigest: record.argumentsDigest,
+          arguments: intent,
+        }
+      : intent;
     const detail = canonicalJsonText(effect);
     if (Buffer.byteLength(detail, 'utf8') > APPROVAL_DETAIL_BYTES)
       return { status: 'unavailable', reason: 'Complete exact effect exceeds the detail limit.' };

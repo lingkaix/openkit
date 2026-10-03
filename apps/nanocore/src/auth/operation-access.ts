@@ -413,7 +413,6 @@ registerOperations(
     'listBackendWorkspaceHandles',
     'listAgentEnvironmentPackageSnapshots',
     'listWorkspaceVaultUseRecords',
-    'listGitPushRecords',
   ],
   {
     mutating: false,
@@ -449,12 +448,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['listWorkspaceRepositories', 'getWorkspaceRepositoryDiagnostics'], {
-  mutating: false,
-  policyOperation: 'workspace.configure',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(
   catalog,
   ['getWorkspaceCatalog', 'listSkillCatalog', 'listMcpCatalog', 'listPluginCatalog'],
@@ -490,12 +483,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['setDefaultWorkspaceRepository'], {
-  mutating: true,
-  policyOperation: 'workspace.configure',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['PATCH /api/workspaces/:workspaceId'], {
   mutating: true,
   policyOperation: 'workspace.lifecycle',
@@ -611,7 +598,7 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['getAgentEnvironmentPackageSnapshot', 'getGitPushRecord'], {
+registerOperations(catalog, ['getAgentEnvironmentPackageSnapshot'], {
   mutating: false,
   policyOperation: 'audit.read',
   resolver: 'workspace-child-lineage',
@@ -637,12 +624,6 @@ registerOperations(
 registerOperations(catalog, ['rebindWorkspaceVaultReference'], {
   mutating: true,
   policyOperation: 'vault.admin',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['requestGitPushApproval', 'executeGitPush'], {
-  mutating: true,
-  policyOperation: 'repo.push',
   resolver: 'workspace-child-lineage',
   scope: 'workspace',
 });

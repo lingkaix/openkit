@@ -57,7 +57,6 @@ import {
   type CreateVaultInjectionReceiptInput,
   createVaultInjectionReceipt,
 } from '../vault-injection-receipts.js';
-import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   consumeQueuedThreadMaterialRevision,
   type QueuedThreadMaterialSelection,
@@ -142,7 +141,6 @@ import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from './workspace-materializer.js';
-import { stageGitWorkspaceReview } from './workspace-review-git.js';
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
@@ -2454,14 +2452,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         environmentPackage.workspace?.inputs.some(
           (input) => input.id === record.changeSet.resourceId && input.source.kind === 'git'
         ) ?? false;
-      const repository =
-        workspaceDb && !gitSource
-          ? getWorkspaceRepositoryResource(
-              workspaceDb,
-              environmentPackage.scope.workspaceId,
-              record.changeSet.resourceId
-            )
-          : null;
       const patchBytes = record.patchPayload
         ? workspaceSyncReviewPatchBytes(record.patchPayload)
         : null;
@@ -2490,9 +2480,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         record.review.status !== 'pending' ? 'review_not_pending' : null,
         record.changeSet.strategy === 'git' && record.review.staging.strategy !== 'git_worktree'
           ? 'git_staging_invalid'
-          : null,
-        record.changeSet.strategy === 'git' && !gitSource && workspaceDb && !repository
-          ? 'git_repository_missing'
           : null,
         record.changeSet.strategy === 'git' && record.filesystemApply !== null
           ? 'git_filesystem_apply_present'
@@ -2528,24 +2515,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (actionabilityFailures.length > 0) {
         const reasons = actionabilityFailures.join(', ');
         const prefix = `Workspace review is not actionable (${reasons}): ${record.review.id}`;
-        throw new Error(
-          actionabilityFailures.length === 1 &&
-            actionabilityFailures[0] === 'git_repository_missing'
-            ? `${prefix}. Link repository resource ${record.changeSet.resourceId} in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.`
-            : prefix
-        );
+        throw new Error(prefix);
       }
       const item = {
         artifactId,
         changeSet: record.changeSet,
         patchPayload: record.patchPayload,
-        review:
-          record.changeSet.strategy === 'git' && repository?.git.stagingStrategy !== 'review-branch'
-            ? {
-                ...record.review,
-                staging: { ...record.review.staging, branch: null },
-              }
-            : record.review,
+        review: record.review,
       };
       let artifactCreated = false;
       /** Persists one staged record to artifact and durable workspace storage. */
@@ -2615,28 +2591,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           persist();
         }
       };
-      if (
-        repository?.git.stagingStrategy === 'review-branch' &&
-        record.changeSet.strategy === 'git' &&
-        record.review.staging.branch !== null
-      ) {
-        await stageGitWorkspaceReview({
-          persistHead: (commitId) => {
-            persistRecord({
-              ...item,
-              changeSet: {
-                ...item.changeSet,
-                head: { ...item.changeSet.head, commit: commitId },
-              },
-            });
-          },
-          repository,
-          review: item,
-          store,
-        });
-      } else {
-        persistRecord(item);
-      }
+      persistRecord(item);
       if (artifactCreated) {
         const artifactItem = store
           .listThreadItems(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)

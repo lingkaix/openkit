@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -375,33 +374,6 @@ function configureScheduler(coreDb: CoreDb): void {
     queueDepth: 0,
     targetId: 'target_local',
   });
-}
-
-/** Links one disposable Git repository through the existing repository-resource route. */
-async function linkRepository(
-  app: ReturnType<typeof createApp>,
-  headers: Readonly<Record<string, string>>,
-  workspaceId: string
-): Promise<void> {
-  const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-repository-'));
-  execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'openkit@example.invalid'], {
-    cwd: repositoryPath,
-  });
-  execFileSync('git', ['config', 'user.name', 'OpenKit'], { cwd: repositoryPath });
-  writeFileSync(join(repositoryPath, 'README.md'), '# Worker environment replacement fixture\n');
-  execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath });
-  execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
-  const response = await app.request(`/api/app/workspaces/${workspaceId}/repositories/default`, {
-    method: 'PUT',
-    headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      displayName: 'Worker environment replacement fixture',
-      localPath: repositoryPath,
-    }),
-  });
-  const body = await response.text();
-  expect(response.status, body).toBe(200);
 }
 
 /** Creates the attached persistent association and runtime lineage for one active Turn. */
@@ -833,7 +805,6 @@ describe('Worker environment App composition', () => {
         store,
         turnExecutor: executor,
       });
-      await linkRepository(app, sessionHeaders, productWorkspace.id);
 
       const predecessorResponse = await app.request('/api/turns', {
         method: 'POST',

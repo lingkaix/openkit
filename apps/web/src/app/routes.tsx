@@ -35,7 +35,6 @@ import {
   KnowledgeScreen,
   NewWorkspaceScreen,
   OverviewScreen,
-  RepositoriesScreen,
 } from '../screens/workspace';
 import { WorkspaceChangesScreen } from '../screens/workspace-sync';
 import { AppShell } from './AppShell';
@@ -93,7 +92,6 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'new-workspace': <NewWorkspaceScreen />,
   'archived-threads': <ArchivedThreadsScreen />,
   automations: <AutomationsScreen />,
-  repositories: <RepositoriesScreen />,
   'workspace-changes': <WorkspaceChangesScreen />,
   portability: <PortabilityScreen />,
   recovery: <RecoveryScreen />,

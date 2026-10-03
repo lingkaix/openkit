@@ -342,75 +342,6 @@ function workspaceApplyResult() {
   };
 }
 
-/** Returns one redacted workspace repository resource. */
-function repositoryResource() {
-  return {
-    workspaceId: 'ws_demo',
-    resourceId: 'default',
-    type: 'git_repository',
-    displayName: 'OpenKit',
-    diagnosticsStatus: 'ready',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    pathSummary: 'git repository ending in openkit',
-    git: {
-      authorEmail: null,
-      authorName: null,
-      allowedPushTargets: [],
-      commitOnApply: false,
-      protectedBranchPatterns: ['main', 'master', 'release/*', 'v*'],
-      requireReviewLinkage: true,
-      stagingStrategy: 'staging-root',
-      vaultGrantRef: null,
-    },
-    validation: {
-      ok: true,
-      resourceKind: 'git_repository',
-      status: 'ready',
-      summary: 'Repository is ready.',
-      pathSummary: 'git repository ending in openkit',
-    },
-  };
-}
-
-/** Returns one redacted Git push record. */
-function gitPushRecord() {
-  return {
-    id: 'gpr_1',
-    workspaceId: 'ws_demo',
-    repositoryResourceId: 'default',
-    approvalRowId: 'har_1',
-    policyDecisionId: 'pd_1',
-    actorId: 'user_1',
-    remoteSummary: 'GitHub repository openkit on origin',
-    sourceRef: 'HEAD',
-    targetBranch: 'main',
-    commitIds: ['abc123'],
-    reviewIds: ['swr_1'],
-    remoteHeadBefore: 'def456',
-    remoteHeadAfter: 'abc123',
-    outcome: 'pushed',
-    errorSummary: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-}
-
-/** Returns one redacted workspace repository diagnostic row. */
-function repositoryDiagnostic() {
-  return {
-    workspaceId: 'ws_demo',
-    resourceId: 'default',
-    type: 'git_repository',
-    displayName: 'OpenKit',
-    diagnosticsStatus: 'ready',
-    ready: true,
-    summary: 'Repository is ready.',
-    pathSummary: 'git repository ending in openkit',
-    updatedAt: timestamp,
-  };
-}
-
 /** Returns one runtime config status fixture. */
 function runtimeConfigStatus() {
   return {
@@ -1563,7 +1494,7 @@ describe('createCoreClient', () => {
     expect('actionCenter' in client).toBe(false);
     expect(client.operations['attention.list']).toBeTypeOf('function');
     expect(client.catalog).toBeDefined();
-    expect(client.repositories).toBeDefined();
+    expect('repositories' in client).toBe(false);
     expect('updateArtifactMetadata' in client.core).toBe(false);
     expect(client.operations['artifact.review-list']).toBeTypeOf('function');
     expect(client.operations['artifact.review.decide']).toBeTypeOf('function');
@@ -3949,117 +3880,6 @@ describe('createCoreClient', () => {
     });
 
     await expect(client.app.getVaultAdminStatus()).rejects.toBeInstanceOf(ProtocolValidationError);
-  });
-
-  it('routes workspace repository resource calls through repository sub-client', async () => {
-    const { client, requests } = createFakeClient({
-      'GET /api/app/workspaces/ws_demo/repositories': {
-        body: {
-          items: [repositoryResource()],
-          defaultResourceId: 'default',
-          defaultResource: repositoryResource(),
-        },
-      },
-      'GET /api/app/workspaces/ws_demo/repositories/diagnostics': {
-        body: {
-          workspaceId: 'ws_demo',
-          defaultResourceId: 'default',
-          defaultResource: repositoryDiagnostic(),
-          resources: [repositoryDiagnostic()],
-        },
-      },
-      'GET /api/app/workspaces/ws_demo/repositories/git-push-records': {
-        body: { items: [gitPushRecord()] },
-      },
-      'GET /api/app/workspaces/ws_demo/repositories/git-push-records/gpr_1': {
-        body: gitPushRecord(),
-      },
-      'POST /api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval': {
-        body: {
-          approval: {
-            id: 'ap_git_push_1',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: 'tu_demo',
-            kind: 'permission',
-            status: 'pending',
-            title: 'Approve Git push to main',
-            description: 'Publish abc123 from HEAD to main on GitHub repository openkit on origin.',
-            createdAt: timestamp,
-            resolvedAt: null,
-          },
-          approvalItemId: 'it_git_push_approval_1',
-          policyDecisionId: 'pd_git_push_approval_1',
-        },
-      },
-      'POST /api/app/workspaces/ws_demo/repositories/repo_default/git-push': {
-        body: gitPushRecord(),
-      },
-      'PUT /api/app/workspaces/ws_demo/repositories/default': {
-        body: { repository: repositoryResource() },
-      },
-    });
-
-    await expect(client.repositories.list('ws_demo')).resolves.toMatchObject({
-      defaultResourceId: 'default',
-    });
-    await expect(client.repositories.diagnostics('ws_demo')).resolves.toMatchObject({
-      workspaceId: 'ws_demo',
-    });
-    await expect(client.repositories.listGitPushRecords('ws_demo')).resolves.toMatchObject({
-      items: [{ id: 'gpr_1' }],
-    });
-    await expect(client.repositories.getGitPushRecord('ws_demo', 'gpr_1')).resolves.toMatchObject({
-      id: 'gpr_1',
-    });
-    await expect(
-      client.repositories.requestGitPushApproval('ws_demo', 'repo_default', {
-        requestId: '00000000-0000-4000-8000-000000000024',
-        threadId: 'th_demo',
-        turnId: 'tu_demo',
-        sourceRef: 'HEAD',
-        targetBranch: 'main',
-        commitIds: ['abc123'],
-      })
-    ).resolves.toMatchObject({ approval: { id: 'ap_git_push_1' } });
-    await expect(
-      client.repositories.executeGitPush('ws_demo', 'repo_default', {
-        requestId: '00000000-0000-4000-8000-000000000026',
-        approvalRequestId: 'ap_git_push_1',
-      })
-    ).resolves.toMatchObject({ id: 'gpr_1', outcome: 'pushed' });
-    await expect(
-      client.repositories.setDefault('ws_demo', {
-        displayName: 'OpenKit',
-        localPath: '/Users/m5pro/Documents/AI/openkit',
-      })
-    ).resolves.toMatchObject({ repository: { resourceId: 'default' } });
-
-    expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'GET /api/app/workspaces/ws_demo/repositories',
-      'GET /api/app/workspaces/ws_demo/repositories/diagnostics',
-      'GET /api/app/workspaces/ws_demo/repositories/git-push-records',
-      'GET /api/app/workspaces/ws_demo/repositories/git-push-records/gpr_1',
-      'POST /api/app/workspaces/ws_demo/repositories/repo_default/git-push/approval',
-      'POST /api/app/workspaces/ws_demo/repositories/repo_default/git-push',
-      'PUT /api/app/workspaces/ws_demo/repositories/default',
-    ]);
-    expect(requests[4]?.body).toEqual({
-      commitIds: ['abc123'],
-      requestId: '00000000-0000-4000-8000-000000000024',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-    });
-    expect(requests[5]?.body).toEqual({
-      approvalRequestId: 'ap_git_push_1',
-      requestId: '00000000-0000-4000-8000-000000000026',
-    });
-    expect(requests[6]?.body).toEqual({
-      displayName: 'OpenKit',
-      localPath: '/Users/m5pro/Documents/AI/openkit',
-    });
   });
 
   it('routes remaining App API and feedback methods through sub-clients', async () => {

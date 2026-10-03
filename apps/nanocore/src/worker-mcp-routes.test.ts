@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1527,7 +1526,7 @@ describe('worker MCP routes', () => {
       transientPreparation: false,
       entry: 'direct Task',
       refuseFirst: false,
-      repository: false,
+
       decision: 'granted' as const,
       ownerCommand: 'task.start',
     },
@@ -1535,7 +1534,7 @@ describe('worker MCP routes', () => {
       transientPreparation: false,
       entry: 'refused warm Worker conversation',
       refuseFirst: true,
-      repository: false,
+
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
     },
@@ -1543,7 +1542,7 @@ describe('worker MCP routes', () => {
       transientPreparation: false,
       entry: 'selected warm Worker conversation',
       refuseFirst: false,
-      repository: false,
+
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
     },
@@ -1551,23 +1550,14 @@ describe('worker MCP routes', () => {
       transientPreparation: true,
       entry: 'transient preparation refused Worker conversation',
       refuseFirst: true,
-      repository: false,
+
       decision: 'granted' as const,
       ownerCommand: 'conversation.submit',
     },
-    ...(['granted', 'denied'] as const).map((decision) => ({
-      transientPreparation: false,
-      entry: `repository ${decision}`,
-      refuseFirst: false,
-      repository: true,
-      decision,
-      ownerCommand: 'task.start',
-    })),
   ])('starts a definition-derived $entry, observes attention, responds and delivers the captured outcome once', async ({
     transientPreparation,
     ownerCommand,
     refuseFirst,
-    repository,
     decision,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-lifecycle-'));
@@ -1582,17 +1572,9 @@ describe('worker MCP routes', () => {
     seedWritableGitRepository(repositoryPath);
     const agentSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
-      mcpIds: [repository ? 'openkit-repository' : 'echo'],
+      mcpIds: ['echo'],
     });
     admitTestNativeEnvironment(coreDb, agentSetup.manifest);
-    const hostCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-    }).trim();
-    if (repository)
-      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/fixture.git'], {
-        cwd: repositoryPath,
-      });
     let repositoryApprovalId: string | null = null;
     const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1,
@@ -1903,9 +1885,7 @@ describe('worker MCP routes', () => {
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(
         new StreamableHTTPClientTransport(
-          new URL(
-            `http://nanocore.test/api/worker-capabilities/mcp/${repository ? 'openkit-repository' : 'echo'}`
-          ),
+          new URL(`http://nanocore.test/api/worker-capabilities/mcp/${'echo'}`),
           {
             fetch: (request, init) => app.fetch(new Request(request, init)),
             requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
@@ -1915,20 +1895,10 @@ describe('worker MCP routes', () => {
       await client.listTools();
       let toolCall: unknown = null;
       if (blocked) {
-        const result = await client.callTool(
-          repository
-            ? {
-                name: 'repository_push',
-                arguments: {
-                  requestId: '0190f4c8-0000-7000-8000-000000000504',
-                  resourceId: 'repo_default',
-                  sourceRef: hostCommit,
-                  targetBranch: 'feature/issue84',
-                  commitIds: [hostCommit],
-                },
-              }
-            : { name: 'echo', arguments: { message: 'public-task' } }
-        );
+        const result = await client.callTool({
+          name: 'echo',
+          arguments: { message: 'public-task' },
+        });
         expect(result).toMatchObject({
           isError: true,
           structuredContent: { status: 'pending-approval' },
@@ -1994,30 +1964,6 @@ describe('worker MCP routes', () => {
     };
 
     try {
-      const repositoryResponse = await app.request(
-        '/api/app/workspaces/ws_demo/repositories/default',
-        {
-          body: JSON.stringify({
-            displayName: 'MCP Task repository',
-            localPath: repositoryPath,
-            ...(repository
-              ? {
-                  git: {
-                    authorEmail: null,
-                    authorName: null,
-                    commitOnApply: false,
-                    allowedPushTargets: ['feature/issue84'],
-                    requireReviewLinkage: false,
-                  },
-                }
-              : {}),
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'PUT',
-        }
-      );
-      expect(repositoryResponse.status).toBe(200);
-
       const firstRequest = app.request(
         ...operationRequest(
           ownerCommand,
@@ -2281,7 +2227,7 @@ describe('worker MCP routes', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
-      if (!repository && !refuseFirst)
+      if (!refuseFirst)
         expect(readFileSync(callFile, 'utf8').trim().split('\n')).toEqual(['public-task']);
       else expect(existsSync(callFile)).toBe(false);
     } finally {

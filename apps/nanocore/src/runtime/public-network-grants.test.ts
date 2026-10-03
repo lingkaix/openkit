@@ -348,10 +348,7 @@ describe('public network canonical identities and retained scope', () => {
 describe('public network route distinctions', () => {
   it('keeps built-in capability selections mediated without inventing external destinations', () => {
     expect(() =>
-      assertPublicNetworkGrants(
-        { ...manifest(), mcp: [{ id: 'openkit-repository' }, { id: 'openkit-generative' }] },
-        facts()
-      )
+      assertPublicNetworkGrants({ ...manifest(), mcp: [{ id: 'openkit-generative' }] }, facts())
     ).not.toThrow();
   });
 

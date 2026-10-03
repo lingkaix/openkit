@@ -4,7 +4,6 @@ import {
   type WorkspaceApplyPlan,
   WorkspaceApplyPlanSchema,
   type WorkspaceApplyResult,
-  WorkspaceApplyResultSchema,
   type WorkspaceSyncReviewDecision,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
@@ -13,10 +12,6 @@ import { listArtifactReviews } from '../artifact-reviews.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import {
-  getWorkspaceRepositoryResource,
-  type WorkspaceRepositoryResourceRecord,
-} from '../workspace/repository-store.js';
 import {
   applyStagedFilesystemChanges,
   cleanupCommittedFilesystemRollback,
@@ -31,11 +26,7 @@ import {
   type FilesystemWorkspaceStagingRootRecord,
   getFilesystemWorkspaceStagingRoot,
 } from './workspace-filesystem-staging.js';
-import { applyGitWorkspaceReview, discardGitWorkspaceReview } from './workspace-review-git.js';
-import {
-  acceptAppliedWorkspaceSnapshot,
-  workspaceSnapshotReviewIsStale,
-} from './workspace-snapshot-chain.js';
+import { acceptAppliedWorkspaceSnapshot } from './workspace-snapshot-chain.js';
 import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
@@ -234,19 +225,7 @@ async function executeWorkspaceSyncReviewDecision(
         });
       })();
     };
-    const repository =
-      review.changeSet.strategy === 'git'
-        ? getWorkspaceRepositoryResource(workspaceDb, workspaceId, review.changeSet.resourceId)
-        : null;
-
-    if (review.changeSet.strategy === 'git' && review.review.staging.branch && !repository) {
-      throw new Error('Workspace repository is not configured.');
-    }
-    if (review.review.staging.branch && repository) {
-      await discardGitWorkspaceReview({ persistDecision, repository, review });
-    } else {
-      persistDecision();
-    }
+    persistDecision();
 
     return {
       review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
@@ -254,16 +233,11 @@ async function executeWorkspaceSyncReviewDecision(
     };
   }
 
-  const target =
-    review.changeSet.strategy === 'filesystem'
-      ? {
-          kind: 'filesystem' as const,
-          staging: requireFilesystemWorkspaceStaging(workspaceDb, review),
-        }
-      : {
-          kind: 'git' as const,
-          repository: requireWorkspaceRepository(workspaceDb, review),
-        };
+  if (review.changeSet.strategy !== 'filesystem')
+    throw new Error(
+      'Git review application is unavailable; publish through the selected vendor MCP.'
+    );
+  const staging = requireFilesystemWorkspaceStaging(workspaceDb, review);
   if (
     !currentWorkspaceAuthority(
       input.coreDb,
@@ -276,66 +250,20 @@ async function executeWorkspaceSyncReviewDecision(
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
   const plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
-
-  if (target.kind === 'filesystem') {
-    await applyWorkspaceSyncReviewFilesystem({
-      appliedAt: plan.createdAt,
-      persistResult: (appliedResult) => {
-        workspaceDb.sqlite.transaction(() => {
-          recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
-        })();
-      },
-      review,
-      staging: target.staging,
-    });
-
-    return {
-      review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
-      workspaceApplyResult: requireWorkspaceApplyResult(
-        workspaceDb,
-        workspaceId,
-        `war_${reviewId}`
-      ),
-    };
-  }
-
-  if (workspaceSnapshotReviewIsStale(workspaceDb, workspaceId, review.changeSet.id)) {
-    const conflicted = WorkspaceApplyResultSchema.parse({
-      id: `war_${reviewId}`,
-      workspaceId,
-      reviewId,
-      changeSetId: review.changeSet.id,
-      status: 'conflicted',
-      appliedPaths: [],
-      skippedPaths: review.changeSet.changedPaths.map((path) => path.path),
-      conflictRecords: ['snapshot-accepted-base-changed'],
-      verification: [{ command: 'snapshot-accepted-base', status: 'failed', ref: null }],
-      commitIds: [],
-      appliedAt: plan.createdAt,
-    });
-    workspaceDb.sqlite.transaction(() =>
-      recordAcceptedWorkspaceReview(workspaceDb, input, conflicted)
-    )();
-    return {
-      review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
-      workspaceApplyResult: conflicted,
-    };
-  }
-  const result = await applyGitWorkspaceReview({
+  await applyWorkspaceSyncReviewFilesystem({
     appliedAt: plan.createdAt,
     persistResult: (appliedResult) => {
       workspaceDb.sqlite.transaction(() => {
         recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
       })();
     },
-    repository: target.repository,
     review,
-    store: input.store,
+    staging,
   });
 
   return {
     review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
-    workspaceApplyResult: result,
+    workspaceApplyResult: requireWorkspaceApplyResult(workspaceDb, workspaceId, `war_${reviewId}`),
   };
 }
 
@@ -440,33 +368,6 @@ function requireFilesystemWorkspaceStaging(
     throw new Error(`Filesystem workspace staging lineage mismatch: ${review.review.id}`);
   }
   return staging;
-}
-
-/**
- * Requires the exact configured Git repository target for one pending review.
- *
- * @param workspaceDb Workspace database owning the repository target.
- * @param review Pending Git review.
- * @returns Matching repository resource.
- * @throws Error when the repository target is unavailable or contradictory.
- */
-function requireWorkspaceRepository(
-  workspaceDb: WorkspaceDb,
-  review: WorkspaceSyncReviewItem
-): WorkspaceRepositoryResourceRecord {
-  const repository = getWorkspaceRepositoryResource(
-    workspaceDb,
-    review.review.workspaceId,
-    review.changeSet.resourceId
-  );
-  if (
-    !repository ||
-    repository.workspaceId !== review.review.workspaceId ||
-    repository.resourceId !== review.changeSet.resourceId
-  ) {
-    throw new Error('Workspace repository is not configured.');
-  }
-  return repository;
 }
 
 /**

@@ -13,8 +13,6 @@ import { createCoreProjectionClient } from './core.js';
 import { createOperationClient, type OperationClient } from './operations.js';
 import type { ProviderSubscriptionsClient } from './provider-subscriptions.js';
 import { createProviderSubscriptionsClient } from './provider-subscriptions.js';
-import type { WorkspaceRepositoryClient } from './repository.js';
-import { createWorkspaceRepositoryClient } from './repository.js';
 import type { RuntimeConfigClient } from './runtime-config.js';
 import { createRuntimeConfigClient } from './runtime-config.js';
 import type { EventSourceConstructor } from './sse.js';
@@ -52,8 +50,6 @@ export interface CoreClient {
   readonly agents: AgentCatalogClient;
   /** Product-facing Workspace Skill, MCP, and Agent Plugin catalog client. */
   readonly catalog: ResourceCatalogClient;
-  /** Product-facing workspace repository resource client. */
-  readonly repositories: WorkspaceRepositoryClient;
 }
 
 /** Creates a composed OpenKit client from one shared HTTP/SSE transport. */
@@ -67,7 +63,6 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const capabilities = createCapabilitiesClient(core.meta);
   const agents = createAgentCatalogClient(transport);
   const catalog = createResourceCatalogClient(transport);
-  const repositories = createWorkspaceRepositoryClient(transport);
 
   return {
     operations: createOperationClient(transport),
@@ -78,7 +73,6 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
     catalog,
     core,
     providerSubscriptions,
-    repositories,
     runtimeConfig,
   };
 }

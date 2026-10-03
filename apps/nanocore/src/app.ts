@@ -120,7 +120,6 @@ import {
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
-import { registerRepositoryRoutes } from './repository-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
 import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
 import {
@@ -1798,17 +1797,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
 
-  registerRepositoryRoutes({
-    app,
-    approvalPolicy: startupOpenKitConfig.policy,
-    assertProjectWorkspace,
-    coreDb: options.coreDb,
-    inflightCommands,
-    repositoryWorkspaceDb,
-    requestStore,
-    vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
-  });
-
   registerSchedulerAdmissionRoutes({
     app,
     coreDb: options.coreDb,
@@ -1985,9 +1973,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     agentAuthority: (record) =>
       runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
     coreDb: options.coreDb,
-    prepareCapturedCall: (record, workspaceDb, actor) =>
+    prepareCapturedCall: (record, workspaceDb) =>
       prepareCapturedPendingCall({
-        actor,
         record,
         workspaceDb,
         coreDb: options.coreDb,
@@ -2027,24 +2014,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         coreDb: options.coreDb,
         record,
         sqlite,
-        approvalPolicy: snapshot.openKitConfig.policy,
         prepared,
       });
     },
-    executeCapturedCall: (record, actor, workspaceDb, prepared, executionCall) => {
+    executeCapturedCall: (record, _actor, workspaceDb, prepared, executionCall) => {
       const snapshot = runtimeConfig();
       return executeCapturedPendingCall({
-        actor,
-        approvalPolicy: snapshot.openKitConfig.policy,
         catalog:
           snapshot.workspaceMcpServerCatalogs.find(
             (entry) => entry.workspaceId === record.workspaceId
           )?.catalog ?? null,
         coreDb: options.coreDb,
-        inflightCommands,
         record,
-        store: sharedStore,
-        vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
         workerMcpGateway,
         workspaceDb,
         prepared,

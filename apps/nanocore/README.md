@@ -45,7 +45,7 @@ NanoCore's App listener serves stateless Streamable HTTP at `/mcp`. This endpoin
 - governed container Worker AgentSessions
 - provider-neutral subscription account state for `openai-codex` and `xai`
 - agent-facing LLM Gateway endpoints for Chat Completions and Responses, with one-level function namespace identity preserved on the chat-native bridge
-- workspace repository resources for governed worker materialization
+- remote Git catalog sources with immutable pins for governed worker materialization
 - Goal intent, cards, exact immutable Plan approval, ordinary Task links, human completion acceptance and cancellation through the derived Goal operation family
 - real HTTP + SSE protocol surface
 
@@ -60,12 +60,6 @@ Task routing preserves affirmative leading implementation intent when later cons
 Selected-Worker `conversation.submit` returns its existing accepted Turn and result Item before Worker completion. The full Worker loop retains ownership of the Workspace database, checkpoint, scheduler lease, output and cleanup until closeout. The exact result Item then reflects terminal failure or interruption; replay validates current durable state without relaunching the Worker or repairing contradictory history. Web and the public Skill follow the returned receiving Thread and Turn for progress rather than keeping the submit request open through execution.
 
 Before creating a receiving Thread or Turn, selected-Worker submission validates the assembled conversation prompt against the structured delegation objective schema. The 2,000-character limit includes attached Artifact text; invalid input returns HTTP 400 `invalid_request` with the schema issue text and creates no Worker admission or executor effect. Valid objectives pass unchanged, without truncation. Run `pnpm --filter @openkit/nanocore exec vitest run src/mode-entry-routes.test.ts` for the focused route regressions, including rejection at 2,073 characters and unchanged delivery at 2,000.
-
-## Selected Repository Worker Tools
-
-Codex manifests may explicitly select `mcp: [{ id: "openkit-repository" }]` to expose the single `repository_push` tool over the existing authenticated MCP relay. The built-in is not automatically supplied and its catalog identity is reserved. The tool requires a UUID `requestId`, a repository `resourceId`, `sourceRef`, `targetBranch`, and `commitIds`. Human mode returns a pending approval and leaves the Turn running. Automatic mode pushes inside the call. Workspace, Thread, Turn, AgentSession, package, and actor authority come from the authenticated package and current server authority.
-
-The source commit must already exist in the linked NanoCore repository through the existing host review/apply workflow. Human approval is a pending request, and an unproved execution requires inspection. Automatic approval leaves the Worker running. The host push executor retains repository policy, review linkage, Vault, remote, and lease guards, and the explicit host execute command stays.
 
 ## Runtime
 
@@ -226,31 +220,9 @@ Source ownership and local verification for this subsystem are documented in [th
 
 Set `OPENKIT_DATA_ROOT` to persist canonical Workspace records under `temp/nanocore-data/workspaces/<workspaceId>/` from the repository root.
 
-## Repository Resources And Goal Mode
+## Remote Git Sources And Goal Mode
 
-The retained NanoCore-hosted repository resource remains the current owner for bounded Chat repository inspection and the separate host-side apply/push surfaces. NanoHost Task and Goal worker Turns use the remote Git catalog flow documented below and do not consume this host path.
-
-Linking this resource does not create or rewrite a runtime data-source catalog entry. Author the credential-free HTTPS URL and immutable commit through the existing runtime-config surface. When importing Git changes for later application, use the same resource ID for the receiving Core repository and the Worker source; their storage and materialization remain separate.
-
-Link the default repository resource with:
-
-```bash
-curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/repositories/default \
-  -H 'content-type: application/json' \
-  --data '{"displayName":"OpenKit","localPath":"/absolute/path/to/git/repository"}'
-```
-
-Read the redacted repository summary with:
-
-```bash
-curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/repositories
-```
-
-Read repository diagnostics with:
-
-```bash
-curl -s http://127.0.0.1:3000/api/app/workspaces/ws_demo/repositories/diagnostics
-```
+NanoCore host repository resources, host Git publication, host inspection, and the Repositories screen are removed. Remote Git sources use catalog URL/commit pins and Sandbox-reported baselines; hosted writes use selected vendor MCP through the Gateway.
 
 Goal uses ten canonical JSON POST operations at `/api/app/operations/<operation-id>`: `goal.create`, `goal.intent.revise`, `goal.card.create`, `goal.card.edit`, `goal.card.cancel`, `goal.plan.propose`, `goal.plan.approve`, `goal.cancel`, `goal.completion.accept`, and `goal.read`. Their definition table supplies HTTP, OpenAPI, Core Client, CLI and Coordinator Tools; `runtime/goal-owner.ts` owns their outcomes and Workspace SQL records.
 
@@ -266,7 +238,7 @@ For user-facing deployment documentation, see [NanoCore Deployment Modes](../../
 
 For user-facing `DATA_ROOT/config` documentation, see [NanoCore DATA_ROOT Config](../../skills/openkit-ops/references/nanocore-data-root-config.en.md).
 
-Workspace config is loaded from `DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc`. V1 configured roots remain workspace-relative `host-dir` roots under the Workspace directory. A selected Agent may additionally bind one read-write input to a credential-free HTTPS Git source in the Workspace data-source catalog; Turn admission captures its exact commit without a NanoCore host path, and the Worker Shim materializes it at `/workspace/openkit/worktrees/main` before native start. The declared `access` field is enforced by the selected worker runtime. `workspace.assistant.repositoryInspection.enabled` can disable Chat Mode repository inspection for that workspace, and `excludedPaths` hides exact repository-relative path prefixes from Chat Mode reads.
+Workspace config is loaded from `DATA_ROOT/workspaces/<workspaceId>/config/workspace.jsonc`. V1 configured roots remain workspace-relative `host-dir` roots under the Workspace directory. A selected Agent may additionally bind one read-write input to a credential-free HTTPS Git source in the Workspace data-source catalog; Turn admission captures its exact commit without a NanoCore host path, and the Worker Shim materializes it at `/workspace/openkit/worktrees/main` before native start. The declared `access` field is enforced by the selected worker runtime. Authored Assistant inspection settings remain loadable as inert data; they do not authorize host reads.
 
 NanoCore creates `data/server/db/core.sqlite` on boot. The current SQLite schemas are managed by Drizzle definitions under `src/storage/schema` and native per-scope SQL journals under `drizzle/{core,user,workspace,app}`. Before first release, each scope keeps its schema in `0000_setup.sql`; later schema-changing releases append one SQL file per affected scope. See [drizzle/README.md](./drizzle/README.md) for the custom SQL creation command.
 
@@ -304,7 +276,7 @@ pnpm --filter @openkit/nanocore run test:e2e
 
 The e2e surface boots NanoCore as a process, uses fresh temporary data roots, covers empty boot, Goal planning, bounded restart read-model replay, configuration loading, migration idempotency, agent readiness diagnostics, secret redaction, and the skip-aware real Codex smoke spec.
 
-The fixed CI portability proof runs the bundled local-mode CLI in separate source and target jobs, transfers the original `.openkit-workspace.tar.zst` plus its SHA-256 and semantic oracle through one workflow artifact, verifies the archive SHA-256 across runners, compares remint-neutral Workspace semantics and complete seeded Turn history, explicitly rebinds repository and Vault references, exercises target behavior, and verifies a target re-export without treating the re-export digest as an equality oracle.
+The fixed CI portability proof runs the bundled local-mode CLI in separate source and target jobs, transfers the original `.openkit-workspace.tar.zst` plus its SHA-256 and semantic oracle through one workflow artifact, verifies the archive SHA-256 across runners, compares remint-neutral Workspace semantics and complete seeded Turn history, explicitly rebinds surviving filesystem and Vault references, exercises target behavior, and verifies a target re-export without treating the re-export digest as an equality oracle.
 
 Run the quick NanoCore e2e smoke subset with:
 
@@ -423,13 +395,12 @@ Deployment admins can edit `config/model-catalog.jsonc` in Settings Configuratio
 
 Workspace dashboard, Thread dashboard and App search resolve the current actor's Thread audience before reading dependent history or matching content. Private ownership is server-bound. Migrated private reads pass current Administrator Eligibility into `isThreadVisible` through `isThreadIdVisible`; retained route guards and the Turn event stream keep the ordinary audience check until those routes are cut over. Artifact summaries follow immutable origin; dashboard counts exclude inaccessible records. `thread.create` defaults to private, while formal Task/Goal callers request `visibility: workspace` for a new Thread. Direct Task/Goal admission never converts private history.
 
-Canonical Thread envelopes require `openkit.thread-visibility.v1`. On predecessor cutover, owner-bound Quick Chat becomes private and Threads with formal Task/Goal inception become shared. Ambiguous project history blocks startup for explicit classification; missing or contradictory current visibility fails closed. The Core route guard also checks addressed Thread paths, conversation-target queries, Turn inputs and opaque feedback/approval/Git-push lineage. Core lists and Workspace counts exclude inaccessible Threads; creation replay is actor-bound. SSE rechecks current Workspace authority, presented Token usability and audience before publication. Attention, scheduler and recovery projections admit candidate audiences before dependent reads, and generated presentations preserve Item-source audience without private-to-shared widening. Standalone Artifact delivery follows immutable origin. Explicit sharing, private-to-shared work handoff, export/import audience enforcement and remaining runtime context retrieval are still incomplete under the visibility specification.
+Canonical Thread envelopes require `openkit.thread-visibility.v1`. On predecessor cutover, owner-bound Quick Chat becomes private and Threads with formal Task/Goal inception become shared. Ambiguous project history blocks startup for explicit classification; missing or contradictory current visibility fails closed. The Core route guard also checks addressed Thread paths, conversation-target queries, Turn inputs and opaque feedback/approval lineage. Core lists and Workspace counts exclude inaccessible Threads; creation replay is actor-bound. SSE rechecks current Workspace authority, presented Token usability and audience before publication. Attention, scheduler and recovery projections admit candidate audiences before dependent reads, and generated presentations preserve Item-source audience without private-to-shared widening. Standalone Artifact delivery follows immutable origin. Explicit sharing, private-to-shared work handoff, export/import audience enforcement and remaining runtime context retrieval are still incomplete under the visibility specification.
 
-Deployment administrators can manage workspace secrets through `POST /api/app/workspaces/:workspaceId/vault/secrets`, `.../secrets/:referenceId/rotate`, and `.../secrets/:referenceId/revoke`, and ordinary gateway-only grants with no capability target or GitHub Worker runtime-env grants through `.../vault/grants` and `.../vault/grants/:grantId/revoke`. The existing repository `git.vaultGrantRef` binds only a gateway-only grant for approved host Git push. All material is request-only; reference and grant ids remain redacted lifecycle history after revocation.
+Deployment administrators can manage workspace secrets through `POST /api/app/workspaces/:workspaceId/vault/secrets`, `.../secrets/:referenceId/rotate`, and `.../secrets/:referenceId/revoke`, and ordinary gateway-only grants with no capability target or GitHub Worker runtime-env grants through `.../vault/grants` and `.../vault/grants/:grantId/revoke`. All material is request-only; reference and grant ids remain redacted lifecycle history after revocation.
 
-Deployment admins may configure `server.jsonc.policy.workspaceApprovalModes[workspaceId]["repo.push"]` as `auto_allow` for a trusted Workspace and restart the App. Missing entries require human approval. Both modes retain target-bound Approval, permission audit, and command receipt records; automatic mode returns a granted Approval without pending attention. Execution remains separate and enforces repository, Vault, and imported-authority restrictions.
+Authored `server.jsonc.policy.workspaceApprovalModes` entries for `repo.push`, including `require_human_approval` and `auto_allow`, remain parseable for configuration loadability only. They have no grant or execution consumer and do not control vendor MCP approval. Selected vendor tools retain their per-tool approval rules under [Worker MCP Tool Supply](../../docs/specs/20260704-worker_mcp_tool_supply.md) and [Pending Requests](../../docs/specs/20260930-pending_requests.md).
 
-Host Git push requests naming a completed Worker Turn create a fresh publication Turn to own approval, while preserving the source Turn and its review lineage. The Thread must be idle; exact command replay reuses the recorded approval, and incomplete publication ownership requires recovery. Worker-originated requests retain their live Turn ownership.
 
 At boot, pending requests on terminal raising Turns remain pending. Recovery settles unfinished claims as unknown and completes only missing Items on their named publication Turns after scheduler fencing. Contradictory records remain inspect-only.
 

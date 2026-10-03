@@ -32,7 +32,6 @@ import {
   createApp as createUnbackedApp,
 } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
-import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -172,13 +171,13 @@ class RecordingTurnExecutor implements TurnExecutor {
 }
 
 /**
- * Creates a scheduler-backed app with one ready repository.
+ * Creates a scheduler-backed app with an admitted Agent configuration.
  *
  * @param executor Turn executor installed in the app.
  * @param slug Stable temporary-directory label.
  * @param workerPlacement Configured scheduler placement.
  * @param manifest Exact authored Agent configuration admitted by the app.
- * @returns App, stores, databases, and repository fixture.
+ * @returns App, product store and Core database fixture.
  */
 async function createSchedulerFixture(
   executor: RecordingTurnExecutor,
@@ -204,24 +203,7 @@ async function createSchedulerFixture(
     turnExecutor: executor,
     workerPlacement,
   });
-  const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-repository-${slug}-`));
-  seedWritableGitRepository(repositoryPath);
-
-  const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-    method: 'PUT',
-    body: JSON.stringify({
-      displayName: `Turn route repository ${slug}`,
-      localPath: repositoryPath,
-    }),
-    headers: { 'content-type': 'application/json' },
-  });
-
-  if (link.status !== 200) {
-    coreDb.sqlite.close();
-    throw new Error(`Failed to link the turn route repository: ${await link.text()}`);
-  }
-
-  return { app, coreDb, repositoryPath, store };
+  return { app, coreDb, store };
 }
 
 /** Creates session authentication from one test-only user header. */
@@ -276,22 +258,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
     store,
     turnExecutor: executor,
   });
-  const repositoryPath = mkdtempSync(join(tmpdir(), `openkit-turn-shared-repository-${slug}-`));
-  seedWritableGitRepository(repositoryPath);
-  const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-    method: 'PUT',
-    body: JSON.stringify({
-      displayName: 'Shared Turn route repository',
-      localPath: repositoryPath,
-    }),
-    headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
-  });
-  if (link.status !== 200) {
-    coreDb.sqlite.close();
-    throw new Error(`Failed to link the shared turn route repository: ${await link.text()}`);
-  }
-
-  return { app, coreDb, dataRoot, repositoryPath, store };
+  return { app, coreDb, dataRoot, store };
 }
 
 /**
@@ -605,7 +572,6 @@ describe('generic turn routes', () => {
       ).toEqual([]);
     } finally {
       fixture.coreDb.sqlite.close();
-      rmSync(fixture.repositoryPath, { force: true, recursive: true });
     }
   });
 
@@ -733,7 +699,6 @@ describe('generic turn routes', () => {
       }
     } finally {
       fixture.coreDb.sqlite.close();
-      rmSync(fixture.repositoryPath, { force: true, recursive: true });
     }
   });
 
@@ -914,9 +879,15 @@ describe('generic turn routes', () => {
     }
   });
 
-  it('replays a successful turn start before revalidating mutable repository state', async () => {
+  it('replays a successful turn start before revalidating mutable Agent configuration', async () => {
     const executor = new RecordingTurnExecutor();
-    const fixture = await createSchedulerFixture(executor, 'repository-replay');
+    const manifest = createTestAgentSetup().manifest;
+    const fixture = await createSchedulerFixture(
+      executor,
+      'configuration-replay',
+      'local',
+      manifest
+    );
     const body = {
       agentId: 'agent_codex_host',
       input: 'Replay this completed turn',
@@ -932,7 +903,7 @@ describe('generic turn routes', () => {
         headers: { 'content-type': 'application/json' },
       });
       const firstTurn = TurnSchema.parse(await firstResponse.json());
-      rmSync(join(fixture.repositoryPath, '.git'), { force: true, recursive: true });
+      manifest.requiredFeatures = ['unsupported.replay.feature'];
 
       const replayResponse = await fixture.app.request('/api/turns', {
         method: 'POST',

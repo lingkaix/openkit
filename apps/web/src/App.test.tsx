@@ -260,7 +260,9 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     const destinations = screen.getByRole('group', { name: 'Sidebar shortcuts' });
     expect(destinations).toHaveClass('grid', 'min-w-0', 'grid-cols-4');
     expect(within(destinations).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
-    expect(within(destinations).getByRole('button', { name: 'Repositories' })).toBeInTheDocument();
+    expect(
+      within(destinations).queryByRole('button', { name: 'Repositories' })
+    ).not.toBeInTheDocument();
     expect(
       within(destinations).getByRole('button', { name: 'Workspace changes' })
     ).toBeInTheDocument();
@@ -270,7 +272,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     ).toBeInTheDocument();
     expect(within(destinations).getByRole('button', { name: 'Vault' })).toBeInTheDocument();
     expect(within(destinations).getByRole('button', { name: 'Usage & audit' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Repositories' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
     const settings = screen.getByRole('button', { name: 'Settings' });
     expect(settings.textContent).toBe('');
     expect(screen.getAllByRole('button', { name: 'Settings' })).toHaveLength(1);
@@ -315,10 +317,11 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
   });
 
-  it('hides Workspace Repositories without authorization while keeping its live route', async () => {
+  it('retires the Repositories route and navigation', async () => {
     await renderAt('/repositories', { workspaces: [] });
 
-    expect(await screen.findByRole('heading', { name: 'Repositories' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Not found' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Repositories' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Repositories' })).not.toBeInTheDocument();
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
   });

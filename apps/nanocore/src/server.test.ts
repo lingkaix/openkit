@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -62,11 +61,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
-import {
-  listWorkspaceAuditEvents,
-  recordServerAuditEvent,
-  recordWorkspaceAuditEvent,
-} from './audit-events.js';
+import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { createNanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
@@ -76,8 +71,6 @@ import {
 } from './bootstrap/readiness.js';
 import {
   finishCapabilityCall,
-  listWorkspaceCapabilityCalls,
-  listWorkspaceUsageRecords,
   recordUsage,
   startCapabilityCall,
 } from './capability/usage-ledger.js';
@@ -105,7 +98,6 @@ import {
   createFilesystemSnapshotManifest,
   stageFilesystemWorkspaceChanges,
 } from './runtime/filesystem-workspace-sync.js';
-import { listGitPushRecords, recordGitPushRecord } from './runtime/git-push-records.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
@@ -182,17 +174,12 @@ import {
   listVaultReferences,
   rebindWorkspaceVaultReference,
 } from './vault/vault-references.js';
-import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-records.js';
 import { createVaultInjectionPlan, listVaultInjectionPlans } from './vault-injection-plans.js';
 import {
   createVaultInjectionReceipt,
   listVaultInjectionReceipts,
 } from './vault-injection-receipts.js';
-import {
-  listWorkspaceRepositoryResources,
-  upsertWorkspaceRepositoryResource,
-} from './workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -1145,182 +1132,6 @@ function workspaceSyncReviewRouteItem(): Parameters<typeof recordWorkspaceSyncRe
   };
 }
 
-/**
- * Creates one linked Git repository and artifact-backed workspace review for route safety tests.
- *
- * @param input Review identity, patch, manifest, and repository behavior overrides.
- * @returns App, storage, repository, and review handles owned by the fixture.
- */
-async function createGitWorkspaceReviewFixture(input: {
-  readonly changedPaths?: readonly {
-    readonly binary: boolean;
-    readonly path: string;
-    readonly status: 'added' | 'modified' | 'deleted' | 'renamed' | 'mode_changed';
-  }[];
-  readonly patchText?: string;
-  readonly reviewId: string;
-  readonly stagingStrategy?: 'review-branch' | 'staging-root';
-}): Promise<{
-  readonly app: ReturnType<typeof createApp>;
-  readonly artifactId: string;
-  readonly baseCommit: string;
-  readonly coreDb: CoreDb;
-  readonly repoDir: string;
-  readonly review: Parameters<typeof recordWorkspaceSyncReview>[1]['item'];
-  readonly store: FsStore;
-  readonly workspaceId: string;
-}> {
-  const coreDb = createCoreDb();
-  const store = createDemoStore();
-  const workspace = store.createWorkspace(`Git review ${input.reviewId}`);
-  const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-  const thread = store.createThread(workspace.id, `Review ${input.reviewId}`);
-  const turn = store.createTurn(workspace.id, thread.id, `Produce ${input.reviewId}`, {
-    kind: 'user',
-    id: 'user_local',
-  });
-  const repoDir = mkdtempSync(join(tmpdir(), `openkit-${input.reviewId}-`));
-  const timestamp = new Date().toISOString();
-
-  execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-    cwd: repoDir,
-    stdio: 'ignore',
-  });
-  execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-    cwd: repoDir,
-    stdio: 'ignore',
-  });
-  writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
-  execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-  const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: repoDir,
-    encoding: 'utf8',
-  }).trim();
-  const link = await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      displayName: `Repository ${input.reviewId}`,
-      git: {
-        authorEmail: 'approver@example.invalid',
-        authorName: 'Approving Human',
-        commitOnApply: true,
-        stagingStrategy: input.stagingStrategy ?? 'staging-root',
-      },
-      localPath: repoDir,
-    }),
-    headers: { 'content-type': 'application/json' },
-  });
-
-  if (link.status !== 200) {
-    throw new Error(`Failed to link Git review fixture: ${await link.text()}`);
-  }
-
-  const artifactId = `ar_${input.reviewId}`;
-  const patchText =
-    input.patchText ??
-    'diff --git a/README.md b/README.md\n' +
-      '--- a/README.md\n' +
-      '+++ b/README.md\n' +
-      '@@ -1 +1,3 @@\n' +
-      ' # Demo\n' +
-      '+\n' +
-      `+Applied by ${input.reviewId}.`;
-  const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
-  const review = {
-    artifactId,
-    changeSet: {
-      artifactIds: [artifactId],
-      base: { commit: baseCommit, contentDigest: null },
-      bundle: null,
-      changedPaths: [
-        ...(input.changedPaths ?? [
-          { binary: false, path: 'README.md', status: 'modified' as const },
-        ]),
-      ],
-      createdAt: timestamp,
-      evidenceRefs: [{ kind: 'worker', ref: turn.id }],
-      head: { commit: 'worker-head', contentDigest: null },
-      id: `wcs_${input.reviewId}`,
-      inputSnapshotId: `wis_${input.reviewId}`,
-      materializationRecordId: `wmr_${input.reviewId}`,
-      patch: {
-        bytes: Buffer.byteLength(patchText, 'utf8'),
-        digest: patchDigest,
-        ref: 'worker-session://workspace.patch',
-      },
-      redaction: { notes: [], status: 'redacted' as const },
-      resourceId: 'repo_default',
-      strategy: 'git' as const,
-      workspaceId: workspace.id,
-    },
-    patchPayload: {
-      bytes: Buffer.byteLength(patchText, 'utf8'),
-      digest: patchDigest,
-      mediaType: 'text/x-diff' as const,
-      text: patchText,
-    },
-    review: {
-      actionCenterRowId: `workspace-review:${input.reviewId}`,
-      changeSetId: `wcs_${input.reviewId}`,
-      createdAt: timestamp,
-      diffSummary: {
-        additions: 2,
-        deletions: 0,
-        filesChanged: input.changedPaths?.length ?? 1,
-      },
-      id: input.reviewId,
-      riskSummary: 'Workspace changes require review.',
-      staging: {
-        branch:
-          (input.stagingStrategy ?? 'staging-root') === 'review-branch'
-            ? `openkit/review/${input.reviewId}`
-            : null,
-        ref: `staging://workspace/${input.reviewId}`,
-        strategy: 'git_worktree' as const,
-      },
-      status: 'pending' as const,
-      updatedAt: timestamp,
-      validation: [],
-      workspaceId: workspace.id,
-    },
-  };
-
-  store.createArtifact({
-    id: artifactId,
-    workspaceId: workspace.id,
-    threadId: thread.id,
-    turnId: turn.id,
-    kind: 'diff',
-    title: 'Workspace changes ready for review',
-    status: 'ready',
-    summary: review.review.riskSummary,
-    version: 1,
-    content: { format: 'json', body: JSON.stringify(review) },
-    contentDigest: artifactDigest(JSON.stringify(review)),
-    lastMutationRequestId: `workspace-sync-artifact-${input.reviewId}`,
-    origin: {
-      kind: 'turn-output',
-      threadId: thread.id,
-      turnId: turn.id,
-      requestId: `workspace-sync-artifact-${input.reviewId}`,
-    },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-
-  const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
-  try {
-    recordTestWorkspaceReviewMaterialization(workspaceDb, review);
-    recordWorkspaceSyncReview(workspaceDb, { item: review });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-
-  return { app, artifactId, baseCommit, coreDb, repoDir, review, store, workspaceId: workspace.id };
-}
-
 describe('nanocore server', () => {
   it('lists seeded workspaces', async () => {
     const canonicalStore = createDemoStore();
@@ -2202,25 +2013,7 @@ describe('nanocore server', () => {
       now: () => '2026-07-06T00:00:03.000Z',
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-workspace-round-trip-repo-'));
     try {
-      upsertWorkspaceRepositoryResource(sourceDb, {
-        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-        workspaceId: 'ws_demo',
-        resourceId: 'repo_round_trip',
-        displayName: 'Round trip repository',
-        localPath: repositoryPath,
-        git: {
-          allowedPushTargets: ['main'],
-          authorEmail: 'openkit@example.com',
-          authorName: 'OpenKit Bot',
-          commitOnApply: true,
-          protectedBranchPatterns: ['main', 'release/*'],
-          requireReviewLinkage: false,
-          stagingStrategy: 'review-branch',
-        },
-        now: () => '2026-07-06T00:00:03.000Z',
-      });
       recordWorkspaceAuditEvent({
         workspaceDb: sourceDb,
         auditEventId: 'aud_round_trip_source',
@@ -2294,16 +2087,6 @@ describe('nanocore server', () => {
         }),
       ])
     );
-    expect(readExportJsonl(reExportRoot, 'records/workspace-repositories.jsonl')).toEqual([
-      expect.objectContaining({
-        displayName: 'Round trip repository',
-        git: expect.objectContaining({
-          allowedPushTargets: ['main'],
-          stagingStrategy: 'review-branch',
-        }),
-        resourceId: 'repo_round_trip',
-      }),
-    ]);
     expect(readExportJsonl(reExportRoot, 'records/vault-references.jsonl')).toEqual([
       expect.objectContaining({
         backendKind: sourceReference.backendKind,
@@ -2913,148 +2696,6 @@ describe('nanocore server', () => {
     ]);
     expect(JSON.stringify(exported)).not.toContain(dataRoot);
     coreDb.sqlite.close();
-  });
-
-  it('exports and imports Git push records as line-oriented records', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-git-push-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      recordGitPushRecord(sourceDb, {
-        requestId: '00000000-0000-4000-8000-00000000d751',
-        record: {
-          actorId: 'user_local',
-          approvalRowId: null,
-          commitIds: ['abc123'],
-          createdAt: '2026-07-06T00:00:00.000Z',
-          errorSummary: null,
-          id: 'gpr_source_1',
-          outcome: 'pushed',
-          policyDecisionId: 'pd_git_push_1',
-          remoteHeadAfter: 'def456',
-          remoteHeadBefore: 'abc000',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
-          reviewIds: ['wr_review_1'],
-          sourceRef: 'HEAD',
-          targetBranch: 'main',
-          updatedAt: '2026-07-06T00:00:01.000Z',
-          workspaceId: 'ws_demo',
-        },
-      });
-    } finally {
-      sourceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    expect(exported.checkedFiles).toContain('records/git-push-records.jsonl');
-
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d752',
-      }),
-    });
-
-    expect(importRes.status).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(listGitPushRecords(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          id: 'gpr_source_1',
-          workspaceId: body.importedWorkspaceId,
-          repositoryResourceId: 'repo_default',
-          outcome: 'pushed',
-          commitIds: ['abc123'],
-          reviewIds: ['wr_review_1'],
-        }),
-      ]);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('exports and imports workspace repository resources as unbound metadata', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-repository-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const sourceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-repository-repo-'));
-    try {
-      upsertWorkspaceRepositoryResource(sourceDb, {
-        workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-        workspaceId: 'ws_demo',
-        resourceId: 'repo_default',
-        displayName: 'OpenKit source',
-        localPath: repositoryPath,
-        git: {
-          allowedPushTargets: ['main'],
-          authorEmail: 'openkit@example.com',
-          authorName: 'OpenKit Bot',
-          commitOnApply: true,
-          protectedBranchPatterns: ['main', 'release/*'],
-          requireReviewLinkage: false,
-          stagingStrategy: 'review-branch',
-        },
-        now: () => '2026-07-06T00:00:00.000Z',
-      });
-    } finally {
-      sourceDb.sqlite.close();
-    }
-    const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    expect(exported.checkedFiles).toContain('records/workspace-repositories.jsonl');
-    expect(JSON.stringify(exported)).not.toContain(dataRoot);
-
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d753',
-      }),
-    });
-
-    expect(importRes.status).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(listWorkspaceRepositoryResources(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          workspaceId: body.importedWorkspaceId,
-          resourceId: 'repo_default',
-          displayName: 'OpenKit source',
-          localPath: '',
-          diagnosticsStatus: 'missing',
-          git: {
-            allowedPushTargets: ['main'],
-            authorEmail: 'openkit@example.com',
-            authorName: 'OpenKit Bot',
-            commitOnApply: true,
-            protectedBranchPatterns: ['main', 'release/*'],
-            requireReviewLinkage: false,
-            stagingStrategy: 'review-branch',
-            vaultGrantRef: null,
-          },
-        }),
-      ]);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
   });
 
   it('exports and imports workspace sync records as line-oriented records', async () => {
@@ -4684,15 +4325,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Scheduler repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
       const res = await app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
@@ -4771,15 +4403,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task Mode repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
       const forgedLineageRes = await app.request(
         ...operationRequest(
           'task.start',
@@ -5055,10 +4678,10 @@ describe('nanocore server', () => {
         expect(
           workspaceDb.sqlite
             .prepare(
-              'SELECT COUNT(*) AS count FROM workspace_repository_resources WHERE workspace_id = ?'
+              "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_repository_resources'"
             )
-            .get('ws_demo')
-        ).toEqual({ count: 0 });
+            .all()
+        ).toEqual([]);
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -5412,14 +5035,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task receipt recovery repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Task receipt write failure');
       });
@@ -6290,15 +5905,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Task Mode review repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
       const res = await app.request(
         ...operationRequest(
           'task.start',
@@ -6336,15 +5942,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat Task Mode repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
       const res = await app.request(
         ...operationRequest(
           'conversation.submit',
@@ -6446,14 +6043,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat receipt gap repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
@@ -6559,14 +6148,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat reroute gap repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
@@ -6654,14 +6235,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat forged replay repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
       const receiptWrite = vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('simulated Chat receipt write failure');
       });
@@ -7087,461 +6660,6 @@ describe('nanocore server', () => {
     }
   });
 
-  it('answers narrow Chat Mode repository file-list questions through read-only inspection', async () => {
-    const coreDb = createCoreDb();
-    const app = createApp({ coreDb });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-repository-'));
-
-    seedWritableGitRepository(repositoryPath);
-    mkdirSync(join(repositoryPath, 'docs'));
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-    writeFileSync(join(repositoryPath, 'docs', 'guide.md'), '# Guide\n');
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat read-only repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000309',
-              input: 'List repository files.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'answered',
-        explanation: 'The Assistant answered from a read-only repository inspection.',
-        item: { type: 'assistant-message' },
-      });
-      expect(parsed.item.type === 'assistant-message' ? parsed.item.text : '').toContain(
-        'README.md'
-      );
-      expect(parsed.item.type === 'assistant-message' ? parsed.item.text : '').toContain('docs/');
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([
-          expect.objectContaining({
-            capabilityId: 'assistant.repository.read',
-            family: 'workspace',
-            operation: 'repository.root_list',
-            requestId: '0190f4c8-0000-7000-8000-000000000309',
-            status: 'succeeded',
-            threadId: 'th_demo',
-          }),
-        ]);
-        expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([
-          expect.objectContaining({
-            action: 'capability.finish',
-            category: 'capability',
-            outcome: 'succeeded',
-            resource: 'capability:assistant.repository.read',
-          }),
-        ]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('refuses Chat Mode repository inspection when workspace policy disables it', async () => {
-    const coreDb = createCoreDb();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-policy-repository-'));
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: coreDb.dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        dataRoot: coreDb.dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: testProviderRegistry(),
-        workspaceConfigs: [
-          {
-            workspaceId: 'ws_demo',
-            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
-            config: {
-              schemaVersion: 1,
-              workspace: {
-                name: 'Demo Workspace',
-                assistant: {
-                  repositoryInspection: {
-                    enabled: false,
-                  },
-                },
-              },
-            },
-          },
-        ],
-      }),
-    });
-    const app = createApp({ coreDb, runtimeConfigManager });
-
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat policy repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000312',
-              input: 'List repository files.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status, await res.clone().text()).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'Workspace policy disables Chat Mode repository inspection.',
-        item: {
-          summary: 'Workspace policy disables Chat Mode repository inspection.',
-          type: 'status',
-        },
-      });
-      expect(JSON.stringify(parsed)).not.toContain('README.md');
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('applies Chat Mode repository inspection path exclusions from workspace policy', async () => {
-    const coreDb = createCoreDb();
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-policy-exclusions-'));
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: coreDb.dataRoot,
-      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
-        dataRoot: coreDb.dataRoot,
-        gatewayConfig: createTestGatewayConfig(),
-        providerRegistry: testProviderRegistry(),
-        workspaceConfigs: [
-          {
-            workspaceId: 'ws_demo',
-            path: join(coreDb.dataRoot, 'workspaces', 'ws_demo', 'config', 'workspace.jsonc'),
-            config: {
-              schemaVersion: 1,
-              workspace: {
-                name: 'Demo Workspace',
-                assistant: {
-                  repositoryInspection: {
-                    excludedPaths: ['docs'],
-                  },
-                },
-              },
-            },
-          },
-        ],
-      }),
-    });
-    const app = createApp({ coreDb, runtimeConfigManager });
-
-    mkdirSync(join(repositoryPath, 'docs'));
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-    writeFileSync(join(repositoryPath, 'docs', 'guide.md'), '# Guide\n');
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat policy exclusions repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const listRes = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000313',
-              input: 'List repository files.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-      const readRes = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000314',
-              input: 'Read repository file docs/guide.md.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(listRes.status, await listRes.clone().text()).toBe(202);
-      const listParsed = SubmitConversationResponseSchema.parse(await listRes.json());
-      const listText = listParsed.item.type === 'assistant-message' ? listParsed.item.text : '';
-
-      expect(listText).toContain('README.md');
-      expect(listText).not.toContain('docs/');
-
-      expect(readRes.status).toBe(202);
-      const readParsed = SubmitConversationResponseSchema.parse(await readRes.json());
-
-      expect(readParsed).toMatchObject({
-        outcome: 'refused',
-        explanation: 'Workspace policy excludes that repository path from Chat Mode inspection.',
-        item: {
-          summary: 'Workspace policy excludes that repository path from Chat Mode inspection.',
-          type: 'status',
-        },
-      });
-      expect(JSON.stringify(readParsed)).not.toContain('Guide');
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('answers narrow Chat Mode repository directory file-list questions through bounded read-only inspection', async () => {
-    const coreDb = createCoreDb();
-    const app = createApp({ coreDb });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-dir-repository-'));
-
-    seedWritableGitRepository(repositoryPath);
-    mkdirSync(join(repositoryPath, 'docs'));
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-    writeFileSync(join(repositoryPath, 'docs', 'guide.md'), '# Guide\n');
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat read-only directory repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000310',
-              input: 'List repository files in docs.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-      const text = parsed.item.type === 'assistant-message' ? parsed.item.text : '';
-
-      expect(parsed).toMatchObject({
-        outcome: 'answered',
-        explanation: 'The Assistant answered from a read-only repository inspection.',
-        item: { type: 'assistant-message' },
-      });
-      expect(text).toContain('Repository docs/ entries:');
-      expect(text).toContain('guide.md');
-      expect(text).not.toContain('README.md');
-      expect(text).not.toContain(repositoryPath);
-      expect(text).not.toContain('.git');
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([
-          expect.objectContaining({
-            capabilityId: 'assistant.repository.read',
-            family: 'workspace',
-            operation: 'repository.directory_list',
-            requestId: '0190f4c8-0000-7000-8000-000000000310',
-            status: 'succeeded',
-            threadId: 'th_demo',
-          }),
-        ]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('answers narrow Chat Mode repository file-read questions through bounded read-only inspection', async () => {
-    const coreDb = createCoreDb();
-    const app = createApp({ coreDb });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-file-repository-'));
-
-    seedWritableGitRepository(repositoryPath);
-    mkdirSync(join(repositoryPath, 'docs'));
-    writeFileSync(
-      join(repositoryPath, 'docs', 'guide.md'),
-      '# Guide\n\nThis file proves safe Chat Mode reads.\n\nsk-openkit-secret\n'
-    );
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat read-only file repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000311',
-              input: 'Read repository file docs/guide.md.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-      const text = parsed.item.type === 'assistant-message' ? parsed.item.text : '';
-
-      expect(parsed).toMatchObject({
-        outcome: 'answered',
-        explanation: 'The Assistant answered from a read-only repository inspection.',
-        item: { type: 'assistant-message' },
-      });
-      expect(text).toContain('Repository file docs/guide.md:');
-      expect(text).toContain('This file proves safe Chat Mode reads.');
-      expect(text).toContain('[redacted]');
-      expect(text).not.toContain('sk-openkit-secret');
-      expect(text).not.toContain(repositoryPath);
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo')).toEqual([
-          expect.objectContaining({
-            capabilityId: 'assistant.repository.read',
-            family: 'workspace',
-            operation: 'repository.file_read',
-            requestId: '0190f4c8-0000-7000-8000-000000000311',
-            status: 'succeeded',
-            threadId: 'th_demo',
-          }),
-        ]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('does not route mutating Chat Mode repository requests through read-only inspection', async () => {
-    const coreDb = createCoreDb();
-    const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-chat-readonly-boundary-'));
-
-    seedWritableGitRepository(repositoryPath);
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-
-    try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Chat read-only boundary repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-
-      const res = await app.request(
-        ...operationRequest(
-          'conversation.submit',
-          { workspaceId: 'ws_demo', threadId: 'th_demo' },
-          {
-            method: 'POST',
-            body: conversationRequest({
-              requestId: '0190f4c8-0000-7000-8000-000000000315',
-              input: 'Delete repository file README.md.',
-            }),
-            headers: { 'content-type': 'application/json' },
-          }
-        )
-      );
-
-      expect(res.status).toBe(202);
-      const parsed = SubmitConversationResponseSchema.parse(await res.json());
-
-      expect(parsed).toMatchObject({
-        outcome: 'task-handoff',
-        handoff: { targetMode: 'task' },
-      });
-      expect(JSON.stringify(parsed)).not.toContain('# Demo');
-      expect(executor.startContexts).toHaveLength(1);
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-      try {
-        expect(
-          listWorkspaceCapabilityCalls(workspaceDb, 'ws_demo').filter(
-            (call) => call.capabilityId === 'assistant.repository.read'
-          )
-        ).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
   it('refuses Chat Mode worker handoff when no worker candidate is ready', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
@@ -7806,16 +6924,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const link = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Model override repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      expect(link.status).toBe(200);
-
       const res = await app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify({
@@ -8213,15 +7321,6 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Idempotent turn repository',
-          localPath: repositoryPath,
-        }),
-        headers: jsonHeaders(),
-      });
-
       const first = app.request('/api/turns', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -8287,12 +7386,6 @@ describe('nanocore server', () => {
     };
 
     seedWritableGitRepository(repositoryPath);
-    upsertWorkspaceRepositoryResource(workspaceDb, {
-      workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-      workspaceId: 'ws_demo',
-      displayName: 'Active turn steering repository',
-      localPath: repositoryPath,
-    });
 
     try {
       const first = await app.request('/api/turns', {
@@ -9333,6 +8426,7 @@ describe('nanocore server', () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
     const workspace = store.createWorkspace('AEP snapshot readback');
+    const thread = store.createThread(workspace.id, 'AEP snapshot readback');
     const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const createdAt = '2026-07-06T00:00:01.000Z';
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
@@ -9347,7 +8441,7 @@ describe('nanocore server', () => {
         turn: {
           id: 'turn_aep_readback',
           workspaceId: workspace.id,
-          threadId: 'th_aep_readback',
+          threadId: thread.id,
           items: [],
           status: 'running',
           error: null,
@@ -10174,672 +9268,6 @@ describe('nanocore server', () => {
     expect(store.listKnowledgeProposals('ws_demo')).toEqual([]);
   });
 
-  it('applies accepted workspace synchronization review patches to the linked repository', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Workspace sync apply');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    const thread = store.createThread(workspace.id, 'Apply workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    const repoDir = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-'));
-    const timestamp = new Date().toISOString();
-
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    }).trim();
-    writeFileSync(join(repoDir, 'unrelated.txt'), 'Keep staged for the user.\n', 'utf8');
-    execFileSync('git', ['add', 'unrelated.txt'], { cwd: repoDir, stdio: 'ignore' });
-
-    const linkRes = await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        displayName: 'Apply fixture',
-        git: {
-          authorEmail: 'approver@example.invalid',
-          authorName: 'Approving Human',
-          commitOnApply: true,
-        },
-        localPath: repoDir,
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-    const patchText =
-      'diff --git a/README.md b/README.md\n' +
-      'index 07968ad..d2a9336 100644\n' +
-      '--- a/README.md\n' +
-      '+++ b/README.md\n' +
-      '@@ -1 +1,3 @@\n' +
-      ' # Demo\n' +
-      '+\n' +
-      '+Applied by NanoCore.';
-    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
-    const workspaceReview = {
-      changeSet: {
-        id: 'wcs_apply_1',
-        materializationRecordId: 'wmr_apply_1',
-        inputSnapshotId: 'wis_apply_1',
-        workspaceId: workspace.id,
-        resourceId: 'repo_default',
-        strategy: 'git',
-        base: { commit: baseCommit, contentDigest: null },
-        head: { commit: 'def456', contentDigest: null },
-        changedPaths: [{ path: 'README.md', status: 'modified', binary: false }],
-        patch: {
-          ref: 'worker-session://workspace.patch',
-          digest: patchDigest,
-          bytes: Buffer.byteLength(patchText, 'utf8'),
-        },
-        bundle: null,
-        artifactIds: ['ar_workspace_apply_1'],
-        evidenceRefs: [{ kind: 'worker', ref: turn.id }],
-        redaction: { status: 'redacted', notes: [] },
-        createdAt: timestamp,
-      },
-      patchPayload: {
-        mediaType: 'text/x-diff',
-        text: patchText,
-        digest: patchDigest,
-        bytes: Buffer.byteLength(patchText, 'utf8'),
-      },
-      review: {
-        id: 'swr_apply_1',
-        changeSetId: 'wcs_apply_1',
-        workspaceId: workspace.id,
-        status: 'pending',
-        staging: {
-          strategy: 'git_worktree',
-          ref: 'staging://workspace/wcs_apply_1',
-          branch: null,
-        },
-        diffSummary: { filesChanged: 1, additions: 2, deletions: 0 },
-        riskSummary: '1 changed path staged for human review.',
-        validation: [],
-        actionCenterRowId: 'workspace-review:swr_apply_1',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    };
-
-    store.createArtifact({
-      id: 'ar_workspace_apply_1',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'diff',
-      title: 'Workspace changes ready for review',
-      status: 'ready',
-      summary: workspaceReview.review.riskSummary,
-      version: 1,
-      content: { format: 'json', body: JSON.stringify(workspaceReview) },
-      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
-      lastMutationRequestId: 'workspace-apply-artifact-1',
-      origin: {
-        kind: 'turn-output',
-        threadId: thread.id,
-        turnId: turn.id,
-        requestId: 'workspace-apply-artifact-1',
-      },
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-
-    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
-    try {
-      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
-      recordWorkspaceSyncReview(workspaceDb, {
-        item: { ...workspaceReview, artifactId: 'ar_workspace_apply_1' },
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-
-    expect(linkRes.status).toBe(200);
-
-    const acceptRes = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_apply_1/decision`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'workspace-apply-request-1',
-          decision: 'accepted',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
-    );
-
-    expect(acceptRes.status, await acceptRes.clone().text()).toBe(200);
-    await expect(acceptRes.json()).resolves.toMatchObject({
-      workspaceApplyResult: {
-        status: 'applied',
-        appliedPaths: ['README.md'],
-        reviewId: 'swr_apply_1',
-      },
-    });
-    expect(readFileSync(join(repoDir, 'README.md'), 'utf8')).toBe(
-      '# Demo\n\nApplied by NanoCore.\n'
-    );
-    const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    }).trim();
-    const commitMessage = execFileSync('git', ['log', '-1', '--format=%B'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    });
-    const commitAuthor = execFileSync('git', ['log', '-1', '--format=%an <%ae>'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    }).trim();
-    expect(commitAuthor).toBe('Approving Human <approver@example.invalid>');
-    expect(commitMessage).toContain('OpenKit-Review-Id: swr_apply_1');
-    expect(commitMessage).toContain(`OpenKit-Workspace-Id: ${workspace.id}`);
-    expect(commitMessage).toContain(
-      'Co-Authored-By: OpenKit Agent agent_codex_host <agent_codex_host@agents.openkit.invalid>'
-    );
-    expect(
-      execFileSync('git', ['show', '--pretty=', '--name-only', 'HEAD'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      }).trim()
-    ).toBe('README.md');
-    expect(
-      execFileSync('git', ['diff', '--cached', '--name-only'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      }).trim()
-    ).toBe('unrelated.txt');
-
-    const reviewDb = openTestWorkspaceDb(coreDb, workspace.id);
-    try {
-      expect(getWorkspaceSyncReview(reviewDb, workspace.id, 'swr_apply_1')?.review.status).toBe(
-        'accepted'
-      );
-    } finally {
-      reviewDb.sqlite.close();
-    }
-
-    const listApplyResults = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results`
-    );
-    const listApplyPlans = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-plans`
-    );
-    const reconciliationDb = openWorkspaceDb(coreDb.dataRoot, workspace.id);
-    try {
-      recordWorkspaceReconciliationRecord(reconciliationDb, {
-        id: 'wrr_swr_apply_1',
-        workspaceId: workspace.id,
-        triggerReason: 'restart',
-        affectedRecordIds: ['wmr_wcs_apply_1', 'bwh_wmr_wcs_apply_1'],
-        backendHandleSummary: {
-          backendKind: 'openshell',
-          handleId: 'bwh_wmr_wcs_apply_1',
-          workerSessionId: null,
-          cleanupStatus: 'pending',
-        },
-        backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
-        collectedOutputManifestIds: [],
-        evidenceBundleIds: [],
-        stateBefore: 'ready',
-        stateAfter: 'requires-human',
-        quarantineRefs: [],
-        requiredHumanDecision: 'inspect_recovery',
-        retentionDecision: 'retain-backend',
-        startedAt: timestamp,
-        finishedAt: null,
-      });
-      recordWorkspaceQuarantineRecord(reconciliationDb, {
-        id: 'wqr_swr_apply_1',
-        workspaceId: workspace.id,
-        lifecycleRecordIds: ['wrr_swr_apply_1', 'wom_wcs_apply_1'],
-        failureKind: 'digest_mismatch',
-        storageRef: 'quarantine/workspace-sync/wqr_swr_apply_1',
-        retentionClass: 'restricted-evidence',
-        requiredHumanDecision: 'inspect_quarantined_output',
-        resolution: 'pending',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        resolvedAt: null,
-      });
-    } finally {
-      reconciliationDb.sqlite.close();
-    }
-    const listReconciliations = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records`
-    );
-    const listQuarantines = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/quarantine-records`
-    );
-    const listSyncEvidenceBundles = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/evidence-bundles`
-    );
-    const readApplyResult = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results/war_swr_apply_1`
-    );
-    const restartedApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    const persistedApplyResult = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results/war_swr_apply_1`
-    );
-
-    expect(listApplyResults.status).toBe(200);
-    await expect(listApplyResults.json()).resolves.toMatchObject({
-      items: [
-        {
-          id: 'war_swr_apply_1',
-          reviewId: 'swr_apply_1',
-          status: 'applied',
-          commitIds: [commitId],
-        },
-      ],
-    });
-    expect(listApplyPlans.status).toBe(200);
-    await expect(listApplyPlans.json()).resolves.toMatchObject({
-      items: [
-        {
-          id: 'wap_swr_apply_1',
-          reviewId: 'swr_apply_1',
-          changeSetId: 'wcs_apply_1',
-          approvalState: 'approved',
-          plannedWrites: ['README.md'],
-        },
-      ],
-    });
-    expect(listReconciliations.status).toBe(200);
-    await expect(listReconciliations.json()).resolves.toMatchObject({
-      items: [
-        {
-          id: 'wrr_swr_apply_1',
-          triggerReason: 'restart',
-          stateBefore: 'ready',
-          stateAfter: 'requires-human',
-          retentionDecision: 'retain-backend',
-        },
-      ],
-    });
-    expect(listQuarantines.status).toBe(200);
-    await expect(listQuarantines.json()).resolves.toMatchObject({
-      items: [
-        {
-          id: 'wqr_swr_apply_1',
-          lifecycleRecordIds: ['wrr_swr_apply_1', 'wom_wcs_apply_1'],
-          failureKind: 'digest_mismatch',
-          storageRef: 'quarantine/workspace-sync/wqr_swr_apply_1',
-          resolution: 'pending',
-        },
-      ],
-    });
-    expect(listSyncEvidenceBundles.status).toBe(404);
-    expect(readApplyResult.status).toBe(200);
-    await expect(readApplyResult.json()).resolves.toMatchObject({
-      id: 'war_swr_apply_1',
-      changeSetId: 'wcs_apply_1',
-      appliedPaths: ['README.md'],
-      commitIds: [commitId],
-    });
-    expect(persistedApplyResult.status).toBe(200);
-    await expect(persistedApplyResult.json()).resolves.toMatchObject({
-      id: 'war_swr_apply_1',
-      reviewId: 'swr_apply_1',
-      commitIds: [commitId],
-    });
-  });
-
-  it('rejects a workspace review when the repository head drifted from its base', async () => {
-    const fixture = await createGitWorkspaceReviewFixture({ reviewId: 'swr_base_drift' });
-
-    try {
-      writeFileSync(join(fixture.repoDir, 'drift.txt'), 'Repository advanced.\n', 'utf8');
-      execFileSync('git', ['add', 'drift.txt'], { cwd: fixture.repoDir, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'advance repository'], {
-        cwd: fixture.repoDir,
-        stdio: 'ignore',
-      });
-      const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: fixture.repoDir,
-        encoding: 'utf8',
-      }).trim();
-      const statusBefore = execFileSync('git', ['status', '--short'], {
-        cwd: fixture.repoDir,
-        encoding: 'utf8',
-      });
-
-      const response = await fixture.app.request(
-        `/api/app/workspaces/${fixture.workspaceId}/workspace-sync/reviews/${fixture.review.review.id}/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId: 'base-drift-1', decision: 'accepted' }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(response.status).not.toBe(200);
-      expect(
-        execFileSync('git', ['rev-parse', 'HEAD'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe(headBefore);
-      expect(
-        execFileSync('git', ['status', '--short'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        })
-      ).toBe(statusBefore);
-      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
-      const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
-      try {
-        expect(
-          getWorkspaceSyncReview(workspaceDb, fixture.workspaceId, fixture.review.review.id)?.review
-            .status
-        ).toBe('pending');
-        expect(listWorkspaceApplyPlans(workspaceDb, fixture.workspaceId)).toHaveLength(1);
-        expect(listWorkspaceApplyResults(workspaceDb, fixture.workspaceId)).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      fixture.coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects a workspace patch whose paths differ from its declared manifest', async () => {
-    const patchText =
-      'diff --git a/README.md b/README.md\n' +
-      '--- a/README.md\n' +
-      '+++ b/README.md\n' +
-      '@@ -1 +1,3 @@\n' +
-      ' # Demo\n' +
-      '+\n' +
-      '+Declared change.\n' +
-      'diff --git a/extra.txt b/extra.txt\n' +
-      'new file mode 100644\n' +
-      '--- /dev/null\n' +
-      '+++ b/extra.txt\n' +
-      '@@ -0,0 +1 @@\n' +
-      '+Undeclared change.';
-    const fixture = await createGitWorkspaceReviewFixture({
-      patchText,
-      reviewId: 'swr_path_mismatch',
-    });
-
-    try {
-      const response = await fixture.app.request(
-        `/api/app/workspaces/${fixture.workspaceId}/workspace-sync/reviews/${fixture.review.review.id}/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId: 'path-mismatch-1', decision: 'accepted' }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(response.status).not.toBe(200);
-      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
-      expect(() => readFileSync(join(fixture.repoDir, 'extra.txt'), 'utf8')).toThrow();
-      expect(
-        execFileSync('git', ['rev-parse', 'HEAD'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe(fixture.baseCommit);
-      expect(
-        execFileSync('git', ['status', '--short'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        })
-      ).toBe('');
-      const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
-      try {
-        expect(
-          getWorkspaceSyncReview(workspaceDb, fixture.workspaceId, fixture.review.review.id)?.review
-            .status
-        ).toBe('pending');
-        expect(listWorkspaceApplyPlans(workspaceDb, fixture.workspaceId)).toHaveLength(1);
-        expect(listWorkspaceApplyResults(workspaceDb, fixture.workspaceId)).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-    } finally {
-      fixture.coreDb.sqlite.close();
-    }
-  });
-
-  it('restores Git state when accepted review persistence fails', async () => {
-    const fixture = await createGitWorkspaceReviewFixture({ reviewId: 'swr_persist_rollback' });
-    writeFileSync(join(fixture.repoDir, 'unrelated.txt'), 'Keep staged.\n', 'utf8');
-    execFileSync('git', ['add', 'unrelated.txt'], { cwd: fixture.repoDir, stdio: 'ignore' });
-    const statusBefore = execFileSync('git', ['status', '--short'], {
-      cwd: fixture.repoDir,
-      encoding: 'utf8',
-    });
-    const workspaceDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
-    try {
-      workspaceDb.sqlite.exec(`CREATE TRIGGER fail_workspace_apply_result
-        BEFORE INSERT ON workspace_apply_results
-        BEGIN
-          SELECT RAISE(FAIL, 'apply result persistence failed');
-        END;`);
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-
-    try {
-      const response = await fixture.app.request(
-        `/api/app/workspaces/${fixture.workspaceId}/workspace-sync/reviews/${fixture.review.review.id}/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({ requestId: 'persist-rollback-1', decision: 'accepted' }),
-          headers: { 'content-type': 'application/json' },
-        }
-      );
-
-      expect(response.status).not.toBe(200);
-      expect(
-        execFileSync('git', ['rev-parse', 'HEAD'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe(fixture.baseCommit);
-      expect(readFileSync(join(fixture.repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
-      expect(
-        execFileSync('git', ['status', '--short'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        })
-      ).toBe(statusBefore);
-      expect(
-        execFileSync('git', ['diff', '--cached', '--name-only'], {
-          cwd: fixture.repoDir,
-          encoding: 'utf8',
-        }).trim()
-      ).toBe('unrelated.txt');
-      const persistedDb = openTestWorkspaceDb(fixture.coreDb, fixture.workspaceId);
-      try {
-        expect(
-          getWorkspaceSyncReview(persistedDb, fixture.workspaceId, fixture.review.review.id)?.review
-            .status
-        ).toBe('pending');
-        expect(listWorkspaceApplyPlans(persistedDb, fixture.workspaceId)).toHaveLength(1);
-        expect(listWorkspaceApplyResults(persistedDb, fixture.workspaceId)).toEqual([]);
-      } finally {
-        persistedDb.sqlite.close();
-      }
-    } finally {
-      fixture.coreDb.sqlite.close();
-    }
-  });
-
-  it('rolls back accepted workspace synchronization review patches when commit identity is missing', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Workspace sync rollback');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    const thread = store.createThread(workspace.id, 'Rollback workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce workspace patch', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const repoDir = mkdtempSync(join(tmpdir(), 'openkit-workspace-rollback-'));
-    const timestamp = new Date().toISOString();
-
-    execFileSync('git', ['init'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-      cwd: repoDir,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repoDir, 'README.md'), '# Demo\n', 'utf8');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoDir, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoDir, stdio: 'ignore' });
-    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repoDir,
-      encoding: 'utf8',
-    }).trim();
-
-    await app.request(`/api/app/workspaces/${workspace.id}/repositories/default`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        displayName: 'Rollback fixture',
-        git: { authorEmail: null, authorName: null, commitOnApply: true },
-        localPath: repoDir,
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-    const patchText =
-      'diff --git a/README.md b/README.md\n' +
-      'index 07968ad..6ed4c95 100644\n' +
-      '--- a/README.md\n' +
-      '+++ b/README.md\n' +
-      '@@ -1 +1,3 @@\n' +
-      ' # Demo\n' +
-      '+\n' +
-      '+Should roll back.';
-    const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
-    const workspaceReview = {
-      changeSet: {
-        id: 'wcs_rollback_1',
-        materializationRecordId: 'wmr_rollback_1',
-        inputSnapshotId: 'wis_rollback_1',
-        workspaceId: workspace.id,
-        resourceId: 'repo_default',
-        strategy: 'git',
-        base: { commit: baseCommit, contentDigest: null },
-        head: { commit: 'def456', contentDigest: null },
-        changedPaths: [{ path: 'README.md', status: 'modified', binary: false }],
-        patch: {
-          ref: 'worker-session://workspace.patch',
-          digest: patchDigest,
-          bytes: Buffer.byteLength(patchText, 'utf8'),
-        },
-        bundle: null,
-        artifactIds: ['ar_workspace_rollback_1'],
-        evidenceRefs: [{ kind: 'worker', ref: turn.id }],
-        redaction: { status: 'redacted', notes: [] },
-        createdAt: timestamp,
-      },
-      patchPayload: {
-        mediaType: 'text/x-diff',
-        text: patchText,
-        digest: patchDigest,
-        bytes: Buffer.byteLength(patchText, 'utf8'),
-      },
-      review: {
-        id: 'swr_rollback_1',
-        changeSetId: 'wcs_rollback_1',
-        workspaceId: workspace.id,
-        status: 'pending',
-        staging: {
-          strategy: 'git_worktree',
-          ref: 'staging://workspace/wcs_rollback_1',
-          branch: null,
-        },
-        diffSummary: { filesChanged: 1, additions: 2, deletions: 0 },
-        riskSummary: '1 changed path staged for human review.',
-        validation: [],
-        actionCenterRowId: 'workspace-review:swr_rollback_1',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    };
-
-    store.createArtifact({
-      id: 'ar_workspace_rollback_1',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      kind: 'diff',
-      title: 'Workspace changes ready for review',
-      status: 'ready',
-      summary: workspaceReview.review.riskSummary,
-      version: 1,
-      content: { format: 'json', body: JSON.stringify(workspaceReview) },
-      contentDigest: artifactDigest(JSON.stringify(workspaceReview)),
-      lastMutationRequestId: 'workspace-rollback-artifact-1',
-      origin: {
-        kind: 'turn-output',
-        threadId: thread.id,
-        turnId: turn.id,
-        requestId: 'workspace-rollback-artifact-1',
-      },
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-
-    const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
-    try {
-      recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReview);
-      recordWorkspaceSyncReview(workspaceDb, {
-        item: { ...workspaceReview, artifactId: 'ar_workspace_rollback_1' },
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-
-    const acceptRes = await app.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_rollback_1/decision`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'workspace-rollback-request-1',
-          decision: 'accepted',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
-    );
-
-    expect(acceptRes.status, await acceptRes.clone().text()).toBe(404);
-    await expect(acceptRes.json()).resolves.toMatchObject({
-      message: 'Workspace repository has no Git identity: swr_rollback_1',
-    });
-    expect(readFileSync(join(repoDir, 'README.md'), 'utf8')).toBe('# Demo\n');
-    expect(execFileSync('git', ['status', '--short'], { cwd: repoDir, encoding: 'utf8' })).toBe('');
-    expect(
-      execFileSync('git', ['rev-list', '--count', 'HEAD'], {
-        cwd: repoDir,
-        encoding: 'utf8',
-      }).trim()
-    ).toBe('1');
-  });
-
   it('applies accepted filesystem workspace synchronization reviews through opaque staging', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore();
@@ -10985,9 +9413,15 @@ describe('nanocore server', () => {
       `/api/app/workspaces/${workspace.id}/workspace-sync/apply-plans`
     );
 
+    const listApplyResults = await restartedApp.request(
+      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results`
+    );
+
     expect(readApplyResult.status).toBe(200);
     await expect(readApplyResult.json()).resolves.toMatchObject({
       id: 'war_swr_filesystem_apply_1',
+      changeSetId: 'wcs_filesystem_apply_1',
+      appliedPaths: ['docs/guide.md', 'new.txt', 'old.txt', 'script.sh'],
       status: 'applied',
     });
     expect(listApplyPlans.status).toBe(200);
@@ -10996,11 +9430,107 @@ describe('nanocore server', () => {
         {
           id: 'wap_swr_filesystem_apply_1',
           reviewId: 'swr_filesystem_apply_1',
+          changeSetId: 'wcs_filesystem_apply_1',
+          approvalState: 'approved',
           strategy: 'filesystem',
           permissionChanges: ['script.sh'],
           plannedWrites: ['docs/guide.md', 'new.txt', 'old.txt', 'script.sh'],
         },
       ],
+    });
+    const reconciliationDb = openWorkspaceDb(coreDb.dataRoot, workspace.id);
+    try {
+      recordWorkspaceReconciliationRecord(reconciliationDb, {
+        id: 'wrr_swr_filesystem_apply_1',
+        workspaceId: workspace.id,
+        triggerReason: 'restart',
+        affectedRecordIds: ['wmr_filesystem_apply_1', 'bwh_wmr_filesystem_apply_1'],
+        backendHandleSummary: {
+          backendKind: 'openshell',
+          handleId: 'bwh_wmr_filesystem_apply_1',
+          workerSessionId: null,
+          cleanupStatus: 'pending',
+        },
+        backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
+        collectedOutputManifestIds: [],
+        evidenceBundleIds: [],
+        stateBefore: 'ready',
+        stateAfter: 'requires-human',
+        quarantineRefs: [],
+        requiredHumanDecision: 'inspect_recovery',
+        retentionDecision: 'retain-backend',
+        startedAt: timestamp,
+        finishedAt: null,
+      });
+      recordWorkspaceQuarantineRecord(reconciliationDb, {
+        id: 'wqr_swr_filesystem_apply_1',
+        workspaceId: workspace.id,
+        lifecycleRecordIds: ['wrr_swr_filesystem_apply_1', 'wom_wcs_filesystem_apply_1'],
+        failureKind: 'digest_mismatch',
+        storageRef: 'quarantine/workspace-sync/wqr_swr_filesystem_apply_1',
+        retentionClass: 'restricted-evidence',
+        requiredHumanDecision: 'inspect_quarantined_output',
+        resolution: 'pending',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        resolvedAt: null,
+      });
+    } finally {
+      reconciliationDb.sqlite.close();
+    }
+    const listReconciliations = await restartedApp.request(
+      `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records`
+    );
+    const listQuarantines = await restartedApp.request(
+      `/api/app/workspaces/${workspace.id}/workspace-sync/quarantine-records`
+    );
+    const listSyncEvidenceBundles = await restartedApp.request(
+      `/api/app/workspaces/${workspace.id}/workspace-sync/evidence-bundles`
+    );
+    const postApplicationApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const persistedApplyResult = await postApplicationApp.request(
+      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results/war_swr_filesystem_apply_1`
+    );
+
+    expect(listApplyResults.status).toBe(200);
+    await expect(listApplyResults.json()).resolves.toMatchObject({
+      items: [
+        {
+          id: 'war_swr_filesystem_apply_1',
+          reviewId: 'swr_filesystem_apply_1',
+          status: 'applied',
+        },
+      ],
+    });
+    expect(listReconciliations.status).toBe(200);
+    await expect(listReconciliations.json()).resolves.toMatchObject({
+      items: [
+        {
+          id: 'wrr_swr_filesystem_apply_1',
+          triggerReason: 'restart',
+          stateBefore: 'ready',
+          stateAfter: 'requires-human',
+          retentionDecision: 'retain-backend',
+        },
+      ],
+    });
+    expect(listQuarantines.status).toBe(200);
+    await expect(listQuarantines.json()).resolves.toMatchObject({
+      items: [
+        {
+          id: 'wqr_swr_filesystem_apply_1',
+          lifecycleRecordIds: ['wrr_swr_filesystem_apply_1', 'wom_wcs_filesystem_apply_1'],
+          failureKind: 'digest_mismatch',
+          storageRef: 'quarantine/workspace-sync/wqr_swr_filesystem_apply_1',
+          resolution: 'pending',
+        },
+      ],
+    });
+    expect(listSyncEvidenceBundles.status).toBe(404);
+    expect(persistedApplyResult.status).toBe(200);
+    await expect(persistedApplyResult.json()).resolves.toMatchObject({
+      id: 'war_swr_filesystem_apply_1',
+      reviewId: 'swr_filesystem_apply_1',
     });
   });
 
@@ -11211,999 +9741,6 @@ describe('nanocore server', () => {
           .prepare('SELECT scheduler_epoch AS schedulerEpoch FROM scheduler_session_leases')
           .get()
       ).toEqual({ schedulerEpoch: 12 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('lists and reads workspace Git push records through the App API', async () => {
-    const coreDb = createCoreDb();
-    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-
-    try {
-      recordGitPushRecord(workspaceDb, {
-        requestId: '00000000-0000-4000-8000-000000000023',
-        record: {
-          actorId: 'user_1',
-          approvalRowId: 'har_1',
-          commitIds: ['abc123'],
-          createdAt: '2026-07-05T00:00:00.000Z',
-          errorSummary: null,
-          id: 'gpr_route_1',
-          outcome: 'pushed',
-          policyDecisionId: 'pd_1',
-          remoteHeadAfter: 'abc123',
-          remoteHeadBefore: 'def456',
-          remoteSummary: 'GitHub repository openkit on origin',
-          repositoryResourceId: 'repo_default',
-          reviewIds: ['swr_1'],
-          sourceRef: 'HEAD',
-          targetBranch: 'main',
-          updatedAt: '2026-07-05T00:00:00.000Z',
-          workspaceId: 'ws_demo',
-        },
-      });
-
-      const listRes = await app.request(
-        '/api/app/workspaces/ws_demo/repositories/git-push-records'
-      );
-      const readRes = await app.request(
-        '/api/app/workspaces/ws_demo/repositories/git-push-records/gpr_route_1'
-      );
-
-      expect(listRes.status).toBe(200);
-      await expect(listRes.json()).resolves.toMatchObject({
-        items: [
-          {
-            id: 'gpr_route_1',
-            commitIds: ['abc123'],
-            outcome: 'pushed',
-            repositoryResourceId: 'repo_default',
-          },
-        ],
-      });
-      expect(readRes.status).toBe(200);
-      await expect(readRes.json()).resolves.toMatchObject({
-        id: 'gpr_route_1',
-        reviewIds: ['swr_1'],
-        targetBranch: 'main',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    undefined,
-    'require_human_approval',
-    'auto_allow',
-  ] as const)('requests Git push authority with %s through the App API', async (mode) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Git push approval');
-    const app = createApp({
-      coreDb,
-      store,
-      turnExecutor: new FakeTurnExecutor(),
-      openKitConfig: {
-        policy: {
-          workspaceApprovalModes:
-            mode === undefined
-              ? { ws_other: { 'repo.push': 'auto_allow' } }
-              : { [workspace.id]: { 'repo.push': mode } },
-        },
-      },
-    });
-    const thread = store.createThread(workspace.id, 'Publish accepted work');
-    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-approval-repository-'));
-
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Approval\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'approvable change'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-    }).trim();
-
-    try {
-      const repositoryRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/default`,
-        {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            displayName: 'Publish repository',
-            localPath: repositoryPath,
-            git: {
-              authorEmail: null,
-              authorName: null,
-              allowedPushTargets: ['main'],
-              commitOnApply: true,
-            },
-          }),
-        }
-      );
-
-      expect(repositoryRes.status).toBe(200);
-
-      const approvalRequest = {
-        requestId: '00000000-0000-4000-8000-000000000024',
-        threadId: thread.id,
-        turnId: turn.id,
-        sourceRef: 'HEAD',
-        targetBranch: 'main',
-        commitIds: [commitId],
-      };
-
-      const approvalRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(approvalRequest),
-        }
-      );
-
-      expect(approvalRes.status).toBe(200);
-      const approvalPayload = await approvalRes.json();
-      expect(approvalPayload).toMatchObject({
-        approval: {
-          kind: 'permission',
-          status: mode === 'auto_allow' ? 'granted' : 'pending',
-          threadId: thread.id,
-          turnId: turn.id,
-        },
-      });
-      expect(store.getTurn(workspace.id, thread.id, turn.id).status).toBe('completed');
-
-      execFileSync('git', ['remote', 'remove', 'origin'], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-      const approvalReplayRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(approvalRequest),
-        }
-      );
-
-      expect(approvalReplayRes.status).toBe(200);
-      await expect(approvalReplayRes.json()).resolves.toMatchObject({
-        approval: { id: approvalPayload.approval.id },
-      });
-
-      const changedInput = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...approvalRequest, targetBranch: 'other' }),
-        }
-      );
-      expect(changedInput.status).toBe(409);
-
-      const restartedApp = createApp({
-        coreDb,
-        store,
-        turnExecutor: new FakeTurnExecutor(),
-        openKitConfig: {
-          policy: {
-            workspaceApprovalModes: {
-              [workspace.id]: {
-                'repo.push': mode === 'auto_allow' ? 'require_human_approval' : 'auto_allow',
-              },
-            },
-          },
-        },
-      });
-      const replayAfterModeChange = await restartedApp.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(approvalRequest),
-        }
-      );
-      expect(replayAfterModeChange.status).toBe(200);
-      await expect(replayAfterModeChange.json()).resolves.toEqual(approvalPayload);
-
-      const actionCenterRes = await app.request(
-        ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
-      );
-      expect(actionCenterRes.status).toBe(200);
-      await expect(actionCenterRes.json()).resolves.toMatchObject({
-        items:
-          mode === 'auto_allow'
-            ? []
-            : [
-                expect.objectContaining({
-                  kind: 'approval',
-                  title: 'Summary: Approve Git push to main',
-                }),
-              ],
-      });
-
-      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-
-      const receiptGapTurn = store.createTurn(
-        workspace.id,
-        thread.id,
-        'Publish work with a missing approval receipt',
-        { kind: 'user', id: 'user_local' }
-      );
-      const receiptGapRequest = {
-        ...approvalRequest,
-        requestId: '00000000-0000-4000-8000-000000000035',
-        turnId: receiptGapTurn.id,
-      };
-      vi.spyOn(store, 'recordCommandRequest').mockImplementationOnce(() => {
-        throw new Error('Injected Git push approval receipt failure.');
-      });
-      const receiptGap = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(receiptGapRequest),
-        }
-      );
-      expect(receiptGap.status).toBe(409);
-      await expect(receiptGap.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      if (mode === 'auto_allow') {
-        const incompleteApproval = store
-          .listThreadItems(workspace.id, thread.id)
-          .find((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request');
-        if (incompleteApproval?.type !== 'approval-request')
-          throw new Error('Missing automatic grant Item.');
-        const unsafeExecute = await app.request(
-          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000036',
-              approvalRequestId: incompleteApproval.approvalRequestId,
-            }),
-          }
-        );
-        expect(unsafeExecute.status).toBe(409);
-        await expect(unsafeExecute.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      }
-
-      const receiptGapRetry = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ...receiptGapRequest, targetBranch: 'release' }),
-        }
-      );
-      expect(receiptGapRetry.status).toBe(409);
-      await expect(receiptGapRetry.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      expect(
-        store
-          .listThreadItems(workspace.id, thread.id)
-          .filter((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request')
-      ).toHaveLength(1);
-      expect(
-        store
-          .listThreadItems(workspace.id, thread.id)
-          .find((item) => item.turnId === receiptGapTurn.id && item.type === 'approval-request')
-      ).toMatchObject({ title: 'Summary: Approve Git push to main' });
-
-      if (mode !== 'auto_allow') {
-        const decisionRes = await app.request(
-          ...operationRequest(
-            'approval.respond',
-            { approvalRequestId: approvalPayload.approval.id },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: '00000000-0000-4000-8000-000000000025',
-                workspaceId: workspace.id,
-                threadId: thread.id,
-                turnId: turn.id,
-                decision: 'granted',
-              }),
-            }
-          )
-        );
-
-        expect(decisionRes.status).toBe(200);
-        await expect(decisionRes.json()).resolves.toMatchObject({ status: 'granted' });
-      }
-      expect(store.getTurn(workspace.id, thread.id, turn.id)).toMatchObject({
-        status: 'completed',
-        completedAt: expect.any(String),
-      });
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        const decisions = workspaceDb.sqlite
-          .prepare(
-            `SELECT action, result, approval_id AS approvalId, resource_summary_json AS resourceSummary
-             FROM permission_decisions
-             WHERE action = 'repo.push'
-               AND approval_id = ?
-             ORDER BY created_at ASC`
-          )
-          .all(approvalPayload.approval.id) as Array<{
-          action: string;
-          approvalId: string;
-          resourceSummary: string;
-          result: string;
-        }>;
-
-        expect(decisions).toEqual([
-          ...(mode === 'auto_allow'
-            ? []
-            : [
-                expect.objectContaining({
-                  action: 'repo.push',
-                  approvalId: approvalPayload.approval.id,
-                  result: 'require_approval',
-                }),
-              ]),
-          ...(mode === 'auto_allow'
-            ? [
-                expect.objectContaining({
-                  action: 'repo.push',
-                  approvalId: approvalPayload.approval.id,
-                  result: 'allow',
-                }),
-              ]
-            : []),
-        ]);
-        for (const decision of decisions) {
-          expect(JSON.parse(decision.resourceSummary)).toMatchObject({
-            commitIds: [commitId],
-            remoteIdentity: 'github:openkit/openkit',
-            remoteName: 'origin',
-            remoteSummary: 'GitHub repository openkit/openkit on origin',
-            sourceCommit: commitId,
-            sourceRef: 'HEAD',
-          });
-        }
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-
-      writeFileSync(join(repositoryPath, 'STALE.md'), '# Stale source\n');
-      execFileSync('git', ['add', 'STALE.md'], { cwd: repositoryPath, stdio: 'ignore' });
-      execFileSync('git', ['commit', '-m', 'move approved source'], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-      const staleSourceRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000032',
-            approvalRequestId: approvalPayload.approval.id,
-          }),
-        }
-      );
-
-      expect(staleSourceRes.status).toBe(404);
-      await expect(staleSourceRes.json()).resolves.toMatchObject({
-        code: 'git_push_failed',
-        message: expect.stringContaining('approval scope mismatch'),
-      });
-
-      execFileSync('git', ['reset', '--hard', commitId], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-      const driftRemotePath = mkdtempSync(join(tmpdir(), 'openkit-git-push-drift-remote-'));
-      execFileSync('git', ['init', '--bare'], { cwd: driftRemotePath, stdio: 'ignore' });
-      execFileSync('git', ['remote', 'set-url', 'origin', driftRemotePath], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-      const staleRemoteRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000033',
-            approvalRequestId: approvalPayload.approval.id,
-          }),
-        }
-      );
-
-      expect(staleRemoteRes.status).toBe(404);
-      await expect(staleRemoteRes.json()).resolves.toMatchObject({
-        code: 'git_push_failed',
-        message: expect.stringContaining('approval scope mismatch'),
-      });
-
-      const driftDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        expect(listGitPushRecords(driftDb, workspace.id)).toEqual([]);
-        expect(listVaultUseRecords(driftDb)).toEqual([]);
-      } finally {
-        driftDb.sqlite.close();
-      }
-      expect(() =>
-        execFileSync('git', ['rev-parse', 'refs/heads/main'], {
-          cwd: driftRemotePath,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        })
-      ).toThrow();
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('rejects Git push write operations in the Quick Chat workspace', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const thread = store.createThread('ws_quick_chat', 'Reject Git push');
-    const turn = store.createTurn('ws_quick_chat', thread.id, 'Reject Git push', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    store.createApproval({
-      createdAt: new Date().toISOString(),
-      description: 'Reject Git push in Quick Chat.',
-      id: 'ap_quick_chat',
-      kind: 'permission',
-      resolvedAt: null,
-      status: 'pending',
-      threadId: thread.id,
-      title: 'Git push',
-      turnId: turn.id,
-      workspaceId: 'ws_quick_chat',
-    });
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-
-    try {
-      const approvalRes = await app.request(
-        '/api/app/workspaces/ws_quick_chat/repositories/repo_default/git-push/approval',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000030',
-            threadId: thread.id,
-            turnId: turn.id,
-            sourceRef: 'HEAD',
-            targetBranch: 'main',
-            commitIds: ['abc123'],
-          }),
-        }
-      );
-
-      expect(approvalRes.status).toBe(400);
-      await expect(approvalRes.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
-      });
-
-      const pushRes = await app.request(
-        '/api/app/workspaces/ws_quick_chat/repositories/repo_default/git-push',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000031',
-            approvalRequestId: 'ap_quick_chat',
-          }),
-        }
-      );
-
-      expect(pushRes.status).toBe(400);
-      await expect(pushRes.json()).resolves.toMatchObject({
-        code: 'workspace_kind_not_supported',
-        message: expect.stringContaining('Quick Chat workspace'),
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    'require_human_approval',
-    'auto_allow',
-  ] as const)('enforces provider, Vault and interrupted push barriers with %s', async (mode) => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore();
-    const workspace = store.createWorkspace('Git push execution');
-    const thread = store.createThread(workspace.id, 'Publish accepted work');
-    const turn = store.createTurn(workspace.id, thread.id, 'Publish accepted work', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(coreDb.dataRoot, 'server', 'vault'),
-    });
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 19) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_vault_push_secret',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_github_push',
-    });
-    createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_github_push',
-      displayName: 'GitHub push token',
-      ownerScope: 'server',
-      referenceId: 'vault_github_push',
-      secretKind: 'github-token',
-    });
-    createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['gateway-only'],
-      grantId: 'grant_github_push',
-      lifetime: 'workspace',
-      ownerScope: 'workspace',
-      policyDecisionId: 'pd_github_push_grant',
-      vaultReferenceId: 'vault_github_push',
-      workspaceId: workspace.id,
-    });
-    const app = createApp({
-      coreDb,
-      store,
-      turnExecutor: new FakeTurnExecutor(),
-      vaultUnlockState,
-      openKitConfig: {
-        policy: { workspaceApprovalModes: { [workspace.id]: { 'repo.push': mode } } },
-      },
-    });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-git-push-execution-repo-'));
-    const remotePath = mkdtempSync(join(tmpdir(), 'openkit-git-push-execution-remote-'));
-
-    execFileSync('git', ['init', '--bare'], { cwd: remotePath, stdio: 'ignore' });
-    execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['config', 'user.email', 'repository-local@example.invalid'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'Repository Local'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    writeFileSync(join(repositoryPath, 'README.md'), '# Demo\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repositoryPath, stdio: 'ignore' });
-    execFileSync('git', ['commit', '-m', 'publishable change'], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['remote', 'add', 'origin', remotePath], {
-      cwd: repositoryPath,
-      stdio: 'ignore',
-    });
-    const commitId = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repositoryPath,
-      encoding: 'utf8',
-    }).trim();
-
-    try {
-      const repositoryRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/default`,
-        {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            displayName: 'Publish repository',
-            localPath: repositoryPath,
-            git: {
-              authorEmail: null,
-              authorName: null,
-              allowedPushTargets: ['feature/demo'],
-              commitOnApply: true,
-              vaultGrantRef: 'grant_github_push',
-            },
-          }),
-        }
-      );
-      expect(repositoryRes.status).toBe(200);
-
-      const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        recordWorkspaceApplyResult(workspaceDb, {
-          requestId: '00000000-0000-4000-8000-000000000026',
-          result: {
-            appliedAt: '2026-07-05T00:00:00.000Z',
-            appliedPaths: ['README.md'],
-            changeSetId: 'wcs_push_route_1',
-            commitIds: [commitId],
-            conflictRecords: [],
-            id: 'war_push_route_1',
-            reviewId: 'swr_push_route_1',
-            skippedPaths: [],
-            status: 'applied',
-            verification: [],
-            workspaceId: workspace.id,
-          },
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-
-      const approvalRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000027',
-            threadId: thread.id,
-            turnId: turn.id,
-            sourceRef: commitId,
-            targetBranch: 'feature/demo',
-            commitIds: [commitId],
-          }),
-        }
-      );
-      expect(approvalRes.status).toBe(200);
-      const approvalPayload = await approvalRes.json();
-
-      if (mode === 'require_human_approval') {
-        const decisionRes = await app.request(
-          ...operationRequest(
-            'approval.respond',
-            { approvalRequestId: approvalPayload.approval.id },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: '00000000-0000-4000-8000-000000000028',
-                workspaceId: workspace.id,
-                threadId: thread.id,
-                turnId: turn.id,
-                decision: 'granted',
-              }),
-            }
-          )
-        );
-        expect(decisionRes.status).toBe(200);
-      }
-
-      const interruptedPushDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        startCapabilityCall({
-          authorityActor: { kind: 'user', id: LOCAL_USER_ID },
-          workspaceDb: interruptedPushDb,
-          callId: 'cap_interrupted_git_push',
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          turnId: turn.id,
-          itemId: approvalPayload.approvalItemId,
-          requestId: '00000000-0000-4000-8000-000000000063',
-          family: 'network',
-          operation: 'git.push',
-          capabilityId: 'workspace.git.push',
-          redactionClass: 'product-safe',
-        });
-
-        const interruptedPushRes = await app.request(
-          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000064',
-              approvalRequestId: approvalPayload.approval.id,
-            }),
-          }
-        );
-
-        expect(interruptedPushRes.status).toBe(409);
-        await expect(interruptedPushRes.json()).resolves.toMatchObject({
-          code: 'recovery_required',
-        });
-        expect(listGitPushRecords(interruptedPushDb, workspace.id)).toEqual([]);
-        expect(listVaultUseRecords(interruptedPushDb)).toEqual([]);
-        expect(() =>
-          execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
-            cwd: remotePath,
-            encoding: 'utf8',
-            stdio: 'pipe',
-          })
-        ).toThrow();
-        expect(
-          interruptedPushDb.sqlite
-            .prepare('DELETE FROM capability_calls WHERE call_id = ?')
-            .run('cap_interrupted_git_push').changes
-        ).toBe(1);
-      } finally {
-        interruptedPushDb.sqlite.close();
-      }
-
-      const previousGithubToken = process.env.GITHUB_TOKEN;
-      process.env.GITHUB_TOKEN = 'ghp_route_secret';
-      const pushRes = await (async () => {
-        try {
-          return await app.request(
-            `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                requestId: '00000000-0000-4000-8000-000000000029',
-                approvalRequestId: approvalPayload.approval.id,
-              }),
-            }
-          );
-        } finally {
-          if (previousGithubToken === undefined) {
-            delete process.env.GITHUB_TOKEN;
-          } else {
-            process.env.GITHUB_TOKEN = previousGithubToken;
-          }
-        }
-      })();
-
-      const pushText = await pushRes.text();
-      expect(pushRes.status, pushText).toBe(200);
-      const pushPayload = JSON.parse(pushText);
-      expect(pushPayload).toMatchObject({
-        commitIds: [commitId],
-        outcome: 'unsupported-provider',
-        remoteSummary: 'Unsupported Git remote on origin',
-        reviewIds: ['swr_push_route_1'],
-      });
-      expect(JSON.stringify(pushPayload)).not.toContain('ghp_route_secret');
-
-      const executeLedger = store
-        .listCommandRequests()
-        .find((record) => record.command === 'git_push.execute');
-      if (!executeLedger) {
-        throw new Error('Git push execution ledger was not recorded.');
-      }
-      expect(executeLedger.requestId).toBe('00000000-0000-4000-8000-000000000029');
-      executeLedger.expiresAt = '2000-01-01T00:00:00.000Z';
-      expect(
-        store.listCommandRequests().some((record) => record.command === 'git_push.execute')
-      ).toBe(false);
-      execFileSync('git', ['remote', 'remove', 'origin'], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-
-      const duplicatePushRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000034',
-            approvalRequestId: approvalPayload.approval.id,
-          }),
-        }
-      );
-
-      expect(duplicatePushRes.status).toBe(409);
-      await expect(duplicatePushRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-      const duplicatePushDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        expect(listGitPushRecords(duplicatePushDb, workspace.id)).toHaveLength(1);
-      } finally {
-        duplicatePushDb.sqlite.close();
-      }
-
-      const pushReplayRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000029',
-            approvalRequestId: approvalPayload.approval.id,
-          }),
-        }
-      );
-
-      expect(pushReplayRes.status).toBe(409);
-      await expect(pushReplayRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-
-      const vaultUseDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        expect(listVaultUseRecords(vaultUseDb)).toEqual([]);
-      } finally {
-        vaultUseDb.sqlite.close();
-      }
-      expect(() =>
-        execFileSync('git', ['rev-parse', 'refs/heads/feature/demo'], {
-          cwd: remotePath,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        })
-      ).toThrow();
-
-      execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/openkit/openkit.git'], {
-        cwd: repositoryPath,
-        stdio: 'ignore',
-      });
-      createVaultReference(coreDb, {
-        backendKind: 'encrypted-file',
-        displayName: 'Workspace GitHub push token',
-        ownerScope: 'workspace',
-        referenceId: 'vault_workspace_github_push',
-        secretKind: 'github-token',
-        workspaceId: workspace.id,
-      });
-      createVaultGrant(coreDb, {
-        allowedInjectionPaths: ['gateway-only'],
-        grantId: 'grant_git_push_import_seed',
-        lifetime: 'workspace',
-        ownerScope: 'workspace',
-        targetCapabilityId: 'workspace.git.push',
-        vaultReferenceId: 'vault_workspace_github_push',
-        workspaceId: workspace.id,
-      });
-      const importedGrantId = `grant_imported_${workspace.id}_git_push`;
-      expect(
-        coreDb.sqlite
-          .prepare('UPDATE vault_grants SET grant_id = ? WHERE grant_id = ?')
-          .run(importedGrantId, 'grant_git_push_import_seed').changes
-      ).toBe(1);
-      createVaultGrant(coreDb, {
-        allowedInjectionPaths: ['gateway-only'],
-        grantId: 'grant_git_push_wrong_target',
-        lifetime: 'workspace',
-        ownerScope: 'workspace',
-        targetAgentSessionId: 'as_wrong_git_push_target',
-        targetCapabilityId: 'workspace.git.push',
-        vaultReferenceId: 'vault_workspace_github_push',
-        workspaceId: workspace.id,
-      });
-
-      const workerSecretResponse = await app.request(
-        `/api/app/workspaces/${workspace.id}/vault/secrets`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ secretKind: 'github-token', material: 'worker-only-canary' }),
-        }
-      );
-      expect(workerSecretResponse.status).toBe(200);
-      const workerReference = await workerSecretResponse.json();
-      const workerGrantResponse = await app.request(
-        `/api/app/workspaces/${workspace.id}/vault/grants`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            referenceId: workerReference.referenceId,
-            injectionPath: 'runtime-env',
-          }),
-        }
-      );
-      expect(workerGrantResponse.status).toBe(200);
-      const workerGrant = await workerGrantResponse.json();
-
-      for (const [index, grantId] of [
-        importedGrantId,
-        'grant_git_push_wrong_target',
-        workerGrant.grantId,
-      ].entries()) {
-        const scenario = index * 3 + 52;
-        const scenarioTurn = store.createTurn(
-          workspace.id,
-          thread.id,
-          `Reject invalid Git push grant ${grantId}`,
-          { kind: 'user', id: 'user_local' }
-        );
-        const repositoryUpdate = await app.request(
-          `/api/app/workspaces/${workspace.id}/repositories/default`,
-          {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              displayName: 'Publish repository',
-              localPath: repositoryPath,
-              git: {
-                authorEmail: null,
-                authorName: null,
-                allowedPushTargets: ['feature/demo'],
-                commitOnApply: true,
-                vaultGrantRef: grantId,
-              },
-            }),
-          }
-        );
-        expect(repositoryUpdate.status).toBe(200);
-
-        const scenarioApproval = await app.request(
-          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push/approval`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: `00000000-0000-4000-8000-0000000000${scenario}`,
-              threadId: thread.id,
-              turnId: scenarioTurn.id,
-              sourceRef: commitId,
-              targetBranch: 'feature/demo',
-              commitIds: [commitId],
-            }),
-          }
-        );
-        expect(scenarioApproval.status).toBe(200);
-        const scenarioApprovalPayload = await scenarioApproval.json();
-        if (mode === 'require_human_approval') {
-          const scenarioDecision = await app.request(
-            ...operationRequest(
-              'approval.respond',
-              { approvalRequestId: scenarioApprovalPayload.approval.id },
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  requestId: `00000000-0000-4000-8000-0000000000${scenario + 1}`,
-                  workspaceId: workspace.id,
-                  threadId: thread.id,
-                  turnId: scenarioTurn.id,
-                  decision: 'granted',
-                }),
-              }
-            )
-          );
-          expect(scenarioDecision.status).toBe(200);
-        }
-
-        const scenarioPush = await app.request(
-          `/api/app/workspaces/${workspace.id}/repositories/repo_default/git-push`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: `00000000-0000-4000-8000-0000000000${scenario + 2}`,
-              approvalRequestId: scenarioApprovalPayload.approval.id,
-            }),
-          }
-        );
-        const scenarioPushBody = await scenarioPush.json();
-        expect(scenarioPush.status).toBe(200);
-        expect(scenarioPushBody).toMatchObject({
-          errorSummary: 'Git push refused because current vault.use authority is not allowed.',
-          outcome: 'refused-policy',
-        });
-      }
-
-      const authorityDb = openTestWorkspaceDb(coreDb, workspace.id);
-      try {
-        expect(listVaultUseRecords(authorityDb)).toEqual([]);
-        expect(listWorkspaceUsageRecords(authorityDb, workspace.id)).toEqual([]);
-      } finally {
-        authorityDb.sqlite.close();
-      }
-      expect(listVaultInjectionPlans(coreDb)).toEqual([]);
-      expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
     }

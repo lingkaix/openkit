@@ -127,10 +127,7 @@ describe('workspace resource catalog', () => {
     }
   });
 
-  it.each([
-    'openkit-generative',
-    'openkit-repository',
-  ])('rejects the reserved built-in %s catalog id', (id) => {
+  it.each(['openkit-generative'])('rejects the reserved built-in %s catalog id', (id) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-reserved-'));
     try {
       expect(() =>

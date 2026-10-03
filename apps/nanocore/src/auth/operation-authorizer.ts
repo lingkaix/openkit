@@ -1,8 +1,6 @@
 import {
   CreateAutomationRequestSchema,
-  ExecuteGitPushRequestSchema,
   PRODUCT_OPERATION_DEFINITIONS,
-  RequestGitPushApprovalRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
@@ -728,7 +726,7 @@ async function denyIfThreadInaccessible(
   input: RegisterOperationAccessGuardsInput,
   workspaceId: string
 ): Promise<Response | null> {
-  const threadId = await requestedThreadId(context, actor, route, input, workspaceId);
+  const threadId = await requestedThreadId(context, actor, route, input);
   if (threadId === null) {
     return null;
   }
@@ -745,15 +743,13 @@ async function denyIfThreadInaccessible(
  * @param actor Authenticated request actor.
  * @param route Exact Workspace operation route.
  * @param input Existing lineage owners.
- * @param workspaceId Already authorized Workspace id.
  * @returns Thread id when the operation addresses an existing Thread, or null when it does not.
  */
 async function requestedThreadId(
   context: Context<{ Variables: AuthVariables }>,
   actor: Actor,
   route: OperationRoute & { readonly access: WorkspaceOperationAccess },
-  input: RegisterOperationAccessGuardsInput,
-  workspaceId: string
+  input: RegisterOperationAccessGuardsInput
 ): Promise<string | null> {
   const pathThreadId = nonempty(context.req.param('threadId'));
   if (pathThreadId) {
@@ -767,39 +763,6 @@ async function requestedThreadId(
         .catch(() => null)
     );
     return parsed.success ? parsed.data.threadId : null;
-  }
-  if (route.operationKey === 'requestGitPushApproval') {
-    const parsed = RequestGitPushApprovalRequestSchema.safeParse(
-      await context.req.raw
-        .clone()
-        .json()
-        .catch(() => null)
-    );
-    if (!parsed.success) {
-      return null;
-    }
-    try {
-      return input.store.getTurn(workspaceId, parsed.data.threadId, parsed.data.turnId).threadId;
-    } catch {
-      return '';
-    }
-  }
-  if (route.operationKey === 'executeGitPush') {
-    const parsed = ExecuteGitPushRequestSchema.safeParse(
-      await context.req.raw
-        .clone()
-        .json()
-        .catch(() => null)
-    );
-    if (!parsed.success) {
-      return null;
-    }
-    try {
-      const approval = input.store.getApproval(parsed.data.approvalRequestId);
-      return approval.workspaceId === workspaceId ? approval.threadId : '';
-    } catch {
-      return '';
-    }
   }
   try {
     const owner = opaqueChildOwner(context, actor, route.operationKey, input);

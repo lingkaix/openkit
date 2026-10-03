@@ -76,7 +76,6 @@ const WORKSPACE_TABLES = [
   'capability_calls',
   'evidence_bundles',
   'generative_presentations',
-  'git_push_records',
   'goal_card_tasks',
   'goal_cards',
   'goal_plan_versions',
@@ -104,7 +103,6 @@ const WORKSPACE_TABLES = [
   'workspace_materials',
   'workspace_quarantine_records',
   'workspace_reconciliation_records',
-  'workspace_repository_resources',
   'workspace_snapshot_collections',
   'workspace_snapshot_cursors',
 ];
@@ -652,24 +650,7 @@ describe('database setup', () => {
         'responsible_user_id',
       ]);
       expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([]);
-      expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([
-        'workspace_id',
-        'resource_id',
-        'type',
-        'display_name',
-        'local_path',
-        'diagnostics_status',
-        'created_at',
-        'updated_at',
-        'commit_on_apply',
-        'git_author_name',
-        'git_author_email',
-        'staging_strategy',
-        'protected_branch_patterns_json',
-        'allowed_push_targets_json',
-        'require_review_linkage',
-        'git_push_vault_grant_ref',
-      ]);
+      expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([]);
       expect(listColumnNames(workspaceDb, 'worker_turn_checkpoints')).toEqual([
         'checkpoint_id',
         'workspace_id',
@@ -858,6 +839,9 @@ describe('database setup', () => {
       // Accepted Goal removal uses one one-way cutover and its populated migration fixture.
       .filter((path) => !path.endsWith(`storage${sep}goal-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}goal-cutover-migration.test.ts`))
+      // Accepted host retirement follows the same named, populated one-way cutover boundary.
+      .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.ts`))
+      .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.test.ts`))
       .filter((path) => schemaMutationPattern.test(readFileSync(path, 'utf8')))
       .map((path) => relative(process.cwd(), path));
 

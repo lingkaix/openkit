@@ -4,10 +4,10 @@ import { GOAL_OPERATION_DEFINITIONS, KERNEL_OPERATION_DEFINITIONS } from '@openk
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 243;
+const EXPECTED_CATALOG_SIZE = 236;
 const EXPECTED_SERVER_SIZE = 55;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 186;
+const EXPECTED_INCLUDED_SIZE = 179;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
@@ -169,15 +169,6 @@ const WEB_OPERATION_GROUPS = {
     selectWorkerEnvironment: { disposition: 'live', surface: 'Chat' },
     'conversation.submit': { disposition: 'live', surface: 'Chat' },
     'task.start': { disposition: 'live', surface: 'Task' },
-  },
-  Repositories: {
-    executeGitPush: { disposition: 'live', surface: 'Repositories' },
-    getGitPushRecord: { disposition: 'live', surface: 'Repositories' },
-    getWorkspaceRepositoryDiagnostics: { disposition: 'live', surface: 'Repositories' },
-    listGitPushRecords: { disposition: 'live', surface: 'Repositories' },
-    listWorkspaceRepositories: { disposition: 'live', surface: 'Repositories' },
-    requestGitPushApproval: { disposition: 'live', surface: 'Repositories' },
-    setDefaultWorkspaceRepository: { disposition: 'workflow', surface: 'Repositories' },
   },
   Reviews: {
     'artifact.review-list': { disposition: 'live', surface: 'Artifact review' },

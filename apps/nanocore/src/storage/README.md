@@ -72,3 +72,5 @@ Snapshot cursors and exact collection receipts (including private candidate byte
 Scheduler admission rows carry optional canonical `reasoning_effort` through delayed Worker dispatch. The pre-release Core baseline includes this nullable column; absent values project as an omitted preference. Work observation sampling uses the shared Protocol effort validator rather than a second enum.
 
 CapabilityCall archives use the ledger’s canonical extension validation to preserve safe stored namespaces across scope remapping and import. Live protocol and App audit projections retain their stricter unknown-namespace omission; this does not add an archive format or a second persistence path.
+
+Workspace migrations drop retired host repository and Git push tables after replaying unchanged historical setup DDL. No schema module or live repository store remains; archive codecs validate historical metadata without restoring authority.

@@ -192,22 +192,6 @@ interface PermissionDecisionRow {
   readonly created_at: string;
 }
 
-/** Stored require-approval policy decision. */
-interface PolicyApprovalDecisionRow {
-  /** Product action that required approval. */
-  readonly action: string;
-  /** Machine-readable reason that distinguishes policy grants from human decisions. */
-  readonly reasonCode: string;
-  /** Stored permission decision id. */
-  readonly decisionId: string;
-  /** Redacted context summary. */
-  readonly contextSummary: unknown;
-  /** Redacted resource summary. */
-  readonly resourceSummary: unknown;
-  /** Redacted subject summary. */
-  readonly subjectSummary: unknown;
-}
-
 /** Exact policy decision that opened one approval Gate. */
 export interface PolicyApprovalSourceDecision {
   /** Product action that requires approval. */
@@ -242,64 +226,6 @@ export interface PolicyApprovalTerminalWinner {
   readonly result: 'allow' | 'deny';
   /** Redacted subject summary copied from the source decision. */
   readonly subjectSummary: unknown;
-}
-
-/**
- * Reads the policy decision that opened one approval gate.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id that owns the approval.
- * @param approvalId Approval request id.
- * @param action Optional action filter.
- * @param result Permission result to read.
- * @returns Stored approval-linked decision row, or null.
- */
-export function readPolicyApprovalDecision(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  approvalId: string,
-  action?: string,
-  result: PermissionDecisionResult = 'require_approval'
-): PolicyApprovalDecisionRow | null {
-  const row = workspaceDb.sqlite
-    .prepare(
-      `SELECT
-        action,
-        reason_code,
-        decision_id,
-        subject_summary_json,
-        resource_summary_json,
-        context_summary_json
-      FROM permission_decisions
-      WHERE owner_scope = 'workspace'
-        AND workspace_id = ?
-        AND result = ?
-        AND approval_id = ?
-        AND (? IS NULL OR action = ?)
-      ORDER BY created_at DESC
-      LIMIT 1`
-    )
-    .get(workspaceId, result, approvalId, action ?? null, action ?? null) as
-    | {
-        action: string;
-        reason_code: string;
-        context_summary_json: string;
-        decision_id: string;
-        resource_summary_json: string;
-        subject_summary_json: string;
-      }
-    | undefined;
-
-  return row
-    ? {
-        action: row.action,
-        reasonCode: row.reason_code,
-        contextSummary: JSON.parse(row.context_summary_json),
-        decisionId: row.decision_id,
-        resourceSummary: JSON.parse(row.resource_summary_json),
-        subjectSummary: JSON.parse(row.subject_summary_json),
-      }
-    : null;
 }
 
 /**

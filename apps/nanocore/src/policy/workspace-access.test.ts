@@ -19,7 +19,6 @@ const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'llm.gateway.use': 'ar:llm-gateway-use',
   'membership.manage': 'ar:membership-manage',
   'network.egress': 'ar:network-egress',
-  'repo.push': 'ar:repo-push',
   'review.apply': 'ar:review-apply',
   'runtime.launch': 'ar:runtime-launch',
   'thread.read': 'ar:thread-read',
@@ -61,7 +60,6 @@ const ROLE_MATRIX = [
   ['runtime.launch', ['owner', 'editor']],
   ['network.egress', ['owner', 'editor']],
   ['llm.gateway.use', ['owner', 'editor']],
-  ['repo.push', ['owner', 'editor']],
 ] as const;
 
 describe('Workspace fixed-role policy adapter', () => {
@@ -86,6 +84,18 @@ describe('Workspace fixed-role policy adapter', () => {
         );
       }
     }
+  });
+
+  it.each([
+    'owner',
+    'editor',
+    'viewer',
+  ] as const)('rejects the retired repo.push right for %s', (role) => {
+    expect(evaluateWorkspaceRoleAccess({ operation: 'repo.push', role })).toMatchObject({
+      effect: 'deny',
+      reasons: [{ code: 'missing-operation', operation: 'repo.push' }],
+      trace: { requiredAccessRights: [] },
+    });
   });
 
   it('fails closed through the policy kernel for an unregistered operation', () => {

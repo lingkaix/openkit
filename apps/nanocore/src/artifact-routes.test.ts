@@ -939,15 +939,6 @@ describe('Core artifact routes', () => {
     } as const;
 
     try {
-      const repositoryRes = await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          displayName: 'Artifact Review repository',
-          localPath: repositoryPath,
-        }),
-      });
-      expect(repositoryRes.status).toBe(200);
       const response = await postJson(app, decisionPath, request);
       const responseBody = await response.json();
       expect(response.status, JSON.stringify(responseBody)).toBe(200);

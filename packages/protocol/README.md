@@ -20,7 +20,7 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 
 Thread visibility is explicit and immutable. Private Threads require `privateOwnerUserId`; shared Threads omit it. Public creation defaults to private and binds ownership to the requesting user; formal Task/Goal callers request `visibility: workspace` at creation. Quick Chat and administration stay private.
 
-Approval-decision Items permit human decisions and narrowly identified `nanocore-repo-push-policy` system grants. Policy grants preserve automatic worker repository approval across reload without impersonating a human. Canonical Zod validation enforces that system actor’s permitted decision.
+Approval-decision Items permit human decisions and narrowly identified `nanocore-repo-push-policy` system grants. The system actor is retained only to validate historical completed Items; no host-push grant producer or executor remains. Canonical Zod validation enforces that system actor’s permitted decision.
 
 `src/requests/pending-request.ts` owns the user-input answer and pending-request withdrawal command schemas, inferred types and shared outcome schema alongside the approval response command. These Core payloads strip additive envelope fields while retaining their existing closed lifecycle values.
 

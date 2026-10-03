@@ -334,7 +334,6 @@ export interface ConversationCommandReceiptMetadata {
   /** Closed Chat outcome needed to locate its fixed durable owners. */
   readonly resultKind:
     | 'knowledge-answer'
-    | 'repository-answer'
     | 'provider-answer'
     | 'clarification'
     | 'task-handoff'

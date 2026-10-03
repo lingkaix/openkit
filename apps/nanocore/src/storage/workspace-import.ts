@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  ArchivedGitPushRecordSchema,
+  ArchivedWorkspaceRepositoryGitConfigSchema,
   ArtifactReviewViewSchema,
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
-  GitPushRecordSchema,
   GoalCardSchema,
   GoalPlanVersionSchema,
   GoalRecordSchema,
@@ -24,7 +25,6 @@ import {
   WorkspaceMaterialViewSchema,
   WorkspaceQuarantineRecordSchema,
   WorkspaceReconciliationRecordSchema,
-  WorkspaceRepositoryGitConfigSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
 import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
@@ -233,7 +233,7 @@ const ExportedWorkspaceRepositoryResourceSchema = z
     resourceId: z.string().min(1),
     type: z.literal('git_repository'),
     displayName: z.string().min(1),
-    git: WorkspaceRepositoryGitConfigSchema,
+    git: ArchivedWorkspaceRepositoryGitConfigSchema,
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -254,7 +254,7 @@ const ExportedCapabilityCallSchema = CapabilityCallSchema.safeExtend({
 
 type ExportedCapabilityCall = z.infer<typeof ExportedCapabilityCallSchema>;
 
-const ExportedGitPushRecordSchema = GitPushRecordSchema.extend({
+const ExportedGitPushRecordSchema = ArchivedGitPushRecordSchema.extend({
   requestId: z.string().min(1),
 }).strict();
 

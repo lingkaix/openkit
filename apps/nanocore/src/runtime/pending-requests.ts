@@ -562,43 +562,6 @@ export function deletePendingRequest(sqlite: Database.Database, requestId: strin
 }
 
 /**
- * Records an automatic repository-push grant that executed inside the raising call and has nothing to deliver.
- *
- * @param sqlite Workspace database.
- * @param input Raise input. The policy actor is the decider.
- * @returns Settled record.
- */
-export function recordAutomaticPolicyGrant(
-  sqlite: Database.Database,
-  input: RaisePendingRequestInput
-): PendingRequestRecord {
-  const grant = sqlite.transaction(() => {
-    insertPendingRequest(sqlite, input);
-    const callId = executionCallIdForRequest(input.requestId);
-    sqlite
-      .prepare(
-        `UPDATE pending_requests
-         SET state = 'resolved', resolution = 'granted', deciding_actor_kind = 'system',
-             deciding_actor_id = 'nanocore-repo-push-policy', decided_at = ?, claim = 'finished',
-             execution_call_id = ?, disposition = 'approved-executed', publication_turn_id = ?,
-             delivery = 'delivered', delivery_turn_id = ?, delivery_cause = 'outcome', updated_at = ?
-         WHERE request_id = ?`
-      )
-      .run(input.now, callId, input.raisingTurnId, input.raisingTurnId, input.now, input.requestId);
-    const record = readPendingRequest(sqlite, input.requestId);
-    if (!record) {
-      throw new PendingRequestCommandError(
-        'recovery_required',
-        'The automatic policy grant was not readable after its write.',
-        409
-      );
-    }
-    return record;
-  });
-  return grant();
-}
-
-/**
  * Raises a request or returns the pending duplicate. The seventeenth pending request fails before a write.
  *
  * @param sqlite Workspace database.

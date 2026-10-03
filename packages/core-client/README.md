@@ -39,7 +39,6 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, detail, and health refresh routes.
 - `client.operations['attention.list']`: definition-derived unified Human Attention read model with one selector object.
-- `client.repositories`: workspace repository resource, diagnostics, and Git push record routes.
 
 `parseWorkspaceSharingError(error)` narrows a generic `ApiCallError` only when it validates as the closed Workspace sharing error family.
 

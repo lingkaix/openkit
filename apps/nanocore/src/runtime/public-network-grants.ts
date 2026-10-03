@@ -13,7 +13,6 @@ import type { ProviderProfile } from '../config/providers-loader.js';
 import { createDefaultPiAiGatewayModels } from '../llm/pi-ai-client.js';
 import { normalizeProviderId, type ProviderRegistry } from '../providers/registry.js';
 import { OPENKIT_GENERATIVE_MCP_ID } from './openkit-generative-mcp.js';
-import { OPENKIT_REPOSITORY_MCP_ID } from './openkit-repository-mcp.js';
 
 /** Current authoritative destination facts used only for public grant admission. */
 export interface PublicNetworkDestinationFacts {
@@ -60,8 +59,7 @@ export function assertPublicNetworkGrants(
   const managedDestinations = (manifest.mcp ?? []).flatMap((selection) => {
     const server = facts.mcpCatalog?.servers.find((candidate) => candidate.id === selection.id);
     // These built-in routes have no external destination; their capability authority stays mediated.
-    if (selection.id === OPENKIT_REPOSITORY_MCP_ID || selection.id === OPENKIT_GENERATIVE_MCP_ID)
-      return [];
+    if (selection.id === OPENKIT_GENERATIVE_MCP_ID) return [];
     if (!server || !server.enabled)
       throw new Error('Public network managed destination metadata is unavailable.');
     if (server.transport.kind !== 'http') return [];

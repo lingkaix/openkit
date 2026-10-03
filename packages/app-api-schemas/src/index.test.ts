@@ -14,6 +14,7 @@ import * as appApiSchemas from './index.js';
 import {
   AppDiagnosticsResponseSchema,
   AppSearchResponseSchema,
+  ArchivedGitPushRecordSchema,
   AuthSignInEmailResponseSchema,
   AuthSignOutResponseSchema,
   AuthSignUpEmailResponseSchema,
@@ -35,16 +36,12 @@ import {
   DataRootBackupVerifyResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
-  ExecuteGitPushRequestSchema,
-  ExecuteGitPushResponseSchema,
   GatewayUsageSummarySchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
-  GetGitPushRecordResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkspaceApplyResultResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
-  GitPushRecordSchema,
   ImportWorkspaceArtifactRequestSchema,
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
@@ -69,7 +66,6 @@ import {
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
   ListArtifactReviewsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
-  ListGitPushRecordsResponseSchema,
   ListHumanAttentionResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
   ListKnowledgeClaimsResponseSchema,
@@ -96,7 +92,6 @@ import {
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceQuarantineRecordsResponseSchema,
   ListWorkspaceReconciliationRecordsResponseSchema,
-  ListWorkspaceRepositoriesResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultUseRecordsResponseSchema,
@@ -113,8 +108,6 @@ import {
   RecordKnowledgeObservationResponseSchema,
   RegisterKnowledgeSourceRequestSchema,
   RegisterKnowledgeSourceResponseSchema,
-  RequestGitPushApprovalRequestSchema,
-  RequestGitPushApprovalResponseSchema,
   ResolveKnowledgeConflictRequestSchema,
   ResolveKnowledgeConflictResponseSchema,
   RestoreThreadMaterialRequestSchema,
@@ -141,7 +134,6 @@ import {
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
-  SetWorkspaceRepositoryResponseSchema,
   StagedWorkspaceReviewSchema,
   StartTaskModeRequestSchema,
   StartTaskModeResponseSchema,
@@ -186,8 +178,6 @@ import {
   WorkspaceQuarantineRecordSchema,
   WorkspaceReconciliationRecordSchema,
   WorkspaceRecoveryDecisionSchema,
-  WorkspaceRepositoryDiagnosticsResponseSchema,
-  WorkspaceRepositoryResourceSchema,
 } from './index.js';
 
 const timestamp = '2026-05-15T05:17:42.000Z';
@@ -3914,112 +3904,6 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('accepts redacted workspace repository resources and rejects raw local paths', () => {
-    const repository = {
-      workspaceId: 'ws_demo',
-      resourceId: 'repo_default',
-      type: 'git_repository',
-      displayName: 'OpenKit',
-      diagnosticsStatus: 'ready',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      pathSummary: 'local directory "openkit"',
-      git: {
-        authorEmail: 'approver@example.invalid',
-        authorName: 'Approving Human',
-        allowedPushTargets: ['openkit/release'],
-        commitOnApply: true,
-        protectedBranchPatterns: ['main', 'release/*'],
-        requireReviewLinkage: true,
-        stagingStrategy: 'review-branch',
-      },
-      validation: {
-        ok: true,
-        resourceKind: 'git_repository',
-        status: 'ready',
-        summary: 'local directory "openkit" is ready as a git repository.',
-        pathSummary: 'local directory "openkit"',
-      },
-    };
-
-    expect(WorkspaceRepositoryResourceSchema.parse(repository)).toMatchObject({
-      resourceId: 'repo_default',
-      diagnosticsStatus: 'ready',
-      git: {
-        authorEmail: 'approver@example.invalid',
-        authorName: 'Approving Human',
-        allowedPushTargets: ['openkit/release'],
-        commitOnApply: true,
-        protectedBranchPatterns: ['main', 'release/*'],
-        requireReviewLinkage: true,
-        stagingStrategy: 'review-branch',
-      },
-    });
-    expect(
-      WorkspaceRepositoryResourceSchema.safeParse({
-        ...repository,
-        localPath: '/Users/example/openkit',
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceRepositoryResourceSchema.safeParse({
-        ...repository,
-        pathSummary: 'local directory "task-real-worker-repo"',
-        validation: {
-          ...repository.validation,
-          summary: 'local directory "task-real-worker-repo" is ready as a git repository.',
-          pathSummary: 'local directory "task-real-worker-repo"',
-        },
-      }).success
-    ).toBe(true);
-    expect(
-      WorkspaceRepositoryResourceSchema.safeParse({
-        ...repository,
-        displayName: '/Users/example/openkit',
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceRepositoryResourceSchema.safeParse({
-        ...repository,
-        displayName: 'C:\\Users\\example\\openkit',
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceRepositoryResourceSchema.safeParse({
-        ...repository,
-        displayName: 'OpenKit at /Users/example/other',
-      }).success
-    ).toBe(false);
-    expect(
-      ListWorkspaceRepositoriesResponseSchema.parse({
-        items: [repository],
-        defaultResourceId: 'repo_default',
-        defaultResource: repository,
-      }).defaultResource?.resourceId
-    ).toBe('repo_default');
-    expect(
-      SetWorkspaceRepositoryResponseSchema.parse({
-        repository,
-      }).repository.resourceId
-    ).toBe('repo_default');
-    expect(
-      WorkspaceRepositoryResourceSchema.parse({
-        ...repository,
-        git: {
-          authorEmail: null,
-          authorName: null,
-          commitOnApply: false,
-        },
-      }).git
-    ).toMatchObject({
-      allowedPushTargets: [],
-      protectedBranchPatterns: ['main', 'master', 'release/*', 'v*'],
-      requireReviewLinkage: true,
-      stagingStrategy: 'staging-root',
-      vaultGrantRef: null,
-    });
-  });
-
   it('accepts redacted Git push records and rejects raw secrets or host paths', () => {
     const pushRecord = {
       id: 'gpr_1',
@@ -4041,9 +3925,9 @@ describe('app api schemas', () => {
       updatedAt: timestamp,
     };
 
-    expect(GitPushRecordSchema.parse(pushRecord).outcome).toBe('pushed');
+    expect(ArchivedGitPushRecordSchema.parse(pushRecord).outcome).toBe('pushed');
     expect(
-      GitPushRecordSchema.parse({
+      ArchivedGitPushRecordSchema.parse({
         ...pushRecord,
         errorSummary: 'Git push refused because V1 supports GitHub remotes only.',
         outcome: 'unsupported-provider',
@@ -4052,189 +3936,15 @@ describe('app api schemas', () => {
       }).outcome
     ).toBe('unsupported-provider');
     expect(
-      ListGitPushRecordsResponseSchema.parse({
-        items: [pushRecord],
-      }).items[0]?.id
-    ).toBe('gpr_1');
-    expect(GetGitPushRecordResponseSchema.parse(pushRecord).id).toBe('gpr_1');
-    expect(
-      GitPushRecordSchema.safeParse({
+      ArchivedGitPushRecordSchema.safeParse({
         ...pushRecord,
         remoteSummary: 'GitHub repository at /Users/example/openkit',
       }).success
     ).toBe(false);
     expect(
-      GitPushRecordSchema.safeParse({
+      ArchivedGitPushRecordSchema.safeParse({
         ...pushRecord,
         errorSummary: 'auth failed for ghp_openkit_secret',
-      }).success
-    ).toBe(false);
-  });
-
-  it('accepts Git push approval requests without caller-authored remote identity', () => {
-    const request = {
-      requestId: '00000000-0000-4000-8000-000000000024',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      commitIds: ['abc123'],
-    };
-    const approval = {
-      id: 'ap_git_push_1',
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: 'tu_demo',
-      kind: 'permission',
-      status: 'pending',
-      title: 'Approve Git push to main',
-      description: 'Publish abc123 to GitHub repository openkit on origin.',
-      createdAt: timestamp,
-      resolvedAt: null,
-    };
-
-    expect(RequestGitPushApprovalRequestSchema.parse(request)).toEqual(request);
-    expect(
-      RequestGitPushApprovalResponseSchema.parse({
-        approval,
-        approvalItemId: 'it_git_push_approval_1',
-        policyDecisionId: 'pd_git_push_approval_1',
-      }).approval.id
-    ).toBe('ap_git_push_1');
-    expect(
-      RequestGitPushApprovalRequestSchema.safeParse({
-        ...request,
-        remoteSummary: 'GitHub repository openkit on origin',
-      }).success
-    ).toBe(false);
-  });
-
-  it('accepts approval-bound Git push execution requests and rejects repeated authority', () => {
-    const request = {
-      requestId: '00000000-0000-4000-8000-000000000026',
-      approvalRequestId: 'ap_git_push_1',
-    };
-    const record = {
-      id: 'gpr_1',
-      workspaceId: 'ws_demo',
-      repositoryResourceId: 'repo_default',
-      approvalRowId: 'it_git_push_approval_1',
-      policyDecisionId: 'pd_repo_push_granted_ap_git_push_1',
-      actorId: 'user_1',
-      remoteSummary: 'GitHub repository openkit on origin',
-      sourceRef: 'HEAD',
-      targetBranch: 'main',
-      commitIds: ['abc123'],
-      reviewIds: ['swr_1'],
-      remoteHeadBefore: null,
-      remoteHeadAfter: 'abc123',
-      outcome: 'pushed',
-      errorSummary: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    expect(ExecuteGitPushRequestSchema.parse(request)).toEqual(request);
-    expect(ExecuteGitPushResponseSchema.parse(record).outcome).toBe('pushed');
-    for (const repeatedAuthority of [
-      { policyDecisionId: 'pd_repo_push_granted_ap_git_push_1' },
-      { remoteSummary: 'GitHub repository openkit on origin' },
-      { remoteName: 'origin' },
-      { sourceRef: 'HEAD' },
-      { targetBranch: 'main' },
-      { commitIds: ['abc123'] },
-    ]) {
-      expect(
-        ExecuteGitPushRequestSchema.safeParse({ ...request, ...repeatedAuthority }).success
-      ).toBe(false);
-    }
-  });
-
-  it('accepts repository diagnostics snapshots and rejects raw local paths', () => {
-    const diagnostic = {
-      workspaceId: 'ws_demo',
-      resourceId: 'repo_default',
-      type: 'git_repository',
-      displayName: 'OpenKit',
-      diagnosticsStatus: 'ready',
-      ready: true,
-      summary: 'local directory "openkit" is ready as a git repository.',
-      pathSummary: 'local directory "openkit"',
-      updatedAt: timestamp,
-    };
-
-    expect(
-      WorkspaceRepositoryDiagnosticsResponseSchema.parse({
-        workspaceId: 'ws_demo',
-        defaultResourceId: 'repo_default',
-        defaultResource: diagnostic,
-        resources: [
-          diagnostic,
-          {
-            ...diagnostic,
-            resourceId: 'repo_missing',
-            diagnosticsStatus: 'missing',
-            ready: false,
-            summary: 'local directory "missing" does not exist.',
-            pathSummary: 'local directory "missing"',
-          },
-          {
-            ...diagnostic,
-            resourceId: 'repo_not_git',
-            diagnosticsStatus: 'not_git',
-            ready: false,
-            summary: 'local directory "plain" is not a git repository directory.',
-            pathSummary: 'local directory "plain"',
-          },
-          {
-            ...diagnostic,
-            resourceId: 'repo_inaccessible',
-            diagnosticsStatus: 'inaccessible',
-            ready: false,
-            summary: 'local directory "private" could not be inspected.',
-            pathSummary: 'local directory "private"',
-          },
-        ],
-      }).resources.map((item) => item.diagnosticsStatus)
-    ).toEqual(['ready', 'missing', 'not_git', 'inaccessible']);
-
-    expect(
-      WorkspaceRepositoryDiagnosticsResponseSchema.safeParse({
-        workspaceId: 'ws_demo',
-        defaultResourceId: 'repo_default',
-        defaultResource: diagnostic,
-        resources: [
-          {
-            ...diagnostic,
-            localPath: '/Users/example/openkit',
-          },
-        ],
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceRepositoryDiagnosticsResponseSchema.safeParse({
-        workspaceId: 'ws_demo',
-        defaultResourceId: 'repo_default',
-        defaultResource: diagnostic,
-        resources: [
-          {
-            ...diagnostic,
-            displayName: 'Repository at /Users/example/other',
-          },
-        ],
-      }).success
-    ).toBe(false);
-    expect(
-      WorkspaceRepositoryDiagnosticsResponseSchema.safeParse({
-        workspaceId: 'ws_demo',
-        defaultResourceId: 'repo_default',
-        defaultResource: diagnostic,
-        resources: [
-          {
-            ...diagnostic,
-            summary: 'Repository at /Users/example/openkit is ready.',
-          },
-        ],
       }).success
     ).toBe(false);
   });

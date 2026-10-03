@@ -30,7 +30,6 @@ export const workspaceKeys = {
   knowledgeClaims: (workspaceId: string) => ['knowledge-claims', workspaceId] as const,
   knowledgeConflicts: (workspaceId: string) => ['knowledge-conflicts', workspaceId] as const,
   knowledgeIndexes: (workspaceId: string) => ['knowledge-indexes', workspaceId] as const,
-  repositories: (workspaceId: string) => ['repositories', workspaceId] as const,
   catalog: (workspaceId: string) => ['catalog', workspaceId] as const,
 };
 
@@ -153,24 +152,6 @@ export type SuggestKnowledgeRepairsCommand = {
 export type CheckKnowledgeHealthCommand = {
   workspaceId: string;
   input: Omit<Parameters<CoreClient['operations']['knowledge.health.check']>[0], 'workspaceId'>;
-};
-/** Selected-Workspace repository resources, diagnostics, and durable push records. */
-export type RepositoryProjection = {
-  resources: Awaited<ReturnType<CoreClient['repositories']['list']>>;
-  diagnostics: Awaited<ReturnType<CoreClient['repositories']['diagnostics']>>;
-  pushRecords: Awaited<ReturnType<CoreClient['repositories']['listGitPushRecords']>>['items'];
-};
-/** Exact replayable request for one repository push approval. */
-export type GitPushApprovalCommand = {
-  workspaceId: string;
-  resourceId: string;
-  input: Parameters<CoreClient['repositories']['requestGitPushApproval']>[2];
-};
-/** Versioned execution request for one granted repository push approval. */
-export type GitPushExecutionCommand = {
-  workspaceId: string;
-  resourceId: string;
-  input: Parameters<CoreClient['repositories']['executeGitPush']>[2];
 };
 
 /** Sort Needs-you rows longest-waiting first (oldest `createdAt` first). */
@@ -497,70 +478,6 @@ export function useCheckKnowledgeHealth() {
         workspaceId: command.workspaceId,
         ...command.input,
       }),
-    retry: false,
-  });
-}
-
-/**
- * Read repository resources, diagnostics, and push records for one validated Workspace.
- *
- * @param workspaceId Validated selected Workspace, or null before discovery settles.
- * @returns One TanStack query over the three existing repository reads.
- */
-export function useRepositoryProjection(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: workspaceKeys.repositories(workspaceId ?? ''),
-    queryFn: async (): Promise<RepositoryProjection> => {
-      const [resources, diagnostics, pushRecords] = await Promise.all([
-        client.repositories.list(workspaceId as string),
-        client.repositories.diagnostics(workspaceId as string),
-        client.repositories.listGitPushRecords(workspaceId as string),
-      ]);
-      return { resources, diagnostics, pushRecords: pushRecords.items };
-    },
-    enabled: Boolean(workspaceId),
-  });
-}
-
-/** @returns Mutation for requesting or exactly replaying one repository push approval command. */
-export function useRequestGitPushApproval() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: GitPushApprovalCommand) =>
-      client.repositories.requestGitPushApproval(
-        command.workspaceId,
-        command.resourceId,
-        command.input
-      ),
-    retry: false,
-  });
-}
-
-/** @returns Mutation that executes one granted push and reads its exact terminal record. */
-export function useExecuteGitPush() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: async (command: GitPushExecutionCommand) => {
-      const record = await client.repositories.executeGitPush(
-        command.workspaceId,
-        command.resourceId,
-        command.input
-      );
-      return client.repositories.getGitPushRecord(command.workspaceId, record.id);
-    },
-    retry: false,
-  });
-}
-
-/** @returns Mutation that sets the selected Workspace default repository. */
-export function useSetDefaultRepository() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: {
-      workspaceId: string;
-      input: Parameters<CoreClient['repositories']['setDefault']>[1];
-    }) => client.repositories.setDefault(command.workspaceId, command.input),
     retry: false,
   });
 }

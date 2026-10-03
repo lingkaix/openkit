@@ -79,7 +79,6 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
-import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import {
   bindThreadMaterial,
   createWorkspaceMaterial,
@@ -625,14 +624,9 @@ function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
  *
  * @param name Stable test-case slug used for ids and temporary roots.
  * @param strategy Workspace synchronization strategy emitted by the worker.
- * @param repositoryStrategy Linked repository staging strategy, or `missing` for no exact link.
  * @returns Ingress dependencies and a valid baseline worker change record.
  */
-function createWorkspaceChangeIngressFixture(
-  name: string,
-  strategy: 'git' | 'filesystem',
-  repositoryStrategy: 'missing' | 'review-branch' | 'staging-root'
-) {
+function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'filesystem') {
   const timestamp = '2026-07-11T00:00:00.000Z';
   const requestId = '00000000-0000-4000-8000-000000000260';
   const workspaceId = 'ws_demo';
@@ -667,20 +661,6 @@ function createWorkspaceChangeIngressFixture(
   const afterDigest = `sha256:${'2'.repeat(64)}`;
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
-  if (repositoryStrategy !== 'missing') {
-    upsertWorkspaceRepositoryResource(workspaceDb, {
-      displayName: 'Ingress validation repository',
-      git: {
-        authorEmail: 'approver@example.invalid',
-        authorName: 'Approving Human',
-        stagingStrategy: repositoryStrategy,
-      },
-      localPath: repositoryPath,
-      resourceId,
-      workspaceExists: (candidateWorkspaceId) => candidateWorkspaceId === workspaceId,
-      workspaceId,
-    });
-  }
 
   const storeDataRoot = mkdtempSync(join(tmpdir(), `openkit-ingress-${name}-store-`));
   const store = createDemoStore({ dataRoot: storeDataRoot });
@@ -1910,11 +1890,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-collection-publication-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const fixture = createWorkspaceChangeIngressFixture(
-      `publication_${mode}`,
-      'git',
-      'review-branch'
-    );
+    const fixture = createWorkspaceChangeIngressFixture(`publication_${mode}`, 'git');
     const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
     applyScopedMigrations(publicationDb);
     publicationDb.sqlite.close();
@@ -3591,12 +3567,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     'utf8',
     'non-utf8',
-  ] as const)('stages linked review branches while ingesting production worker changes: $0', async (format) => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'staged_review_branch',
-      'git',
-      'review-branch'
-    );
+  ] as const)('retains worker Git evidence without staging a host branch: $0', async (format) => {
+    const fixture = createWorkspaceChangeIngressFixture('staged_review_branch', 'git');
     const stagedBytes =
       format === 'utf8' ? Buffer.from('# Demo\n\nReviewed.\n') : Buffer.from([98, 255, 10]);
     writeFileSync(join(fixture.repositoryPath, 'README.md'), stagedBytes);
@@ -3634,17 +3606,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     await ingestWorkspaceChangeFixture(fixture, record);
 
-    const branchCommit = runTestGit(fixture.repositoryPath, [
-      'rev-parse',
-      '--verify',
-      fixture.reviewBranchRef,
-    ]).trim();
-    expect(branchCommit).not.toBe(baseCommit);
-    expect(
-      execFileSync('git', ['show', `${branchCommit}:README.md`], {
-        cwd: fixture.repositoryPath,
-      })
-    ).toEqual(stagedBytes);
+    const branchCommit = record.changeSet.head.commit;
+    expect(() =>
+      runTestGit(fixture.repositoryPath, ['rev-parse', '--verify', fixture.reviewBranchRef])
+    ).toThrow();
     expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([
       expect.objectContaining({
         artifactId: fixture.artifactId,
@@ -3701,11 +3666,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('accepts equivalent workspace bases with different object key order', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'equivalent_base_key_order',
-      'git',
-      'staging-root'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('equivalent_base_key_order', 'git');
     const record = {
       ...fixture.record,
       changeSet: {
@@ -3726,11 +3687,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('rejects a workspace review without package request proof before Artifact or Review writes', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'missing_package_request_proof',
-      'git',
-      'staging-root'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('missing_package_request_proof', 'git');
     const createArtifact = vi.spyOn(fixture.store, 'createArtifact');
 
     fixture.environmentPackage.scope.requestId = null;
@@ -3746,7 +3703,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('refuses governed dispatch without durable capture admission before Git backend effects', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('git_without_core_db', 'git', 'missing');
+    const fixture = createWorkspaceChangeIngressFixture('git_without_core_db', 'git');
     const backend = new FakeWorkerGovernanceBackend();
     const collectWorkspaceChanges = vi
       .spyOn(backend, 'collectWorkspaceChanges')
@@ -3787,8 +3744,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('stores worker synchronization records in the owner-independent workspace', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('actor_scope', 'git', 'missing');
+  it('stores worker Git evidence in the owner-independent workspace', async () => {
+    const fixture = createWorkspaceChangeIngressFixture('actor_scope', 'git');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-actor-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3809,18 +3766,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const setupDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(setupDb);
-    upsertWorkspaceRepositoryResource(setupDb, {
-      displayName: 'Workspace repository',
-      git: {
-        authorEmail: 'actor@example.invalid',
-        authorName: 'Actor User',
-        stagingStrategy: 'staging-root',
-      },
-      localPath: fixture.repositoryPath,
-      resourceId: 'repo',
-      workspaceExists: (candidateWorkspaceId) => candidateWorkspaceId === workspace.id,
-      workspaceId: workspace.id,
-    });
     setupDb.sqlite.close();
     const backend = new FakeWorkerGovernanceBackend();
     const collectWorkspaceChanges = vi
@@ -3877,13 +3822,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
             agentSetup: createTestAgentSetup(),
             requestId: '00000000-0000-4000-8000-000000000203',
             triggerActor: turn.triggerActor,
-            workspaceCwd: fixture.repositoryPath,
+            workspaceCwd: null,
+            workspaceDataSourceCatalog: {
+              schemaVersion: 1,
+              sources: [
+                {
+                  id: 'repo',
+                  displayName: 'Remote Git source',
+                  kind: 'git',
+                  access: 'read-write',
+                  allowedSlotKinds: ['worktree'],
+                  sensitivity: 'internal',
+                  status: 'active',
+                  locator: {
+                    url: 'https://example.invalid/source.git',
+                    commit: fixture.record.changeSet.base.commit!,
+                  },
+                },
+              ],
+            },
+            workspaceSourceRefs: { repo: 'repo' },
             workspaceRoots: [
               {
                 access: 'read-write',
                 id: 'repo',
-                sourceKind: 'host-dir',
-                sourcePath: fixture.repositoryPath,
+                sourceKind: 'remote-git',
+                sourceCommit: fixture.record.changeSet.base.commit!,
                 workerPath: '/workspace/repo',
               },
             ],
@@ -3898,14 +3862,28 @@ describe('WorkerGovernanceTurnExecutor', () => {
       try {
         expect.soft(startError).toBeNull();
         expect.soft(listWorkspaceInputSnapshots(workspaceDb, workspace.id)).toHaveLength(1);
-        expect.soft(listWorkspaceSyncReviews(workspaceDb, workspace.id)).toEqual([
-          expect.objectContaining({
-            review: expect.objectContaining({
-              id: fixture.reviewId,
-              staging: expect.objectContaining({ branch: null }),
-            }),
-          }),
-        ]);
+        expect.soft(listWorkspaceSyncReviews(workspaceDb, workspace.id)).toEqual([]);
+        expect.soft(listWorkspaceChangeSets(workspaceDb, workspace.id)).toEqual([]);
+        const evidence = store.getArtifact(
+          workspace.id,
+          `ar_workspace_changes_${turn.id}_${fixture.reviewId}`
+        );
+        expect(evidence).toMatchObject({
+          workspaceId: workspace.id,
+          origin: { threadId: turn.threadId, turnId: turn.id },
+          title: 'Git work evidence',
+          content: { format: 'json' },
+        });
+        const body = JSON.parse(evidence.content.body);
+        expect(body).toMatchObject({
+          changeSet: {
+            id: fixture.record.changeSet.id,
+            workspaceId: workspace.id,
+            resourceId: 'repo',
+          },
+          patchPayload: fixture.record.patchPayload,
+        });
+        expect(body).not.toHaveProperty('review');
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -3917,11 +3895,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('retains a complete Artifact for exact retry when later ingress persistence fails', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'artifact_compensation',
-      'git',
-      'review-branch'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('artifact_compensation', 'git');
     const createArtifact = fixture.store.createArtifact.bind(fixture.store);
     fixture.store.createArtifact = (artifact) => {
       const created = createArtifact(artifact);
@@ -3964,7 +3938,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('retains a refinement-only candidate without staging a Git review branch', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('refinement_only', 'git', 'review-branch');
+    const fixture = createWorkspaceChangeIngressFixture('refinement_only', 'git');
     const record = {
       ...fixture.record,
       review: {
@@ -4000,7 +3974,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       record: WorkerGovernanceWorkspaceChangeRecord
     ) => WorkerGovernanceWorkspaceChangeRecord;
     readonly name: string;
-    readonly repositoryStrategy: 'missing' | 'review-branch' | 'staging-root';
     readonly strategy: 'git' | 'filesystem';
   }[] = [
     ...(['accepted', 'needs_refinement', 'rejected', 'blocked'] as const).map((status) => ({
@@ -4009,7 +3982,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         review: { ...record.review, status },
       }),
       name: `non-pending ${status} review`,
-      repositoryStrategy: 'review-branch' as const,
       strategy: 'git' as const,
     })),
     {
@@ -4025,7 +3997,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         },
       }),
       name: 'Git change set with filesystem staging',
-      repositoryStrategy: 'review-branch',
       strategy: 'git',
     },
     {
@@ -4041,33 +4012,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         },
       }),
       name: 'filesystem change set with Git staging',
-      repositoryStrategy: 'missing',
       strategy: 'filesystem',
     },
     {
       inputStrategy: 'filesystem',
       mutate: (record) => record,
       name: 'change-set and input-snapshot strategy mismatch',
-      repositoryStrategy: 'review-branch',
       strategy: 'git',
     },
     {
       materializationStrategy: 'filesystem',
       mutate: (record) => record,
       name: 'change-set and materialization strategy mismatch',
-      repositoryStrategy: 'review-branch',
-      strategy: 'git',
-    },
-    {
-      mutate: (record) => record,
-      name: 'Git change set without its exact repository resource',
-      repositoryStrategy: 'missing',
       strategy: 'git',
     },
     {
       mutate: (record) => ({ ...record, filesystemApply: null }),
       name: 'filesystem change set without apply metadata',
-      repositoryStrategy: 'missing',
       strategy: 'filesystem',
     },
     {
@@ -4081,7 +4042,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : null,
       }),
       name: 'filesystem before snapshot from another workspace',
-      repositoryStrategy: 'missing',
       strategy: 'filesystem',
     },
     {
@@ -4095,7 +4055,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : null,
       }),
       name: 'filesystem before snapshot from another resource',
-      repositoryStrategy: 'missing',
       strategy: 'filesystem',
     },
     {
@@ -4112,13 +4071,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : null,
       }),
       name: 'filesystem before snapshot with another content digest',
-      repositoryStrategy: 'missing',
       strategy: 'filesystem',
     },
     {
       mutate: (record) => ({ ...record, patchPayload: null }),
       name: 'Git change set without patch payload',
-      repositoryStrategy: 'staging-root',
       strategy: 'git',
     },
     {
@@ -4127,7 +4084,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         changeSet: { ...record.changeSet, patch: null },
       }),
       name: 'Git change set without patch reference',
-      repositoryStrategy: 'staging-root',
       strategy: 'git',
     },
     {
@@ -4138,13 +4094,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : null,
       }),
       name: 'Git patch payload that mismatches its reference',
-      repositoryStrategy: 'staging-root',
       strategy: 'git',
     },
   ];
 
   it('retains Git-source output as evidence without a host repository or apply review', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('vendor_git_evidence', 'git', 'missing');
+    const fixture = createWorkspaceChangeIngressFixture('vendor_git_evidence', 'git');
     fixture.environmentPackage.workspace = {
       inputs: [{ id: 'repo', access: 'read-write', source: { kind: 'git' } }],
     } as AgentEnvironmentPackage['workspace'];
@@ -4164,11 +4119,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('reports a non-secret workspace review actionability reason', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'actionability_reason',
-      'git',
-      'staging-root'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('actionability_reason', 'git');
     let ingressError: unknown;
 
     try {
@@ -4191,13 +4142,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     materializationStrategy,
     mutate,
     name,
-    repositoryStrategy,
     strategy,
   }) => {
     const fixture = createWorkspaceChangeIngressFixture(
       name.replaceAll(/[^a-z0-9]+/gi, '_').toLowerCase(),
-      strategy,
-      repositoryStrategy
+      strategy
     );
     let ingressError: unknown;
 
@@ -4240,20 +4189,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       reviewArtifactIds: [],
       reviewIds: [],
     });
-    if (name === 'Git change set without its exact repository resource') {
-      expect(ingressError).toMatchObject({
-        message: `Workspace review is not actionable (git_repository_missing): ${fixture.reviewId}. Link repository resource ${fixture.record.changeSet.resourceId} in Repositories. A new authorized Task can recover retained changes if they remain; linking does not replay the old handoff or apply them.`,
-      });
-    }
     fixture.workspaceDb.sqlite.close();
   });
 
   it('rejects a conflicting pre-existing review artifact without overwriting or deleting it', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'conflicting_artifact',
-      'git',
-      'review-branch'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('conflicting_artifact', 'git');
     const body = 'Unrelated artifact content.';
     const existingArtifact = fixture.store.createArtifact({
       content: { body, format: 'markdown' },
@@ -4323,11 +4263,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const backend = new FakeWorkerGovernanceBackend();
-    const fixture = createWorkspaceChangeIngressFixture(
-      'failed_closeout_missing_target',
-      'git',
-      'missing'
-    );
+    const fixture = createWorkspaceChangeIngressFixture('failed_closeout_missing_target', 'git');
     vi.spyOn(backend, 'collectWorkspaceChanges').mockResolvedValue([fixture.record]);
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
     const executor = new WorkerGovernanceTurnExecutor({
@@ -4364,15 +4300,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('adopts an exact orphan review artifact without rewriting it', async () => {
-    const fixture = createWorkspaceChangeIngressFixture(
-      'exact_orphan_artifact',
-      'git',
-      'staging-root'
-    );
-    const review = {
-      ...fixture.record.review,
-      staging: { ...fixture.record.review.staging, branch: null },
-    };
+    const fixture = createWorkspaceChangeIngressFixture('exact_orphan_artifact', 'git');
+    const review = fixture.record.review;
     const body = JSON.stringify(
       {
         changeSet: fixture.record.changeSet,
@@ -5415,7 +5344,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
               displayName: 'Main repository',
               id: 'repo_default',
               kind: 'git',
-              locator: { repositoryResourceId: 'repo_default' },
+              locator: { url: 'https://example.invalid/source.git', commit: originalCommit },
               sensitivity: 'internal',
               status: 'active',
             },
@@ -5425,8 +5354,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             access: 'read-write',
             id: 'repo_default',
-            sourceKind: 'host-dir',
-            sourcePath: repositoryPath,
+            sourceKind: 'remote-git',
+            sourceCommit: originalCommit,
             workerPath: '/workspace/openkit',
           },
         ],
@@ -5452,7 +5381,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(backend.lastPackage?.workspace.inputs[0]?.source).toMatchObject({
       catalogEntryDigest: expect.stringMatching(/^sha256:/),
       kind: 'git',
-      locator: { repositoryResourceId: 'repo_default' },
+      url: 'https://example.invalid/source.git',
+      commit: originalCommit,
       sourceId: 'repo_default',
       sourceRef: 'repo_default',
     });

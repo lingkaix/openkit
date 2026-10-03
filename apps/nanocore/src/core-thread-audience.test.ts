@@ -7,9 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
-import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
-import { listGitPushRecords } from './runtime/git-push-records.js';
+import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -86,36 +85,63 @@ function createCoreAudienceFixture() {
   );
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  const gate = createPolicyApprovalGate({
-    action: 'repo.push',
-    approvalId: 'ap_local_private',
-    approvalItemId: 'it_ap_local_private',
-    decisionId: 'pd_local_private',
-    description: 'Approve a private-thread push.',
-    reasonCode: 'repo_push_approval_required',
-    resourceSummary: { action: 'repo.push' },
-    store,
-    subjectSummary: { kind: 'test' },
-    title: 'Approve private push',
-    turnId: approvalTurn.id,
-    workspaceDb,
-    workspaceId: workspace.id,
-  });
-  const deniedGate = createPolicyApprovalGate({
-    action: 'repo.push',
-    approvalId: 'ap_other_private',
-    approvalItemId: 'it_ap_other_private',
-    decisionId: 'pd_other_private',
-    description: 'Approve the other private-thread push.',
-    reasonCode: 'repo_push_approval_required',
-    resourceSummary: { action: 'repo.push' },
-    store,
-    subjectSummary: { kind: 'test' },
-    title: 'Approve other private push',
-    turnId: deniedApprovalTurn.id,
-    workspaceDb,
-    workspaceId: workspace.id,
-  });
+  for (const [turn, requestId, requestItemId] of [
+    [approvalTurn, 'ap_local_private', 'it_ap_local_private'],
+    [deniedApprovalTurn, 'ap_other_private', 'it_ap_other_private'],
+  ] as const) {
+    store.createItem({
+      id: requestItemId,
+      workspaceId: workspace.id,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: requestId,
+      title: 'Approve a vendor tool call',
+      description: 'Allow the captured vendor call.',
+      kind: 'permission',
+      createdAt: STAMP,
+      completedAt: STAMP,
+    });
+    raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+      requestId,
+      workspaceId: workspace.id,
+      threadId: turn.threadId,
+      raisingTurnId: turn.id,
+      requestItemId,
+      responsibleUserId: turn.triggerActor.id,
+      requesterKind: 'worker',
+      agentId: 'agent_fixture',
+      kind: 'approval',
+      now: STAMP,
+      approval: {
+        kind: 'permission',
+        title: 'Approve a vendor tool call',
+        description: 'Allow the captured vendor call.',
+      },
+      call: {
+        serverId: 'vendor',
+        toolName: 'publish',
+        catalogRevision: 'sha256:fixture',
+        schemaSnapshotId: 'snap_fixture',
+        canonicalArgumentsJson: '{}',
+        argumentsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+        packageDigest: null,
+        policyDecisionId: null,
+        authorizationContext: {
+          threadId: turn.threadId,
+          turnId: turn.id,
+          agentSessionId: null,
+          agentId: 'agent_fixture',
+          responsibleUserId: turn.triggerActor.id,
+          packageDigest: null,
+          policyDecisionId: null,
+        },
+      },
+    });
+  }
+  const gate = { approvalId: 'ap_local_private' };
+  const deniedGate = { approvalId: 'ap_other_private' };
   workspaceDb.sqlite.close();
   coreDb.sqlite
     .prepare(
@@ -622,175 +648,6 @@ describe('core Thread audience', () => {
           row.secrets
         );
         row.after();
-      }
-    } finally {
-      fixture.close();
-    }
-  });
-
-  it('refuses git-push approval body Turn and execute approvalId Thread as missing or hidden without effects', async () => {
-    const fixture = createCoreAudienceFixture();
-    try {
-      const member = bearer(
-        fixture.coreDb,
-        { scope: 'workspace', userId: 'user_other' },
-        fixture.workspace.id
-      );
-      const admin = bearer(
-        fixture.coreDb,
-        { scope: 'server-admin', userId: 'user_local' },
-        fixture.workspace.id
-      );
-      const approvalPath = `/api/app/workspaces/${fixture.workspace.id}/repositories/repo_audience/git-push/approval`;
-      const executePath = `/api/app/workspaces/${fixture.workspace.id}/repositories/repo_audience/git-push`;
-      const approvalItemCount = (threadId: string) =>
-        fixture.store
-          .listThreadItems(fixture.workspace.id, threadId)
-          .filter((item) => item.type === 'approval-request').length;
-      const foreignWorkspace = fixture.store.createWorkspace('Foreign approval Workspace');
-      const foreignApproval = fixture.store.createApproval({
-        ...fixture.store.getApproval(fixture.gate.approvalId),
-        id: 'ap_foreign_workspace_visible_thread',
-        workspaceId: foreignWorkspace.id,
-        threadId: fixture.shared.id,
-        turnId: fixture.sharedTurn.id,
-      });
-      const ownApprovalItems = approvalItemCount(fixture.own.id);
-      const deniedApprovalItems = approvalItemCount(fixture.denied.id);
-      const rows = [
-        {
-          after: () => expect(approvalItemCount(fixture.own.id)).toBe(ownApprovalItems),
-          headers: member,
-          init: {
-            body: JSON.stringify({
-              commitIds: ['deadbeef'],
-              requestId: '11111111-1111-4111-8111-111111111301',
-              sourceRef: 'HEAD',
-              targetBranch: 'main',
-              threadId: fixture.own.id,
-              turnId: fixture.ownTurn.id,
-            }),
-            method: 'POST' as const,
-          },
-          path: approvalPath,
-          secrets: ['local-private needle'],
-        },
-        {
-          after: () => expect(approvalItemCount(fixture.denied.id)).toBe(deniedApprovalItems),
-          headers: admin,
-          init: {
-            body: JSON.stringify({
-              commitIds: ['deadbeef'],
-              requestId: '11111111-1111-4111-8111-111111111302',
-              sourceRef: 'HEAD',
-              targetBranch: 'main',
-              threadId: fixture.denied.id,
-              turnId: fixture.deniedTurn.id,
-            }),
-            method: 'POST' as const,
-          },
-          path: approvalPath,
-          secrets: ['other-private needle'],
-        },
-        {
-          after: () => expect(approvalItemCount(fixture.own.id)).toBe(ownApprovalItems),
-          headers: member,
-          init: {
-            body: JSON.stringify({
-              commitIds: ['deadbeef'],
-              requestId: '11111111-1111-4111-8111-111111111303',
-              sourceRef: 'HEAD',
-              targetBranch: 'main',
-              threadId: 'th_missing_audience',
-              turnId: 'tu_missing_audience',
-            }),
-            method: 'POST' as const,
-          },
-          path: approvalPath,
-          secrets: ['local-private needle', 'other-private needle'],
-        },
-        {
-          after: () => {
-            expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
-            expect(fixture.store.getTurnById(fixture.approvalTurn.id).status).toBe('running');
-          },
-          headers: member,
-          init: {
-            body: JSON.stringify({
-              approvalRequestId: fixture.gate.approvalId,
-              requestId: '11111111-1111-4111-8111-111111111304',
-            }),
-            method: 'POST' as const,
-          },
-          path: executePath,
-          secrets: ['local-private needle', 'Approve private push'],
-        },
-        {
-          after: () => {
-            expect(fixture.store.getApproval(fixture.deniedGate.approvalId).status).toBe('pending');
-            expect(fixture.store.getTurnById(fixture.deniedApprovalTurn.id).status).toBe('running');
-          },
-          headers: admin,
-          init: {
-            body: JSON.stringify({
-              approvalRequestId: fixture.deniedGate.approvalId,
-              requestId: '11111111-1111-4111-8111-111111111305',
-            }),
-            method: 'POST' as const,
-          },
-          path: executePath,
-          secrets: ['other-private needle', 'Approve other private push'],
-        },
-        {
-          after: () =>
-            expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending'),
-          headers: admin,
-          init: {
-            body: JSON.stringify({
-              approvalRequestId: 'ap_missing_audience',
-              requestId: '11111111-1111-4111-8111-111111111306',
-            }),
-            method: 'POST' as const,
-          },
-          path: executePath,
-          secrets: ['local-private needle', 'other-private needle'],
-        },
-      ];
-      for (const row of rows) {
-        await expectNondisclosing404(
-          await fixture.app.request(row.path, {
-            ...row.init,
-            headers: {
-              ...(row.path.endsWith('approval.respond')
-                ? { 'x-openkit-request-id': '11111111-1111-4111-8111-111111111204' }
-                : {}),
-              ...row.headers,
-              'content-type': 'application/json',
-            },
-          }),
-          row.secrets
-        );
-        row.after();
-      }
-      for (const headers of [member, admin]) {
-        await expectNondisclosing404(
-          await fixture.app.request(executePath, {
-            method: 'POST',
-            headers: { ...headers, 'content-type': 'application/json' },
-            body: JSON.stringify({
-              approvalRequestId: foreignApproval.id,
-              requestId: '11111111-1111-4111-8111-111111111307',
-            }),
-          }),
-          ['Foreign approval Workspace', 'Approve private push']
-        );
-        expect(fixture.store.getApproval(foreignApproval.id).status).toBe('pending');
-      }
-      const workspaceDb = openWorkspaceDb(fixture.store.getDataRoot() ?? '', fixture.workspace.id);
-      try {
-        expect(listGitPushRecords(workspaceDb, fixture.workspace.id)).toEqual([]);
-      } finally {
-        workspaceDb.sqlite.close();
       }
     } finally {
       fixture.close();

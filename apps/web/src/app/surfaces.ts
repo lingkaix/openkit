@@ -106,16 +106,6 @@ export const SURFACES: Surface[] = [
     wp: 'WP-7',
   },
   {
-    id: 'repositories',
-    title: 'Repositories',
-    path: '/repositories',
-    tier: 'A',
-    nav: 'workspace-compact',
-    icon: 'repository',
-    board: '19',
-    wp: 'WP-7',
-  },
-  {
     id: 'catalog',
     title: 'Catalog',
     path: '/catalog',

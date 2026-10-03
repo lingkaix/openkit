@@ -7,7 +7,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { createPolicyApprovalGate } from './policy/approval-gates.js';
+import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -17,11 +17,11 @@ import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
- * Creates one policy-gated approval route fixture.
+ * Creates one person approval or incomplete runtime approval route fixture.
  *
  * @returns Open database, app, store, turn, and stable gate ids.
  */
-function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.push') {
+function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'review.apply') {
   const actionSlug = action.replace('.', '_');
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-approval-route-')));
   applyMigrations(coreDb);
@@ -38,22 +38,58 @@ function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.pu
   });
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   applyScopedMigrations(workspaceDb);
-  const gate = createPolicyApprovalGate({
-    action,
+  const gate = {
     approvalId: `ap_${actionSlug}`,
     approvalItemId: `it_${actionSlug}`,
-    decisionId: `pd_${actionSlug}_required`,
-    description: `Approve ${action}.`,
-    reasonCode: `${actionSlug}_approval_required`,
-    resourceSummary: { action },
-    store,
-    subjectSummary: { kind: 'test' },
-    title: `Approve ${action}`,
-    turnId: turn.id,
-    workspaceDb,
+  };
+  const timestamp = '2026-09-30T00:00:00.000Z';
+  store.createApproval({
+    id: gate.approvalId,
     workspaceId: 'ws_demo',
+    threadId: turn.threadId,
+    turnId: turn.id,
+    kind: 'permission',
+    status: 'pending',
+    title: `Approve ${action}`,
+    description: `Approve ${action}.`,
+    createdAt: timestamp,
+    resolvedAt: null,
   });
-  if (action === 'repo.push') {
+  store.createItem({
+    id: gate.approvalItemId,
+    workspaceId: 'ws_demo',
+    threadId: turn.threadId,
+    turnId: turn.id,
+    type: 'approval-request',
+    status: 'completed',
+    approvalRequestId: gate.approvalId,
+    title: `Approve ${action}`,
+    description: `Approve ${action}.`,
+    kind: 'permission',
+    createdAt: timestamp,
+    completedAt: timestamp,
+  });
+  if (action === 'tool.use') {
+    recordProductPermissionDecision({
+      workspaceDb,
+      decisionId: `pd_${actionSlug}_required`,
+      ownerScope: 'workspace',
+      workspaceId: 'ws_demo',
+      policyEngineVersion: 'test-runtime-approval:v1',
+      policySnapshotId: 'test-runtime-approval',
+      subjectSummary: { kind: 'test' },
+      action,
+      resourceSummary: { action },
+      contextSummary: { threadId: turn.threadId, turnId: turn.id, workspaceId: 'ws_demo' },
+      result: 'require_approval',
+      reasonCode: `${actionSlug}_approval_required`,
+      enforcementPoint: 'test.incomplete_runtime_approval',
+      requiredApprovalKind: 'permission',
+      approvalId: gate.approvalId,
+      now: new Date(timestamp),
+    });
+  }
+  if (action === 'review.apply') {
     raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
       requestId: gate.approvalId,
       workspaceId: 'ws_demo',
@@ -63,7 +99,7 @@ function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.pu
       kind: 'approval',
       requesterKind: 'person',
       responsibleUserId: 'user_local',
-      governedIntent: { action: 'repo.push' },
+      governedIntent: { action },
       approval: {
         kind: 'permission',
         title: store.getApproval(gate.approvalId).title,
@@ -84,15 +120,15 @@ function createPolicyApprovalFixture(action: 'repo.push' | 'tool.use' = 'repo.pu
 }
 
 /**
- * Posts one approval response to a policy fixture.
+ * Posts one approval response to its person or incomplete runtime fixture.
  *
- * @param fixture Policy approval fixture.
+ * @param fixture Approval route fixture.
  * @param requestId Stable idempotency key.
  * @param decision Requested approval decision.
  * @returns Route response.
  */
-function respondToPolicyApproval(
-  fixture: ReturnType<typeof createPolicyApprovalFixture>,
+function respondToApproval(
+  fixture: ReturnType<typeof createApprovalFixture>,
   requestId: string,
   decision: 'denied' | 'granted' = 'granted'
 ): Promise<Response> {
@@ -125,12 +161,12 @@ describe('Pending Request operations', () => {
     new TurnStartValidationError('recovery_required', 'Turn receipt owner needs recovery.', 409),
     new KnowledgePageValidationError(),
   ])('preserves the command error $code and status $status from a receipt dependency', async (error) => {
-    const f = createPolicyApprovalFixture();
+    const f = createApprovalFixture();
     try {
       vi.spyOn(f.store, 'getCommandRequest').mockImplementation(() => {
         throw error;
       });
-      const response = await respondToPolicyApproval(f, '00000000-0000-4000-8000-000000000201');
+      const response = await respondToApproval(f, '00000000-0000-4000-8000-000000000201');
       expect(response.status).toBe(error.status);
       expect(await response.json()).toMatchObject({ code: error.code, message: error.message });
     } finally {
@@ -139,13 +175,10 @@ describe('Pending Request operations', () => {
   });
 
   it('rejects tool.use without the exact worker owner tuple', async () => {
-    const fixture = createPolicyApprovalFixture('tool.use');
+    const fixture = createApprovalFixture('tool.use');
 
     try {
-      const response = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000114'
-      );
+      const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000114');
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
@@ -170,8 +203,8 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('resolves repo.push on a leased Turn without deleting the scheduler lease', async () => {
-    const fixture = createPolicyApprovalFixture('repo.push');
+  it('resolves a person approval on a leased Turn without deleting the scheduler lease', async () => {
+    const fixture = createApprovalFixture('review.apply');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
@@ -201,10 +234,7 @@ describe('Pending Request operations', () => {
           `binding_${fixture.turn.id}`
         );
 
-      const response = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000171'
-      );
+      const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000171');
       expect(response.status, await response.clone().text()).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         id: fixture.gate.approvalId,
@@ -227,7 +257,7 @@ describe('Pending Request operations', () => {
   });
 
   it('keeps tool.use fail-closed when a lease exists without a worker checkpoint', async () => {
-    const fixture = createPolicyApprovalFixture('tool.use');
+    const fixture = createApprovalFixture('tool.use');
     const now = '2026-09-15T00:00:00.000Z';
 
     try {
@@ -257,10 +287,7 @@ describe('Pending Request operations', () => {
           `binding_${fixture.turn.id}`
         );
 
-      const response = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000172'
-      );
+      const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000172');
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('pending');
@@ -275,7 +302,7 @@ describe('Pending Request operations', () => {
   });
 
   it('keeps a committed person grant when the command receipt write fails', async () => {
-    const fixture = createPolicyApprovalFixture();
+    const fixture = createApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000101';
     const otherRequestId = '00000000-0000-4000-8000-000000000102';
 
@@ -284,7 +311,7 @@ describe('Pending Request operations', () => {
         throw new Error('Injected approval response receipt failure.');
       });
 
-      const failed = await respondToPolicyApproval(fixture, requestId);
+      const failed = await respondToApproval(fixture, requestId);
       expect(failed.status).toBe(404);
       await expect(failed.json()).resolves.toMatchObject({
         code: 'approval_respond_failed',
@@ -293,11 +320,11 @@ describe('Pending Request operations', () => {
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
       expect(fixture.store.listCommandRequests()).toEqual([]);
 
-      const changed = await respondToPolicyApproval(fixture, otherRequestId, 'denied');
+      const changed = await respondToApproval(fixture, otherRequestId, 'denied');
       expect(changed.status).toBe(409);
       await expect(changed.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
 
-      const retried = await respondToPolicyApproval(fixture, requestId);
+      const retried = await respondToApproval(fixture, requestId);
       expect(retried.status).toBe(409);
       await expect(retried.json()).resolves.toMatchObject({ code: 'request_not_pending' });
       expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
@@ -310,13 +337,13 @@ describe('Pending Request operations', () => {
     ['granted', '00000000-0000-4000-8000-000000000104'],
     ['denied', '00000000-0000-4000-8000-000000000107'],
   ] as const)('replays one receipt-backed %s approval without closing the raising Turn', async (decision, requestId) => {
-    const fixture = createPolicyApprovalFixture();
+    const fixture = createApprovalFixture();
 
     try {
-      const resolved = await respondToPolicyApproval(fixture, requestId, decision);
+      const resolved = await respondToApproval(fixture, requestId, decision);
       expect(resolved.status).toBe(200);
 
-      const replayed = await respondToPolicyApproval(fixture, requestId, decision);
+      const replayed = await respondToApproval(fixture, requestId, decision);
       expect(replayed.status).toBe(200);
       await expect(replayed.json()).resolves.toMatchObject({ status: decision });
       expect(fixture.store.getTurnById(fixture.turn.id).status).toBe('running');
@@ -343,14 +370,14 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('joins concurrent duplicate policy approval responses before receipt publication', async () => {
-    const fixture = createPolicyApprovalFixture();
+  it('joins concurrent duplicate person approval responses before receipt publication', async () => {
+    const fixture = createApprovalFixture();
     const requestId = '00000000-0000-4000-8000-000000000105';
 
     try {
       const responses = await Promise.all([
-        respondToPolicyApproval(fixture, requestId),
-        respondToPolicyApproval(fixture, requestId),
+        respondToApproval(fixture, requestId),
+        respondToApproval(fixture, requestId),
       ]);
 
       expect(responses.map((response) => response.status)).toEqual([200, 200]);
@@ -368,15 +395,15 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('lets one contrary policy approval request win and reports the other as stale', async () => {
-    const fixture = createPolicyApprovalFixture();
+  it('lets one contrary person approval request win and reports the other as stale', async () => {
+    const fixture = createApprovalFixture();
     const grantedRequestId = '00000000-0000-4000-8000-000000000111';
     const deniedRequestId = '00000000-0000-4000-8000-000000000112';
 
     try {
       const responses = await Promise.all([
-        respondToPolicyApproval(fixture, grantedRequestId, 'granted'),
-        respondToPolicyApproval(fixture, deniedRequestId, 'denied'),
+        respondToApproval(fixture, grantedRequestId, 'granted'),
+        respondToApproval(fixture, deniedRequestId, 'denied'),
       ]);
       const payloads = await Promise.all(responses.map((response) => response.json()));
 
@@ -400,8 +427,8 @@ describe('Pending Request operations', () => {
     }
   });
 
-  it('fails closed when the originating policy approval tuple is contradictory', async () => {
-    const fixture = createPolicyApprovalFixture();
+  it('fails closed when the originating approval tuple is contradictory', async () => {
+    const fixture = createApprovalFixture();
     const workspaceDb = openWorkspaceDb(fixture.coreDb.dataRoot, fixture.turn.workspaceId);
 
     try {
@@ -422,10 +449,7 @@ describe('Pending Request operations', () => {
       });
       workspaceDb.sqlite.close();
 
-      const response = await respondToPolicyApproval(
-        fixture,
-        '00000000-0000-4000-8000-000000000113'
-      );
+      const response = await respondToApproval(fixture, '00000000-0000-4000-8000-000000000113');
 
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });

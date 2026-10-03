@@ -26,7 +26,7 @@ Authentication schemas include optional exact-owner access-token issuance plus s
 
 This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.
 
-Materialized linked-repository roots carry the full NanoCore-captured Git base commit so AEP, input-snapshot, materialization, and review records can enforce one immutable lineage.
+Remote Git materialization carries the full Sandbox-reported Git base commit so AEP, input-snapshot, materialization, and review records can enforce one immutable lineage.
 
 Workspace materialization records and backend workspace handles carry AEP package snapshot lineage separately from the backend worker session id so terminal events, teardown, and recovery target the same materialization without treating backend-native ids as scheduler identity.
 
@@ -96,3 +96,5 @@ The Knowledge family has 19 definitions and the retained minimal entry family ha
 `ARTIFACT_OPERATION_DEFINITIONS` declares inventory, inline read, import, introduction, Review list and exact version Review decision. Inputs reuse the owned Artifact schemas with explicit selectors; the refined import and decision schemas retain their cross-field checks when trusted fields are omitted from model views. Import and introduction declare success status 201. `artifact.review-list` keeps its settled CLI identity, while `artifact.review.decide` keeps the settled domain command identity without a hyphenated alias.
 
 Conversation, Task, Attention and Pending Request operations are composed from their family definition tables; they reuse the existing structured schemas and preserve Task HTTP 202 and owner-selected conversation HTTP 200/202.
+
+`workspace-archive-history.ts` validates pre-retirement Git push and repository metadata only for archive verification. It defines no public operations, live resource, or execution authority.

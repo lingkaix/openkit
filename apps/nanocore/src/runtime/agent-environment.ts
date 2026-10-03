@@ -1,6 +1,5 @@
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCaptureCoverage,
@@ -46,10 +45,6 @@ import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receip
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
-import {
-  createOpenkitRepositoryMcpSupply,
-  OPENKIT_REPOSITORY_MCP_ID,
-} from './openkit-repository-mcp.js';
 import { createOpenkitWorkMcpSupply } from './openkit-work-mcp.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
@@ -1008,11 +1003,8 @@ function workspaceInputSource(
     };
   }
 
-  const commit = root.access === 'read-write' ? readWorkspaceGitCommit(root.sourcePath) : null;
-
   if (!sourceRef) {
     return {
-      ...(commit ? { commit } : {}),
       kind: root.sourceKind,
       pathRef: `workspace-root://${root.id}`,
       ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
@@ -1032,7 +1024,6 @@ function workspaceInputSource(
 
   return {
     catalogEntryDigest: resolved.catalogEntryDigest,
-    ...(commit ? { commit } : {}),
     kind: resolved.sourceKind,
     locator: resolved.locator,
     pathRef: `workspace-root://${root.id}`,
@@ -1042,50 +1033,6 @@ function workspaceInputSource(
     ...(root.sourceCommit ? { commit: root.sourceCommit } : {}),
     ...(resolved.vaultGrantRef ? { vaultGrantRef: resolved.vaultGrantRef } : {}),
   };
-}
-
-/**
- * Resolves the immutable Git base for one writable workspace root.
- * Command-scoped trust admits only that root's canonical path, without changing host Git configuration.
- *
- * @param sourcePath Host-local repository root.
- * @returns Full Git object id for the current HEAD commit.
- * @throws Error when the writable root has no valid Git HEAD commit.
- */
-function readWorkspaceGitCommit(sourcePath: string): string {
-  let commit: string;
-
-  try {
-    commit = execFileSync('git', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'], {
-      cwd: sourcePath,
-      encoding: 'utf8',
-      env: {
-        GIT_CONFIG_COUNT: '1',
-        GIT_CONFIG_KEY_0: 'safe.directory',
-        GIT_CONFIG_VALUE_0: realpathSync(sourcePath),
-        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-        GIT_CONFIG_NOSYSTEM: '1',
-        GIT_NO_REPLACE_OBJECTS: '1',
-        GIT_TERMINAL_PROMPT: '0',
-        LANG: 'C',
-        LC_ALL: 'C',
-        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
-      },
-      maxBuffer: 64 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-    }).trim();
-  } catch {
-    throw new Error('Writable workspace Git base could not be resolved.');
-  }
-
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
-    throw new Error('Writable workspace Git base could not be resolved.');
-  }
-
-  return commit;
 }
 
 /**
@@ -1168,7 +1115,6 @@ function resolveWorkerMcpServerSupply(
     );
   }
   return mcpServerIds.map((mcpServerId) => {
-    if (mcpServerId === OPENKIT_REPOSITORY_MCP_ID) return createOpenkitRepositoryMcpSupply();
     if (!catalog)
       throw new Error('Workspace MCP server catalog is required by the selected Agent.');
     const entry = resolveWorkspaceMcpServer({ catalog, serverId: mcpServerId });

@@ -84,7 +84,7 @@ describe('scoped storage databases', () => {
         'capability_calls',
         'evidence_bundles',
         'generative_presentations',
-        'git_push_records',
+
         'goal_card_tasks',
         'goal_cards',
         'goal_plan_versions',
@@ -112,7 +112,7 @@ describe('scoped storage databases', () => {
         'workspace_materials',
         'workspace_quarantine_records',
         'workspace_reconciliation_records',
-        'workspace_repository_resources',
+
         'workspace_snapshot_collections',
         'workspace_snapshot_cursors',
       ]);

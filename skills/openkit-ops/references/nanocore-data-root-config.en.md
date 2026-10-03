@@ -272,7 +272,7 @@ The Workspace file owns shared editable composition.
 
 `workspace.name` is required. `workspace.defaultAgentId` is the shared default for warm Sandbox supply and task launch when no explicit or User choice exists; `null` explicitly declines a Workspace default so Server fallback may apply. An Agent binding may select a profile, override model preference and admission, add Skills and MCP entries, extend sandbox declarations, and bind reusable credential requirements. Workspace sandbox extensions may declare only reusable requirements, never a direct concrete grant.
 
-Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` configures the legacy Assistant host repository reader, which retires. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
+Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` remains loadable as inert authored configuration after removal of the host reader. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
 
 ## `users/<userId>/config/user.jsonc`
 

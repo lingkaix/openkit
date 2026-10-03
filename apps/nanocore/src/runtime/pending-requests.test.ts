@@ -30,6 +30,7 @@ import {
 } from './pending-request-flow.js';
 import {
   answerPendingRequest,
+  canonicalJsonText,
   freezeReadyOutcomes,
   frozenPendingOutcomeInput,
   type PendingRequestRecord,
@@ -41,6 +42,7 @@ import {
   settleUnfinishedClaims,
   validateCanonicalLoad,
 } from './pending-requests.js';
+import { createDefaultWorkerMcpGateway, type WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 const NOW = '2026-09-30T00:00:00.000Z';
 
@@ -49,7 +51,7 @@ const NOW = '2026-09-30T00:00:00.000Z';
  *
  * @returns App, store, and data root.
  */
-function openPendingApp(agentId?: string) {
+function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -73,6 +75,7 @@ function openPendingApp(agentId?: string) {
       : {}),
     coreDb,
     dataRoot,
+    ...(workerMcpGateway ? { workerMcpGateway } : {}),
     store,
     turnExecutor: new SimulatedTurnExecutor(),
   });
@@ -1459,8 +1462,14 @@ describe('pending requests', () => {
     }
   });
 
-  it('grants a call whose tool left the supply without executing it and admits one delivering Turn', async () => {
-    const { app, coreDb, store } = openPendingApp('agent_demo');
+  it.each([
+    'echo',
+    'openkit-repository',
+  ])('grants a retained %s call whose tool left the supply without executing it and admits one delivering Turn', async (serverId) => {
+    const gateway = createDefaultWorkerMcpGateway();
+    const callTool = vi.spyOn(gateway, 'callTool');
+    const listTools = vi.spyOn(gateway, 'listTools');
+    const { app, coreDb, store } = openPendingApp('agent_demo', gateway);
     const turn = store.createTurn(
       'ws_demo',
       'th_demo',
@@ -1486,11 +1495,28 @@ describe('pending requests', () => {
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
     applyScopedMigrations(db);
     try {
-      raiseRecordedPendingRequest(
-        store,
-        db.sqlite,
-        approvalRaise(turn.id, 'ap_supply', 'digest-supply')
-      );
+      const raised = approvalRaise(turn.id, 'ap_supply', 'digest-supply');
+      if (serverId === 'openkit-repository') {
+        const args = {
+          resourceId: 'repo_default',
+          requestId: '00000000-0000-4000-8000-000000000702',
+          sourceRef: 'HEAD',
+          targetBranch: 'feature/retired',
+          commitIds: ['a'.repeat(40)],
+        };
+        raised.call = {
+          ...raised.call!,
+          serverId,
+          toolName: 'repository_push',
+          canonicalArgumentsJson: canonicalJsonText(args),
+          argumentsDigest: mcpToolArgumentsContentDigest(args),
+          catalogRevision:
+            'sha256:760fdb6951f11b512c6e556739733aec40036c3a57167b4985947dd0408b46b5',
+          schemaSnapshotId:
+            'sha256:760fdb6951f11b512c6e556739733aec40036c3a57167b4985947dd0408b46b5',
+        };
+      }
+      raiseRecordedPendingRequest(store, db.sqlite, raised);
     } finally {
       db.sqlite.close();
     }
@@ -1522,6 +1548,9 @@ describe('pending requests', () => {
         dispositionReason: 'tool-left-supply',
         claim: 'unclaimed',
       });
+      expect(callTool).not.toHaveBeenCalled();
+      expect(listTools).not.toHaveBeenCalled();
+      expect(recorded.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual([]);
     } finally {
       recorded.sqlite.close();
     }

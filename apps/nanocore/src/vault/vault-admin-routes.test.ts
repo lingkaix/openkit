@@ -1,5 +1,3 @@
-import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   globSync,
@@ -16,8 +14,6 @@ import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
-import { FsStore } from '../lib/store.js';
-import * as gitPushExecutor from '../runtime/git-push-executor.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -297,154 +293,6 @@ describe('vault admin app API', () => {
       }
       expect(vaultUnlockState.backend().listReferences()).toEqual([]);
     } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it.each([
-    ['require_human_approval', 'allowed'],
-    ['auto_allow', 'allowed'],
-    ['auto_allow', 'no-targets'],
-    ['auto_allow', 'protected-wildcard'],
-  ] as const)('enforces host push policy with %s and %s', async (mode, targetPolicy) => {
-    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
-    const store = new FsStore();
-    const workspace = store.createWorkspace('Public Vault push');
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'user_local',
-      workspaceId: workspace.id,
-    });
-    const thread = store.createThread(workspace.id, 'Publish');
-    const turn = store.createTurn(workspace.id, thread.id, 'Publish', {
-      kind: 'user',
-      id: 'user_local',
-    });
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      store,
-      vaultUnlockState,
-      openKitConfig: {
-        policy: { workspaceApprovalModes: { [workspace.id]: { 'repo.push': mode } } },
-      },
-    });
-    vaultUnlockState.unlock({ masterKey });
-    const secret = 'ghp_public_vault_push_canary';
-    const basic = Buffer.from(`x-access-token:${secret}`).toString('base64');
-    const runner = vi.spyOn(gitPushExecutor, 'runGitPushCommand').mockResolvedValue({
-      exitCode: 1,
-      stdout: '',
-      stderr: `fatal: Authentication failed ${secret} ${basic}`,
-    });
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-public-vault-push-'));
-    const git = (args: string[]) =>
-      execFileSync('git', args, {
-        cwd: repositoryPath,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
-    git(['init']);
-    git(['config', 'user.name', 'Test']);
-    git(['config', 'user.email', 'test@example.invalid']);
-    git(['commit', '--allow-empty', '-m', 'test']);
-    git(['remote', 'add', 'origin', 'https://github.com/example/test.git']);
-    const commitId = git(['rev-parse', 'HEAD']);
-    const request = (path: string, body: unknown, method = 'POST') =>
-      app.request(path, {
-        method,
-        headers: {
-          'content-type': 'application/json',
-          ...(path.startsWith('/api/app/operations/') &&
-          body &&
-          typeof body === 'object' &&
-          'requestId' in body
-            ? { 'x-openkit-request-id': String(body.requestId) }
-            : {}),
-        },
-        body: JSON.stringify(body),
-      });
-    const root = `/api/app/workspaces/${workspace.id}`;
-    try {
-      const created = await request(`${root}/vault/secrets`, {
-        secretKind: 'github-token',
-        material: secret,
-      });
-      expect(created.status).toBe(200);
-      const reference = await created.json();
-      const granted = await request(`${root}/vault/grants`, { referenceId: reference.referenceId });
-      expect(granted.status).toBe(200);
-      const grant = await granted.json();
-      const linked = await request(
-        `${root}/repositories/default`,
-        {
-          displayName: 'Test repository',
-          localPath: repositoryPath,
-          git: {
-            authorName: null,
-            authorEmail: null,
-            commitOnApply: true,
-            allowedPushTargets:
-              targetPolicy === 'no-targets'
-                ? []
-                : targetPolicy === 'protected-wildcard'
-                  ? ['*']
-                  : ['feature/test'],
-            requireReviewLinkage: false,
-            vaultGrantRef: grant.grantId,
-          },
-        },
-        'PUT'
-      );
-      expect(linked.status).toBe(200);
-      const approval = await request(`${root}/repositories/repo_default/git-push/approval`, {
-        requestId: randomUUID(),
-        threadId: thread.id,
-        turnId: turn.id,
-        sourceRef: commitId,
-        targetBranch: targetPolicy === 'protected-wildcard' ? 'main' : 'feature/test',
-        commitIds: [commitId],
-      });
-      expect(approval.status).toBe(200);
-      const payload = await approval.json();
-      if (mode === 'require_human_approval') {
-        const approved = await request('/api/app/operations/approval.respond', {
-          approvalRequestId: payload.approval.id,
-          requestId: randomUUID(),
-          workspaceId: workspace.id,
-          threadId: thread.id,
-          turnId: turn.id,
-          decision: 'granted',
-        });
-        expect(approved.status).toBe(200);
-      } else expect(payload.approval.status).toBe('granted');
-      const pushed = await request(`${root}/repositories/repo_default/git-push`, {
-        requestId: randomUUID(),
-        approvalRequestId: payload.approval.id,
-      });
-      expect(pushed.status).toBe(200);
-      const bytes = await pushed.text();
-      if (targetPolicy !== 'allowed') {
-        expect(JSON.parse(bytes)).toMatchObject({
-          outcome: targetPolicy === 'protected-wildcard' ? 'rejected-protected' : 'refused-policy',
-        });
-        expect(runner).not.toHaveBeenCalled();
-        return;
-      }
-      expect(JSON.parse(bytes)).toMatchObject({ outcome: 'auth-failed' });
-      expect(runner).toHaveBeenCalled();
-      expect(runner.mock.calls[0]?.[0].env.GIT_CONFIG_VALUE_1).toBe(
-        `AUTHORIZATION: basic ${basic}`
-      );
-      expect(bytes).not.toContain(secret);
-      expect(bytes).not.toContain(basic);
-      const list = await app.request(`${root}/repositories/git-push-records`);
-      expect(list.status).toBe(200);
-      const listBytes = await list.text();
-      expect(listBytes).not.toContain(secret);
-      expect(listBytes).not.toContain(basic);
-    } finally {
-      runner.mockRestore();
       coreDb.sqlite.close();
     }
   });

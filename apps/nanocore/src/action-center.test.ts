@@ -11,7 +11,6 @@ import { createArtifactReview, decideArtifactReview } from './artifact-reviews.j
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { DEFAULT_WORKSPACE_KNOWLEDGE_SCHEMA_VERSION } from './knowledge/okf.js';
-import { createPolicyApprovalGate } from './policy/approval-gates.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
@@ -466,26 +465,32 @@ describe('action center app API', () => {
       kind: 'user',
       id: 'user_local',
     });
-    const toolUseWorkspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
-    try {
-      createPolicyApprovalGate({
-        action: 'tool.use',
-        approvalId: 'ap_incomplete_tool_use',
-        approvalItemId: 'it_incomplete_tool_use',
-        decisionId: 'pd_incomplete_tool_use',
-        description: 'Approve one exact MCP tool effect.',
-        reasonCode: 'mcp_tool_approval_required',
-        resourceSummary: { serverId: 'echo', tool: 'echo' },
-        store,
-        subjectSummary: { agentId: 'agent_codex' },
-        title: 'Approve MCP tool use',
-        turnId: toolUseTurn.id,
-        workspaceDb: toolUseWorkspaceDb,
-        workspaceId: 'ws_demo',
-      });
-    } finally {
-      toolUseWorkspaceDb.sqlite.close();
-    }
+    const incompleteToolApproval = store.createApproval({
+      id: 'ap_incomplete_tool_use',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: toolUseTurn.id,
+      kind: 'permission',
+      status: 'pending',
+      title: 'Approve MCP tool use',
+      description: 'Approve one exact MCP tool effect.',
+      createdAt: timestamp,
+      resolvedAt: null,
+    });
+    store.createItem({
+      id: 'it_incomplete_tool_use',
+      workspaceId: 'ws_demo',
+      threadId: thread.id,
+      turnId: toolUseTurn.id,
+      type: 'approval-request',
+      status: 'completed',
+      approvalRequestId: incompleteToolApproval.id,
+      kind: 'permission',
+      title: incompleteToolApproval.title,
+      description: incompleteToolApproval.description,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
     const app = createAuthorizedCoreApp(coreDb, store);
 
     const res = await app.request(
@@ -609,7 +614,7 @@ describe('action center app API', () => {
         requesterKind: 'person',
         responsibleUserId: 'user_owner',
         approval: { kind: 'permission', title: approval.title, description: approval.description },
-        governedIntent: { action: 'repo.push' },
+        governedIntent: { action: 'review.apply' },
         now: timestamp,
       });
     } finally {

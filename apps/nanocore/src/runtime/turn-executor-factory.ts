@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -33,7 +32,6 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
-import { getWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
@@ -136,20 +134,16 @@ import {
   WorkspaceCollectCommandSchema,
   WorkspaceCollectionError,
 } from './workspace-collect-wire.js';
-import { stageWorkspaceChangeSet } from './workspace-materializer.js';
-import { readWorkspaceSnapshotCandidate } from './workspace-snapshot-candidate.js';
 import {
   acceptWorkspaceBaseline,
   acceptWorkspaceCapture,
   authorizeWorkspaceBaselineInitialization,
-  linkWorkspaceSnapshotReview,
   readWorkspaceBaselineIdentity,
   readWorkspaceCollection,
   readWorkspaceSnapshotCursor,
   requireWorkspaceBaselineInitialization,
   type WorkspaceCollectionIdentity,
 } from './workspace-snapshot-chain.js';
-import { recordWorkerOutputManifest } from './workspace-sync-records.js';
 
 /** Exact V1 maximum for one raw NanoHost file export. */
 const NANO_HOST_FILE_EXPORT_MAX_BYTES = 256 * 1024 * 1024;
@@ -528,16 +522,16 @@ function workspaceMaterializationRefusalExplanation(
     return ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.';
   }
   if (startup.reason === 'git_fetch_commit_unavailable') {
-    return ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+    return ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. The incomplete slot stays in place.';
   }
   if (startup.reason === 'git_fetch_http_refused') {
-    return ` Repository access returned HTTP ${startup.explanation?.httpStatus}; the source of the refusal is not established. Ask an authorized operator to inspect sandbox network policy and upstream access separately, then start a new Task only after cleanup and storage admission allow it. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.`;
+    return ` Repository access returned HTTP ${startup.explanation?.httpStatus}; the source of the refusal is not established. Ask an authorized operator to inspect sandbox network policy and upstream access separately, then start a new Task only after cleanup and storage admission allow it. The incomplete slot stays in place.`;
   }
   if (startup.reason === 'git_fetch_tls_failed') {
-    return ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+    return ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. The incomplete slot stays in place.';
   }
   if (startup.reason === 'git_fetch_transport_failed') {
-    return ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.';
+    return ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. The incomplete slot stays in place.';
   }
   return '';
 }
@@ -3227,122 +3221,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const { stagingPath: _stagingPath, ...durable } = result;
         receipt = acceptWorkspaceCapture(db, identity, durable, candidate);
       }
-      const sources = session.environmentPackage.workspace.inputs.filter(
-        (input) => input.access === 'read-write'
-      );
-      if (
-        sources.length !== 1 ||
-        sources[0]!.source.kind === 'git' ||
-        !getWorkspaceRepositoryResource(db, identity.workspaceId, sources[0]!.id)
-      )
-        return [];
-      const source = sources[0]!;
-      if (!receipt.candidate) {
-        if (receipt.result.outcome === 'empty')
-          recordWorkerOutputManifest(db, {
-            id: `wom_${identity.collectionId}`,
-            workspaceId: identity.workspaceId,
-            inputSnapshotId: `wis_${identity.packageSnapshotId}_${source.id}`,
-            materializationRecordId: `wmr_${identity.packageSnapshotId}_${source.id}`,
-            workerSessionId: session.identity.backendSessionId,
-            backendKind: 'openshell',
-            strategy: 'git',
-            changedPaths: [],
-            artifactIds: [],
-            ignoredOutputs: [],
-            logRefs: [],
-            testOutputRefs: [],
-            evidenceRefs: [{ kind: 'worker', ref: identity.turnId }],
-            collectedAt: receipt.result.collectedAt as string,
-          });
-        return [];
-      }
-      const parsed = readWorkspaceSnapshotCandidate(receipt.candidate);
-      const digest = `sha256:${createHash('sha256').update(receipt.candidate).digest('hex')}`;
-      const timestamp = receipt.result.collectedAt as string;
-      const changeSet = WorkspaceChangeSetSchema.parse({
-        id: `wcs_${identity.collectionId}`,
-        workspaceId: identity.workspaceId,
-        resourceId: source.id,
-        sourceId: source.source.sourceId,
-        inputSnapshotId: `wis_${identity.packageSnapshotId}_${source.id}`,
-        materializationRecordId: `wmr_${identity.packageSnapshotId}_${source.id}`,
-        strategy: 'git',
-        base: {
-          commit:
-            typeof receipt.result.acceptedCommit === 'string'
-              ? receipt.result.acceptedCommit
-              : (source.source.commit ?? null),
-          contentDigest: null,
-        },
-        head: { commit: null, contentDigest: digest },
-        changedPaths: parsed.changedPaths,
-        patch: {
-          ref: `workspace-collection://${identity.collectionId}`,
-          digest,
-          bytes: receipt.candidate.length,
-        },
-        bundle: null,
-        artifactIds: [],
-        evidenceRefs: [{ kind: 'worker', ref: identity.turnId }],
-        redaction: {
-          status: 'no-sensitive-content-found',
-          notes: ['NanoHost literal credential check passed.'],
-        },
-        createdAt: timestamp,
-      });
-      const patchPayload = {
-        text: receipt.candidate.toString('utf8'),
-        ...(Buffer.from(receipt.candidate.toString('utf8')).equals(receipt.candidate)
-          ? {}
-          : {
-              text: receipt.candidate.toString('base64'),
-              encoding: 'base64' as const,
-            }),
-        bytes: receipt.candidate.length,
-        digest,
-        mediaType: 'text/x-diff' as const,
-      };
-      const review = stageWorkspaceChangeSet(changeSet, {
-        createdAt: timestamp,
-        patchPayload,
-        reviewId: `swr_${identity.collectionId}`,
-        stagingRef: `staging://workspace/${identity.collectionId}`,
-      });
-      const earlierLinks = receipt.result.pendingEarlierLinks as string[];
-      if (earlierLinks.length)
-        review.riskSummary += ` Pending earlier capture links on this volume: ${earlierLinks.join(', ')}.`;
-      const unsafeApplication =
-        parsed.requiresRefinement ||
-        parsed.changedPaths.some(
-          (path) =>
-            path.binary ||
-            [path.oldPermissions, path.newPermissions].some(
-              (mode) => mode !== undefined && !['0644', '0755'].includes(mode)
-            )
-        ) ||
-        /^(?:new file mode|deleted file mode|old mode|new mode) (?:120000|160000)$/m.test(
-          parsed.gitPatch.toString('utf8')
-        ) ||
-        parsed.gitPatch.length === 0;
-      if (unsafeApplication) {
-        review.staging.branch = null;
-        review.validation.push({
-          command: 'workspace-snapshot-apply',
-          status: 'failed',
-          ref: null,
-        });
-        review.riskSummary +=
-          ' These captured bytes require refinement before the current Git application path can apply them.';
-      }
-      linkWorkspaceSnapshotReview(db, identity, changeSet.id);
-      const records = [{ changeSet, filesystemApply: null, patchPayload, review }];
-      if (boundary !== 'turn-end') {
-        if (!this.workspaceCollectionPublisher)
-          throw new Error('Workspace collection review publisher is unavailable.');
-        await this.workspaceCollectionPublisher(session.environmentPackage, records);
-      }
-      return records;
+      // Captured Sandbox bytes remain evidence; no NanoCore host repository is an apply target.
+      return [];
     } finally {
       db.sqlite.close();
     }

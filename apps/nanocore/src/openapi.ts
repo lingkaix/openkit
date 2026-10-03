@@ -48,14 +48,11 @@ import {
   EnrollNanoHostResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
-  ExecuteGitPushRequestSchema,
-  ExecuteGitPushResponseSchema,
   GenerativePresentationDataModelResponseSchema,
   GenerativePresentationResourceResponseSchema,
   GetAgentCatalogEntryResponseSchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
   GetGenerativePresentationResponseSchema,
-  GetGitPushRecordResponseSchema,
   GetLightAppRecordResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkerEnvironmentStatusResponseSchema,
@@ -77,7 +74,6 @@ import {
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
   ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
-  ListGitPushRecordsResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
   ListLightAppRecordsResponseSchema,
   ListLightAppsResponseSchema,
@@ -108,7 +104,6 @@ import {
   ListWorkspacePermissionDecisionsResponseSchema,
   ListWorkspaceQuarantineRecordsResponseSchema,
   ListWorkspaceReconciliationRecordsResponseSchema,
-  ListWorkspaceRepositoriesResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
   ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
@@ -140,8 +135,6 @@ import {
   RecoverWorkspaceAccessRequestSchema,
   RefreshGenerativePresentationRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
-  RequestGitPushApprovalRequestSchema,
-  RequestGitPushApprovalResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
   RetireLightAppRequestSchema,
@@ -178,8 +171,6 @@ import {
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
-  SetWorkspaceRepositoryRequestSchema,
-  SetWorkspaceRepositoryResponseSchema,
   SkillCandidateResponseSchema,
   StartAppUpdateRequestSchema,
   StartProviderSubscriptionAccountLoginRequestSchema,
@@ -227,7 +218,6 @@ import {
   WorkspaceInvitationMutationResponseSchema,
   WorkspaceMemberMutationResponseSchema,
   WorkspaceOwnershipMutationResponseSchema,
-  WorkspaceRepositoryDiagnosticsResponseSchema,
   WorkspaceVaultGrantSchema,
   WorkspaceWorkersResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -4561,245 +4551,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/repositories': {
-        get: {
-          operationId: 'listWorkspaceRepositories',
-          tags: ['repositories'],
-          summary: 'List redacted repository resources for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Redacted repository resources and default repository.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceRepositoriesResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/diagnostics': {
-        get: {
-          operationId: 'getWorkspaceRepositoryDiagnostics',
-          tags: ['repositories'],
-          summary: 'Read redacted repository diagnostics for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Redacted repository readiness diagnostics.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/WorkspaceRepositoryDiagnosticsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/default': {
-        put: {
-          operationId: 'setDefaultWorkspaceRepository',
-          tags: ['repositories'],
-          summary: 'Create or update the default repository resource for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SetWorkspaceRepositoryRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted repository resource read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SetWorkspaceRepositoryResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/git-push-records': {
-        get: {
-          operationId: 'listGitPushRecords',
-          tags: ['repositories'],
-          summary: 'List durable Git push records for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Redacted Git push records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListGitPushRecordsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/git-push-records/{pushRecordId}': {
-        get: {
-          operationId: 'getGitPushRecord',
-          tags: ['repositories'],
-          summary: 'Read one durable Git push record.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'pushRecordId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Redacted Git push record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/GetGitPushRecordResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/{resourceId}/git-push/approval': {
-        post: {
-          operationId: 'requestGitPushApproval',
-          tags: ['repositories'],
-          summary: 'Open one approval gate for a repository Git push.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'resourceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RequestGitPushApprovalRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Created approval gate and linked policy decision ids.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RequestGitPushApprovalResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/repositories/{resourceId}/git-push': {
-        post: {
-          operationId: 'executeGitPush',
-          tags: ['repositories'],
-          summary: 'Execute one approved repository Git push.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'resourceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ExecuteGitPushRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Durable Git push attempt record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ExecuteGitPushResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/catalog': {
         get: appJsonOperation({
           operationId: 'getWorkspaceCatalog',
@@ -5093,13 +4844,10 @@ export function createAppOpenApiDocument() {
         DecommissionNanoHostResponse: toJsonSchema(DecommissionNanoHostResponseSchema),
         EnrollNanoHostRequest: toJsonSchema(EnrollNanoHostRequestSchema),
         EnrollNanoHostResponse: toJsonSchema(EnrollNanoHostResponseSchema),
-        ExecuteGitPushRequest: toJsonSchema(ExecuteGitPushRequestSchema),
-        ExecuteGitPushResponse: toJsonSchema(ExecuteGitPushResponseSchema),
         GetAgentCatalogEntryResponse: toJsonSchema(GetAgentCatalogEntryResponseSchema),
         GetAgentEnvironmentPackageSnapshotResponse: toJsonSchema(
           GetAgentEnvironmentPackageSnapshotResponseSchema
         ),
-        GetGitPushRecordResponse: toJsonSchema(GetGitPushRecordResponseSchema),
         GetWorkerEnvironmentStatusResponse: toJsonSchema(GetWorkerEnvironmentStatusResponseSchema),
         GetWorkspaceApplyResultResponse: toJsonSchema(GetWorkspaceApplyResultResponseSchema),
         GetWorkspaceCatalogResponse: toJsonSchema(GetWorkspaceCatalogResponseSchema),
@@ -5113,7 +4861,6 @@ export function createAppOpenApiDocument() {
           ListAgentEnvironmentPackageSnapshotsResponseSchema
         ),
         ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
-        ListGitPushRecordsResponse: toJsonSchema(ListGitPushRecordsResponseSchema),
         ListInterruptedWorkerStatesResponse: toJsonSchema(
           ListInterruptedWorkerStatesResponseSchema
         ),
@@ -5171,7 +4918,6 @@ export function createAppOpenApiDocument() {
           ListBackendWorkspaceHandlesResponseSchema
         ),
         ListWorkerOutputManifestsResponse: toJsonSchema(ListWorkerOutputManifestsResponseSchema),
-        ListWorkspaceRepositoriesResponse: toJsonSchema(ListWorkspaceRepositoriesResponseSchema),
         ListWorkspaceSyncReviewsResponse: toJsonSchema(ListWorkspaceSyncReviewsResponseSchema),
         ListWorkspaceVaultUseRecordsResponse: toJsonSchema(
           ListWorkspaceVaultUseRecordsResponseSchema
@@ -5192,8 +4938,6 @@ export function createAppOpenApiDocument() {
         QuickChatResponse: toJsonSchema(QuickChatResponseSchema),
         PurgeWorkerEnvironmentRequest: toJsonSchema(PurgeWorkerEnvironmentRequestSchema),
         PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
-        RequestGitPushApprovalRequest: toJsonSchema(RequestGitPushApprovalRequestSchema),
-        RequestGitPushApprovalResponse: toJsonSchema(RequestGitPushApprovalResponseSchema),
         PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
         PrepareAppUpdateResponse: toJsonSchema(PrepareAppUpdateResponseSchema),
         PrepareWorkerEnvironmentRequest: toJsonSchema(PrepareWorkerEnvironmentRequestSchema),
@@ -5231,8 +4975,6 @@ export function createAppOpenApiDocument() {
         RuntimeConfigSchemaCatalogResponse: toJsonSchema(RuntimeConfigSchemaCatalogResponseSchema),
         RuntimeConfigValidationRequest: toJsonSchema(RuntimeConfigValidationRequestSchema),
         RuntimeConfigValidationResponse: toJsonSchema(RuntimeConfigValidationResponseSchema),
-        SetWorkspaceRepositoryRequest: toJsonSchema(SetWorkspaceRepositoryRequestSchema),
-        SetWorkspaceRepositoryResponse: toJsonSchema(SetWorkspaceRepositoryResponseSchema),
         SelectWorkerEnvironmentRequest: toJsonSchema(SelectWorkerEnvironmentRequestSchema),
         SelectWorkerEnvironmentResponse: toJsonSchema(SelectWorkerEnvironmentResponseSchema),
         SetMyAdminAccessTokenDefaultRequest: toJsonSchema(
@@ -5306,9 +5048,6 @@ export function createAppOpenApiDocument() {
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
         WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
-        WorkspaceRepositoryDiagnosticsResponse: toJsonSchema(
-          WorkspaceRepositoryDiagnosticsResponseSchema
-        ),
       },
     },
   } satisfies Omit<AppOpenApiDocument, 'x-openkit-source-digest'>;

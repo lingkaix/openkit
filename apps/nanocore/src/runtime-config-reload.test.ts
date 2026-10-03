@@ -208,14 +208,6 @@ describe('runtime config reload API', () => {
 
     try {
       seedWritableGitRepository(repositoryPath);
-      await app.request('/api/app/workspaces/ws_demo/repositories/default', {
-        method: 'PUT',
-        body: JSON.stringify({
-          displayName: 'Runtime reload repository',
-          localPath: repositoryPath,
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
 
       const turnRes = await app.request('/api/turns', {
         method: 'POST',

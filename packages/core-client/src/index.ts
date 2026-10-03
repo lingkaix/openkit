@@ -10,7 +10,6 @@ export * from './events.js';
 export * from './http.js';
 export * from './operations.js';
 export * from './provider-subscriptions.js';
-export * from './repository.js';
 export * from './request-id.js';
 export * from './runtime-config.js';
 export * from './sse.js';

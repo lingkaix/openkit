@@ -399,7 +399,7 @@ export function createWorkspaceMcpConfig(input: {
   const packageRootDigest = input.packageRootDigest ?? null;
   const digest = digestMcpConfig(declaration, packageRootDigest);
   const id = input.id ?? skillIdFromDisplayName(input.displayName);
-  if (id === 'openkit-generative' || id === 'openkit-repository') {
+  if (id === 'openkit-generative') {
     throw new CatalogForbiddenError('Catalog id is reserved for a built-in Worker MCP surface.');
   }
   const current =
@@ -846,7 +846,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   const bindings: ResourceCatalogDocument['mcp']['bindings'] = [];
   const layout = ensureWorkspaceLayout(input.dataRoot, input.workspaceId);
   for (const server of input.catalog.servers) {
-    if (server.id === 'openkit-generative' || server.id === 'openkit-repository') {
+    if (server.id === 'openkit-generative') {
       throw new CatalogForbiddenError('Catalog id is reserved for a built-in Worker MCP surface.');
     }
     const declaration: McpValidatedDeclaration =

@@ -23,7 +23,7 @@ function createWorkspaceRoot(): string {
 }
 
 describe('workspace config schema', () => {
-  it('accepts host-dir roots and defaults createIfMissing to false', () => {
+  it('loads retained authored inspection settings and host-dir roots after host retirement', () => {
     const parsed = WorkspaceConfigSchema.parse({
       schemaVersion: 1,
       workspace: {

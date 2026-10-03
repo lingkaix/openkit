@@ -69,7 +69,6 @@ const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandRec
       .nullable(),
     resultKind: z.enum([
       'knowledge-answer',
-      'repository-answer',
       'provider-answer',
       'clarification',
       'task-handoff',

@@ -7,6 +7,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { BootConfigError } from '../config/mode.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { applyGoalCutover, removeGoalSandboxPin } from './goal-cutover.js';
+import { applyHostRepositoryCutover } from './host-repository-cutover.js';
 
 /** Ownership scope for one native Drizzle journal. */
 export type StorageMigrationScope = 'core' | 'user' | 'workspace' | 'app';
@@ -86,7 +87,10 @@ export function applyNativeScopeMigrations(
 
   try {
     migrate(drizzle(sqlite), { migrationsFolder });
-    if (scope === 'workspace') applyGoalCutover(sqlite);
+    if (scope === 'workspace') {
+      applyGoalCutover(sqlite);
+      applyHostRepositoryCutover(sqlite);
+    }
     if (scope === 'core') removeGoalSandboxPin(sqlite);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

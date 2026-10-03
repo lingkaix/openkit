@@ -42,7 +42,6 @@ import {
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
-import { upsertWorkspaceRepositoryResource } from '../workspace/repository-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -2495,8 +2494,12 @@ describe('createConfiguredTurnExecutor', () => {
     const db = openWorkspaceDb(f.coreDb.dataRoot, f.environmentPackage.scope.workspaceId);
     try {
       expect(
-        db.sqlite.prepare('SELECT count(*) AS count FROM workspace_repository_resources').get()
-      ).toEqual({ count: 0 });
+        db.sqlite
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_repository_resources'"
+          )
+          .all()
+      ).toEqual([]);
       const collector = f.backend as unknown as {
         ensureWorkspaceBaseline(
           session: unknown,
@@ -2623,15 +2626,15 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
   it.each([
-    { destination: false, format: 'text' },
-    { destination: true, format: 'text' },
-    { destination: true, format: 'binary' },
-    { destination: true, format: 'invalid-utf8' },
-  ])('retains exact cumulative candidate bytes with destination=$destination format=$format without a Git apply review', async ({
-    destination,
+    { gitSource: false, format: 'text' },
+    { gitSource: true, format: 'text' },
+    { gitSource: true, format: 'binary' },
+    { gitSource: true, format: 'invalid-utf8' },
+  ])('retains exact cumulative candidate bytes with gitSource=$gitSource format=$format without a Git apply review', async ({
+    gitSource,
     format,
   }) => {
-    const repositoryPath = mkdtempSync(join(tmpdir(), 'n6-review-destination-'));
+    const repositoryPath = mkdtempSync(join(tmpdir(), 'n6-candidate-source-'));
     const git = (...args: string[]) =>
       execFileSync('git', ['-C', repositoryPath, ...args], {
         encoding: 'utf8',
@@ -2651,7 +2654,7 @@ describe('createConfiguredTurnExecutor', () => {
     git('add', '.');
     git('commit', '-m', 'base');
     const commit = git('rev-parse', 'HEAD');
-    const expectedTree = destination
+    const expectedTree = gitSource
       ? git('rev-parse', 'HEAD^{tree}')
       : '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
     writeFileSync(
@@ -2673,14 +2676,11 @@ describe('createConfiguredTurnExecutor', () => {
     git('restore', '.');
     let serial = 1;
     let captureEmpty = false;
-    const f = await admitIdleSupplyResident(`candidate_${destination}_${format}`, {
-      ...(destination ? { gitBaseline: { commit, tree: expectedTree } } : {}),
-      ...(destination
+    const f = await admitIdleSupplyResident(`candidate_${gitSource}_${format}`, {
+      ...(gitSource ? { gitBaseline: { commit, tree: expectedTree } } : {}),
+      ...(gitSource
         ? {
-            configurePackage: (
-              env: AgentEnvironmentPackage,
-              coreDb: ReturnType<typeof createFactoryCoreDb>
-            ) => {
+            configurePackage: (env: AgentEnvironmentPackage) => {
               env.workspace.inputs = [
                 {
                   id: 'repo',
@@ -2697,19 +2697,6 @@ describe('createConfiguredTurnExecutor', () => {
               ];
               (env.extensions.openkit as Record<string, unknown>).sessionWorkspace =
                 planSessionWorkspaceMaterialization({ environmentPackage: env });
-              const db = openWorkspaceDb(coreDb.dataRoot, env.scope.workspaceId);
-              applyScopedMigrations(db);
-              try {
-                upsertWorkspaceRepositoryResource(db, {
-                  workspaceId: env.scope.workspaceId,
-                  resourceId: 'repo',
-                  displayName: 'Existing destination',
-                  localPath: repositoryPath,
-                  workspaceExists: () => true,
-                });
-              } finally {
-                db.sqlite.close();
-              }
             },
           }
         : {}),
@@ -2770,7 +2757,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(
         db.sqlite.prepare('SELECT count(*) AS count FROM staged_workspace_reviews').get()
       ).toEqual({ count: 0 });
-      expect(JSON.parse(row.result_json).acceptedCommit).toBe(destination ? commit : null);
+      expect(JSON.parse(row.result_json).acceptedCommit).toBe(gitSource ? commit : null);
       bytes = Buffer.from('openkit-full-mode-delta\n0644 0600 8 file.txt\n');
       const unsupported = await collector.collectWorkspaceSnapshot(f.session, 'release');
       expect(unsupported).toEqual([]);
@@ -5859,13 +5846,6 @@ describe('createConfiguredTurnExecutor', () => {
         const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
         try {
           applyScopedMigrations(db);
-          upsertWorkspaceRepositoryResource(db, {
-            workspaceId: environmentPackage.scope.workspaceId,
-            resourceId: 'repo',
-            displayName: 'Comparable initial source',
-            localPath: fixtureRepositoryPath,
-            workspaceExists: () => true,
-          });
         } finally {
           db.sqlite.close();
         }
@@ -8989,15 +8969,15 @@ describe('createConfiguredTurnExecutor', () => {
             : undefined;
         const explanation =
           startupRefused === 'git_fetch_http_refused'
-            ? ' Repository access returned HTTP 403; the source of the refusal is not established. Ask an authorized operator to inspect sandbox network policy and upstream access separately, then start a new Task only after cleanup and storage admission allow it. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+            ? ' Repository access returned HTTP 403; the source of the refusal is not established. Ask an authorized operator to inspect sandbox network policy and upstream access separately, then start a new Task only after cleanup and storage admission allow it. The incomplete slot stays in place.'
             : startupRefused === 'retained_baseline_conflict'
               ? ' The retained checkout and requested commit differ; choose a fresh work environment for the requested commit, or restore the source configuration to the retained checkout’s original commit before reusing it.'
               : startupRefused === 'git_fetch_commit_unavailable'
-                ? ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                ? ' The configured Git remote does not serve the requested commit; publish that commit or select one the remote serves, then start a new Task. The incomplete slot stays in place.'
                 : startupRefused === 'git_fetch_tls_failed'
-                  ? ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                  ? ' The worker could not trust the configured Git remote during fetch. Repair the sandbox trust bundle, then start a new Task. The incomplete slot stays in place.'
                   : startupRefused === 'git_fetch_transport_failed'
-                    ? ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. Host repository diagnostics only confirm the local checkout, and the incomplete slot stays in place.'
+                    ? ' The worker could not complete the Git fetch transport. This covers a subprocess, timeout, or transport failure and is not proof that the remote lacks the commit. The incomplete slot stays in place.'
                     : '';
         const observedRejection = launch.catch((error: unknown) => error);
         const rejected = expect(launch).rejects.toMatchObject({

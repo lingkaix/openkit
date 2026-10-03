@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { extname, relative, resolve, sep } from 'node:path';
 import {
   ConversationTargetCatalogSchema,
   QuickChatRequestSchema,
@@ -135,10 +133,6 @@ import {
   artifactReferenceItemId,
   isCurrentAgentSessionStatus,
 } from './storage/workspace-file-records.js';
-import {
-  getDefaultWorkspaceRepositoryResource,
-  type WorkspaceRepositoryResourceRecord,
-} from './workspace/repository-store.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Stable attribution id for the direct Quick Chat provider call. */
@@ -162,7 +156,6 @@ type ConversationCommandResultKind = ConversationCommandReceiptMetadata['resultK
 /** Deterministic durable Item prefix for each accepted Chat result kind. */
 const CONVERSATION_RESULT_ITEM_PREFIX = {
   'knowledge-answer': 'it_chat_answer_',
-  'repository-answer': 'it_chat_repo_files_',
   'provider-answer': 'it_chat_answer_',
   clarification: 'it_chat_clarify_',
   'task-handoff': 'it_chat_task_',
@@ -574,18 +567,12 @@ function replayConversationCommand(
     let explanation: string;
     let handoff: ConversationCommandBody['handoff'] = null;
 
-    if (
-      metadata.resultKind === 'knowledge-answer' ||
-      metadata.resultKind === 'repository-answer' ||
-      metadata.resultKind === 'provider-answer'
-    ) {
+    if (metadata.resultKind === 'knowledge-answer' || metadata.resultKind === 'provider-answer') {
       if (
         resultItem.type !== 'assistant-message' ||
         resultItem.status !== 'completed' ||
         metadata.downstream !== null ||
-        (metadata.resultKind === 'repository-answer'
-          ? metadata.status !== 202
-          : metadata.status !== 200)
+        metadata.status !== 200
       ) {
         throw new Error('Chat answer owner contradiction.');
       }
@@ -594,9 +581,7 @@ function replayConversationCommand(
       explanation =
         metadata.resultKind === 'knowledge-answer'
           ? 'The Knowledge Manager answered from Workspace Knowledge.'
-          : metadata.resultKind === 'repository-answer'
-            ? 'The Assistant answered from a read-only repository inspection.'
-            : 'The Assistant answered directly.';
+          : 'The Assistant answered directly.';
     } else if (metadata.resultKind === 'task-handoff') {
       if (
         resultItem.type !== 'status' ||
@@ -1560,309 +1545,6 @@ function isProjectWorkChatPrompt(prompt: string): boolean {
   return /\b(implement|fix|edit|change|modify|patch|refactor|build|ship|worker|task mode|goal mode|repository|repo|git|commit|push)\b/i.test(
     prompt
   );
-}
-
-/**
- * Returns true when Chat Mode can answer from a bounded repository root listing.
- *
- * @param prompt User prompt.
- * @returns Whether the prompt asks only for linked repository file names.
- */
-function isRepositoryFileListChatPrompt(prompt: string): boolean {
-  const normalized = prompt.toLowerCase();
-
-  return (
-    /\b(list|show|what|which)\b/.test(normalized) &&
-    /\b(repository|repo|working directory|workdir)\b/.test(normalized) &&
-    /\b(files|contents|entries)\b/.test(normalized)
-  );
-}
-
-type RepositoryFileListResult = {
-  answerText: string;
-  operation: 'repository.root_list' | 'repository.directory_list' | 'repository.file_read';
-  summary: string;
-};
-
-type ChatRepositoryInspectionPolicy = {
-  enabled: boolean;
-  excludedPaths: string[];
-};
-
-class ChatRepositoryInspectionPolicyError extends Error {}
-
-const ChatModeReadableFileExtensions = new Set([
-  '.css',
-  '.html',
-  '.js',
-  '.json',
-  '.jsonc',
-  '.md',
-  '.toml',
-  '.ts',
-  '.tsx',
-  '.txt',
-  '.yaml',
-  '.yml',
-]);
-
-/**
- * Returns true when Chat Mode can answer from one bounded repository text file.
- *
- * @param prompt User prompt.
- * @returns Whether the prompt asks to read one linked repository file.
- */
-function isRepositoryFileReadChatPrompt(prompt: string): boolean {
-  const normalized = prompt.toLowerCase();
-
-  return (
-    /\b(read|show|open|display)\b/.test(normalized) &&
-    /\b(repository|repo|working directory|workdir)\b/.test(normalized) &&
-    /\b(file|path)\b/.test(normalized)
-  );
-}
-
-/**
- * Reads the Chat Mode repository inspection policy from workspace config.
- *
- * @param snapshot Runtime config snapshot containing workspace policy.
- * @param workspaceId Workspace id to inspect.
- * @returns Effective repository inspection policy.
- */
-function chatRepositoryInspectionPolicy(
-  snapshot: RuntimeConfigSnapshot,
-  workspaceId: string
-): ChatRepositoryInspectionPolicy {
-  const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId);
-  const policy = workspaceConfig?.config.workspace?.assistant?.repositoryInspection;
-
-  return {
-    enabled: policy?.enabled !== false,
-    excludedPaths: policy?.excludedPaths ?? [],
-  };
-}
-
-/**
- * Extracts one optional repository-relative directory from a file-list prompt.
- *
- * @param prompt User prompt.
- * @returns Repository-relative directory when the prompt asks for one.
- */
-function parseRepositoryFileListDirectory(prompt: string): string | null {
-  const match = /\b(?:in|under)\s+([a-z0-9._/-]+)\b/i.exec(prompt.trim());
-  const requestedDirectory = match?.[1]?.replace(/\/+$/g, '') ?? null;
-
-  if (!requestedDirectory || ['repository', 'repo', 'workdir'].includes(requestedDirectory)) {
-    return null;
-  }
-
-  return requestedDirectory;
-}
-
-/**
- * Extracts one repository-relative file path from a strict file-read prompt.
- *
- * @param prompt User prompt.
- * @returns Repository-relative file path when the prompt names one.
- */
-function parseRepositoryFileReadPath(prompt: string): string | null {
-  const match = /\b(?:file|path)\s+([a-z0-9._/-]+\.[a-z0-9]+)\b/i.exec(prompt.trim());
-  return match?.[1]?.replace(/[.?!,;:]+$/g, '') ?? null;
-}
-
-/**
- * Returns a safe repository-relative target path.
- *
- * @param rootPath Absolute repository root path.
- * @param requestedPath Repository-relative path requested by the user.
- * @returns Absolute target and normalized repository-relative label.
- */
-function safeRepositoryTarget(
-  rootPath: string,
-  requestedPath: string
-): {
-  targetPath: string;
-  relativeTarget: string;
-} {
-  const requestedSegments = requestedPath.split('/').filter(Boolean);
-  const targetPath = resolve(rootPath, requestedPath);
-  const relativeTarget = relative(rootPath, targetPath);
-  const relativeSegments = relativeTarget.split(sep).filter(Boolean);
-
-  if (
-    requestedSegments.some((segment) => segment === '.' || segment === '..') ||
-    relativeTarget.startsWith('..') ||
-    relativeSegments.some((segment) => segment.startsWith('.'))
-  ) {
-    throw new Error('Unsafe repository path requested.');
-  }
-
-  return { targetPath, relativeTarget };
-}
-
-/**
- * Normalizes a repository-relative path for policy matching.
- *
- * @param path Repository-relative path.
- * @returns Slash-separated path without leading or trailing separators.
- */
-function normalizeRepositoryPolicyPath(path: string): string {
-  return path
-    .split(sep)
-    .join('/')
-    .replace(/^\/+|\/+$/g, '');
-}
-
-/**
- * Checks whether a repository-relative path is excluded by policy.
- *
- * @param relativePath Repository-relative path.
- * @param excludedPaths Excluded path prefixes from workspace policy.
- * @returns True when the path itself or one of its ancestors is excluded.
- */
-function isRepositoryPathExcluded(relativePath: string, excludedPaths: readonly string[]): boolean {
-  const normalized = normalizeRepositoryPolicyPath(relativePath);
-
-  return excludedPaths.some((excludedPath) => {
-    const excluded = normalizeRepositoryPolicyPath(excludedPath);
-
-    return normalized === excluded || normalized.startsWith(`${excluded}/`);
-  });
-}
-
-/**
- * Fails when a repository-relative path is excluded by workspace policy.
- *
- * @param relativePath Repository-relative path.
- * @param excludedPaths Excluded path prefixes from workspace policy.
- */
-function assertRepositoryPathNotExcluded(
-  relativePath: string,
-  excludedPaths: readonly string[]
-): void {
-  if (relativePath && isRepositoryPathExcluded(relativePath, excludedPaths)) {
-    throw new ChatRepositoryInspectionPolicyError(
-      'Workspace policy excludes that repository path from Chat Mode inspection.'
-    );
-  }
-}
-
-/**
- * Redacts common secret-like tokens from Chat Mode file previews.
- *
- * @param text Text that may contain raw secret-looking material.
- * @returns Redacted text.
- */
-function redactChatModeFilePreview(text: string): string {
-  return text
-    .replace(
-      /(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]+|hf_[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_-]+|okt_[A-Za-z0-9_-]+)/g,
-      '$1[redacted]'
-    )
-    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted]');
-}
-
-/**
- * Builds a read-only summary of the linked repository root or one safe child directory.
- *
- * @param repository Linked repository resource to inspect.
- * @param prompt User prompt that may name one repository-relative directory.
- * @param policy Workspace repository inspection policy.
- * @returns User-visible file and directory summary plus audit metadata.
- */
-function formatRepositoryFileList(
-  repository: WorkspaceRepositoryResourceRecord,
-  prompt: string,
-  policy: ChatRepositoryInspectionPolicy
-): RepositoryFileListResult {
-  const rootPath = resolve(repository.localPath);
-  const requestedDirectory = parseRepositoryFileListDirectory(prompt);
-  const target = requestedDirectory
-    ? safeRepositoryTarget(rootPath, requestedDirectory)
-    : { targetPath: rootPath, relativeTarget: '' };
-  const { targetPath, relativeTarget } = target;
-  assertRepositoryPathNotExcluded(relativeTarget, policy.excludedPaths);
-
-  const entries = readdirSync(targetPath, { withFileTypes: true })
-    .filter((entry) => !entry.name.startsWith('.'))
-    .filter((entry) => {
-      const relativeEntry = relativeTarget
-        ? `${relativeTarget.split(sep).join('/')}/${entry.name}`
-        : entry.name;
-
-      return !isRepositoryPathExcluded(relativeEntry, policy.excludedPaths);
-    })
-    .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
-    .sort((left, right) => left.localeCompare(right))
-    .slice(0, 25);
-  const label = relativeTarget ? `${relativeTarget.split(sep).join('/')}/` : 'root';
-  const operation = relativeTarget ? 'repository.directory_list' : 'repository.root_list';
-  const summary = relativeTarget
-    ? 'Assistant read linked repository directory entries.'
-    : 'Assistant read linked repository root entries.';
-
-  if (entries.length === 0) {
-    return {
-      answerText: `Repository ${label} has no visible files or directories.`,
-      operation,
-      summary,
-    };
-  }
-
-  return {
-    answerText: `Repository ${label} entries:\n${entries.map((entry) => `- ${entry}`).join('\n')}`,
-    operation,
-    summary,
-  };
-}
-
-/**
- * Builds a read-only preview of one safe linked repository text file.
- *
- * @param repository Linked repository resource to inspect.
- * @param prompt User prompt that names one repository-relative file.
- * @param policy Workspace repository inspection policy.
- * @returns User-visible text preview plus audit metadata.
- */
-function formatRepositoryFileRead(
-  repository: WorkspaceRepositoryResourceRecord,
-  prompt: string,
-  policy: ChatRepositoryInspectionPolicy
-): RepositoryFileListResult {
-  const requestedFile = parseRepositoryFileReadPath(prompt);
-
-  if (!requestedFile) {
-    throw new Error('Repository file read prompt did not name a file.');
-  }
-
-  const rootPath = resolve(repository.localPath);
-  const { targetPath, relativeTarget } = safeRepositoryTarget(rootPath, requestedFile);
-  assertRepositoryPathNotExcluded(relativeTarget, policy.excludedPaths);
-  const extension = extname(relativeTarget).toLowerCase();
-  const stat = statSync(targetPath);
-
-  if (!stat.isFile() || !ChatModeReadableFileExtensions.has(extension) || stat.size > 16_384) {
-    throw new Error('Repository file is not eligible for Chat Mode preview.');
-  }
-
-  const raw = readFileSync(targetPath, 'utf8');
-
-  if (raw.includes('\0')) {
-    throw new Error('Repository file is not text.');
-  }
-
-  const preview = redactChatModeFilePreview(raw)
-    .split(/\r?\n/)
-    .slice(0, 40)
-    .join('\n')
-    .slice(0, 4000);
-  const label = relativeTarget.split(sep).join('/');
-
-  return {
-    answerText: `Repository file ${label}:\n${preview}`,
-    operation: 'repository.file_read',
-    summary: 'Assistant read one linked repository text file.',
-  };
 }
 
 /**
@@ -3560,122 +3242,6 @@ export function registerQuickAndChatModeRoutes({
           resultKind: 'refused',
           status: 200,
         };
-      }
-
-      if (
-        (isRepositoryFileListChatPrompt(chatInput.input) ||
-          isRepositoryFileReadChatPrompt(chatInput.input)) &&
-        coreDb
-      ) {
-        const repositoryInspectionPolicy = chatRepositoryInspectionPolicy(
-          runtimeConfig(),
-          workspaceId
-        );
-
-        if (!repositoryInspectionPolicy.enabled) {
-          return {
-            body: createRefusedResponse(
-              'Workspace policy disables Chat Mode repository inspection.'
-            ),
-            downstream: null,
-            resultKind: 'refused',
-            status: 202,
-          };
-        }
-
-        const workspaceDb = repositoryWorkspaceDb(workspaceId);
-        let repository: WorkspaceRepositoryResourceRecord | null;
-
-        try {
-          repository = getDefaultWorkspaceRepositoryResource(workspaceDb, workspaceId);
-
-          if (repository) {
-            let repositoryFileList: RepositoryFileListResult;
-
-            try {
-              repositoryFileList = isRepositoryFileReadChatPrompt(chatInput.input)
-                ? formatRepositoryFileRead(repository, chatInput.input, repositoryInspectionPolicy)
-                : formatRepositoryFileList(repository, chatInput.input, repositoryInspectionPolicy);
-            } catch (error) {
-              if (error instanceof ChatRepositoryInspectionPolicyError) {
-                return {
-                  body: createRefusedResponse(error.message),
-                  downstream: null,
-                  resultKind: 'refused',
-                  status: 202,
-                };
-              }
-
-              throw error;
-            }
-
-            const completedAt = new Date().toISOString();
-            const turn = createChatTurn(completedAt);
-            const capabilityCall = startCapabilityCall({
-              authorityActor: triggerActor,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              turnId: turn.id,
-              requestId: chatInput.requestId,
-              family: 'workspace',
-              operation: repositoryFileList.operation,
-              capabilityId: 'assistant.repository.read',
-              summary: repositoryFileList.summary,
-              serviceRef: 'workspace-repository',
-              redactionClass: 'metadata',
-            });
-            let answerText: string;
-
-            try {
-              answerText = repositoryFileList.answerText;
-              finishCapabilityCall({
-                workspaceDb,
-                callId: capabilityCall.id,
-                status: 'succeeded',
-              });
-            } catch (error) {
-              finishCapabilityCall({
-                workspaceDb,
-                callId: capabilityCall.id,
-                status: 'failed',
-                errorCode: 'assistant_repository_read_failed',
-              });
-              throw error;
-            }
-
-            const answerItem = store.createItem({
-              id: `it_chat_repo_files_${turn.id}`,
-              workspaceId,
-              threadId,
-              turnId: turn.id,
-              type: 'assistant-message',
-              status: 'completed',
-              text: answerText,
-              createdAt: turn.startedAt ?? completedAt,
-              completedAt,
-            });
-            const completedTurn = store.updateTurn(turn.id, {
-              status: 'completed',
-              completedAt,
-            });
-
-            return {
-              body: ConversationCommandBodySchema.parse({
-                outcome: 'answered',
-                explanation: 'The Assistant answered from a read-only repository inspection.',
-                turn: completedTurn,
-                item: answerItem,
-                handoff: null,
-              }),
-              downstream: null,
-              resultKind: 'repository-answer',
-              status: 202,
-            };
-          }
-        } finally {
-          workspaceDb.sqlite.close();
-        }
       }
 
       const selection = quickChatSelection(actor.userId, workspaceId, logicalModelId ?? undefined);
