@@ -1,7 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { listAppliedNativeMigrationIds } from '../src/storage/migrate.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -38,14 +38,19 @@ describe('nanocore e2e migration idempotency', () => {
         'select created_at as createdAt, count(*) as count from __drizzle_migrations group by created_at'
       )
       .all() as Array<{ count: number; createdAt: number }>;
-    const applied = listAppliedNativeMigrationIds(sqlite, 'core');
+    // Compare persisted boot effects with the released journal without invoking the migrator under test.
+    const journal = JSON.parse(
+      readFileSync(new URL('../drizzle/core/meta/_journal.json', import.meta.url), 'utf8')
+    ) as { entries: Array<{ tag: string; when: number }> };
     const localUsers = sqlite
       .prepare("select count(*) as count from users where id = 'user_local'")
       .get() as { count: number };
     sqlite.close();
 
-    expect(applied).toEqual(['core_0000_setup']);
-    expect(ledgerRows).toEqual([expect.objectContaining({ count: 1 })]);
+    expect(journal.entries.map((entry) => `core_${entry.tag}`)).toEqual(['core_0000_setup']);
+    expect(ledgerRows).toEqual(
+      journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))
+    );
     expect(localUsers.count).toBe(1);
   });
 });

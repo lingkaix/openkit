@@ -185,11 +185,6 @@ function createPassingTaskModeFixture(options) {
             ],
           }),
         },
-        repositories: {
-          setDefault: async () => {
-            throw new Error('repositories.setDefault must not configure Task Mode acceptance.');
-          },
-        },
         operations: {
           'sync.review-decide': async ({
             workspaceId: receivedWorkspaceId,
@@ -251,9 +246,6 @@ function createDistinctTaskModeActorClients(options) {
       getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics'),
       listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
       listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
-    },
-    repositories: {
-      setDefault: refuse('admin client must not set a repository'),
     },
     runtimeConfig: {
       createFile: track(fixture.clients.admin.runtimeConfig.createFile, adminCalls, 'createFile'),

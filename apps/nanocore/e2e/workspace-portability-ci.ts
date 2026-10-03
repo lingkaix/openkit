@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,7 +53,6 @@ if (mode === 'source') {
 /** Produces one portable archive and its source semantic oracle through public product surfaces. */
 async function runSource(outputDir: string): Promise<void> {
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-portability-source-'));
-  const repositoryRoot = await createGitRepository('openkit-portability-source-repository-');
   let harness: NanoCoreHarness | null = null;
 
   try {
@@ -63,12 +62,6 @@ async function runSource(outputDir: string): Promise<void> {
     await seedSourceVaultReference(dataRoot);
     harness = await startNanoCoreHarness({ dataRoot, seedDemoWorkspace: false });
 
-    const linked = await runCli(harness.baseUrl, 'repository.set-default', {
-      displayName: 'Source portability repository',
-      localPath: repositoryRoot,
-      workspaceId: WORKSPACE_ID,
-    });
-    assert.equal(readPath(linked.data, 'repository', 'diagnosticsStatus'), 'ready');
     const sourceReferences = await runCli(harness.baseUrl, 'vault.reference-list', {
       workspaceId: WORKSPACE_ID,
     });
@@ -84,7 +77,6 @@ async function runSource(outputDir: string): Promise<void> {
     const sourceSemantics = await readSemanticSnapshot(harness.baseUrl, WORKSPACE_ID);
     const serializedSemantics = `${JSON.stringify(sourceSemantics, null, 2)}\n`;
     assert(!serializedSemantics.includes(dataRoot));
-    assert(!serializedSemantics.includes(repositoryRoot));
 
     const exported = await runCli(harness.baseUrl, 'workspace.export', {
       workspaceId: WORKSPACE_ID,
@@ -111,7 +103,6 @@ async function runSource(outputDir: string): Promise<void> {
     } else {
       await removeDataRoot(dataRoot);
     }
-    await rm(repositoryRoot, { force: true, recursive: true });
   }
 }
 
@@ -125,7 +116,6 @@ async function runTarget(inputDir: string): Promise<void> {
   const sourceSemantics = JSON.parse(
     await readFile(join(inputDir, SEMANTICS_FILE), 'utf8')
   ) as SemanticSnapshot;
-  const repositoryRoot = await createGitRepository('openkit-portability-target-repository-');
   const fakeVaultMaterial = Buffer.from('openkit-portability-ci-fake-secret', 'utf8');
   let harness: NanoCoreHarness | null = null;
 
@@ -152,21 +142,6 @@ async function runTarget(inputDir: string): Promise<void> {
       await readSemanticSnapshot(harness.baseUrl, importedWorkspaceId),
       sourceSemantics
     );
-
-    const importedRepositories = await runCli(harness.baseUrl, 'repository.list', {
-      workspaceId: importedWorkspaceId,
-    });
-    assert.equal(readPath(importedRepositories.data, 'items', 0, 'diagnosticsStatus'), 'missing');
-    assert(
-      !JSON.stringify(importedRepositories).includes('openkit-portability-source-repository-')
-    );
-
-    const reboundRepository = await runCli(harness.baseUrl, 'repository.set-default', {
-      displayName: 'Target portability repository',
-      localPath: repositoryRoot,
-      workspaceId: importedWorkspaceId,
-    });
-    assert.equal(readPath(reboundRepository.data, 'repository', 'diagnosticsStatus'), 'ready');
 
     const importedReferences = await runCli(harness.baseUrl, 'vault.reference-list', {
       workspaceId: importedWorkspaceId,
@@ -220,7 +195,6 @@ async function runTarget(inputDir: string): Promise<void> {
     );
   } finally {
     await stopHarness(harness);
-    await rm(repositoryRoot, { force: true, recursive: true });
   }
 }
 
@@ -457,22 +431,6 @@ function runCli(
     });
     child.stdin.end(JSON.stringify(input));
   });
-}
-
-/** Creates one disposable Git repository outside every temporary NanoCore data root. */
-async function createGitRepository(prefix: string): Promise<string> {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), prefix));
-  await new Promise<void>((resolve, reject) => {
-    execFile('git', ['init', '--quiet'], { cwd: repositoryRoot }, (error) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve();
-      }
-    });
-  });
-  await writeFile(join(repositoryRoot, 'README.md'), '# Portable CI fixture\n');
-  return repositoryRoot;
 }
 
 /** Stops only the isolated child process owned by this runner. */

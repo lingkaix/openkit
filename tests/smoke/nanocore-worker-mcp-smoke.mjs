@@ -16,6 +16,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const smokeRequestId = '0190f4c8-0000-7000-8000-000000000601';
 const integrationHeader = 'x-openkit-integration-binding';
 const smokeAdjudicationTimeoutMs = 5_000;
+// Explicit synthetic image evidence for the transport/MCP subject, never a production admission default.
+const smokeImageDigest = `sha256:${'a'.repeat(64)}`;
+const smokeImageDefaults = {
+  defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+  values: {},
+};
 
 class SmokeAdjudicationTimeout extends Error {}
 
@@ -78,13 +84,14 @@ async function main() {
     assert.equal(readiness.status, 204, responseFailure('NanoHost readiness', readiness));
 
     let taskFailure = null;
+    const taskInput = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      input: 'Implement the MCP verification by calling the echo tool.',
+      requestId: smokeRequestId,
+    };
     const taskPromise = fetch(`${baseUrl}/api/app/operations/task.start`, {
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        input: 'Implement the MCP verification by calling the echo tool.',
-        requestId: smokeRequestId,
-      }),
+      body: JSON.stringify(taskInput),
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': smokeRequestId },
       method: 'POST',
     });
@@ -102,15 +109,16 @@ async function main() {
     );
 
     const image = await waitForEffect(h2, 'image.acquire', child, output, () => taskFailure);
-    assert.equal(image.command.imageReference, 'openkit/worker-codex:dev');
+    assert.equal(image.command.imageReference, smokeImageDigest);
     await settleJsonEffect(h2, 'image.acquire', {
-      digest: `sha256:${'a'.repeat(64)}`,
+      digest: smokeImageDigest,
       requestId: image.command.requestId,
     });
     const inspection = await waitForEffect(h2, 'image.inspect', child, output, () => taskFailure);
     await settleJsonEffect(h2, 'image.inspect', {
       requestId: inspection.command.requestId,
       digest: inspection.command.imageDigest,
+      environmentDefaults: smokeImageDefaults,
       platform: { architecture: 'arm64', os: 'linux' },
       storageLayout: {
         family: 'openkit-worker',
@@ -149,22 +157,8 @@ async function main() {
     });
 
     const harnessOperations = [];
-    const opened = await waitForHarnessOperation(
-      h2,
-      integrationBindingRef,
-      'session.open',
-      child,
-      output,
-      () => taskFailure
-    );
-    harnessOperations.push(opened.operation);
-    await settleHarness(h2, integrationBindingRef, opened, {
-      maxActiveTurns: 1,
-      nativeHandleDigest: null,
-      nativeHandleState: 'pending',
-      state: 'open',
-    });
-
+    const collections = [];
+    let opened = null;
     let environmentPackage = null;
     const contextFiles = new Map();
     let importCount = 0;
@@ -180,10 +174,11 @@ async function main() {
           assert.equal(importCount, 1, 'The canonical AEP must be the first Turn import.');
           assert.equal(environmentPackage, null, 'NanoHost imported more than one canonical AEP.');
           environmentPackage = JSON.parse(imported.bodyBytes.toString('utf8'));
-          assert.equal(metadata.relativePath, `${opened.body.agentSessionId}/config/package.json`);
-          assert.equal(environmentPackage.scope.agentSessionId, opened.body.agentSessionId);
-          assert.equal(environmentPackage.scope.workspaceId, opened.body.workspaceId);
-          assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
+          assert.equal(metadata.relativePath, `${environmentPackage.scope.agentSessionId}/config/package.json`);
+          assert.deepEqual(environmentPackage.runtime.environment, {
+            imageDigest: smokeImageDigest,
+            ...smokeImageDefaults,
+          });
         } else if (metadata.slot === 'context') {
           assert.ok(environmentPackage, 'NanoHost imported Context before the canonical AEP.');
           const contextPrefix = `${environmentPackage.scope.agentSessionId}/context/`;
@@ -207,10 +202,34 @@ async function main() {
         continue;
       }
       assert.equal(imported.status, 204, responseFailure('reference.import poll', imported));
+      const collection = await pollEffect(h2, 'workspace.collect');
+      if (collection.status === 200) {
+        collections.push(await settleEmptyWorkspaceCollection(h2, collection));
+        continue;
+      }
+      assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
       const nextHarness = await pollHarness(h2, integrationBindingRef);
       if (nextHarness.status === 200) {
-        started = parseJson(nextHarness, 'turn.start command');
-        assert.equal(started.operation, 'turn.start');
+        const command = parseJson(nextHarness, 'Harness startup command');
+        if (command.operation === 'session.open') {
+          assert.equal(opened, null, 'NanoHost opened more than one AgentSession.');
+          assert.ok(environmentPackage, 'NanoHost opened the AgentSession before its AEP import.');
+          opened = command;
+          assert.equal(environmentPackage.scope.agentSessionId, opened.body.agentSessionId);
+          assert.equal(environmentPackage.scope.workspaceId, opened.body.workspaceId);
+          assert.equal(environmentPackage.scope.threadId, opened.body.threadId);
+          harnessOperations.push(opened.operation);
+          await settleHarness(h2, integrationBindingRef, opened, {
+            maxActiveTurns: 1,
+            nativeHandleDigest: null,
+            nativeHandleState: 'pending',
+            state: 'open',
+          });
+        } else {
+          assert.ok(opened, 'NanoHost started a Turn before opening its AgentSession.');
+          started = command;
+          assert.equal(started.operation, 'turn.start');
+        }
       } else {
         assert.equal(nextHarness.status, 204, responseFailure('Harness poll', nextHarness));
         await sleep(10);
@@ -391,6 +410,12 @@ async function main() {
         continue;
       }
       assert.equal(exported.status, 204, responseFailure('file.export poll', exported));
+      const collection = await pollEffect(h2, 'workspace.collect');
+      if (collection.status === 200) {
+        collections.push(await settleEmptyWorkspaceCollection(h2, collection));
+        continue;
+      }
+      assert.equal(collection.status, 204, responseFailure('workspace.collect poll', collection));
       const nextHarness = await pollHarness(h2, integrationBindingRef);
       if (nextHarness.status === 200) {
         const command = parseJson(nextHarness, 'session.close command');
@@ -421,11 +446,37 @@ async function main() {
     ]);
 
     const taskResponse = await taskPromise;
-    const task = await taskResponse.json();
-    assert.equal(taskResponse.status, 202, JSON.stringify(task));
+    const admitted = await taskResponse.json();
+    assert.equal(taskResponse.status, 202, JSON.stringify(admitted));
+    assert.equal(admitted.turn?.id, environmentPackage.scope.turnId);
+    // Task start returns at durable admission; exact replay observes the same owner's closeout.
+    let task = admitted;
+    const taskDeadline = Date.now() + 30_000;
+    while (task.state !== 'completed' && Date.now() < taskDeadline) {
+      assertProcessRunning(child, output, taskFailure);
+      assert.notEqual(task.turn?.status, 'failed', JSON.stringify(task));
+      const replay = await fetch(`${baseUrl}/api/app/operations/task.start`, {
+        body: JSON.stringify(taskInput),
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': smokeRequestId },
+        method: 'POST',
+      });
+      const replayBody = await replay.json();
+      assert.equal(replay.status, 202, JSON.stringify(replayBody));
+      assert.equal(replayBody.turn?.id, admitted.turn.id);
+      task = replayBody;
+      if (task.state !== 'completed') await sleep(10);
+    }
     assert.equal(task.state, 'completed');
     assert.equal(task.turn?.status, 'completed');
-    assert.equal(task.turn?.humanGate, null);
+    assert.equal(Object.hasOwn(task.turn, 'humanGate'), false);
+    const attentionResponse = await fetch(`${baseUrl}/api/app/operations/attention.list`, {
+      body: JSON.stringify({ workspaceId: 'ws_demo' }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    const attention = await attentionResponse.json();
+    assert.equal(attentionResponse.status, 200, JSON.stringify(attention));
+    assert.deepEqual(attention.items, [], 'Worker left a human-attention request.');
     assert.equal(task.turn?.id, environmentPackage.scope.turnId);
 
     await stopProcess(child);
@@ -440,6 +491,7 @@ async function main() {
     const terminal = await settleSmokeAdjudication(async () => ({
       admission: admissionProjection,
       callLog,
+      collections,
       cleanup: { h2Closed: true, listenerClosed: true, mcpProcessExited: true },
       distinctTokenCount,
       durable: await readDurableOutcome(dataRoot, task.turn.id),
@@ -451,7 +503,7 @@ async function main() {
       readinessStatus: readiness.status,
       targetObservable: existsSync(dataRoot),
       task: {
-        humanGate: task.turn?.humanGate,
+        attentionItems: attention.items,
         httpStatus: taskResponse.status,
         state: task.state,
         turnMatchesPackage: task.turn?.id === environmentPackage.scope.turnId,
@@ -515,6 +567,7 @@ function expectedSmokeObservation() {
   return {
     admission: { mayCarryWork: true, role: 'authoritative' },
     callLog: ['l5-packaged'],
+    collections: ['baseline', 'capture', 'capture'],
     cleanup: { h2Closed: true, listenerClosed: true, mcpProcessExited: true },
     distinctTokenCount: 3,
     durable: {
@@ -534,12 +587,12 @@ function expectedSmokeObservation() {
       { presence: 'required', relativePath: 'artifacts.jsonl' },
     ],
     harnessOperations: ['session.open', 'turn.start', 'session.inspect', 'session.close'],
-    imageReference: 'openkit/worker-codex:dev',
+    imageReference: smokeImageDigest,
     importObserved: true,
     readinessStatus: 204,
     targetObservable: true,
     task: {
-      humanGate: null,
+      attentionItems: [],
       httpStatus: 202,
       state: 'completed',
       turnMatchesPackage: true,
@@ -578,6 +631,11 @@ async function settleSmokeAdjudication(readObservation, timeoutMs = smokeAdjudic
 
 /** Writes the smallest production-valid config and isolated inputs for the packaged lifecycle. */
 async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
+  const runtimeImage = {
+    kind: 'reference',
+    pullPolicy: 'if-not-present',
+    ref: 'openkit/worker-codex:dev',
+  };
   const { FsStore, createDemoWorkspaceForUser } = await import(
     '../../apps/nanocore/dist/lib/store.js'
   );
@@ -663,7 +721,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
         { id: 'node', path: '/usr/local/bin/node' },
         { id: 'codex', path: '/usr/local/bin/codex' },
       ],
-      image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker-codex:dev' },
+      image: runtimeImage,
       kind: 'codex',
       version: 'smoke',
     },
@@ -671,7 +729,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
       backend: {
         allowedKinds: ['openshell'],
         preferred: 'openshell',
-        requiredCapabilities: ['backend-local-inference'],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
       },
       credentialDeclarations: [],
       filesystem: [],
@@ -712,6 +770,37 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     },
   });
   await seedDemoWorkspaceAuthority(dataRoot);
+  // Mirror the existing confirmed-synthetic-image fixture through built production settlements.
+  // Real Task admission still requires exact image/default evidence; no runtime fallback is installed.
+  const [{ openCoreDb }, { commandInputHash }, { admitWorkerImageEnvironment, writeWorkerImageSettlement }] =
+    await Promise.all([
+      import('../../apps/nanocore/dist/storage/db.js'),
+      import('../../apps/nanocore/dist/runtime/idempotent-command.js'),
+      import('../../apps/nanocore/dist/runtime/worker-image-settlements.js'),
+    ]);
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    const inputDigest = commandInputHash(runtimeImage);
+    const requestId = createHash('sha256').update(`worker-mcp-smoke:${inputDigest}`).digest('hex');
+    const candidate = {
+      authoredArtifactId: `ar_smoke_${requestId}`,
+      authoredArtifactVersion: 1,
+      authoredContentDigest: inputDigest,
+      inputDigest,
+    };
+    writeWorkerImageSettlement(coreDb, {
+      ...candidate,
+      requestId,
+      operation: 'image.acquire',
+      outcome: { kind: 'success', imageDigest: smokeImageDigest },
+    });
+    admitWorkerImageEnvironment(coreDb, candidate, {
+      imageDigest: smokeImageDigest,
+      ...smokeImageDefaults,
+    });
+  } finally {
+    coreDb.sqlite.close();
+  }
 }
 
 /** Seeds the exact active NanoHost identity and issues its temporary admission secret. */
@@ -922,6 +1011,23 @@ async function waitForHarnessOperation(client, binding, operation, child, output
     await sleep(10);
   }
   throw new Error(`Timed out waiting for Harness ${operation}.\n${output()}`);
+}
+
+/** Settles the explicitly empty synthetic Sandbox workspace through the native collection wire. */
+async function settleEmptyWorkspaceCollection(client, response) {
+  const command = parseJson(response, 'workspace.collect command');
+  assert.ok(['baseline', 'capture'].includes(command.mode));
+  await settleJsonEffect(client, 'workspace.collect', command.mode === 'baseline'
+    ? {
+        requestId: command.requestId,
+        outcome: 'baseline',
+        head: {
+          tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+          manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+        },
+      }
+    : { requestId: command.requestId, outcome: 'no_new_head', unstable: false });
+  return command.mode;
 }
 
 /** Polls the private Harness without presenting a bearer token. */

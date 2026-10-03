@@ -51,7 +51,12 @@ describe('nanocore e2e secret redaction', () => {
     expect(created.status).toBe(200);
 
     const diagnostics = await fetchJson(`${harness.baseUrl}/api/diagnostics`);
-    const workspace = await fetchJson(`${harness.baseUrl}/api/app/workspaces/ws_demo/dashboard`);
+    const workspaceResponse = await postJson(
+      `${harness.baseUrl}/api/app/operations/workspace.dashboard`,
+      { workspaceId: 'ws_demo' }
+    );
+    expect(workspaceResponse.status).toBe(200);
+    const workspace = await workspaceResponse.json();
     const knowledgeResponse = await postJson(
       `${harness.baseUrl}/api/app/operations/knowledge.list`,
       { workspaceId: 'ws_demo' }

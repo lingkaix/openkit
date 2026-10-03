@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
@@ -11,19 +9,14 @@ import {
  * Writes the explicit Demo Workspace fixture used by local-mode Web e2e tests.
  *
  * @param dataRoot NanoCore data root to seed.
- * @param fixtureRoot Stack-owned fixture root outside the NanoCore data root.
  * @returns Resolves after the file records and Core membership authority are durable.
- * @throws When fixture files, Git initialization, or authority persistence fails.
+ * @throws When fixture files or authority persistence fails.
  */
-export async function seedDemoWorkspaceDataRoot(
-  dataRoot: string,
-  fixtureRoot: string
-): Promise<void> {
+export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void> {
   seedSharedDemoWorkspaceDataRoot(dataRoot);
   await seedSimulatorInferenceConfig(dataRoot);
   await seedSimulatorAgent(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
-  await seedReadyRepository(dataRoot, await createDisposableGitRepository(fixtureRoot));
 }
 
 /**
@@ -81,53 +74,6 @@ async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
 }
 
 /**
- * Creates the isolated disposable Git repository and initial HEAD required by real Turn admission.
- * Every Git subprocess shares one scrubbed execution context with empty system/global config,
- * disabled prompting and signing, and an empty fixture-owned hooks directory.
- *
- * @param fixtureRoot Stack-owned fixture root outside the NanoCore data root.
- * @returns Absolute repository path below the fixture root.
- * @throws When file creation or any local Git initialization, configuration, add, or commit fails.
- */
-async function createDisposableGitRepository(fixtureRoot: string): Promise<string> {
-  const repositoryPath = join(fixtureRoot, 'repository');
-  const hooksPath = join(fixtureRoot, 'hooks');
-  await Promise.all([
-    mkdir(repositoryPath, { recursive: true }),
-    mkdir(hooksPath, { recursive: true }),
-  ]);
-  const git = promisify(execFile);
-  const inheritedEnvironment = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_CONFIG_'))
-  );
-  const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
-  const gitOptions = {
-    cwd: repositoryPath,
-    env: {
-      ...inheritedEnvironment,
-      GIT_ASKPASS: '',
-      GIT_CONFIG_COUNT: '2',
-      GIT_CONFIG_GLOBAL: nullDevice,
-      GIT_CONFIG_KEY_0: 'core.hooksPath',
-      GIT_CONFIG_KEY_1: 'commit.gpgSign',
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_SYSTEM: nullDevice,
-      GIT_CONFIG_VALUE_0: hooksPath,
-      GIT_CONFIG_VALUE_1: 'false',
-      GIT_TERMINAL_PROMPT: '0',
-      SSH_ASKPASS: '',
-    },
-  };
-  await git('git', ['init', '--quiet'], gitOptions);
-  await git('git', ['config', 'user.email', 'openkit@example.invalid'], gitOptions);
-  await git('git', ['config', 'user.name', 'OpenKit'], gitOptions);
-  await writeFile(join(repositoryPath, 'README.md'), '# Browser fixture\n');
-  await git('git', ['add', 'README.md'], gitOptions);
-  await git('git', ['commit', '--quiet', '-m', 'initial'], gitOptions);
-  return repositoryPath;
-}
-
-/**
  * Installs the isolated self-check scheduler RuntimeTarget used by SimulatedTurnExecutor.
  *
  * This is fixture-only synthetic Epoch authority: `physicalEpoch` is `'a'.repeat(64)`, identity is
@@ -174,36 +120,6 @@ export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promi
     ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
   } finally {
     coreDb.sqlite.close();
-  }
-}
-
-/**
- * Records the disposable fixture Git repository as the ready default needed by real Turns.
- *
- * @param dataRoot NanoCore data root that owns the demo Workspace.
- * @param repositoryPath Disposable Git repository outside the NanoCore data root.
- * @returns Resolves after the ready repository authority is durable.
- * @throws When database migration, validation, or persistence fails.
- */
-async function seedReadyRepository(dataRoot: string, repositoryPath: string): Promise<void> {
-  const [{ openWorkspaceDb }, { applyScopedMigrations }, { upsertWorkspaceRepositoryResource }] =
-    await Promise.all([
-      import('../../../nanocore/dist/storage/db.js'),
-      import('../../../nanocore/dist/storage/migrate.js'),
-      import('../../../nanocore/dist/workspace/repository-store.js'),
-    ]);
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
-
-  try {
-    applyScopedMigrations(workspaceDb);
-    upsertWorkspaceRepositoryResource(workspaceDb, {
-      workspaceExists: (workspaceId) => workspaceId === 'ws_demo',
-      workspaceId: 'ws_demo',
-      displayName: 'OpenKit browser fixture',
-      localPath: repositoryPath,
-    });
-  } finally {
-    workspaceDb.sqlite.close();
   }
 }
 

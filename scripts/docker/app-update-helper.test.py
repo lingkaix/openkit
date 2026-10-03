@@ -439,7 +439,7 @@ class RecordingEffects:
             return 200, payload
         if url.endswith("/api/diagnostics"):
             return 200, {"migrations": {"applied": list(self.applied_migrations)}}
-        if url.endswith("/api/app/workspaces"):
+        if url.endswith("/api/app/operations/workspace.list"):
             return 403, None
         if url.endswith("/api/app/auth/tokens"):
             if self.replaced and self.tokens_after is not None:
@@ -1010,7 +1010,7 @@ class ApplyJobTests(unittest.TestCase):
             self.assertIn(HTTPS_SAMPLE, config_before)
             self.assertEqual(start["jobId"], body["jobId"])
             self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
-            self.assertFalse(any(url.endswith("/api/app/workspaces") for url in effects.http_calls))
+            self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertTrue(body["predicates"]["retainedAuthRead"])
 
     def test_app_update_ssh_rw_or_missing_refuses_before_stop(self) -> None:
@@ -1957,7 +1957,7 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertIn("retainedAuthRead", (body.get("predicates") or {}))
             self.assertIs(body["predicates"]["retainedAuthRead"], False)
             self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
-            self.assertFalse(any(url.endswith("/api/app/workspaces") for url in effects.http_calls))
+            self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
@@ -1982,7 +1982,7 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertEqual(body["stage"], "succeeded", body)
             self.assertTrue(body["predicates"]["retainedAuthRead"])
             self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
-            self.assertFalse(any(url.endswith("/api/app/workspaces") for url in effects.http_calls))
+            self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
@@ -2010,7 +2010,7 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"empty")
             self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
-            self.assertFalse(any(url.endswith("/api/app/workspaces") for url in effects.http_calls))
+            self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -2041,7 +2041,7 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"public Token")
             self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
-            self.assertFalse(any(url.endswith("/api/app/workspaces") for url in effects.http_calls))
+            self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
     def test_annotated_tag_peels_to_commit_and_refuses_mismatch(self) -> None:

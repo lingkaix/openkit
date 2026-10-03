@@ -1,7 +1,16 @@
 // openkit-test-platform: posix
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  promises as fsPromises,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
@@ -132,14 +141,15 @@ setInterval(() => {}, 1000);
   try {
     const markerDeadline = originalDateNow() + 30_000;
     while (originalDateNow() < markerDeadline && webPid === undefined) {
-      const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-      if (nanoCorePid === undefined && existsSync(lockPath)) {
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
-      }
       if (existsSync(webPidMarker)) {
         const candidate = Number(readFileSync(webPidMarker, 'utf8'));
         if (Number.isInteger(candidate)) webPid = candidate;
+      }
+      // The Web marker follows Core readiness, so the lock bytes have finished publishing.
+      if (webPid !== undefined && nanoCorePid === undefined) {
+        const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
+        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
       }
       if (webPid === undefined) await delay(20);
     }
@@ -283,11 +293,19 @@ test('cleans NanoCore and its temporary data root when Web startup fails', async
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-stack-cleanup-'));
   const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
+  const webStartedMarker = join(harnessRoot, 'web.started');
   const originalPath = process.env.PATH;
   let nanoCorePid: number | undefined;
   mkdirSync(fakeBin);
   mkdirSync(dataRoot);
-  writeFileSync(join(fakeBin, 'pnpm'), '#!/bin/sh\nsleep 2\nexit 23\n', { mode: 0o700 });
+  writeFileSync(
+    join(fakeBin, 'pnpm'),
+    `#!${process.execPath}
+require('node:fs').writeFileSync(${JSON.stringify(webStartedMarker)}, 'ready');
+setTimeout(() => process.exit(23), 2000);
+`,
+    { mode: 0o700 }
+  );
   process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
 
   const failurePromise = startIsolatedWebStack({
@@ -303,7 +321,8 @@ test('cleans NanoCore and its temporary data root when Web startup fails', async
     const lockDeadline = Date.now() + 30_000;
     while (Date.now() < lockDeadline && nanoCorePid === undefined) {
       const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-      if (existsSync(lockPath)) {
+      // The fake Web child starts only after Core readiness and complete lock publication.
+      if (existsSync(webStartedMarker)) {
         const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
         if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
       }
@@ -400,25 +419,28 @@ test('cleans the temporary data root when NanoCore exits before readiness', asyn
 
 test('cleans every stack-owned root when fixture initialization rejects before spawn', async () => {
   const harnessRoot = mkdtempSync(join(tmpdir(), 'openkit-web-pre-spawn-cleanup-'));
-  const fakeBin = join(harnessRoot, 'bin');
   const dataRoot = join(harnessRoot, 'data-root');
-  const fixtureCwdMarker = join(harnessRoot, 'fixture-cwd');
-  const originalMarker = process.env.OPENKIT_TEST_FIXTURE_CWD_MARKER;
-  const originalPath = process.env.PATH;
+  const originalMkdtemp = fsPromises.mkdtemp;
+  const originalWriteFile = fsPromises.writeFile;
+  const sentinel = Object.assign(new Error('pre-spawn initialization sentinel'), {
+    code: 'EACCES',
+  });
   let stackRoot: string | undefined;
-  mkdirSync(fakeBin);
-  writeFileSync(
-    join(fakeBin, 'git'),
-    `#!${process.execPath}
-const { writeFileSync } = require('node:fs');
-writeFileSync(process.env.OPENKIT_TEST_FIXTURE_CWD_MARKER, process.cwd(), { flag: 'wx' });
-process.stderr.write('pre-spawn initialization sentinel\\n');
-process.exit(37);
-`,
-    { mode: 0o700 }
-  );
-  process.env.OPENKIT_TEST_FIXTURE_CWD_MARKER = fixtureCwdMarker;
-  process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+  // Inject at the surviving fixture write, and observe the actual stack-owned temporary root.
+  fsPromises.mkdtemp = (async (...args: Parameters<typeof fsPromises.mkdtemp>) => {
+    const root = await originalMkdtemp(...args);
+    if (String(args[0]).endsWith('openkit-web-e2e-')) stackRoot = String(root);
+    return root;
+  }) as typeof fsPromises.mkdtemp;
+  fsPromises.writeFile = async (...args) => {
+    if (
+      String(args[0]) === join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc')
+    ) {
+      throw sentinel;
+    }
+    return originalWriteFile(...args);
+  };
+  syncBuiltinESMExports();
 
   try {
     const failure = await startIsolatedWebStack({
@@ -430,26 +452,21 @@ process.exit(37);
       (error: unknown) => error
     );
 
-    expect(existsSync(fixtureCwdMarker), 'Fixture Git initialization did not run.').toBe(true);
-    stackRoot = dirname(dirname(readFileSync(fixtureCwdMarker, 'utf8')));
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure).toMatchObject({
-      code: 37,
-      stderr: 'pre-spawn initialization sentinel\n',
-    });
+    expect(stackRoot, 'Stack-owned temporary root was not created.').toBeDefined();
+    expect(failure).toBe(sentinel);
+    expect(failure).toMatchObject({ code: 'EACCES' });
     expect((failure as Error).message).toContain('pre-spawn initialization sentinel');
     expect({
       dataRootExists: existsSync(dataRoot),
-      stackRootExists: existsSync(stackRoot),
+      stackRootExists: existsSync(stackRoot!),
     }).toEqual({
       dataRootExists: false,
       stackRootExists: false,
     });
   } finally {
-    if (originalMarker === undefined) delete process.env.OPENKIT_TEST_FIXTURE_CWD_MARKER;
-    else process.env.OPENKIT_TEST_FIXTURE_CWD_MARKER = originalMarker;
-    if (originalPath === undefined) delete process.env.PATH;
-    else process.env.PATH = originalPath;
+    fsPromises.mkdtemp = originalMkdtemp;
+    fsPromises.writeFile = originalWriteFile;
+    syncBuiltinESMExports();
     rmSync(dataRoot, { force: true, recursive: true });
     if (stackRoot !== undefined) rmSync(stackRoot, { force: true, recursive: true });
     rmSync(harnessRoot, { force: true, recursive: true });
@@ -493,14 +510,15 @@ setInterval(() => {}, 1000);
   try {
     const markerDeadline = Date.now() + 30_000;
     while (Date.now() < markerDeadline && webPid === undefined) {
-      const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-      if (nanoCorePid === undefined && existsSync(lockPath)) {
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
-      }
       if (existsSync(webPidMarker)) {
         const candidate = Number(readFileSync(webPidMarker, 'utf8'));
         if (Number.isInteger(candidate)) webPid = candidate;
+      }
+      // Web startup follows Core readiness and complete lock publication.
+      if (webPid !== undefined && nanoCorePid === undefined) {
+        const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
+        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
       }
       if (webPid === undefined) await delay(20);
     }
@@ -612,15 +630,16 @@ setInterval(() => {}, 1000);
   try {
     const markerDeadline = Date.now() + 10_000;
     while (Date.now() < markerDeadline && descendantPid === undefined) {
-      const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-      if (nanoCorePid === undefined && existsSync(lockPath)) {
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
-      }
       if (existsSync(descendantMarker)) {
         const marker = JSON.parse(readFileSync(descendantMarker, 'utf8'));
         if (Number.isInteger(marker.descendantPid)) descendantPid = marker.descendantPid;
         if (Number.isInteger(marker.leaderPid)) leaderPid = marker.leaderPid;
+      }
+      // The descendant marker also follows the ready Core's complete lock publication.
+      if (descendantPid !== undefined && nanoCorePid === undefined) {
+        const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
+        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
       }
       if (descendantPid === undefined) await delay(20);
     }

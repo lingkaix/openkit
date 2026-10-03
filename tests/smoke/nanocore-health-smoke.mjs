@@ -48,10 +48,18 @@ async function main() {
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
     const fencedRead = await fetch(
-      `${baseUrl}/api/app/workspaces/${deletion.workspaceId}/dashboard`
+      `${baseUrl}/api/app/operations/workspace.dashboard`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: deletion.workspaceId }),
+      }
     );
-    if (fencedRead.status !== 403) {
-      throw new Error(`Recovered deletion fence allowed a read with ${fencedRead.status}.`);
+    const fencedReadBody = await fencedRead.json();
+    if (fencedRead.status !== 403 || fencedReadBody.code !== 'workspace_access_denied') {
+      throw new Error(
+        `Recovered deletion fence returned ${fencedRead.status}: ${JSON.stringify(fencedReadBody)}.`
+      );
     }
     const continuedDeletion = await fetch(`${baseUrl}/api/app/operations/workspace.delete`, {
       body: JSON.stringify({

@@ -8,4 +8,4 @@ The test-image helpers own content-addressed `test-env` identification and anony
 
 The persistence smoke reads the post-restart Workspace collection through the definition-derived `workspace.list` JSON binding and checks the nested Workspace record. Its pre/post-restart persistence observation is unchanged.
 
-The App-update helper observes configured NanoHost readiness through `POST /api/app/operations/nanohost.runtime-target` with an empty JSON object, preserving bounded JSON HTTP error handling and configured identity checks.
+The App-update helper observes configured NanoHost readiness through `POST /api/app/operations/nanohost.runtime-target` with an empty JSON object, preserving bounded JSON HTTP error handling and configured identity checks. Its host fixtures use the canonical `workspace.list` binding for forbidden Workspace discovery, and its assertions retain the requirement that update admission never reads Workspace content.

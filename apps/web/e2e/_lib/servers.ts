@@ -86,7 +86,7 @@ export async function startIsolatedWebStack(
     }
 
     if (mode === 'local') {
-      await seedDemoWorkspaceDataRoot(dataRoot, fixtureRoot);
+      await seedDemoWorkspaceDataRoot(dataRoot);
     }
   } catch (error) {
     await Promise.allSettled(
