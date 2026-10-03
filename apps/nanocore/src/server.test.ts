@@ -3200,7 +3200,9 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/scheduler/admissions');
+    const res = await app.request(
+      ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+    );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListSchedulerAdmissionsResponseSchema.parse(await res.json());
@@ -3613,8 +3615,11 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const retryRes = await app.request(
-      '/api/app/workspaces/ws_demo/scheduler/admissions/queue_retry_route/retry',
-      { method: 'POST' }
+      ...operationRequest(
+        'scheduler.retry',
+        { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_route' },
+        { method: 'POST' }
+      )
     );
 
     expect(retryRes.status, await retryRes.clone().text()).toBe(200);
@@ -3672,8 +3677,11 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     const cancelRes = await app.request(
-      '/api/app/workspaces/ws_demo/scheduler/admissions/queue_cancel_route/cancel',
-      { method: 'POST' }
+      ...operationRequest(
+        'scheduler.cancel',
+        { workspaceId: 'ws_demo', queueEntryId: 'queue_cancel_route' },
+        { method: 'POST' }
+      )
     );
 
     expect(cancelRes.status, await cancelRes.clone().text()).toBe(200);
@@ -3881,15 +3889,18 @@ describe('nanocore server', () => {
       workerControlGateway: new WorkerControlGateway(),
     });
 
-    const list = await app.request('/api/app/recovery/interrupted-workers');
+    const list = await app.request(...operationRequest('recovery.worker-list', {}));
     await expect(list.json()).resolves.toEqual({ items: [] });
     const retry = await app.request(
-      `/api/app/workspaces/ws_demo/threads/${thread.id}/recovery/interrupted-worker/${turn.id}/retry`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ requestId: 'req_reconnect_pending_retry' }),
-      }
+      ...operationRequest(
+        'recovery.checkpoint-retry',
+        { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: 'req_reconnect_pending_retry' }),
+        }
+      )
     );
 
     expect(retry.status).toBe(409);

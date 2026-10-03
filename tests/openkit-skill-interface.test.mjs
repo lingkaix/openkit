@@ -2960,3 +2960,23 @@ test('Goal publishes precisely its ten derived semantic operations and retires s
   assert.deepEqual(observed, input);
   assert.equal(result.goal, null);
 });
+
+test('automation deletion derives strict CLI input and maps the bodyless HTTP success to null', async () => {
+  const { operationCatalog } = await operations();
+  const operation = operationCatalog.find((entry) => entry.id === 'automation.delete');
+  assert.equal(operation.clientMethod, 'operations.automation.delete');
+  const input = { automationId: 'auto_deleted' };
+  assert.deepEqual(operation.inputSchema.parse(input), input);
+  assert.equal(operation.inputSchema.safeParse({ ...input, force: true }).success, false);
+  const requests = [];
+  const client = createCoreClient({
+    baseUrl: 'http://nanocore.test',
+    fetch: async (url, init) => {
+      requests.push(new Request(url, init));
+      return new Response(null, { status: 204 });
+    },
+  });
+  assert.equal(await operation.handler({ client }, input), null);
+  assert.equal(new URL(requests[0].url).pathname, '/api/app/operations/automation.delete');
+  assert.deepEqual(await requests[0].json(), input);
+});

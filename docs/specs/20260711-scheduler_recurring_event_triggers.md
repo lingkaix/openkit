@@ -133,7 +133,7 @@ The scan prioritizes unresolved occurrences and unmaterialized due instants whos
 
 ## Current Implementation Projection
 
-`apps/nanocore/src/lib/automation-store.ts` currently holds user-owned cron-shaped definitions in a process-local `Map`; creation always pauses them, and no executor or persistence exists. That store and its routes do not implement this contract and must be replaced rather than extended as a second owner.
+`apps/nanocore/src/lib/automation-store.ts` currently holds user-owned cron-shaped definitions in a process-local `Map`; creation always pauses them, and no executor or persistence exists. The four definition-derived `automation.*` operations still join that process-local owner and do not implement this contract and must be replaced rather than extended as a second owner.
 
 `apps/nanocore/src/runtime/product-turn-start.ts` currently rechecks the exact `triggerActor` with `runtime.launch`, derives deterministic queue and Turn identities from a request ID, creates the admission, and immediately invokes dispatch. `apps/nanocore/src/scheduler-records.ts` stores admissions in `core.sqlite`, but its current create seam is not request-idempotent and does not yet accept the occurrence transaction. Implementation must extract or reuse narrow preparation and shared-transaction seams, then leave dispatch to the normal service, instead of wrapping the combined start path or adding a second ledger.
 

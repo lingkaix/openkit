@@ -153,7 +153,7 @@ const SAMPLE_TRAVEL: ChannelTravelSetting[] = [
  */
 export function useAutomations(): DemoQueryResult<AutomationRow[]> {
   const isDemo = useDemoFixtures('automations');
-  // Live path (future): core-client listAutomations → same AutomationRow[].
+  // Live path (future): client.operations['automation.list'] → same AutomationRow[].
   return { data: SAMPLE_AUTOMATIONS, isDemo };
 }
 

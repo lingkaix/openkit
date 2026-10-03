@@ -1204,7 +1204,7 @@ describe('action center app API', () => {
         },
         actions: expect.arrayContaining([
           expect.objectContaining({
-            href: '/api/app/workspaces/ws_demo/scheduler/admissions/queue_action_center/cancel',
+            href: '/api/app/operations/scheduler.cancel',
             kind: 'abort',
             method: 'POST',
           }),
@@ -1223,12 +1223,12 @@ describe('action center app API', () => {
         },
         actions: expect.arrayContaining([
           expect.objectContaining({
-            href: '/api/app/workspaces/ws_demo/scheduler/admissions/queue_denied_action_center/retry',
+            href: '/api/app/operations/scheduler.retry',
             kind: 'retry_work',
             method: 'POST',
           }),
           expect.objectContaining({
-            href: '/api/app/workspaces/ws_demo/scheduler/admissions/queue_denied_action_center/cancel',
+            href: '/api/app/operations/scheduler.cancel',
             kind: 'abort',
             method: 'POST',
           }),

@@ -62,7 +62,6 @@ import {
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import { registerAutomationRoutes } from './automation-routes.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
@@ -145,7 +144,6 @@ import {
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { cancelOwnedDeferredAdmission, startProductTurn } from './runtime/product-turn-start.js';
-import { registerSchedulerAdmissionRoutes } from './runtime/scheduler-admission-routes.js';
 import { createCoordinatorTaskTool } from './runtime/task-admission.js';
 import { waitForWorkerTurnTerminalState } from './runtime/task-turn-wait.js';
 import {
@@ -171,7 +169,6 @@ import {
   createDefaultWorkerMcpGateway,
   type WorkerMcpGateway,
 } from './runtime/worker-mcp-gateway.js';
-import { registerWorkerRecoveryRoutes } from './runtime/worker-recovery-routes.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
@@ -1407,7 +1404,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   if (options.coreDb) {
     registerOperationAccessGuards({
       app,
-      automationStore,
       coreDb: options.coreDb,
       quickChatWorkspaceIdForUser,
       store: sharedStore,
@@ -1755,8 +1751,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
-  registerAutomationRoutes({ app, authorizedWorkspaceIds, automationStore, requestStore });
-
   registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
 
   registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
@@ -1782,13 +1776,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
 
-  registerSchedulerAdmissionRoutes({
-    app,
-    coreDb: options.coreDb,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
-
   registerGovernanceRoutes({
     app,
     coreDb: options.coreDb,
@@ -1811,14 +1798,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,
-  });
-
-  registerWorkerRecoveryRoutes({
-    app,
-    coreDb: options.coreDb,
-    repositoryWorkspaceDb,
-    requestStore,
-    authorizedWorkspaceIds,
   });
 
   registerAgentHealthRoutes({
@@ -2023,6 +2002,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerOperationJsonRoutes({
     app,
+    automationStore,
     conversationService: chatService,
     taskStart,
     pendingRequestServices,
@@ -2042,6 +2022,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRemoteMcpRoutes({
     app,
+    automationStore,
     conversationService: chatService,
     taskStart,
     pendingRequestServices,

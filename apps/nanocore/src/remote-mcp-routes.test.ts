@@ -17,11 +17,17 @@ import {
 import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
+import { AutomationStore } from './lib/automation-store.js';
 import * as invocation from './operation-invocation.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
+import {
+  createSchedulerAdmissionEntry,
+  denySchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
-import { openCoreDb } from './storage/db.js';
-import { applyMigrations } from './storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -86,7 +92,9 @@ async function fixture(
       workspaceIds: ['ws_demo'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
+  const automationStore = new AutomationStore();
   const app = createApp({
+    automationStore,
     coreDb,
     dataRoot,
     store,
@@ -129,12 +137,87 @@ async function fixture(
     expect(body.error).toBeUndefined();
     return body.result;
   };
-  return { app, coreDb, dataRoot, store, command, appRecord, token, selectors, message, call };
+  return {
+    app,
+    coreDb,
+    dataRoot,
+    store,
+    command,
+    appRecord,
+    token,
+    selectors,
+    message,
+    call,
+    automationStore,
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
+  it.each([
+    'missing',
+    'private',
+    'foreign',
+  ] as const)('preserves the known %s scheduler refusal through HTTP and MCP without changing queue rows', async (target) => {
+    const f = await fixture();
+    const bearer = f.token();
+    const thread = f.store.createThread('ws_demo', 'Private queue', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'user_other',
+    });
+    for (const [queueEntryId, workspaceId] of [
+      ['queue_private', 'ws_demo'],
+      ['queue_foreign', 'ws_foreign'],
+    ] as const) {
+      createSchedulerAdmissionEntry(f.coreDb, {
+        queueEntryId,
+        workspaceId,
+        threadId: thread.id,
+        turnId: `turn_${queueEntryId}`,
+        triggerActor: { kind: 'user', id: 'user_remote_mcp' },
+        turnInput: 'Protected work',
+        requestedAgentId: 'agent_codex_host',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+      });
+      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'no-healthy-target' });
+    }
+    const before = ['queue_private', 'queue_foreign'].map((id) =>
+      requireSchedulerAdmissionEntry(f.coreDb, id)
+    );
+    try {
+      for (const operation of ['scheduler.retry', 'scheduler.cancel'] as const) {
+        const input = { workspaceId: 'ws_demo', queueEntryId: `queue_${target}` };
+        const http = await f.app.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer.secret}` },
+          body: JSON.stringify(input),
+        });
+        expect(http.status).toBe(404);
+        expect(await http.text()).toBe('Thread not found.');
+        expect(
+          ['queue_private', 'queue_foreign'].map((id) =>
+            requireSchedulerAdmissionEntry(f.coreDb, id)
+          )
+        ).toEqual(before);
+        const mcp = await f.call('call', { operation, input }, bearer.secret);
+        expect(mcp.isError).toBe(true);
+        expect(JSON.parse(mcp.content[0].text)).toEqual({
+          code: 'not_found',
+          message: 'Thread not found.',
+        });
+        expect(
+          ['queue_private', 'queue_foreign'].map((id) =>
+            requireSchedulerAdmissionEntry(f.coreDb, id)
+          )
+        ).toEqual(before);
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('creates a Goal through remote MCP and wakes its existing coordinator owner', async () => {
     const createCoordinator = goalCoordinator.createGoalCoordinator;
     const wake = vi.fn();
@@ -209,6 +292,148 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(read.content[0].text).items).toEqual([
       expect.objectContaining({ workspace: expect.objectContaining({ id: 'ws_demo' }) }),
     ]);
+  });
+
+  it('gates every migrated mutation on HTTP and MCP readiness before the protected owner changes', async () => {
+    let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b9_admission' });
+    const f = await fixture('server', () => readiness);
+    const token = f.token();
+    const automation = f.automationStore.createAutomation('user_remote_mcp', {
+      workspaceId: 'ws_demo',
+      name: 'Existing',
+      cron: '*',
+      prompt: 'Work',
+    });
+    const thread = f.store.createThread('ws_demo', 'Recovery admission');
+    const turn = f.store.createTurn('ws_demo', thread.id, 'Interrupted work', {
+      kind: 'user',
+      id: 'user_remote_mcp',
+    });
+    f.store.updateTurn(turn.id, { status: 'interrupted', completedAt: new Date().toISOString() });
+    for (const queueEntryId of ['queue_b9_retry', 'queue_b9_cancel'])
+      createSchedulerAdmissionEntry(f.coreDb, {
+        triggerActor: { kind: 'user', id: 'user_remote_mcp' },
+        queueEntryId,
+        workspaceId: 'ws_demo',
+        threadId: thread.id,
+        turnId: `turn_${queueEntryId}`,
+        turnInput: 'Work',
+        requestedAgentId: 'agent_codex_host',
+        priorityClass: 'interactive',
+        requiredPoolConstraints: ['openshell.local'],
+      });
+    denySchedulerAdmissionEntry(f.coreDb, {
+      queueEntryId: 'queue_b9_retry',
+      denialReason: 'no-healthy-target',
+    });
+    const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    applyScopedMigrations(workspaceDb);
+    const beforeTurn = { ...f.store.getTurnById(turn.id) };
+    const beforeRetry = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry');
+    const beforeCancel = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel');
+    readiness = { ...readiness, acceptingProductWork: false };
+    try {
+      for (const [operation, input] of [
+        [
+          'automation.create',
+          { workspaceId: 'ws_demo', name: 'Blocked', cron: '*', prompt: 'Work' },
+        ],
+        ['automation.update', { automationId: automation.id, status: 'enabled' }],
+        ['automation.delete', { automationId: automation.id }],
+        ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_retry' }],
+        ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_b9_cancel' }],
+        [
+          'recovery.checkpoint-retry',
+          {
+            workspaceId: 'ws_demo',
+            threadId: thread.id,
+            turnId: turn.id,
+            requestId: 'req_b9_closed',
+          },
+        ],
+      ] as const) {
+        const http = await f.app.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token.secret}`,
+            'content-type': 'application/json',
+            'x-openkit-request-id': 'req_b9_closed',
+          },
+          body: JSON.stringify(input),
+        });
+        expect(http.status).toBe(503);
+        await expect(http.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
+        const mcp = await f.call('call', { operation, input }, token.secret);
+        expect(mcp.isError).toBe(true);
+        expect(JSON.parse(mcp.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
+        expect(f.automationStore.listAutomations('user_remote_mcp')).toEqual([automation]);
+        expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry')).toEqual(beforeRetry);
+        expect(requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel')).toEqual(beforeCancel);
+        expect(f.store.getTurnById(turn.id)).toEqual(beforeTurn);
+        expect(
+          f.store.getCommandRequest(
+            'worker.recovery.retry',
+            'req_b9_closed',
+            { workspaceId: 'ws_demo', threadId: thread.id, turnId: turn.id },
+            workspaceDb
+          )
+        ).toBeNull();
+      }
+    } finally {
+      workspaceDb.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('projects automation deletion as logical null through MCP and refuses readonly or revoked mutations before changing the record', async () => {
+    const f = await fixture();
+    const token = f.token();
+    const readonly = f.token('workspace-readonly');
+    const automation = f.automationStore.createAutomation('user_remote_mcp', {
+      workspaceId: 'ws_demo',
+      name: 'Existing',
+      cron: '*',
+      prompt: 'Work',
+    });
+    try {
+      for (const [operation, input] of [
+        ['automation.update', { automationId: automation.id, status: 'enabled' }],
+        ['automation.delete', { automationId: automation.id }],
+      ] as const) {
+        const denied = await f.call('call', { operation, input }, readonly.secret);
+        expect(denied.isError).toBe(true);
+        expect(f.automationStore.getAutomation('user_remote_mcp', automation.id)).toEqual(
+          automation
+        );
+      }
+      const deleted = await f.call(
+        'call',
+        { operation: 'automation.delete', input: { automationId: automation.id } },
+        token.secret
+      );
+      expect(deleted.isError).not.toBe(true);
+      expect(JSON.parse(deleted.content[0].text)).toBeNull();
+      expect(f.automationStore.listAutomations('user_remote_mcp')).toEqual([]);
+      const retained = f.automationStore.createAutomation('user_remote_mcp', {
+        workspaceId: 'ws_demo',
+        name: 'Retained',
+        cron: '*',
+        prompt: 'Work',
+      });
+      revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
+      const revoked = await f.message(
+        'tools/call',
+        {
+          name: 'call',
+          arguments: { operation: 'automation.delete', input: { automationId: retained.id } },
+        },
+        token.secret
+      );
+      expect(revoked.status).toBe(401);
+      expect(f.automationStore.getAutomation('user_remote_mcp', retained.id)).toEqual(retained);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
   });
 
   it('challenges missing, unknown, malformed, expired and revoked credentials uniformly before dispatch', async () => {

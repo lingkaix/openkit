@@ -11,17 +11,17 @@ const EXPECTED_INCLUDED_SIZE = 179;
 
 /** Included operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
-  ['createAutomation', 'R092'],
-  ['deleteAutomation', 'R092'],
+  ['automation.create', 'R092'],
+  ['automation.delete', 'R092'],
   ['deleteWorkspace', 'R049'],
   ['downloadWorkspaceExportArchive', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['dryRunWorkspaceArchiveImport', 'R008'],
   ['importWorkspaceArchive', 'R008'],
-  ['listAutomations', 'R092'],
+  ['automation.list', 'R092'],
   ['recoverDeletedWorkspace', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
-  ['updateAutomation', 'R092'],
+  ['automation.update', 'R092'],
 ]);
 
 /** Published Tier-A titles from the live surface catalog. Unpublished B/C names are rejected. */
@@ -56,13 +56,8 @@ const WEB_OPERATION_GROUPS = {
     submitAdministrationConversation: { disposition: 'live', surface: 'Administration' },
   },
   'App utilities': {
-    cancelSchedulerAdmission: { disposition: 'live', surface: 'Recovery' },
-    listInterruptedWorkers: { disposition: 'live', surface: 'Recovery' },
-    listSchedulerAdmissions: { disposition: 'live', surface: 'Recovery' },
     quickChat: { disposition: 'workflow', surface: 'Chat' },
     refreshAgentHealth: { disposition: 'live', surface: 'Agents' },
-    retryInterruptedWorkerCheckpoint: { disposition: 'live', surface: 'Recovery' },
-    retrySchedulerAdmission: { disposition: 'live', surface: 'Recovery' },
     searchApp: { disposition: 'workflow', surface: 'Overview' },
     submitTurnFeedback: { disposition: 'live', surface: 'Chat' },
   },
@@ -70,11 +65,20 @@ const WEB_OPERATION_GROUPS = {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
     'artifact.introduce': { disposition: 'live', surface: 'Artifacts' },
   },
-  Automations: {
-    createAutomation: { disposition: 'roadmap', roadmap: 'R092' },
-    deleteAutomation: { disposition: 'roadmap', roadmap: 'R092' },
-    listAutomations: { disposition: 'roadmap', roadmap: 'R092' },
-    updateAutomation: { disposition: 'roadmap', roadmap: 'R092' },
+  recovery: {
+    'recovery.worker-list': { disposition: 'live', surface: 'Recovery' },
+    'recovery.checkpoint-retry': { disposition: 'live', surface: 'Recovery' },
+  },
+  scheduler: {
+    'scheduler.list': { disposition: 'live', surface: 'Recovery' },
+    'scheduler.retry': { disposition: 'live', surface: 'Recovery' },
+    'scheduler.cancel': { disposition: 'live', surface: 'Recovery' },
+  },
+  automation: {
+    'automation.create': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.delete': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.list': { disposition: 'roadmap', roadmap: 'R092' },
+    'automation.update': { disposition: 'roadmap', roadmap: 'R092' },
   },
   Catalog: {
     createMcpConfig: { disposition: 'live', surface: 'Catalog' },

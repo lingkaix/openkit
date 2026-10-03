@@ -98,3 +98,5 @@ The Knowledge family has 19 definitions and the retained minimal entry family ha
 Conversation, Task, Attention and Pending Request operations are composed from their family definition tables; they reuse the existing structured schemas and preserve Task HTTP 202 and owner-selected conversation HTTP 200/202.
 
 `workspace-archive-history.ts` validates pre-retirement Git push and repository metadata only for archive verification. It defines no public operations, live resource, or execution authority.
+
+`automation-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare nine browser-safe operations and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.

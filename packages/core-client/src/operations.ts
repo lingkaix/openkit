@@ -38,7 +38,8 @@ export function createOperationClient(transport: ClientTransport): OperationClie
           operationHttpPath(id),
           body,
           definition.outputSchema,
-          definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined
+          definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined,
+          'successStatus' in definition && definition.successStatus === 204
         );
       },
     ])

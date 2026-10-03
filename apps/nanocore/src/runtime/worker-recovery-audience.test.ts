@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
@@ -15,6 +14,7 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
@@ -153,7 +153,7 @@ function seedInterruptedWorker(input: {
 }
 
 describe('interrupted worker list Thread audience', () => {
-  it('keeps own and shared recovery rows and hides another member private Thread from members and admins', async () => {
+  it('keeps member audiences private while current administrators see all recovery rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-audience-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -285,9 +285,15 @@ describe('interrupted worker list Thread audience', () => {
     });
 
     try {
-      const ownerList = await app.request('/api/app/recovery/interrupted-workers', {
-        headers: { authorization: `Bearer ${ownerToken.secret}` },
-      });
+      const ownerList = await app.request(
+        ...operationRequest(
+          'recovery.worker-list',
+          {},
+          {
+            headers: { authorization: `Bearer ${ownerToken.secret}` },
+          }
+        )
+      );
       expect(ownerList.status, await ownerList.clone().text()).toBe(200);
       const ownerBody = (await ownerList.json()) as {
         items: Array<{ threadId: string; turnId: string; diagnosticsSummary: string | null }>;
@@ -303,9 +309,15 @@ describe('interrupted worker list Thread audience', () => {
       const getTurnSpy = vi.spyOn(store, 'getTurn');
       const getAgentSessionSpy = vi.spyOn(store, 'getAgentSession');
 
-      const memberList = await app.request('/api/app/recovery/interrupted-workers', {
-        headers: { authorization: `Bearer ${memberToken.secret}` },
-      });
+      const memberList = await app.request(
+        ...operationRequest(
+          'recovery.worker-list',
+          {},
+          {
+            headers: { authorization: `Bearer ${memberToken.secret}` },
+          }
+        )
+      );
       expect(memberList.status, await memberList.clone().text()).toBe(200);
       const memberText = await memberList.text();
       expect(memberText).not.toContain(ownPrivateThread.id);
@@ -327,28 +339,50 @@ describe('interrupted worker list Thread audience', () => {
       getTurnSpy.mockClear();
       getAgentSessionSpy.mockClear();
 
-      const adminList = await app.request('/api/app/recovery/interrupted-workers', {
-        headers: { authorization: `Bearer ${adminToken.secret}` },
-      });
+      const adminList = await app.request(
+        ...operationRequest(
+          'recovery.worker-list',
+          {},
+          {
+            headers: { authorization: `Bearer ${adminToken.secret}` },
+          }
+        )
+      );
       expect(adminList.status, await adminList.clone().text()).toBe(200);
       const adminText = await adminList.text();
-      expect(adminText).not.toContain(otherPrivateThread.id);
-      expect(adminText).not.toContain(otherPrivateTurnId);
+      expect(adminText).toContain(otherPrivateThread.id);
+      expect(adminText).toContain(otherPrivateTurnId);
       const adminBody = JSON.parse(adminText) as {
         items: Array<{ threadId: string; turnId: string }>;
       };
       expect(adminBody.items.map((item) => item.threadId).sort()).toEqual(
-        [ownPrivateThread.id, sharedThread.id].sort()
+        [ownPrivateThread.id, otherPrivateThread.id, sharedThread.id].sort()
       );
       expect(getTurnSpy.mock.calls.some(([, threadId]) => threadId === sharedThread.id)).toBe(true);
       expect(getTurnSpy.mock.calls.some(([, threadId]) => threadId === otherPrivateThread.id)).toBe(
-        false
+        true
       );
       expect(
         getAgentSessionSpy.mock.calls.some(
           ([sessionId]) => sessionId === `as_${otherPrivateTurnId}`
         )
-      ).toBe(false);
+      ).toBe(true);
+
+      const sessionApp = createApp({
+        auth: {
+          api: { getSession: async () => ({ user: { id: 'user_local' } }) },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        coreDb,
+        dataRoot,
+        mode: 'server',
+        store,
+      });
+      const sessionList = await sessionApp.request(...operationRequest('recovery.worker-list', {}));
+      expect(sessionList.status).toBe(200);
+      expect(
+        (await sessionList.json()).items.map((item: { threadId: string }) => item.threadId).sort()
+      ).toEqual([ownPrivateThread.id, otherPrivateThread.id, sharedThread.id].sort());
 
       getTurnSpy.mockRestore();
       getAgentSessionSpy.mockRestore();
@@ -375,6 +409,81 @@ describe('interrupted worker list Thread audience', () => {
         afterDb.sqlite.close();
       }
     } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('releases an eligible checkpoint and replays its exact receipt without rewriting or relaunching the original attempt', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-recovery-receipt-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Receipt recovery');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: 'user_local',
+    });
+    const thread = store.createThread(workspace.id, 'Original attempt');
+    const turnId = seedInterruptedWorker({
+      coreDb,
+      dataRoot,
+      store,
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      diagnosticsSummary: 'Interrupted receipt attempt',
+    });
+    const turnBefore = { ...store.getTurnById(turnId) };
+    const sessionBefore = { ...store.getAgentSession(`as_${turnId}`) };
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    const scope = { workspaceId: workspace.id, threadId: thread.id, turnId };
+    const requestId = 'req_b9_exact_receipt';
+    const app = createApp({ coreDb, dataRoot, store });
+    const beforeLease = coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
+      .get(`lease_${turnId}`);
+    try {
+      expect(getWorkerCheckpoint(db, workspace.id, thread.id, turnId)).toMatchObject({
+        stage: 'running_worker',
+        stopReason: null,
+      });
+      const release = await app.request('/api/app/operations/recovery.checkpoint-retry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+        body: JSON.stringify({ ...scope, requestId }),
+      });
+      expect(release.status, await release.clone().text()).toBe(200);
+      await expect(release.json()).resolves.toEqual({ outcome: 'released_for_retry', turnId });
+      const receipt = store.getCommandRequest('worker.recovery.retry', requestId, scope, db);
+      expect(receipt).toMatchObject({
+        command: 'worker.recovery.retry',
+        requestId,
+        scope,
+        response: { kind: 'turn', id: turnId },
+      });
+      expect(getWorkerCheckpoint(db, workspace.id, thread.id, turnId)).toBeNull();
+      const replay = await app.request('/api/app/operations/recovery.checkpoint-retry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+        body: JSON.stringify({ ...scope, requestId }),
+      });
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      await expect(replay.json()).resolves.toEqual({ outcome: 'released_for_retry', turnId });
+      expect(store.getCommandRequest('worker.recovery.retry', requestId, scope, db)).toEqual(
+        receipt
+      );
+      expect(store.getTurnById(turnId)).toEqual(turnBefore);
+      expect(store.getAgentSession(`as_${turnId}`)).toEqual(sessionBefore);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT * FROM scheduler_session_leases WHERE lease_id = ?')
+          .get(`lease_${turnId}`)
+      ).toEqual(beforeLease);
+      expect(store.listThreadTurns(workspace.id, thread.id)).toHaveLength(1);
+    } finally {
+      db.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

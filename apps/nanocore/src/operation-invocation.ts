@@ -18,6 +18,7 @@ import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import { HumanAttentionReadError, readHumanAttention } from './action-center.js';
+import { publishedErrorMessage } from './api-errors.js';
 import {
   ConversationNavigationReadError,
   readConversationNavigation,
@@ -43,6 +44,10 @@ import {
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
+import {
+  AutomationOperationError,
+  createAutomationOperationImplementations,
+} from './automation-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
@@ -52,6 +57,7 @@ import {
   createKnowledgeOperationImplementations,
   KnowledgeOperationError,
 } from './knowledge-operations.js';
+import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
 import type {
   createTaskStartOperation,
@@ -70,6 +76,14 @@ import {
   PendingRequestCommandError,
   readPendingRequestLineage,
 } from './runtime/pending-requests.js';
+import {
+  createSchedulerAdmissionOperationImplementations,
+  SchedulerAdmissionOperationError,
+} from './runtime/scheduler-admission-operations.js';
+import {
+  createRecoveryOperationImplementations,
+  RecoveryOperationError,
+} from './runtime/worker-recovery-operations.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
 import {
   createDataRootAdminOperationImplementations,
@@ -112,6 +126,8 @@ export type KernelOperationImplementations = {
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  /** Existing process-local automation owner, shared across public projections. */
+  readonly automationStore?: AutomationStore;
   /** Existing conversation owner, including process-local interruption handles. */
   readonly conversationService?: ReturnType<typeof registerQuickAndChatModeRoutes>;
   /** Existing bounded Task admission command. */
@@ -154,9 +170,10 @@ export class OperationInvocationError extends Error {
   public constructor(
     public readonly code: string,
     message: string,
-    public readonly status: number
+    public readonly status: number,
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = 'OperationInvocationError';
   }
 }
@@ -376,6 +393,9 @@ function createOperationImplementations(
   dependencies: OperationInvocationDependencies
 ): OperationImplementations {
   return {
+    ...createAutomationOperationImplementations(dependencies),
+    ...createSchedulerAdmissionOperationImplementations(dependencies),
+    ...createRecoveryOperationImplementations(dependencies),
     ...createKernelOperationImplementations(dependencies),
     ...createWorkspaceOperationImplementations(dependencies),
     ...createThreadOperationImplementations(dependencies),
@@ -489,7 +509,21 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       )
         throw denied();
       const input = parsed.data as { workspaceId: string; threadId?: string; turnId?: string };
-      const workspaceId = input[definition.scope.field];
+      const automationLineage =
+        definition.target.kind === 'automation'
+          ? dependencies.automationStore?.getAutomationLineage(
+              (parsed.data as { automationId: string }).automationId,
+              actor.id,
+              context.kind === 'public' &&
+                !!coreDb &&
+                isCurrentDeploymentAdministrator(coreDb, context.actor)
+            )
+          : null;
+      const workspaceId =
+        'field' in definition.scope
+          ? input[definition.scope.field]
+          : automationLineage?.workspaceId;
+      if (!workspaceId) throw denied();
       if (
         !coreDb ||
         !dependencies.store ||
@@ -508,8 +542,11 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
           : authorizeWorkspace(coreDb, context.actor, workspaceId, definition);
       if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
         throw denied();
-      if (definition.scope.kind === 'opaque-child-workspace') {
-        // This branch resolves only Pending Request lineage and fails closed for any other child family.
+      if (
+        definition.scope.kind === 'opaque-child-workspace' &&
+        definition.target.kind !== 'automation'
+      ) {
+        // Approval lineage stays within the already selected Workspace.
         const childId = (parsed.data as Record<string, unknown>)[
           definition.scope.childField
         ] as string;
@@ -562,7 +599,18 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         )
           throw new OperationInvocationError('not_found', 'Thread not found.', 404);
         if (definition.target.kind === 'addressed-turn') {
-          const turn = dependencies.store.getTurnById(input[definition.target.turnField]!);
+          let turn: ReturnType<FsStore['getTurnLineage']>;
+          try {
+            turn = dependencies.store.getTurnLineage(input[definition.target.turnField]!);
+          } catch (error) {
+            if (id === 'recovery.checkpoint-retry')
+              throw new OperationInvocationError(
+                'recovery_retry_failed',
+                publishedErrorMessage(error),
+                400
+              );
+            throw error;
+          }
           assertAuthorizedWorkspaceLineage(
             {
               ...(authorized as {
@@ -574,6 +622,18 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
             },
             turn.workspaceId
           );
+          // A caller-selected Thread cannot grant the actual Turn's private audience.
+          if (
+            turn.threadId !== input[definition.target.threadField] &&
+            !isThreadIdVisible(
+              dependencies.store,
+              workspaceId,
+              turn.threadId,
+              userId ?? undefined,
+              administratorEligible
+            )
+          )
+            throw new OperationInvocationError('not_found', 'Thread not found.', 404);
         }
       }
       // Domain handlers resolve the child inside this authorized Workspace and preserve their own availability outcomes.
@@ -611,6 +671,9 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
       if (
         error instanceof NanoHostOperationError ||
         error instanceof DataRootAdminOperationError ||
+        error instanceof AutomationOperationError ||
+        error instanceof SchedulerAdmissionOperationError ||
+        error instanceof RecoveryOperationError ||
         error instanceof KnowledgeOperationError ||
         error instanceof ArtifactOperationError ||
         error instanceof HumanAttentionReadError ||
@@ -619,7 +682,9 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         error instanceof PendingRequestCommandError ||
         error instanceof IdempotencyKeyConflictError
       )
-        throw new OperationInvocationError(error.code, error.message, error.status);
+        throw new OperationInvocationError(error.code, error.message, error.status, {
+          cause: error,
+        });
       throw error;
     } finally {
       release?.();

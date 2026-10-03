@@ -5,6 +5,7 @@ import {
   operationHttpPath,
   operationModelInput,
   operationToolName,
+  PRODUCT_OPERATION_DEFINITIONS,
 } from './operation-definitions.js';
 
 describe('operation definitions', () => {
@@ -68,4 +69,40 @@ it('derives Artifact model views with bound identity omitted and content and fee
       feedback: 'Try again.',
     }).success
   ).toBe(true);
+});
+
+describe('automation, scheduler and recovery definitions', () => {
+  it('uses strict complete inputs and preserves model-view validation and mutation posture', () => {
+    const cases = [
+      ['automation.list', {}, false],
+      [
+        'automation.create',
+        { workspaceId: 'ws_demo', name: 'Morning', cron: '*', prompt: 'Work' },
+        true,
+      ],
+      ['automation.update', { automationId: 'auto_one', status: 'enabled' }, true],
+      ['automation.delete', { automationId: 'auto_one' }, true],
+      ['scheduler.list', { workspaceId: 'ws_demo' }, false],
+      ['scheduler.retry', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
+      ['scheduler.cancel', { workspaceId: 'ws_demo', queueEntryId: 'queue_one' }, true],
+      ['recovery.worker-list', {}, false],
+      [
+        'recovery.checkpoint-retry',
+        { workspaceId: 'ws_demo', threadId: 'th_one', turnId: 'tu_one', requestId: 'req_one' },
+        true,
+      ],
+    ] as const;
+    for (const [id, input, mutating] of cases) {
+      const definition = PRODUCT_OPERATION_DEFINITIONS[id];
+      expect(definition.mutating).toBe(mutating);
+      expect(definition.inputSchema.safeParse(input).success).toBe(true);
+      expect(definition.inputSchema.safeParse({ ...input, userId: 'caller' }).success).toBe(false);
+      expect(
+        operationModelInput(definition.inputSchema, []).safeParse({ ...input, invented: true })
+          .success
+      ).toBe(false);
+    }
+    expect(PRODUCT_OPERATION_DEFINITIONS['automation.delete'].outputSchema.parse(null)).toBeNull();
+    expect(PRODUCT_OPERATION_DEFINITIONS['automation.delete'].successStatus).toBe(204);
+  });
 });

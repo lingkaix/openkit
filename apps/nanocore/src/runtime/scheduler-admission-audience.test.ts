@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 
 import type { AuthVariables } from '../auth/middleware.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
@@ -12,14 +14,18 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { registerSchedulerAdmissionRoutes } from './scheduler-admission-routes.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 describe('scheduler admission thread audience', () => {
   it('hides private Thread queue rows and denies child mutations with a nondisclosing 404', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-audience-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const shared = store.createThread('ws_demo', 'Shared admission');
     const privateThread = store.createThread(
       'ws_demo',
@@ -77,15 +83,19 @@ describe('scheduler admission thread audience', () => {
     const repositoryWorkspaceDb = vi.fn(() => {
       throw new Error('Private Thread admissions must fail before opening workspace storage.');
     });
-    registerSchedulerAdmissionRoutes({
+    registerOperationJsonRoutes({
       app,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb,
     });
 
     try {
-      const listed = await app.request('/api/app/workspaces/ws_demo/scheduler/admissions');
+      const listed = await app.request(
+        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+      );
       const listedBody = await listed.json();
 
       expect(listed.status).toBe(200);
@@ -96,20 +106,32 @@ describe('scheduler admission thread audience', () => {
       expect(JSON.stringify(listedBody)).not.toContain('queue_foreign_private');
 
       const hiddenRetry = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_foreign_private/retry',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.retry',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_foreign_private' },
+          { method: 'POST' }
+        )
       );
       const hiddenCancel = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_foreign_private/cancel',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.cancel',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_foreign_private' },
+          { method: 'POST' }
+        )
       );
       const missingRetry = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/retry',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.retry',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { method: 'POST' }
+        )
       );
       const missingCancel = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/cancel',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.cancel',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { method: 'POST' }
+        )
       );
       const hiddenRetryText = await hiddenRetry.text();
       const hiddenCancelText = await hiddenCancel.text();

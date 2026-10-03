@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 
 import type { AuthVariables } from '../auth/middleware.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
@@ -12,14 +14,18 @@ import {
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { registerSchedulerAdmissionRoutes } from './scheduler-admission-routes.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 describe('scheduler admission routes', () => {
   it('closes workspace databases after scheduler admission audit attempts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-routes-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const thread = store.createThread('ws_demo', 'Scheduler admission database lifecycle');
 
     for (const queueEntryId of [
@@ -57,8 +63,10 @@ describe('scheduler admission routes', () => {
       });
       await next();
     });
-    registerSchedulerAdmissionRoutes({
+    registerOperationJsonRoutes({
       app,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
@@ -78,17 +86,26 @@ describe('scheduler admission routes', () => {
 
     try {
       const retried = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_retry_close/retry',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.retry',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_close' },
+          { method: 'POST' }
+        )
       );
       const cancelled = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_cancel_close/cancel',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.cancel',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_cancel_close' },
+          { method: 'POST' }
+        )
       );
       failAudit = true;
       const auditFailed = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_retry_audit_failure/retry',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.retry',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_retry_audit_failure' },
+          { method: 'POST' }
+        )
       );
 
       expect(retried.status).toBe(200);
@@ -112,7 +129,9 @@ describe('scheduler admission routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-ownership-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'user_local' });
@@ -146,8 +165,10 @@ describe('scheduler admission routes', () => {
     const repositoryWorkspaceDb = vi.fn(() => {
       throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
     });
-    registerSchedulerAdmissionRoutes({
+    registerOperationJsonRoutes({
       app,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb,
@@ -155,12 +176,18 @@ describe('scheduler admission routes', () => {
 
     try {
       const missingRetry = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/retry',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.retry',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { method: 'POST' }
+        )
       );
       const missingCancel = await app.request(
-        '/api/app/workspaces/ws_demo/scheduler/admissions/queue_missing/cancel',
-        { method: 'POST' }
+        ...operationRequest(
+          'scheduler.cancel',
+          { workspaceId: 'ws_demo', queueEntryId: 'queue_missing' },
+          { method: 'POST' }
+        )
       );
       const missingRetryText = await missingRetry.text();
       const missingCancelText = await missingCancel.text();
@@ -173,8 +200,9 @@ describe('scheduler admission routes', () => {
         ['queue_foreign_retry', 'retry', 'denied'],
         ['queue_foreign_cancel', 'cancel', 'queued'],
       ] as const) {
-        const path = `/api/app/workspaces/ws_demo/scheduler/admissions/${queueEntryId}/${action}`;
-        const foreign = await app.request(path, { method: 'POST' });
+        const foreign = await app.request(
+          ...operationRequest(`scheduler.${action}`, { workspaceId: 'ws_demo', queueEntryId })
+        );
         const foreignText = await foreign.text();
 
         expect(foreign.status).toBe(
@@ -197,7 +225,9 @@ describe('scheduler admission routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-user-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const shared = store.createThread('ws_demo', 'Shared other-user admission');
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
@@ -229,8 +259,10 @@ describe('scheduler admission routes', () => {
       queueEntryId: 'queue_victim_retry',
       denialReason: 'no-healthy-target',
     });
-    registerSchedulerAdmissionRoutes({
+    registerOperationJsonRoutes({
       app,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
@@ -241,7 +273,9 @@ describe('scheduler admission routes', () => {
     });
 
     try {
-      const listed = await app.request('/api/app/workspaces/ws_demo/scheduler/admissions');
+      const listed = await app.request(
+        ...operationRequest('scheduler.list', { workspaceId: 'ws_demo' })
+      );
 
       expect(listed.status).toBe(200);
       await expect(listed.json()).resolves.toMatchObject({
@@ -255,8 +289,9 @@ describe('scheduler admission routes', () => {
         ['queue_victim_retry', 'retry', 'queued'],
         ['queue_victim_cancel', 'cancel', 'cancelled'],
       ] as const) {
-        const path = `/api/app/workspaces/ws_demo/scheduler/admissions/${queueEntryId}/${action}`;
-        const response = await app.request(path, { method: 'POST' });
+        const response = await app.request(
+          ...operationRequest(`scheduler.${action}`, { workspaceId: 'ws_demo', queueEntryId })
+        );
 
         expect(response.status).toBe(200);
         expect(

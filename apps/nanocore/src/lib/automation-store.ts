@@ -22,6 +22,34 @@ export class AutomationStore {
     return [...(this.automationsByUserId.get(userId)?.values() ?? [])];
   }
 
+  /** Resolves only owner and Workspace selectors before content admission; administrators may address another user's record. */
+  public getAutomationLineage(
+    automationId: string,
+    userId: string,
+    administratorEligible = false
+  ): { workspaceId: string; ownerUserId: string } | null {
+    for (const [ownerUserId, records] of this.automationsByUserId) {
+      if (ownerUserId !== userId && !administratorEligible) continue;
+      const record = records.get(automationId);
+      if (record) return { workspaceId: record.workspaceId, ownerUserId };
+    }
+    return null;
+  }
+
+  /** Returns admitted records only, retaining ordinary user-private collections and current administrator eligibility. */
+  public listAuthorizedAutomations(
+    userId: string,
+    workspaceIds: readonly string[],
+    administratorEligible = false
+  ): AutomationRecord[] {
+    const admitted = new Set(workspaceIds);
+    return [...this.automationsByUserId.entries()].flatMap(([ownerUserId, records]) =>
+      ownerUserId === userId || administratorEligible
+        ? [...records.values()].filter((record) => admitted.has(record.workspaceId))
+        : []
+    );
+  }
+
   /**
    * Return one user-owned automation definition.
    *

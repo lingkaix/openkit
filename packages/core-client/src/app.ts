@@ -15,14 +15,10 @@ import {
   AppSearchResponseSchema,
   type AppUpdateStatusResponse,
   AppUpdateStatusResponseSchema,
-  type AutomationRecord,
-  AutomationRecordSchema,
   type BindThreadMaterialRequest,
   BindThreadMaterialRequestSchema,
   type BindThreadMaterialResponse,
   BindThreadMaterialResponseSchema,
-  type CancelSchedulerAdmissionResponse,
-  CancelSchedulerAdmissionResponseSchema,
   type CapabilityUsageResponse,
   CapabilityUsageResponseSchema,
   type ChangeWorkspaceMemberAccessRequest,
@@ -31,8 +27,6 @@ import {
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  type CreateAutomationRequest,
-  CreateAutomationRequestSchema,
   type CreateLightAppRequest,
   CreateLightAppRequestSchema,
   type CreateLightAppResponse,
@@ -98,12 +92,8 @@ import {
   LightAppBatchResponseSchema,
   type ListAgentEnvironmentPackageSnapshotsResponse,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  type ListAutomationsResponse,
-  ListAutomationsResponseSchema,
   type ListBackendWorkspaceHandlesResponse,
   ListBackendWorkspaceHandlesResponseSchema,
-  type ListInterruptedWorkerStatesResponse,
-  ListInterruptedWorkerStatesResponseSchema,
   type ListLightAppRecordsResponse,
   ListLightAppRecordsResponseSchema,
   type ListLightAppsResponse,
@@ -112,8 +102,6 @@ import {
   ListMyAdminAccessTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
-  type ListSchedulerAdmissionsResponse,
-  ListSchedulerAdmissionsResponseSchema,
   type ListServerAuditEventsResponse,
   ListServerAuditEventsResponseSchema,
   type ListServerPermissionDecisionsResponse,
@@ -212,12 +200,6 @@ import {
   type RetireLightAppResponse,
   RetireLightAppResponseSchema,
   type RetrieveKnowledgeRequest,
-  type RetryInterruptedWorkerCheckpointRequest,
-  RetryInterruptedWorkerCheckpointRequestSchema,
-  type RetryInterruptedWorkerCheckpointResponse,
-  RetryInterruptedWorkerCheckpointResponseSchema,
-  type RetrySchedulerAdmissionResponse,
-  RetrySchedulerAdmissionResponseSchema,
   type ReverseKnowledgeProposalRequest,
   type RevokeOpenKitAccessTokenResponse,
   RevokeOpenKitAccessTokenResponseSchema,
@@ -274,8 +256,6 @@ import {
   UnbindThreadMaterialRequestSchema,
   type UnbindThreadMaterialResponse,
   UnbindThreadMaterialResponseSchema,
-  type UpdateAutomationRequest,
-  UpdateAutomationRequestSchema,
   type UpdateLightAppRecordRequest,
   UpdateLightAppRecordRequestSchema,
   type UpdateLightAppRecordResponse,
@@ -363,9 +343,6 @@ export type DisableUserInput = OptionalRequestId<DisableUserRequest>;
 export type DeleteWorkspaceInput = OptionalRequestId<DeleteWorkspaceRequest>;
 /** Deleted-Workspace recovery input with an optional caller-provided request id. */
 export type RecoverDeletedWorkspaceInput = OptionalRequestId<RecoverDeletedWorkspaceRequest>;
-/** Interrupted-worker retry input with optional caller-provided request id. */
-export type RetryInterruptedWorkerCheckpointInput =
-  OptionalRequestId<RetryInterruptedWorkerCheckpointRequest>;
 /** Workspace Material create input with optional caller-provided request id. */
 export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
 /** Workspace Material revision save input with optional caller-provided request id. */
@@ -895,37 +872,8 @@ export interface AppApiClient {
     referenceId: string,
     input: VaultAdminRebindWorkspaceReferenceRequest
   ): Promise<VaultAdminRebindWorkspaceReferenceResponse>;
-  /** Lists automations. */
-  listAutomations(): Promise<ListAutomationsResponse>;
-  /** Creates one automation. */
-  createAutomation(input: CreateAutomationRequest): Promise<AutomationRecord>;
-  /** Updates one automation. */
-  updateAutomation(automationId: string, input: UpdateAutomationRequest): Promise<AutomationRecord>;
-  /** Deletes one automation. */
-  deleteAutomation(automationId: string): Promise<void>;
   /** Runs one completed quick chat request. */
   quickChat(input: QuickChatRequest): Promise<QuickChatResponse>;
-  /** Lists interrupted worker recovery states. */
-  listInterruptedWorkers(): Promise<ListInterruptedWorkerStatesResponse>;
-  /** Queues one interrupted worker checkpoint for retry through the owning task. */
-  retryInterruptedWorkerCheckpoint(
-    workspaceId: string,
-    threadId: string,
-    turnId: string,
-    input?: RetryInterruptedWorkerCheckpointInput
-  ): Promise<RetryInterruptedWorkerCheckpointResponse>;
-  /** Requeues one denied scheduler admission. */
-  retrySchedulerAdmission(
-    workspaceId: string,
-    queueEntryId: string
-  ): Promise<RetrySchedulerAdmissionResponse>;
-  /** Cancels one queued or denied scheduler admission. */
-  cancelSchedulerAdmission(
-    workspaceId: string,
-    queueEntryId: string
-  ): Promise<CancelSchedulerAdmissionResponse>;
-  /** Lists workspace-filtered scheduler admissions. */
-  listSchedulerAdmissions(workspaceId: string): Promise<ListSchedulerAdmissionsResponse>;
   /** Searches App API read models. */
   search(query: string): Promise<AppSearchResponse>;
   /** Submits per-turn feedback. */
@@ -1601,57 +1549,11 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         VaultAdminRebindWorkspaceReferenceRequestSchema.parse(input),
         VaultAdminRebindWorkspaceReferenceResponseSchema
       ),
-    listAutomations: () => transport.getJson('/api/app/automations', ListAutomationsResponseSchema),
-    createAutomation: (input) =>
-      transport.postJson(
-        '/api/app/automations',
-        CreateAutomationRequestSchema.parse(input),
-        AutomationRecordSchema
-      ),
-    updateAutomation: (automationId, input) =>
-      transport.patchJson(
-        `/api/app/automations/${automationId}`,
-        UpdateAutomationRequestSchema.parse(input),
-        AutomationRecordSchema
-      ),
-    deleteAutomation: (automationId) =>
-      transport.deleteEmpty(`/api/app/automations/${automationId}`),
     quickChat: (input) =>
       transport.postJson(
         '/api/app/quick-chat',
         QuickChatRequestSchema.parse(input),
         QuickChatResponseSchema
-      ),
-    listInterruptedWorkers: () =>
-      transport.getJson(
-        '/api/app/recovery/interrupted-workers',
-        ListInterruptedWorkerStatesResponseSchema
-      ),
-    retryInterruptedWorkerCheckpoint: (workspaceId, threadId, turnId, input = {}) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/recovery/interrupted-worker/${turnId}/retry`,
-        RetryInterruptedWorkerCheckpointRequestSchema.parse(request),
-        RetryInterruptedWorkerCheckpointResponseSchema
-      );
-    },
-    retrySchedulerAdmission: (workspaceId, queueEntryId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/scheduler/admissions/${queueEntryId}/retry`,
-        {},
-        RetrySchedulerAdmissionResponseSchema
-      ),
-    cancelSchedulerAdmission: (workspaceId, queueEntryId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/scheduler/admissions/${queueEntryId}/cancel`,
-        {},
-        CancelSchedulerAdmissionResponseSchema
-      ),
-    listSchedulerAdmissions: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/scheduler/admissions`,
-        ListSchedulerAdmissionsResponseSchema
       ),
     search: (query) =>
       transport.getJson(`/api/app/search?q=${encodeURIComponent(query)}`, AppSearchResponseSchema),

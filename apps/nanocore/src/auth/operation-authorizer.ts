@@ -1,7 +1,4 @@
-import {
-  CreateAutomationRequestSchema,
-  PRODUCT_OPERATION_DEFINITIONS,
-} from '@openkit/app-api-schemas';
+import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
   responsibleUserIdForActor,
@@ -12,7 +9,6 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 
 import { asApiError } from '../api-errors.js';
-import type { AutomationStore } from '../lib/automation-store.js';
 import type { FsStore } from '../lib/store.js';
 import { APP_OPENAPI_ROUTE_METHODS, createAppOpenApiDocument } from '../openapi.js';
 import { evaluateWorkspaceRoleAccess, type ProductOperation } from '../policy/workspace-access.js';
@@ -87,8 +83,6 @@ export type WorkspaceAccess =
 export interface RegisterOperationAccessGuardsInput {
   /** Hono app receiving guards before public handlers are registered. */
   readonly app: Hono<{ Variables: AuthVariables }>;
-  /** Existing process-local Automation owner used for opaque lineage. */
-  readonly automationStore: AutomationStore;
   /** Core database owning Workspace registry and membership authority. */
   readonly coreDb: CoreDb;
   /** Derives the built-in Quick Chat Workspace for one canonical user. */
@@ -787,10 +781,6 @@ async function bodyWorkspaceId(
     .clone()
     .json()
     .catch(() => null);
-  if (operationKey === 'createAutomation') {
-    const parsed = CreateAutomationRequestSchema.safeParse(body);
-    return parsed.success ? parsed.data.workspaceId : null;
-  }
   if (operationKey === 'POST /api/turns') {
     const parsed = SubmitTurnInputRequestSchema.safeParse(body);
     return parsed.success ? parsed.data.workspaceId : null;
@@ -827,16 +817,10 @@ function opaqueChildWorkspaceId(
  */
 function opaqueChildOwner(
   context: Context<{ Variables: AuthVariables }>,
-  actor: Actor,
+  _actor: Actor,
   operationKey: string,
   input: RegisterOperationAccessGuardsInput
 ): OpaqueChildOwner | null {
-  if (operationKey === 'updateAutomation' || operationKey === 'deleteAutomation') {
-    const automationId = nonempty(context.req.param('automationId'));
-    return automationId
-      ? { workspaceId: input.automationStore.getAutomation(actor.userId, automationId).workspaceId }
-      : null;
-  }
   if (operationKey === 'submitTurnFeedback') {
     const turnId = nonempty(context.req.param('turnId'));
     if (!turnId) {

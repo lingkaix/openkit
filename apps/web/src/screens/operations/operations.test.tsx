@@ -355,15 +355,6 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     },
     app: {
       getWorkspaceDashboard: vi.fn().mockResolvedValue({ activeWork: [] }),
-      listInterruptedWorkers: vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
-      retryInterruptedWorkerCheckpoint: vi.fn().mockResolvedValue(WORKER_RETRY_SUCCESS),
-      listSchedulerAdmissions: vi
-        .fn()
-        .mockImplementation((workspaceId: string) =>
-          Promise.resolve({ items: schedulerItemsFor(workspaceId) })
-        ),
-      retrySchedulerAdmission: vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION),
-      cancelSchedulerAdmission: vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION),
       search: vi.fn().mockResolvedValue({ items: [SEARCH_THREAD] }),
       ...app,
     },
@@ -372,6 +363,16 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
     },
 
     operations: {
+      'recovery.worker-list': vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
+      'recovery.checkpoint-retry': vi.fn().mockResolvedValue(WORKER_RETRY_SUCCESS),
+      'scheduler.list': vi
+        .fn()
+        .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve({ items: schedulerItemsFor(workspaceId) })
+        ),
+      'scheduler.retry': vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION),
+      'scheduler.cancel': vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION),
+
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
 
@@ -479,25 +480,27 @@ function expectWorkerActionUnavailable(scope: HTMLElement) {
 
 /** Captures the stable request identity from one interrupted-worker retry. */
 function workerRetryRequestId(retry: ReturnType<typeof vi.fn>) {
-  const requestId = retry.mock.calls[0]?.[3].requestId;
+  const requestId = retry.mock.calls[0]?.[0].requestId;
   expect(requestId).toEqual(expect.any(String));
   return requestId as string;
 }
 
-/** Returns retryInterruptedWorkerCheckpoint calls for one exact worker lineage. */
+/** Returns recovery.checkpoint-retry calls for one exact worker lineage. */
 function workerRetryCallsFor(
   retry: ReturnType<typeof vi.fn>,
   worker: Pick<typeof INTERRUPTED_WORKER, 'workspaceId' | 'threadId' | 'turnId'>
 ) {
   return retry.mock.calls.filter(
     (call) =>
-      call[0] === worker.workspaceId && call[1] === worker.threadId && call[2] === worker.turnId
+      call[0].workspaceId === worker.workspaceId &&
+      call[0].threadId === worker.threadId &&
+      call[0].turnId === worker.turnId
   );
 }
 
-/** Returns listSchedulerAdmissions calls for one Workspace. */
+/** Returns scheduler.list calls for one Workspace. */
 function schedulerReadsFor(list: ReturnType<typeof vi.fn>, workspaceId: string) {
-  return list.mock.calls.filter((call) => call[0] === workspaceId);
+  return list.mock.calls.filter((call) => call[0].workspaceId === workspaceId);
 }
 
 const INSPECT_FIELD_LABELS = [
@@ -586,7 +589,7 @@ describe('Recovery and search', () => {
     if (inspectAffordance) {
       await user.click(inspectAffordance);
     }
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
 
     const scheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
     expect(within(scheduler).getByText('Denied', { exact: true })).toBeInTheDocument();
@@ -597,17 +600,19 @@ describe('Recovery and search', () => {
 
     expect(
       screen.queryByRole('button', {
-        name: /listInterruptedWorkers|retryInterruptedWorkerCheckpoint|listSchedulerAdmissions|searchApp/i,
+        name: /recovery\.(worker-list|checkpoint-retry)|scheduler\.(list|retry|cancel)|searchApp/i,
       })
     ).toBeNull();
     poisonDom();
 
     await waitFor(() => {
-      expect(vi.mocked(client.app.listInterruptedWorkers).mock.calls).toEqual([[]]);
-      expect(vi.mocked(client.app.listSchedulerAdmissions).mock.calls).toEqual([[WORKSPACE.id]]);
+      expect(vi.mocked(client.operations['recovery.worker-list']).mock.calls).toEqual([[{}]]);
+      expect(vi.mocked(client.operations['scheduler.list']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+      ]);
     });
     expect(client.app.search).not.toHaveBeenCalled();
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
     expect(pathname).toBe('/recovery');
 
     const surface = surfaceById('recovery');
@@ -632,7 +637,10 @@ describe('Recovery and search', () => {
       .fn()
       .mockResolvedValueOnce({ items: schedulerItemsFor(WORKSPACE.id) })
       .mockReturnValueOnce(schedulerReread.promise);
-    const client = makeClient({ listInterruptedWorkers, listSchedulerAdmissions });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'scheduler.list': listSchedulerAdmissions,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -670,9 +678,9 @@ describe('Recovery and search', () => {
     expectWorkerActionUnavailable(remountedWorkers);
     expectActionUnavailable(remountedScheduler, 'Retry');
     expectActionUnavailable(remountedScheduler, 'Cancel');
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -681,16 +689,18 @@ describe('Recovery and search', () => {
     const workspaceBReread = createDeferred<{ items: unknown[] }>();
     let workspaceAReads = 0;
     let workspaceBReads = 0;
-    const listSchedulerAdmissions = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE.id) {
-        workspaceAReads += 1;
-        return Promise.resolve({ items: [DENIED_ADMISSION] });
-      }
-      workspaceBReads += 1;
-      if (workspaceBReads === 1) return Promise.resolve({ items: [WORKSPACE_B_DENIED] });
-      return workspaceBReread.promise;
-    });
-    const client = makeClient({ listSchedulerAdmissions });
+    const listSchedulerAdmissions = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE.id) {
+          workspaceAReads += 1;
+          return Promise.resolve({ items: [DENIED_ADMISSION] });
+        }
+        workspaceBReads += 1;
+        if (workspaceBReads === 1) return Promise.resolve({ items: [WORKSPACE_B_DENIED] });
+        return workspaceBReread.promise;
+      });
+    const client = makeClient({ 'scheduler.list': listSchedulerAdmissions });
     renderApp('/recovery', client);
 
     const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
@@ -733,8 +743,8 @@ describe('Recovery and search', () => {
     );
     expectActionUnavailable(remountedScheduler, 'Retry');
     expectActionUnavailable(remountedScheduler, 'Cancel');
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -742,11 +752,16 @@ describe('Recovery and search', () => {
     const user = userEvent.setup();
     const workspaceBScheduler = createDeferred<{ items: unknown[] }>();
     const retryInterruptedWorkerCheckpoint = vi.fn().mockResolvedValue(WORKSPACE_B_WORKER_RETRY);
-    const listSchedulerAdmissions = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE_B.id) return workspaceBScheduler.promise;
-      return Promise.resolve({ items: schedulerItemsFor(workspaceId) });
+    const listSchedulerAdmissions = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE_B.id) return workspaceBScheduler.promise;
+        return Promise.resolve({ items: schedulerItemsFor(workspaceId) });
+      });
+    const client = makeClient({
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+      'scheduler.list': listSchedulerAdmissions,
     });
-    const client = makeClient({ retryInterruptedWorkerCheckpoint, listSchedulerAdmissions });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -760,9 +775,12 @@ describe('Recovery and search', () => {
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
 
     await waitFor(() =>
-      expect(listSchedulerAdmissions.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE_B.id]])
+      expect(listSchedulerAdmissions.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+        [{ workspaceId: WORKSPACE_B.id }],
+      ])
     );
-    expect(vi.mocked(client.app.listInterruptedWorkers).mock.calls).toEqual([[]]);
+    expect(vi.mocked(client.operations['recovery.worker-list']).mock.calls).toEqual([[{}]]);
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).queryByText(INSPECT_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
@@ -773,8 +791,8 @@ describe('Recovery and search', () => {
     if (staleRetry) {
       await user.click(staleRetry);
     }
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
 
     workspaceBScheduler.resolve({ items: [WORKSPACE_B_QUEUED] });
     await waitFor(() =>
@@ -789,10 +807,12 @@ describe('Recovery and search', () => {
     const requestId = workerRetryRequestId(retryInterruptedWorkerCheckpoint);
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([
       [
-        WORKSPACE_B_WORKER.workspaceId,
-        WORKSPACE_B_WORKER.threadId,
-        WORKSPACE_B_WORKER.turnId,
-        { requestId },
+        {
+          workspaceId: WORKSPACE_B_WORKER.workspaceId,
+          threadId: WORKSPACE_B_WORKER.threadId,
+          turnId: WORKSPACE_B_WORKER.turnId,
+          requestId,
+        },
       ],
     ]);
     poisonDom();
@@ -816,11 +836,11 @@ describe('Recovery and search', () => {
     const retrySchedulerAdmission = vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION);
     const cancelSchedulerAdmission = vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION);
     const client = makeClient({
-      listInterruptedWorkers,
-      listSchedulerAdmissions,
-      retryInterruptedWorkerCheckpoint,
-      retrySchedulerAdmission,
-      cancelSchedulerAdmission,
+      'recovery.worker-list': listInterruptedWorkers,
+      'scheduler.list': listSchedulerAdmissions,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+      'scheduler.retry': retrySchedulerAdmission,
+      'scheduler.cancel': cancelSchedulerAdmission,
     });
     renderApp('/recovery', client);
 
@@ -835,10 +855,12 @@ describe('Recovery and search', () => {
     const workerRequestId = workerRetryRequestId(retryInterruptedWorkerCheckpoint);
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([
       [
-        WORKSPACE.id,
-        INTERRUPTED_WORKER.threadId,
-        INTERRUPTED_WORKER.turnId,
-        { requestId: workerRequestId },
+        {
+          workspaceId: WORKSPACE.id,
+          threadId: INTERRUPTED_WORKER.threadId,
+          turnId: INTERRUPTED_WORKER.turnId,
+          requestId: workerRequestId,
+        },
       ],
     ]);
     await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(2));
@@ -860,7 +882,7 @@ describe('Recovery and search', () => {
 
     await waitFor(() =>
       expect(retrySchedulerAdmission.mock.calls).toEqual([
-        [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+        [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
       ])
     );
     expect(schedulerRetry).toBeDisabled();
@@ -882,7 +904,7 @@ describe('Recovery and search', () => {
 
     await waitFor(() =>
       expect(cancelSchedulerAdmission.mock.calls).toEqual([
-        [WORKSPACE.id, RETRIED_ADMISSION.queueEntryId],
+        [{ workspaceId: WORKSPACE.id, queueEntryId: RETRIED_ADMISSION.queueEntryId }],
       ])
     );
     expect(cancel).toBeDisabled();
@@ -925,8 +947,8 @@ describe('Recovery and search', () => {
         new ApiCallError(409, 'recovery-private failure', { code: 'recovery_required' })
       );
     const client = makeClient({
-      listInterruptedWorkers,
-      retryInterruptedWorkerCheckpoint,
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
     });
     renderApp('/recovery', client);
 
@@ -951,7 +973,9 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(listInterruptedWorkers.mock.calls.length).toBeGreaterThan(1));
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
     expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(client.app.listSchedulerAdmissions).mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(vi.mocked(client.operations['scheduler.list']).mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
 
     recoveryRead.resolve({ items: scenario.items });
     if (scenario.retryAfterRead) {
@@ -968,8 +992,8 @@ describe('Recovery and search', () => {
       );
     }
     expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1);
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -982,7 +1006,7 @@ describe('Recovery and search', () => {
       code: 'scheduler_admission_retry_failed',
       status: 400,
       message: /couldn't retry scheduler admission/i,
-      args: [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+      args: [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
     },
     {
       name: 'cancel failed',
@@ -992,7 +1016,7 @@ describe('Recovery and search', () => {
       code: 'scheduler_admission_cancel_failed',
       status: 400,
       message: /couldn't cancel scheduler admission/i,
-      args: [WORKSPACE.id, QUEUED_ADMISSION.queueEntryId],
+      args: [{ workspaceId: WORKSPACE.id, queueEntryId: QUEUED_ADMISSION.queueEntryId }],
     },
     {
       name: 'retry access denied',
@@ -1002,7 +1026,7 @@ describe('Recovery and search', () => {
       code: 'workspace_access_denied',
       status: 403,
       message: /access denied/i,
-      args: [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+      args: [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
     },
   ])('isolates a scheduler $name failure and retries only the admissions read', async (scenario) => {
     const user = userEvent.setup();
@@ -1017,7 +1041,10 @@ describe('Recovery and search', () => {
       scenario.mutate === 'cancelSchedulerAdmission'
         ? vi.fn().mockRejectedValue(failure)
         : vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION);
-    const client = makeClient({ retrySchedulerAdmission, cancelSchedulerAdmission });
+    const client = makeClient({
+      'scheduler.retry': retrySchedulerAdmission,
+      'scheduler.cancel': cancelSchedulerAdmission,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -1041,22 +1068,24 @@ describe('Recovery and search', () => {
     expect(within(workers).queryByRole('alert')).toBeNull();
     expect(workerActionButton(workers)).toBeEnabled();
 
-    const workersBefore = vi.mocked(client.app.listInterruptedWorkers).mock.calls.length;
-    const schedulerBefore = vi.mocked(client.app.listSchedulerAdmissions).mock.calls.length;
+    const workersBefore = vi.mocked(client.operations['recovery.worker-list']).mock.calls.length;
+    const schedulerBefore = vi.mocked(client.operations['scheduler.list']).mock.calls.length;
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
-      expect(vi.mocked(client.app.listSchedulerAdmissions)).toHaveBeenCalledTimes(
+      expect(vi.mocked(client.operations['scheduler.list'])).toHaveBeenCalledTimes(
         schedulerBefore + 1
       )
     );
-    expect(vi.mocked(client.app.listInterruptedWorkers)).toHaveBeenCalledTimes(workersBefore);
+    expect(vi.mocked(client.operations['recovery.worker-list'])).toHaveBeenCalledTimes(
+      workersBefore
+    );
     expect(retrySchedulerAdmission).toHaveBeenCalledTimes(
       scenario.mutate === 'retrySchedulerAdmission' ? 1 : 0
     );
     expect(cancelSchedulerAdmission).toHaveBeenCalledTimes(
       scenario.mutate === 'cancelSchedulerAdmission' ? 1 : 0
     );
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
     expect(client.app.search).not.toHaveBeenCalled();
     poisonDom();
   });
@@ -1106,14 +1135,18 @@ describe('Recovery and search', () => {
         ? vi.fn().mockRejectedValue(new Error(scenario.privateText))
         : vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               Promise.resolve({ items: schedulerItemsFor(workspaceId) })
             );
     const search =
       scenario.retryTarget === 'search'
         ? vi.fn().mockRejectedValue(new Error(scenario.privateText))
         : vi.fn().mockResolvedValue({ items: [SEARCH_THREAD] });
-    const client = makeClient({ listInterruptedWorkers, listSchedulerAdmissions, search });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'scheduler.list': listSchedulerAdmissions,
+      search,
+    });
     renderApp(scenario.path, client);
 
     if (scenario.kind === 'search') {
@@ -1172,9 +1205,9 @@ describe('Recovery and search', () => {
       expect(listInterruptedWorkers).not.toHaveBeenCalled();
       expect(listSchedulerAdmissions).not.toHaveBeenCalled();
     }
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -1213,9 +1246,9 @@ describe('Recovery and search', () => {
     const user = userEvent.setup();
     const emptyApp: AppOverrides =
       scenario.emptyOwner === 'listInterruptedWorkers'
-        ? { listInterruptedWorkers: vi.fn().mockResolvedValue({ items: [] }) }
+        ? { 'recovery.worker-list': vi.fn().mockResolvedValue({ items: [] }) }
         : scenario.emptyOwner === 'listSchedulerAdmissions'
-          ? { listSchedulerAdmissions: vi.fn().mockResolvedValue({ items: [] }) }
+          ? { 'scheduler.list': vi.fn().mockResolvedValue({ items: [] }) }
           : { search: vi.fn().mockResolvedValue(EMPTY_SEARCH) };
     const client = makeClient(emptyApp);
     renderApp(scenario.path, client);
@@ -1230,8 +1263,8 @@ describe('Recovery and search', () => {
       );
       expect(screen.queryByText(SEARCH_THREAD.title)).not.toBeInTheDocument();
       expect(screen.getByText(scenario.empty)).toBeInTheDocument();
-      expect(client.app.listInterruptedWorkers).not.toHaveBeenCalled();
-      expect(client.app.listSchedulerAdmissions).not.toHaveBeenCalled();
+      expect(client.operations['recovery.worker-list']).not.toHaveBeenCalled();
+      expect(client.operations['scheduler.list']).not.toHaveBeenCalled();
     } else {
       const region = await screen.findByRole('region', { name: scenario.region });
       expect(within(region).getByText(scenario.empty)).toBeInTheDocument();
@@ -1256,14 +1289,14 @@ describe('Recovery and search', () => {
       .mockRejectedValue(new Error('workers-private refetch failure'));
     const listSchedulerAdmissions = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve({ items: schedulerItemsFor(workspaceId) })
       );
     const retryInterruptedWorkerCheckpoint = vi.fn().mockResolvedValue(WORKER_RETRY_MUTATION);
     const client = makeClient({
-      listInterruptedWorkers,
-      listSchedulerAdmissions,
-      retryInterruptedWorkerCheckpoint,
+      'recovery.worker-list': listInterruptedWorkers,
+      'scheduler.list': listSchedulerAdmissions,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
     });
     renderApp('/recovery', client);
 
@@ -1297,11 +1330,11 @@ describe('Recovery and search', () => {
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
-    expect(listInterruptedWorkers.mock.calls).toEqual([[], [], []]);
+    expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}]]);
     expect(listSchedulerAdmissions).toHaveBeenCalledTimes(schedulerReadsBefore);
     expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1);
-    expect(client.app.retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.retry']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
     expect(within(workers).getByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeInTheDocument();
     expect(within(scheduler).getByText('Denied', { exact: true })).toBeInTheDocument();
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
@@ -1324,8 +1357,8 @@ describe('Recovery and search', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
     ).toBeInTheDocument();
-    expect(client.app.listInterruptedWorkers).not.toHaveBeenCalled();
-    expect(client.app.listSchedulerAdmissions).not.toHaveBeenCalled();
+    expect(client.operations['recovery.worker-list']).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.list']).not.toHaveBeenCalled();
 
     await submitSearch(user);
     await waitFor(() => expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY]]));
@@ -1341,7 +1374,7 @@ describe('Recovery and search', () => {
     expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue(SEARCH_QUERY);
     expect(await screen.findByText(SEARCH_THREAD.title)).toBeInTheDocument();
     expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY], [SEARCH_QUERY]]);
-    expect(client.app.listInterruptedWorkers).not.toHaveBeenCalled();
+    expect(client.operations['recovery.worker-list']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -1352,12 +1385,16 @@ describe('Recovery and search', () => {
       .mockResolvedValueOnce({ items: [DENIED_ADMISSION] })
       .mockRejectedValue(new Error('scheduler-private refetch failure'));
     const retrySchedulerAdmission = vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION);
-    const client = makeClient({ listSchedulerAdmissions, retrySchedulerAdmission });
+    const client = makeClient({
+      'scheduler.list': listSchedulerAdmissions,
+      'scheduler.retry': retrySchedulerAdmission,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
     const scheduler = screen.getByRole('region', { name: 'Scheduler admissions' });
-    const workersReadsBefore = vi.mocked(client.app.listInterruptedWorkers).mock.calls.length;
+    const workersReadsBefore = vi.mocked(client.operations['recovery.worker-list']).mock.calls
+      .length;
     await user.click(within(scheduler).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(retrySchedulerAdmission).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listSchedulerAdmissions).toHaveBeenCalledTimes(2));
@@ -1374,7 +1411,9 @@ describe('Recovery and search', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listSchedulerAdmissions).toHaveBeenCalledTimes(3));
     expect(retrySchedulerAdmission).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(client.app.listInterruptedWorkers)).toHaveBeenCalledTimes(workersReadsBefore);
+    expect(vi.mocked(client.operations['recovery.worker-list'])).toHaveBeenCalledTimes(
+      workersReadsBefore
+    );
     expectActionUnavailable(scheduler, 'Retry');
     expectActionUnavailable(scheduler, 'Cancel');
     poisonDom();
@@ -1391,7 +1430,10 @@ describe('Recovery and search', () => {
       .mockRejectedValue(
         new ApiCallError(409, 'recovery-private failure', { code: 'recovery_required' })
       );
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -1426,7 +1468,7 @@ describe('Recovery and search', () => {
     const retryInterruptedWorkerCheckpoint = vi
       .fn()
       .mockRejectedValue(new Error('worker-private failure'));
-    const client = makeClient({ retryInterruptedWorkerCheckpoint });
+    const client = makeClient({ 'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -1434,7 +1476,7 @@ describe('Recovery and search', () => {
     await user.click(workerActionButton(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary)));
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1));
     const requestId = workerRetryRequestId(retryInterruptedWorkerCheckpoint);
-    const workersReads = vi.mocked(client.app.listInterruptedWorkers).mock.calls.length;
+    const workersReads = vi.mocked(client.operations['recovery.worker-list']).mock.calls.length;
 
     const alert = await within(workers).findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't (release|retry)/i);
@@ -1447,8 +1489,10 @@ describe('Recovery and search', () => {
     expect(retryInterruptedWorkerCheckpoint.mock.calls[1]).toEqual(
       retryInterruptedWorkerCheckpoint.mock.calls[0]
     );
-    expect(retryInterruptedWorkerCheckpoint.mock.calls[1]?.[3]).toEqual({ requestId });
-    expect(vi.mocked(client.app.listInterruptedWorkers)).toHaveBeenCalledTimes(workersReads);
+    expect(retryInterruptedWorkerCheckpoint.mock.calls[1]?.[0].requestId).toEqual(requestId);
+    expect(vi.mocked(client.operations['recovery.worker-list'])).toHaveBeenCalledTimes(
+      workersReads
+    );
     poisonDom();
   });
 
@@ -1492,7 +1536,10 @@ describe('Recovery and search', () => {
       .fn()
       .mockResolvedValueOnce({ items: ALL_WORKERS })
       .mockRejectedValue(new Error('workers-private refetch failure'));
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -1525,7 +1572,7 @@ describe('Recovery and search', () => {
     const user = userEvent.setup();
     const mutation = createDeferred<unknown>();
     const retrySchedulerAdmission = vi.fn().mockReturnValue(mutation.promise);
-    const client = makeClient({ retrySchedulerAdmission });
+    const client = makeClient({ 'scheduler.retry': retrySchedulerAdmission });
     renderApp('/recovery', client);
 
     const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
@@ -1559,7 +1606,7 @@ describe('Recovery and search', () => {
   it('keeps a null-diagnostics interrupted worker visible and inspect-only with truthful action copy', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      listInterruptedWorkers: vi.fn().mockResolvedValue({
+      'recovery.worker-list': vi.fn().mockResolvedValue({
         items: [NULL_DIAGNOSTICS_WORKER, INTERRUPTED_WORKER, WORKSPACE_B_WORKER],
       }),
     });
@@ -1577,7 +1624,7 @@ describe('Recovery and search', () => {
     expect(inspectRow).toHaveTextContent(NULL_DIAGNOSTICS_WORKER.stopReason as string);
     expect(inspectRow).toHaveTextContent('Inspect interrupted worker evidence');
     expect(inspectRow).toHaveTextContent('Ask the user how to recover this worker turn');
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
 
     const retryRow = rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary);
     expect(within(retryRow).getByRole('button', { name: WORKER_RELEASE_ACTION })).toBeEnabled();
@@ -1645,7 +1692,7 @@ describe('Recovery and search', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
     expect(screen.queryByRole('button', { name: WORKER_RELEASE_ACTION })).toBeNull();
-    expect(client.app.listSchedulerAdmissions).not.toHaveBeenCalled();
+    expect(client.operations['scheduler.list']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -1721,14 +1768,14 @@ describe('Recovery and search', () => {
             .mockReturnValue(settled.promise)
         : vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               Promise.resolve({ items: schedulerItemsFor(workspaceId) })
             );
     const client = makeClient({
-      listInterruptedWorkers,
-      listSchedulerAdmissions,
-      retryInterruptedWorkerCheckpoint: workerMutation,
-      retrySchedulerAdmission,
+      'recovery.worker-list': listInterruptedWorkers,
+      'scheduler.list': listSchedulerAdmissions,
+      'recovery.checkpoint-retry': workerMutation,
+      'scheduler.retry': retrySchedulerAdmission,
     });
     renderApp('/recovery', client);
 
@@ -1827,8 +1874,8 @@ describe('Recovery and search', () => {
     }
     expect(workerMutation).toHaveBeenCalledTimes(1);
     expect(retrySchedulerAdmission).not.toHaveBeenCalled();
-    expect(client.app.cancelSchedulerAdmission).not.toHaveBeenCalled();
-    expect(listSchedulerAdmissions.mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(client.operations['scheduler.cancel']).not.toHaveBeenCalled();
+    expect(listSchedulerAdmissions.mock.calls).toEqual([[{ workspaceId: WORKSPACE.id }]]);
     poisonDom();
   });
 
@@ -1839,7 +1886,7 @@ describe('Recovery and search', () => {
       label: 'Denied',
       mutate: 'retrySchedulerAdmission' as const,
       code: 'scheduler_admission_retry_failed',
-      args: [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+      args: [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
       settledItems: [RETRIED_ADMISSION],
       originGone: 'Denied' as const,
       retryAfterRead: false,
@@ -1850,7 +1897,7 @@ describe('Recovery and search', () => {
       label: 'Queued',
       mutate: 'cancelSchedulerAdmission' as const,
       code: 'scheduler_admission_cancel_failed',
-      args: [WORKSPACE.id, QUEUED_ADMISSION.queueEntryId],
+      args: [{ workspaceId: WORKSPACE.id, queueEntryId: QUEUED_ADMISSION.queueEntryId }],
       settledItems: [DENIED_ADMISSION],
       originGone: 'Queued' as const,
       retryAfterRead: true,
@@ -1872,9 +1919,9 @@ describe('Recovery and search', () => {
       .mockResolvedValueOnce({ items: [DENIED_ADMISSION, QUEUED_ADMISSION] })
       .mockReturnValue(settled.promise);
     const client = makeClient({
-      listSchedulerAdmissions,
-      retrySchedulerAdmission,
-      cancelSchedulerAdmission,
+      'scheduler.list': listSchedulerAdmissions,
+      'scheduler.retry': retrySchedulerAdmission,
+      'scheduler.cancel': cancelSchedulerAdmission,
     });
     renderApp('/recovery', client);
 
@@ -2081,7 +2128,7 @@ describe('Recovery and search', () => {
 
     await toggleInspect(user, inspectRow);
     expectInspectCollapsed(inspectRow);
-    expect(client.app.retryInterruptedWorkerCheckpoint).not.toHaveBeenCalled();
+    expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -2107,7 +2154,10 @@ describe('Recovery and search', () => {
       scenario.kind === 'generic'
         ? vi.fn().mockRejectedValue(new Error('worker-private failure'))
         : vi.fn().mockResolvedValue(WORKER_RETRY_MUTATION);
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2123,7 +2173,7 @@ describe('Recovery and search', () => {
     const frozenRequestId = workerRetryCallsFor(
       retryInterruptedWorkerCheckpoint,
       INTERRUPTED_WORKER
-    )[0]![3].requestId as string;
+    )[0]![0].requestId as string;
     expect(frozenRequestId).toEqual(expect.any(String));
 
     if (scenario.kind === 'success') {
@@ -2145,10 +2195,12 @@ describe('Recovery and search', () => {
     const retainedOriginAlert = within(workers).getByRole('alert');
 
     const frozenACall = [
-      WORKSPACE.id,
-      INTERRUPTED_WORKER.threadId,
-      INTERRUPTED_WORKER.turnId,
-      { requestId: frozenRequestId },
+      {
+        workspaceId: WORKSPACE.id,
+        threadId: INTERRUPTED_WORKER.threadId,
+        turnId: INTERRUPTED_WORKER.turnId,
+        requestId: frozenRequestId,
+      },
     ];
     if (scenario.kind === 'generic') {
       await user.click(within(retainedOriginAlert).getByRole('button', { name: 'Try again' }));
@@ -2197,7 +2249,10 @@ describe('Recovery and search', () => {
         new ApiCallError(409, 'recovery-private failure', { code: 'recovery_required' })
       )
       .mockReturnValueOnce(secondAMutation.promise);
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2205,10 +2260,12 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1));
     const firstRequestId = workerRetryRequestId(retryInterruptedWorkerCheckpoint);
     const frozenACall = [
-      WORKSPACE.id,
-      INTERRUPTED_WORKER.threadId,
-      INTERRUPTED_WORKER.turnId,
-      { requestId: firstRequestId },
+      {
+        workspaceId: WORKSPACE.id,
+        threadId: INTERRUPTED_WORKER.threadId,
+        turnId: INTERRUPTED_WORKER.turnId,
+        requestId: firstRequestId,
+      },
     ];
     await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(2));
 
@@ -2244,7 +2301,7 @@ describe('Recovery and search', () => {
     expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1);
     await user.click(workerActionButton(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary)));
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(2));
-    const secondRequestId = retryInterruptedWorkerCheckpoint.mock.calls[1]?.[3].requestId as string;
+    const secondRequestId = retryInterruptedWorkerCheckpoint.mock.calls[1]?.[0].requestId as string;
     expect(secondRequestId).toEqual(expect.any(String));
     expect(secondRequestId).not.toBe(firstRequestId);
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
@@ -2256,27 +2313,32 @@ describe('Recovery and search', () => {
     const firstARefetch = createDeferred<{ items: unknown[] }>();
     const secondAMutation = createDeferred<unknown>();
     let workspaceAReads = 0;
-    const listSchedulerAdmissions = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE_B.id) {
-        return Promise.resolve({ items: [WORKSPACE_B_QUEUED] });
-      }
-      workspaceAReads += 1;
-      if (workspaceAReads === 1) return Promise.resolve({ items: [DENIED_ADMISSION] });
-      if (workspaceAReads === 2) return firstARefetch.promise;
-      return Promise.resolve({ items: [DENIED_ADMISSION] });
-    });
+    const listSchedulerAdmissions = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE_B.id) {
+          return Promise.resolve({ items: [WORKSPACE_B_QUEUED] });
+        }
+        workspaceAReads += 1;
+        if (workspaceAReads === 1) return Promise.resolve({ items: [DENIED_ADMISSION] });
+        if (workspaceAReads === 2) return firstARefetch.promise;
+        return Promise.resolve({ items: [DENIED_ADMISSION] });
+      });
     const retrySchedulerAdmission = vi
       .fn()
       .mockResolvedValueOnce(SCHEDULER_RETRY_MUTATION)
       .mockReturnValueOnce(secondAMutation.promise);
-    const client = makeClient({ listSchedulerAdmissions, retrySchedulerAdmission });
+    const client = makeClient({
+      'scheduler.list': listSchedulerAdmissions,
+      'scheduler.retry': retrySchedulerAdmission,
+    });
     renderApp('/recovery', client);
 
     const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
     await user.click(within(scheduler).getByRole('button', { name: 'Retry' }));
     await waitFor(() =>
       expect(retrySchedulerAdmission.mock.calls).toEqual([
-        [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+        [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
       ])
     );
     await waitFor(() => expect(workspaceAReads).toBe(2));
@@ -2299,7 +2361,7 @@ describe('Recovery and search', () => {
     if (staleCancel) await user.click(staleCancel);
     expect(retrySchedulerAdmission).toHaveBeenCalledTimes(1);
     expect(retrySchedulerAdmission.mock.calls).toEqual([
-      [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+      [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
     ]);
 
     await act(async () => {
@@ -2315,8 +2377,7 @@ describe('Recovery and search', () => {
     await user.click(within(scheduler).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(retrySchedulerAdmission).toHaveBeenCalledTimes(2));
     expect(retrySchedulerAdmission.mock.calls[1]).toEqual([
-      WORKSPACE.id,
-      DENIED_ADMISSION.queueEntryId,
+      { workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId },
     ]);
     expectActionUnavailable(scheduler, 'Retry');
     expectActionUnavailable(scheduler, 'Cancel');
@@ -2328,7 +2389,7 @@ describe('Recovery and search', () => {
     const retryInterruptedWorkerCheckpoint = vi
       .fn()
       .mockRejectedValue(new Error('worker-private failure'));
-    const client = makeClient({ retryInterruptedWorkerCheckpoint });
+    const client = makeClient({ 'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2336,10 +2397,12 @@ describe('Recovery and search', () => {
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(1));
     const requestId = workerRetryRequestId(retryInterruptedWorkerCheckpoint);
     const frozenACall = [
-      WORKSPACE.id,
-      INTERRUPTED_WORKER.threadId,
-      INTERRUPTED_WORKER.turnId,
-      { requestId },
+      {
+        workspaceId: WORKSPACE.id,
+        threadId: INTERRUPTED_WORKER.threadId,
+        turnId: INTERRUPTED_WORKER.turnId,
+        requestId,
+      },
     ];
     const originAlert = await within(workers).findByRole('alert');
     expect(originAlert).toHaveTextContent(/couldn't (release|retry)/i);
@@ -2372,7 +2435,7 @@ describe('Recovery and search', () => {
     await user.click(tryAgain);
     await waitFor(() => expect(retryInterruptedWorkerCheckpoint).toHaveBeenCalledTimes(2));
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([frozenACall, frozenACall]);
-    expect(retryInterruptedWorkerCheckpoint.mock.calls[1]?.[3]).toEqual({ requestId });
+    expect(retryInterruptedWorkerCheckpoint.mock.calls[1]?.[0].requestId).toEqual(requestId);
     poisonDom();
   });
 
@@ -2384,7 +2447,10 @@ describe('Recovery and search', () => {
       .mockResolvedValueOnce({ items: ALL_WORKERS })
       .mockResolvedValue({ items: [INSPECT_WORKER, WORKSPACE_B_WORKER] });
     const retryInterruptedWorkerCheckpoint = vi.fn().mockReturnValue(mutation.promise);
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2424,9 +2490,16 @@ describe('Recovery and search', () => {
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).queryByRole('alert')).toBeNull();
     expect(workerActionButtons(rowFor(workers, INSPECT_WORKER.diagnosticsSummary))).toEqual([]);
-    expect(listInterruptedWorkers.mock.calls).toEqual([[], []]);
+    expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}]]);
     expect(retryInterruptedWorkerCheckpoint.mock.calls).toEqual([
-      [WORKSPACE.id, INTERRUPTED_WORKER.threadId, INTERRUPTED_WORKER.turnId, { requestId }],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          threadId: INTERRUPTED_WORKER.threadId,
+          turnId: INTERRUPTED_WORKER.turnId,
+          requestId,
+        },
+      ],
     ]);
     poisonDom();
   });
@@ -2444,17 +2517,19 @@ describe('Recovery and search', () => {
     const user = userEvent.setup();
     const mutation = createDeferred<unknown>();
     let workspaceAReads = 0;
-    const listSchedulerAdmissions = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE_B.id) {
-        return Promise.resolve({ items: [WORKSPACE_B_QUEUED] });
-      }
-      workspaceAReads += 1;
-      if (workspaceAReads === 1) return Promise.resolve({ items: [DENIED_ADMISSION] });
-      if (scenario.mode === 'settlement' && workspaceAReads === 2) {
-        return Promise.resolve({ items: [RETRIED_ADMISSION] });
-      }
-      return Promise.resolve({ items: [DENIED_ADMISSION] });
-    });
+    const listSchedulerAdmissions = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE_B.id) {
+          return Promise.resolve({ items: [WORKSPACE_B_QUEUED] });
+        }
+        workspaceAReads += 1;
+        if (workspaceAReads === 1) return Promise.resolve({ items: [DENIED_ADMISSION] });
+        if (scenario.mode === 'settlement' && workspaceAReads === 2) {
+          return Promise.resolve({ items: [RETRIED_ADMISSION] });
+        }
+        return Promise.resolve({ items: [DENIED_ADMISSION] });
+      });
     const retrySchedulerAdmission =
       scenario.mode === 'failure'
         ? vi.fn().mockRejectedValue(
@@ -2463,7 +2538,10 @@ describe('Recovery and search', () => {
             })
           )
         : vi.fn().mockReturnValue(mutation.promise);
-    const client = makeClient({ listSchedulerAdmissions, retrySchedulerAdmission });
+    const client = makeClient({
+      'scheduler.list': listSchedulerAdmissions,
+      'scheduler.retry': retrySchedulerAdmission,
+    });
     renderApp('/recovery', client);
 
     const scheduler = await screen.findByRole('region', { name: 'Scheduler admissions' });
@@ -2471,7 +2549,7 @@ describe('Recovery and search', () => {
     await user.click(within(scheduler).getByRole('button', { name: 'Retry' }));
     await waitFor(() =>
       expect(retrySchedulerAdmission.mock.calls).toEqual([
-        [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+        [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
       ])
     );
 
@@ -2503,18 +2581,19 @@ describe('Recovery and search', () => {
       expectActionUnavailable(scheduler, 'Retry');
       expect(retrySchedulerAdmission).toHaveBeenCalledTimes(1);
       const aReadsBeforeRetry = listSchedulerAdmissions.mock.calls.filter(
-        ([workspaceId]) => workspaceId === WORKSPACE.id
+        ([{ workspaceId }]) => workspaceId === WORKSPACE.id
       ).length;
 
       await user.click(tryAgain);
       await waitFor(() =>
         expect(
-          listSchedulerAdmissions.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
-            .length
+          listSchedulerAdmissions.mock.calls.filter(
+            ([{ workspaceId }]) => workspaceId === WORKSPACE.id
+          ).length
         ).toBe(aReadsBeforeRetry + 1)
       );
       expect(retrySchedulerAdmission.mock.calls).toEqual([
-        [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+        [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
       ]);
       expectActionUnavailable(scheduler, 'Retry');
       poisonDom();
@@ -2535,8 +2614,9 @@ describe('Recovery and search', () => {
     });
     await waitFor(() =>
       expect(
-        listSchedulerAdmissions.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
-          .length
+        listSchedulerAdmissions.mock.calls.filter(
+          ([{ workspaceId }]) => workspaceId === WORKSPACE.id
+        ).length
       ).toBe(2)
     );
     expect(within(scheduler).getByText('agent_ops', { exact: true })).toBeInTheDocument();
@@ -2553,7 +2633,7 @@ describe('Recovery and search', () => {
     expect(within(scheduler).queryByRole('button', { name: 'Retry' })).toBeNull();
     expect(within(scheduler).getByRole('button', { name: 'Cancel' })).toBeEnabled();
     expect(retrySchedulerAdmission.mock.calls).toEqual([
-      [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
+      [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
     ]);
     poisonDom();
   });
@@ -2563,10 +2643,10 @@ describe('Recovery and search', () => {
     const pendingA = createDeferred<typeof WORKER_RETRY_MUTATION>();
     const retryInterruptedWorkerCheckpoint = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         workspaceId === WORKSPACE.id ? pendingA.promise : Promise.resolve(WORKSPACE_B_WORKER_RETRY)
       );
-    const client = makeClient({ retryInterruptedWorkerCheckpoint });
+    const client = makeClient({ 'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2579,7 +2659,7 @@ describe('Recovery and search', () => {
     const aRequestId = workerRetryCallsFor(
       retryInterruptedWorkerCheckpoint,
       INTERRUPTED_WORKER
-    )[0]![3].requestId as string;
+    )[0]![0].requestId as string;
     expect(aRequestId).toEqual(expect.any(String));
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
 
@@ -2601,26 +2681,30 @@ describe('Recovery and search', () => {
     const bRequestId = workerRetryCallsFor(
       retryInterruptedWorkerCheckpoint,
       WORKSPACE_B_WORKER
-    )[0]![3].requestId as string;
+    )[0]![0].requestId as string;
     expect(bRequestId).toEqual(expect.any(String));
     expect(bRequestId).not.toBe(aRequestId);
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, INTERRUPTED_WORKER)).toEqual([
       [
-        WORKSPACE.id,
-        INTERRUPTED_WORKER.threadId,
-        INTERRUPTED_WORKER.turnId,
-        { requestId: aRequestId },
+        {
+          workspaceId: WORKSPACE.id,
+          threadId: INTERRUPTED_WORKER.threadId,
+          turnId: INTERRUPTED_WORKER.turnId,
+          requestId: aRequestId,
+        },
       ],
     ]);
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, WORKSPACE_B_WORKER)).toEqual([
       [
-        WORKSPACE_B.id,
-        WORKSPACE_B_WORKER.threadId,
-        WORKSPACE_B_WORKER.turnId,
-        { requestId: bRequestId },
+        {
+          workspaceId: WORKSPACE_B.id,
+          threadId: WORKSPACE_B_WORKER.threadId,
+          turnId: WORKSPACE_B_WORKER.turnId,
+          requestId: bRequestId,
+        },
       ],
     ]);
-    await waitFor(() => expect(client.app.listInterruptedWorkers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.operations['recovery.worker-list']).toHaveBeenCalledTimes(2));
     expect(within(workers).queryByText(INTERRUPTED_WORKER.diagnosticsSummary)).toBeNull();
     expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
 
@@ -2631,10 +2715,12 @@ describe('Recovery and search', () => {
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, INTERRUPTED_WORKER)).toEqual([
       [
-        WORKSPACE.id,
-        INTERRUPTED_WORKER.threadId,
-        INTERRUPTED_WORKER.turnId,
-        { requestId: aRequestId },
+        {
+          workspaceId: WORKSPACE.id,
+          threadId: INTERRUPTED_WORKER.threadId,
+          turnId: INTERRUPTED_WORKER.turnId,
+          requestId: aRequestId,
+        },
       ],
     ]);
     poisonDom();
@@ -2666,10 +2752,13 @@ describe('Recovery and search', () => {
     });
     const retryInterruptedWorkerCheckpoint = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         workspaceId === WORKSPACE.id ? pendingA.promise : pendingB.promise
       );
-    const client = makeClient({ listInterruptedWorkers, retryInterruptedWorkerCheckpoint });
+    const client = makeClient({
+      'recovery.worker-list': listInterruptedWorkers,
+      'recovery.checkpoint-retry': retryInterruptedWorkerCheckpoint,
+    });
     renderApp('/recovery', client);
 
     const workers = await screen.findByRole('region', { name: 'Interrupted workers' });
@@ -2682,13 +2771,15 @@ describe('Recovery and search', () => {
     const aRequestId = workerRetryCallsFor(
       retryInterruptedWorkerCheckpoint,
       INTERRUPTED_WORKER
-    )[0]![3].requestId as string;
+    )[0]![0].requestId as string;
     expect(aRequestId).toEqual(expect.any(String));
     const frozenACall = [
-      WORKSPACE.id,
-      INTERRUPTED_WORKER.threadId,
-      INTERRUPTED_WORKER.turnId,
-      { requestId: aRequestId },
+      {
+        workspaceId: WORKSPACE.id,
+        threadId: INTERRUPTED_WORKER.threadId,
+        turnId: INTERRUPTED_WORKER.turnId,
+        requestId: aRequestId,
+      },
     ];
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
 
@@ -2707,14 +2798,16 @@ describe('Recovery and search', () => {
     const bRequestId = workerRetryCallsFor(
       retryInterruptedWorkerCheckpoint,
       WORKSPACE_B_WORKER
-    )[0]![3].requestId as string;
+    )[0]![0].requestId as string;
     expect(bRequestId).toEqual(expect.any(String));
     expect(bRequestId).not.toBe(aRequestId);
     const frozenBCall = [
-      WORKSPACE_B.id,
-      WORKSPACE_B_WORKER.threadId,
-      WORKSPACE_B_WORKER.turnId,
-      { requestId: bRequestId },
+      {
+        workspaceId: WORKSPACE_B.id,
+        threadId: WORKSPACE_B_WORKER.threadId,
+        turnId: WORKSPACE_B_WORKER.turnId,
+        requestId: bRequestId,
+      },
     ];
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, INTERRUPTED_WORKER)).toEqual([
       frozenACall,
@@ -2742,7 +2835,7 @@ describe('Recovery and search', () => {
         await pendingA.promise;
       });
       await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
-      expect(listInterruptedWorkers.mock.calls).toEqual([[], [], []]);
+      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}]]);
       expect(within(workers).getByText(WORKSPACE_B_WORKER.diagnosticsSummary)).toBeInTheDocument();
       expect(within(workers).queryByRole('alert')).toBeNull();
       expect(
@@ -2796,7 +2889,7 @@ describe('Recovery and search', () => {
 
     if (scenario.mode === 'recovery') {
       await waitFor(() => expect(listInterruptedWorkers).toHaveBeenCalledTimes(3));
-      expect(listInterruptedWorkers.mock.calls).toEqual([[], [], []]);
+      expect(listInterruptedWorkers.mock.calls).toEqual([[{}], [{}], [{}]]);
     } else {
       expect(listInterruptedWorkers).toHaveBeenCalledTimes(2);
     }
@@ -2857,7 +2950,7 @@ describe('Recovery and search', () => {
     expect(workerRetryCallsFor(retryInterruptedWorkerCheckpoint, WORKSPACE_B_WORKER)).toEqual([
       frozenBCall,
     ]);
-    expect(retryInterruptedWorkerCheckpoint.mock.calls[2]?.[3]).toEqual({ requestId: aRequestId });
+    expect(retryInterruptedWorkerCheckpoint.mock.calls[2]?.[0].requestId).toEqual(aRequestId);
     expectWorkerActionUnavailable(rowFor(workers, INTERRUPTED_WORKER.diagnosticsSummary));
     poisonDom();
   });
@@ -2869,8 +2962,8 @@ describe('Recovery and search', () => {
       action: 'Retry',
       aLabel: 'Denied',
       mutate: 'retrySchedulerAdmission' as const,
-      aArgs: [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
-      bArgs: [WORKSPACE_B.id, WORKSPACE_B_DENIED.queueEntryId],
+      aArgs: [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
+      bArgs: [{ workspaceId: WORKSPACE_B.id, queueEntryId: WORKSPACE_B_DENIED.queueEntryId }],
       aInitial: [DENIED_ADMISSION, QUEUED_ADMISSION],
       bInitial: [WORKSPACE_B_DENIED],
       bSettled: [WORKSPACE_B_DENIED_RETRIED],
@@ -2885,8 +2978,8 @@ describe('Recovery and search', () => {
       action: 'Retry',
       aLabel: 'Denied',
       mutate: 'retrySchedulerAdmission' as const,
-      aArgs: [WORKSPACE.id, DENIED_ADMISSION.queueEntryId],
-      bArgs: [WORKSPACE_B.id, WORKSPACE_B_DENIED.queueEntryId],
+      aArgs: [{ workspaceId: WORKSPACE.id, queueEntryId: DENIED_ADMISSION.queueEntryId }],
+      bArgs: [{ workspaceId: WORKSPACE_B.id, queueEntryId: WORKSPACE_B_DENIED.queueEntryId }],
       aInitial: [DENIED_ADMISSION, QUEUED_ADMISSION],
       bInitial: [WORKSPACE_B_DENIED],
       bSettled: [WORKSPACE_B_DENIED_RETRIED],
@@ -2901,8 +2994,8 @@ describe('Recovery and search', () => {
       action: 'Cancel',
       aLabel: 'Queued',
       mutate: 'cancelSchedulerAdmission' as const,
-      aArgs: [WORKSPACE.id, QUEUED_ADMISSION.queueEntryId],
-      bArgs: [WORKSPACE_B.id, WORKSPACE_B_QUEUED.queueEntryId],
+      aArgs: [{ workspaceId: WORKSPACE.id, queueEntryId: QUEUED_ADMISSION.queueEntryId }],
+      bArgs: [{ workspaceId: WORKSPACE_B.id, queueEntryId: WORKSPACE_B_QUEUED.queueEntryId }],
       aInitial: [DENIED_ADMISSION, QUEUED_ADMISSION],
       bInitial: [WORKSPACE_B_QUEUED],
       bSettled: [] as unknown[],
@@ -2917,8 +3010,8 @@ describe('Recovery and search', () => {
       action: 'Cancel',
       aLabel: 'Queued',
       mutate: 'cancelSchedulerAdmission' as const,
-      aArgs: [WORKSPACE.id, QUEUED_ADMISSION.queueEntryId],
-      bArgs: [WORKSPACE_B.id, WORKSPACE_B_QUEUED.queueEntryId],
+      aArgs: [{ workspaceId: WORKSPACE.id, queueEntryId: QUEUED_ADMISSION.queueEntryId }],
+      bArgs: [{ workspaceId: WORKSPACE_B.id, queueEntryId: WORKSPACE_B_QUEUED.queueEntryId }],
       aInitial: [DENIED_ADMISSION, QUEUED_ADMISSION],
       bInitial: [WORKSPACE_B_QUEUED],
       bSettled: [] as unknown[],
@@ -2934,20 +3027,22 @@ describe('Recovery and search', () => {
     const aSettlement = createDeferred<{ items: unknown[] }>();
     let aReads = 0;
     let bReads = 0;
-    const listSchedulerAdmissions = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE_B.id) {
-        bReads += 1;
-        return Promise.resolve({ items: bReads === 1 ? scenario.bInitial : scenario.bSettled });
-      }
-      aReads += 1;
-      if (aReads === 1) return Promise.resolve({ items: scenario.aInitial });
-      return aSettlement.promise;
-    });
+    const listSchedulerAdmissions = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE_B.id) {
+          bReads += 1;
+          return Promise.resolve({ items: bReads === 1 ? scenario.bInitial : scenario.bSettled });
+        }
+        aReads += 1;
+        if (aReads === 1) return Promise.resolve({ items: scenario.aInitial });
+        return aSettlement.promise;
+      });
     const retrySchedulerAdmission =
       scenario.mutate === 'retrySchedulerAdmission'
         ? vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               workspaceId === WORKSPACE.id ? pendingA.promise : pendingB.promise
             )
         : vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION);
@@ -2955,7 +3050,7 @@ describe('Recovery and search', () => {
       scenario.mutate === 'cancelSchedulerAdmission'
         ? vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               workspaceId === WORKSPACE.id ? pendingA.promise : pendingB.promise
             )
         : vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION);
@@ -2964,9 +3059,9 @@ describe('Recovery and search', () => {
         ? retrySchedulerAdmission
         : cancelSchedulerAdmission;
     const client = makeClient({
-      listSchedulerAdmissions,
-      retrySchedulerAdmission,
-      cancelSchedulerAdmission,
+      'scheduler.list': listSchedulerAdmissions,
+      'scheduler.retry': retrySchedulerAdmission,
+      'scheduler.cancel': cancelSchedulerAdmission,
     });
     renderApp('/recovery', client);
 
@@ -2999,7 +3094,9 @@ describe('Recovery and search', () => {
     await waitFor(() =>
       expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE_B.id).length).toBe(2)
     );
-    expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id)).toEqual([[WORKSPACE.id]]);
+    expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id)).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(within(scheduler).queryByRole('alert')).toBeNull();
     if (scenario.bSettled.length === 0) {
       expect(within(scheduler).getByText('No scheduler admissions')).toBeInTheDocument();
@@ -3025,8 +3122,8 @@ describe('Recovery and search', () => {
         expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id).length).toBe(2)
       );
       expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id)).toEqual([
-        [WORKSPACE.id],
-        [WORKSPACE.id],
+        [{ workspaceId: WORKSPACE.id }],
+        [{ workspaceId: WORKSPACE.id }],
       ]);
       expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE_B.id).length).toBe(2);
       expect(mutate.mock.calls).toEqual([scenario.aArgs, scenario.bArgs]);
@@ -3069,7 +3166,9 @@ describe('Recovery and search', () => {
       );
       await pendingA.promise.catch(() => undefined);
     });
-    expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id)).toEqual([[WORKSPACE.id]]);
+    expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE.id)).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(schedulerReadsFor(listSchedulerAdmissions, WORKSPACE_B.id).length).toBe(2);
     expect(within(scheduler).queryByRole('alert')).toBeNull();
     expect(screen.queryByText('scheduler-private failure')).not.toBeInTheDocument();
@@ -3149,6 +3248,12 @@ describe('Recovery and search', () => {
     const listThreadItems = vi.fn().mockResolvedValue({ items: [], nextCursor: null });
     const getThreadDashboard = vi.fn().mockResolvedValue({ turns: [] });
     const getWorkspaceDashboard = vi.fn().mockResolvedValue({ activeWork: [] });
+    // The dashboard method still takes a scalar Workspace id; this counterexample checks the oracle.
+    await getWorkspaceDashboard(WORKSPACE.id);
+    expect(
+      getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
+    ).toHaveLength(1);
+    getWorkspaceDashboard.mockClear();
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient(
       {

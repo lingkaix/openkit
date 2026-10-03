@@ -2775,6 +2775,13 @@ export class FsStore {
     return turn;
   }
 
+  /** Returns only canonical execution selectors for admission, without exposing Turn content. */
+  public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } {
+    const turn = this.turns.get(turnId);
+    if (!turn) throw new Error(`Turn not found: ${turnId}`);
+    return { workspaceId: turn.workspaceId, threadId: turn.threadId };
+  }
+
   /**
    * List turns for one thread in chronological order.
    *

@@ -7,6 +7,451 @@
   },
   "x-openkit-protocol-version": "0.5.0",
   "paths": {
+    "/api/app/operations/automation.list": {
+      "post": {
+        "operationId": "automation.list",
+        "tags": [
+          "automation"
+        ],
+        "summary": "List automation definitions in authorized Workspaces.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/automation.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List automation definitions in authorized Workspaces.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/automation.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/automation.create": {
+      "post": {
+        "operationId": "automation.create",
+        "tags": [
+          "automation"
+        ],
+        "summary": "Create one paused automation definition.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/automation.create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Create one paused automation definition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/automation.create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/automation.update": {
+      "post": {
+        "operationId": "automation.update",
+        "tags": [
+          "automation"
+        ],
+        "summary": "Update one automation definition.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/automation.update.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Update one automation definition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/automation.update.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/automation.delete": {
+      "post": {
+        "operationId": "automation.delete",
+        "tags": [
+          "automation"
+        ],
+        "summary": "Delete one automation definition.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/automation.delete.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Delete one automation definition."
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/scheduler.list": {
+      "post": {
+        "operationId": "scheduler.list",
+        "tags": [
+          "scheduler"
+        ],
+        "summary": "List queued and denied admissions for one Workspace.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/scheduler.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List queued and denied admissions for one Workspace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/scheduler.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/scheduler.retry": {
+      "post": {
+        "operationId": "scheduler.retry",
+        "tags": [
+          "scheduler"
+        ],
+        "summary": "Retry one denied scheduler admission.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/scheduler.retry.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retry one denied scheduler admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/scheduler.retry.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/scheduler.cancel": {
+      "post": {
+        "operationId": "scheduler.cancel",
+        "tags": [
+          "scheduler"
+        ],
+        "summary": "Cancel one queued or denied scheduler admission.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/scheduler.cancel.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cancel one queued or denied scheduler admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/scheduler.cancel.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/recovery.worker-list": {
+      "post": {
+        "operationId": "recovery.worker-list",
+        "tags": [
+          "recovery"
+        ],
+        "summary": "List interrupted worker states in authorized Workspaces.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/recovery.worker-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List interrupted worker states in authorized Workspaces.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/recovery.worker-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/recovery.checkpoint-retry": {
+      "post": {
+        "operationId": "recovery.checkpoint-retry",
+        "tags": [
+          "recovery"
+        ],
+        "summary": "Release one interrupted worker attempt for a later fresh start.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/recovery.checkpoint-retry.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Release one interrupted worker attempt for a later fresh start.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/recovery.checkpoint-retry.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/kernel.apps.get": {
       "post": {
         "operationId": "kernel.apps.get",
@@ -5399,193 +5844,6 @@
         }
       }
     },
-    "/api/app/automations": {
-      "get": {
-        "operationId": "listAutomations",
-        "tags": [
-          "automations"
-        ],
-        "summary": "List configured automations.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Automation records.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListAutomationsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createAutomation",
-        "tags": [
-          "automations"
-        ],
-        "summary": "Create one automation.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAutomationRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Created automation record.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AutomationRecord"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/automations/{automationId}": {
-      "patch": {
-        "operationId": "updateAutomation",
-        "tags": [
-          "automations"
-        ],
-        "summary": "Update one automation.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "automationId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateAutomationRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Updated automation record.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AutomationRecord"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteAutomation",
-        "tags": [
-          "automations"
-        ],
-        "summary": "Delete one automation.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "automationId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Automation deleted."
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/workspaces/{workspaceId}/agents/health/refresh": {
       "post": {
         "operationId": "refreshAgentHealth",
@@ -6533,285 +6791,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SubmitAdministrationConversationResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/recovery/interrupted-workers": {
-      "get": {
-        "operationId": "listInterruptedWorkers",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "List interrupted worker recovery states.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Interrupted worker recovery states.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListInterruptedWorkerStatesResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry": {
-      "post": {
-        "operationId": "retryInterruptedWorkerCheckpoint",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "Release one interrupted worker attempt for a later retry.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "turnId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/TurnId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RetryInterruptedWorkerCheckpointRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Checkpoint retry result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RetryInterruptedWorkerCheckpointResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/scheduler/admissions": {
-      "get": {
-        "operationId": "listSchedulerAdmissions",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "List workspace scheduler admissions with public queue state.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Workspace scheduler admission read model.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListSchedulerAdmissionsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/retry": {
-      "post": {
-        "operationId": "retrySchedulerAdmission",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "Requeue one denied scheduler admission.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "queueEntryId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Scheduler admission retry result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RetrySchedulerAdmissionResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/cancel": {
-      "post": {
-        "operationId": "cancelSchedulerAdmission",
-        "tags": [
-          "app-utils"
-        ],
-        "summary": "Cancel one scheduler admission.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "queueEntryId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Scheduler admission cancellation result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CancelSchedulerAdmissionResponse"
                 }
               }
             }
@@ -12463,6 +12442,813 @@
       }
     },
     "schemas": {
+      "automation.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "automation.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cron": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "prompt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "paused",
+                    "enabled"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "workspaceId",
+                "cron",
+                "prompt",
+                "status",
+                "createdAt",
+                "updatedAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "automation.create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cron": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "name",
+          "workspaceId",
+          "cron",
+          "prompt"
+        ],
+        "additionalProperties": false
+      },
+      "automation.create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cron": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "paused",
+              "enabled"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "workspaceId",
+          "cron",
+          "prompt",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "automation.update.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "paused",
+              "enabled"
+            ]
+          },
+          "automationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "status",
+          "automationId"
+        ],
+        "additionalProperties": false
+      },
+      "automation.update.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cron": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "paused",
+              "enabled"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "workspaceId",
+          "cron",
+          "prompt",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "automation.delete.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "automationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "automationId"
+        ],
+        "additionalProperties": false
+      },
+      "automation.delete.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "null"
+      },
+      "scheduler.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "scheduler.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "queueEntryId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requestId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "turnId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requestedAgentId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "profileRef": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "modelId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "priorityClass": {
+                  "type": "string",
+                  "enum": [
+                    "interactive",
+                    "automation",
+                    "maintenance"
+                  ]
+                },
+                "enqueuedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "effectivePriorityAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "firstCapDeferredAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "requiredPoolConstraints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "denied"
+                  ]
+                },
+                "denialReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "queue-full",
+                        "policy-cap",
+                        "no-compatible-pool",
+                        "no-healthy-target",
+                        "invalid-request"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "queuePosition": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "queueEntryId",
+                "requestId",
+                "workspaceId",
+                "threadId",
+                "turnId",
+                "requestedAgentId",
+                "profileRef",
+                "modelId",
+                "priorityClass",
+                "enqueuedAt",
+                "effectivePriorityAt",
+                "firstCapDeferredAt",
+                "requiredPoolConstraints",
+                "status",
+                "denialReason",
+                "queuePosition"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "scheduler.retry.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "queueEntryId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "queueEntryId"
+        ],
+        "additionalProperties": false
+      },
+      "scheduler.retry.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "retried": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "retried"
+        ],
+        "additionalProperties": false
+      },
+      "scheduler.cancel.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "queueEntryId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "queueEntryId"
+        ],
+        "additionalProperties": false
+      },
+      "scheduler.cancel.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cancelled"
+        ],
+        "additionalProperties": false
+      },
+      "recovery.worker-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "recovery.worker-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "interrupted_worker_state"
+                },
+                "checkpointId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "threadId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "turnId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "goalId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "taskId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stage": {
+                  "type": "string",
+                  "enum": [
+                    "preparing",
+                    "running_worker",
+                    "waiting_for_user",
+                    "completed",
+                    "failed",
+                    "aborted"
+                  ]
+                },
+                "iteration": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "workerSessionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "contextAssembly": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "contextDigest": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "contextRefs": {
+                          "minItems": 1,
+                          "maxItems": 50,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "workspace",
+                                  "thread",
+                                  "artifact",
+                                  "knowledge",
+                                  "item"
+                                ]
+                              },
+                              "id": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "contextDigest",
+                        "contextRefs"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stopReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "completed",
+                        "error",
+                        "aborted",
+                        "length",
+                        "budget_exhausted"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "diagnosticsSummary": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "replayInstruction": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "choices": {
+                  "minItems": 1,
+                  "maxItems": 10,
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "inspect"
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "recommended": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "label",
+                          "recommended"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "retry"
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "request_human"
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "materializedAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sourceUpdatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "checkpointId",
+                "workspaceId",
+                "threadId",
+                "turnId",
+                "goalId",
+                "taskId",
+                "stage",
+                "iteration",
+                "workerSessionId",
+                "contextDigest",
+                "contextAssembly",
+                "stopReason",
+                "diagnosticsSummary",
+                "replayInstruction",
+                "choices",
+                "materializedAt",
+                "sourceUpdatedAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "recovery.checkpoint-retry.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "turnId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId",
+          "turnId"
+        ],
+        "additionalProperties": false
+      },
+      "recovery.checkpoint-retry.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "released_for_retry"
+          },
+          "turnId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "outcome",
+          "turnId"
+        ],
+        "additionalProperties": false
+      },
       "kernel.apps.get.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -51519,58 +52305,6 @@
         ],
         "additionalProperties": false
       },
-      "AutomationRecord": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "cron": {
-            "type": "string",
-            "minLength": 1
-          },
-          "prompt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "paused",
-              "enabled"
-            ]
-          },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updatedAt": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "workspaceId",
-          "cron",
-          "prompt",
-          "status",
-          "createdAt",
-          "updatedAt"
-        ],
-        "additionalProperties": false
-      },
       "CancelProviderSubscriptionAccountLoginRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -52312,52 +53046,6 @@
         ],
         "additionalProperties": false
       },
-      "RetryInterruptedWorkerCheckpointRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "requestId"
-        ],
-        "additionalProperties": false
-      },
-      "RetryInterruptedWorkerCheckpointResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "outcome": {
-            "type": "string",
-            "const": "released_for_retry"
-          },
-          "turnId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "outcome",
-          "turnId"
-        ],
-        "additionalProperties": false
-      },
-      "RetrySchedulerAdmissionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "retried": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "retried"
-        ],
-        "additionalProperties": false
-      },
       "CatalogMutationResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -52370,19 +53058,6 @@
         },
         "required": [
           "revision"
-        ],
-        "additionalProperties": false
-      },
-      "CancelSchedulerAdmissionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "cancelled": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "cancelled"
         ],
         "additionalProperties": false
       },
@@ -52571,35 +53246,6 @@
         "required": [
           "token",
           "record"
-        ],
-        "additionalProperties": false
-      },
-      "CreateAutomationRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "cron": {
-            "type": "string",
-            "minLength": 1
-          },
-          "prompt": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "name",
-          "workspaceId",
-          "cron",
-          "prompt"
         ],
         "additionalProperties": false
       },
@@ -55304,283 +55950,6 @@
         ],
         "additionalProperties": false
       },
-      "ListInterruptedWorkerStatesResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "const": "interrupted_worker_state"
-                },
-                "checkpointId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "threadId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turnId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "goalId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "taskId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "stage": {
-                  "type": "string",
-                  "enum": [
-                    "preparing",
-                    "running_worker",
-                    "waiting_for_user",
-                    "completed",
-                    "failed",
-                    "aborted"
-                  ]
-                },
-                "iteration": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "workerSessionId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "contextDigest": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "contextAssembly": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "contextDigest": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "contextRefs": {
-                          "minItems": 1,
-                          "maxItems": 50,
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "enum": [
-                                  "workspace",
-                                  "thread",
-                                  "artifact",
-                                  "knowledge",
-                                  "item"
-                                ]
-                              },
-                              "id": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "id"
-                            ],
-                            "additionalProperties": false
-                          }
-                        }
-                      },
-                      "required": [
-                        "contextDigest",
-                        "contextRefs"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "stopReason": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "completed",
-                        "error",
-                        "aborted",
-                        "length",
-                        "budget_exhausted"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "diagnosticsSummary": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "replayInstruction": {
-                  "type": "boolean",
-                  "const": false
-                },
-                "choices": {
-                  "minItems": 1,
-                  "maxItems": 10,
-                  "type": "array",
-                  "items": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "inspect"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "recommended": {
-                            "type": "boolean",
-                            "const": true
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "label",
-                          "recommended"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "retry"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "label"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "request_human"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "label"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  }
-                },
-                "materializedAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "sourceUpdatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "kind",
-                "checkpointId",
-                "workspaceId",
-                "threadId",
-                "turnId",
-                "goalId",
-                "taskId",
-                "stage",
-                "iteration",
-                "workerSessionId",
-                "contextDigest",
-                "contextAssembly",
-                "stopReason",
-                "diagnosticsSummary",
-                "replayInstruction",
-                "choices",
-                "materializedAt",
-                "sourceUpdatedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
       "ListOpenKitAccessTokensResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -55944,166 +56313,6 @@
         "required": [
           "items",
           "defaultTokenId"
-        ],
-        "additionalProperties": false
-      },
-      "ListSchedulerAdmissionsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "queueEntryId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "requestId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "threadId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "turnId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "requestedAgentId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "profileRef": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "modelId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "priorityClass": {
-                  "type": "string",
-                  "enum": [
-                    "interactive",
-                    "automation",
-                    "maintenance"
-                  ]
-                },
-                "enqueuedAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "effectivePriorityAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "firstCapDeferredAt": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "requiredPoolConstraints": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "queued",
-                    "denied"
-                  ]
-                },
-                "denialReason": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "queue-full",
-                        "policy-cap",
-                        "no-compatible-pool",
-                        "no-healthy-target",
-                        "invalid-request"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "queuePosition": {
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "queueEntryId",
-                "requestId",
-                "workspaceId",
-                "threadId",
-                "turnId",
-                "requestedAgentId",
-                "profileRef",
-                "modelId",
-                "priorityClass",
-                "enqueuedAt",
-                "effectivePriorityAt",
-                "firstCapDeferredAt",
-                "requiredPoolConstraints",
-                "status",
-                "denialReason",
-                "queuePosition"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
         ],
         "additionalProperties": false
       },
@@ -58422,70 +58631,6 @@
         "required": [
           "workspaceId",
           "permissionDecisions"
-        ],
-        "additionalProperties": false
-      },
-      "ListAutomationsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "cron": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "prompt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "paused",
-                    "enabled"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "name",
-                "workspaceId",
-                "cron",
-                "prompt",
-                "status",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
         ],
         "additionalProperties": false
       },
@@ -72324,23 +72469,6 @@
         ],
         "additionalProperties": false
       },
-      "UpdateAutomationRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "paused",
-              "enabled"
-            ]
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "additionalProperties": false
-      },
       "UpdateMcpBindingRequest": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -74566,5 +74694,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b1a860d976172d028124d8043f60ad863f29b1ec9ba93c4ca2b4c136654f3208"
+  "x-openkit-source-digest": "sha256:ac49cf782d198d10ea33e8e6bd7a18bda0305adbe4154fd9454d8ce71c70396c"
 }

@@ -29,6 +29,7 @@ import {
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from './action-center.js';
+import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 import {
   ConversationTargetCatalogSchema,
   SubmitConversationRequestSchema,
@@ -86,6 +87,8 @@ import {
   SubmitArtifactReviewDecisionResponseSchema,
 } from './material.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
+import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
+import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 
@@ -703,6 +706,9 @@ export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
 
 /** Statically composed product contracts. */
 export const PRODUCT_OPERATION_DEFINITIONS = {
+  ...AUTOMATION_OPERATION_DEFINITIONS,
+  ...SCHEDULER_OPERATION_DEFINITIONS,
+  ...RECOVERY_OPERATION_DEFINITIONS,
   ...KERNEL_OPERATION_DEFINITIONS,
   ...WORKSPACE_OPERATION_DEFINITIONS,
   ...THREAD_OPERATION_DEFINITIONS,

@@ -269,22 +269,12 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(
-  catalog,
-  [
-    'listAutomations',
-    'listAgentCatalog',
-    'getAgentCatalogEntry',
-    'listInterruptedWorkers',
-    'searchApp',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'workspace.read',
-    resolver: 'authorized-workspace-set',
-    scope: 'workspace',
-  }
-);
+registerOperations(catalog, ['listAgentCatalog', 'getAgentCatalogEntry', 'searchApp'], {
+  mutating: false,
+  policyOperation: 'workspace.read',
+  resolver: 'authorized-workspace-set',
+  scope: 'workspace',
+});
 registerOperations(catalog, ['listWorkspaceMembers', 'listWorkspaceInvitations'], {
   mutating: false,
   policyOperation: 'membership.manage',
@@ -313,19 +303,13 @@ registerOperations(catalog, ['transferWorkspaceOwnership', 'deleteWorkspace'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(catalog, ['createAutomation'], {
-  mutating: true,
-  policyOperation: 'workspace.write',
-  resolver: 'body-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['POST /api/turns'], {
   mutating: true,
   policyOperation: 'turn.run',
   resolver: 'body-workspace',
   scope: 'workspace',
 });
-registerOperations(catalog, ['updateAutomation', 'deleteAutomation', 'submitTurnFeedback'], {
+registerOperations(catalog, ['submitTurnFeedback'], {
   mutating: true,
   policyOperation: 'workspace.write',
   resolver: 'opaque-child-workspace',
@@ -341,7 +325,6 @@ registerOperations(catalog, ['refreshAgentHealth'], {
 registerOperations(
   catalog,
   [
-    'listSchedulerAdmissions',
     'getWorkspaceDashboard',
     'listWorkspaceWorkers',
     'listWorkspaceMaterials',
@@ -501,12 +484,7 @@ registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads'], {
 
 registerOperations(
   catalog,
-  [
-    'retryInterruptedWorkerCheckpoint',
-    'retrySchedulerAdmission',
-    'cancelSchedulerAdmission',
-    'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
-  ],
+  ['POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt'],
   {
     mutating: true,
     policyOperation: 'turn.run',

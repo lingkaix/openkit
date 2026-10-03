@@ -59,3 +59,5 @@ Artifact CLI discovery and execution derive the six entries from `ARTIFACT_OPERA
 The Conversation, Task, Attention and Pending Request CLI entries derive from the shared product tables. Semantic ids remain `question.answer` and `pending-request.withdraw`; durable command receipt spellings remain `user_input.answer` and `pending_request.withdraw`.
 
 The NanoHost, backup and storage-report rows derive from the same composed table as product operations. Their access text is deployment-administrator authority; `strictShared` preserves complete input refinements and the generic client handler. NanoHost credential writes remain Core-owned exclusive sinks with redacted CLI and MCP results.
+
+The four Automation, three Scheduler and two Recovery CLI entries derive from the composed product definitions and call `client.operations[id]`; their literal catalog rows are removed. Automation deletion returns logical JSON `null` after its bodyless HTTP 204 success. Recovery retry retains full Workspace, Thread, Turn and request lineage. Rebuild the bundled executable with `pnpm build:openkit`.

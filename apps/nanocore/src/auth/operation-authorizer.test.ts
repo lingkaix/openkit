@@ -1,13 +1,11 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { operationHttpPath, WORKSPACE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
@@ -16,6 +14,7 @@ import {
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -27,7 +26,6 @@ import type { AuthVariables } from './middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
 import {
   assertAuthorizedWorkspaceLineage,
-  authorizedWorkspaceSet,
   currentScheduledTurnWorkspaceAuthority,
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -125,7 +123,6 @@ function createFixture() {
   });
   registerOperationAccessGuards({
     app,
-    automationStore,
     coreDb,
     quickChatWorkspaceIdForUser,
     store,
@@ -137,24 +134,15 @@ function createFixture() {
     administrationHandlerReads += 1;
     return c.json(c.get('workspaceAccess') ?? null);
   });
-  app.get('/api/app/automations', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.post(operationHttpPath('workspace.list'), (c) =>
-    c.json({
-      kind: 'workspace-set',
-      workspaceIds: authorizedWorkspaceSet(
-        coreDb,
-        actorState.current,
-        WORKSPACE_OPERATION_DEFINITIONS['workspace.list'],
-        workspaceMutationAdmission
-      ),
-    })
-  );
-  app.post('/api/app/automations', async (c) =>
-    c.json({
-      body: await c.req.json(),
-      workspaceAccess: c.get('workspaceAccess') ?? null,
-    })
-  );
+
+  registerOperationJsonRoutes({
+    app,
+    coreDb,
+    automationStore,
+    requestStore: () => store,
+    workspaceMutationAdmission,
+    inflightCommands: new WeakMap(),
+  });
   app.post('/api/app/workspace-imports/dry-run', (c) => c.json(c.get('actor')));
   app.post('/api/workspaces', (c) => c.json({ actor: c.get('actor') }));
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
@@ -557,49 +545,37 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('derives collection candidates from active Core memberships before loading content', async () => {
-    const response = await fixture.app.request('/api/app/automations');
-    const access = (await response.json()) as {
-      kind: string;
-      policyOperation: string;
-      workspaceIds: string[];
-    };
-
+    const response = await fixture.app.request(...operationRequest('workspace.list', {}));
+    const access = (await response.json()) as { items: { workspace: { id: string } }[] };
     expect(response.status).toBe(200);
-    expect({ ...access, workspaceIds: [...access.workspaceIds].sort() }).toEqual({
-      kind: 'workspace-set',
-      policyOperation: 'workspace.read',
-      workspaceIds: [
-        fixture.foreignWorkspace.id,
-        fixture.quickChatWorkspace.id,
-        fixture.workspace.id,
-      ].sort(),
-    });
-    expect(access.workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
+    const workspaceIds = access.items.map(({ workspace }) => workspace.id);
+    expect(workspaceIds.sort()).toEqual(
+      [fixture.foreignWorkspace.id, fixture.quickChatWorkspace.id, fixture.workspace.id].sort()
+    );
+    expect(workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
   });
 
-  it('resolves the exact route-owned body Workspace without consuming the request', async () => {
+  it('admits the complete automation body Workspace through native invocation', async () => {
     const body = {
       cron: '0 9 * * *',
       name: 'Morning status',
       prompt: 'Summarize current work.',
       workspaceId: fixture.workspace.id,
     };
-    const response = await fixture.app.request('/api/app/automations', {
-      body: JSON.stringify(body),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await fixture.app.request(
+      ...operationRequest(
+        'automation.create',
+        {},
+        {
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
-    expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      body,
-      workspaceAccess: {
-        effectiveRole: 'owner',
-        kind: 'workspace',
-        policyOperation: 'workspace.write',
-        workspaceId: fixture.workspace.id,
-      },
-    });
+    expect(response.status, await response.clone().text()).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({ ...body, status: 'paused' });
   });
 
   it('treats Gateway metadata as optional session attribution but mandatory token scope', async () => {
@@ -771,7 +747,7 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('uses catalog mutation posture to cap readonly tokens', async () => {
-    expect(PUBLIC_OPERATION_ACCESS.createAutomation).toMatchObject({ mutating: true });
+    expect(PUBLIC_OPERATION_ACCESS['automation.create']).toMatchObject({ mutating: true });
     expect(PUBLIC_OPERATION_ACCESS.getWorkspaceDashboard).toMatchObject({ mutating: false });
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -789,16 +765,22 @@ describe('central Workspace operation authorizer', () => {
     };
 
     const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
-    const mutation = await fixture.app.request('/api/app/automations', {
-      body: JSON.stringify({
-        cron: '0 9 * * *',
-        name: 'Denied mutation',
-        prompt: 'Do not create this.',
-        workspaceId: fixture.workspace.id,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const mutation = await fixture.app.request(
+      ...operationRequest(
+        'automation.create',
+        {},
+        {
+          body: JSON.stringify({
+            cron: '0 9 * * *',
+            name: 'Denied mutation',
+            prompt: 'Do not create this.',
+            workspaceId: fixture.workspace.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(read.status).toBe(200);
     expect(mutation.status).toBe(403);
@@ -814,22 +796,26 @@ describe('central Workspace operation authorizer', () => {
       body: JSON.stringify({}),
     });
     const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
-    const mutation = await fixture.app.request('/api/app/automations', {
-      body: JSON.stringify({
-        cron: '0 9 * * *',
-        name: 'Fenced mutation',
-        prompt: 'Do not create this.',
-        workspaceId: fixture.workspace.id,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const mutation = await fixture.app.request(
+      ...operationRequest(
+        'automation.create',
+        {},
+        {
+          body: JSON.stringify({
+            cron: '0 9 * * *',
+            name: 'Fenced mutation',
+            prompt: 'Do not create this.',
+            workspaceId: fixture.workspace.id,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(collection.status).toBe(200);
-    await expect(collection.json()).resolves.toMatchObject({
-      kind: 'workspace-set',
-      workspaceIds: expect.not.arrayContaining([fixture.workspace.id]),
-    });
+    const items = (await collection.json()).items as { workspace: { id: string } }[];
+    expect(items.map(({ workspace }) => workspace.id)).not.toContain(fixture.workspace.id);
     expect(read.status).toBe(403);
     expect(mutation.status).toBe(403);
     await expect(read.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
@@ -897,19 +883,16 @@ describe('central Workspace operation authorizer', () => {
       workspaceId: fixture.workspace.id,
     });
     expect(collection.status).toBe(200);
-    const collectionBody = (await collection.json()) as {
-      kind: string;
-      workspaceIds: string[];
-    };
-    expect(collectionBody).toMatchObject({
-      kind: 'workspace-set',
-      workspaceIds: expect.arrayContaining([
+    const collectionBody = (await collection.json()) as { items: { workspace: { id: string } }[] };
+    const workspaceIds = collectionBody.items.map(({ workspace }) => workspace.id);
+    expect(workspaceIds).toEqual(
+      expect.arrayContaining([
         fixture.quickChatWorkspace.id,
         fixture.workspace.id,
         fixture.foreignWorkspace.id,
-      ]),
-    });
-    expect(collectionBody.workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
+      ])
+    );
+    expect(workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
     expect(create.status).toBe(200);
   });
 

@@ -284,6 +284,8 @@ Approval is policy-originated only; runtime-native approval prompts are never im
 
 ## Current Implementation Projection
 
+The migrated process-local automation definitions retain `workspace.read` for inventory and `workspace.write` for create/update/delete; this is not the recurring schedule contract above. Scheduler listing retains `workspace.read`, while retry/cancel and interrupted checkpoint release retain `turn.run`. Recovery inventory retains `workspace.read`. These classifications derive from the family definition tables; the removed route catalog declarations and automation-specific guard branches are absent. Native invocation supplies one primary Workspace admission and preserves the existing owner effect checks, readonly ceiling and current administrator audience predicate.
+
 The V1 enforcement bridge exists, but full alignment with the standard-aligned policy-kernel contract remains partial:
 
 - `packages/policy-kernel` implements the first standard-aligned NGAC subset evaluator over policy elements, assignments, process-to-user mappings, operation-to-access-right mappings, associations, prohibitions, and access requests. It returns `allow` or `deny` plus structural traces.

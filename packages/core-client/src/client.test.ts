@@ -3190,23 +3190,22 @@ describe('createCoreClient', () => {
       'GET /api/app/agents': { body: { items: [agent()] } },
       'GET /api/app/agents/agent_demo': { body: agent() },
       'POST /api/app/operations/attention.list': { body: { items: [] } },
-      'GET /api/app/recovery/interrupted-workers': {
+      'POST /api/app/operations/recovery.worker-list': {
         body: { items: [interruptedWorkerState()] },
       },
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry':
-        {
-          body: {
-            outcome: 'released_for_retry',
-            turnId: 'turn_worker',
-          },
+      'POST /api/app/operations/recovery.checkpoint-retry': {
+        body: {
+          outcome: 'released_for_retry',
+          turnId: 'turn_worker',
         },
-      'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_denied/retry': {
+      },
+      'POST /api/app/operations/scheduler.retry': {
         body: { retried: true },
       },
-      'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_queued/cancel': {
+      'POST /api/app/operations/scheduler.cancel': {
         body: { cancelled: true },
       },
-      'GET /api/app/workspaces/ws_demo/scheduler/admissions': {
+      'POST /api/app/operations/scheduler.list': {
         body: {
           items: [
             {
@@ -3624,7 +3623,7 @@ describe('createCoreClient', () => {
     await expect(client.operations['attention.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
       items: [],
     });
-    await expect(client.app.listInterruptedWorkers()).resolves.toEqual({
+    await expect(client.operations['recovery.worker-list']({})).resolves.toEqual({
       items: [interruptedWorkerState()],
     });
     expect(client.app).not.toHaveProperty('listRecoveryPendingUserTurns');
@@ -3633,7 +3632,10 @@ describe('createCoreClient', () => {
     expect(client.app).not.toHaveProperty('editRecoveryPendingUserTurn');
     expect(client.app).not.toHaveProperty('promoteRecoveryPendingUserTurnToInterrupt');
     await expect(
-      client.app.retryInterruptedWorkerCheckpoint('ws_demo', 'th_demo', 'turn_worker', {
+      client.operations['recovery.checkpoint-retry']({
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_worker',
         requestId: 'req_worker_retry',
       })
     ).resolves.toEqual({
@@ -3641,19 +3643,29 @@ describe('createCoreClient', () => {
       turnId: 'turn_worker',
     });
     expect(
-      requests.find(
-        (request) =>
-          request.path ===
-          '/api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry'
-      )?.body
-    ).toEqual({ requestId: 'req_worker_retry' });
-    await expect(client.app.retrySchedulerAdmission('ws_demo', 'queue_denied')).resolves.toEqual({
+      requests.find((request) => request.path === '/api/app/operations/recovery.checkpoint-retry')
+        ?.body
+    ).toEqual({ workspaceId: 'ws_demo', threadId: 'th_demo', turnId: 'turn_worker' });
+    expect(
+      requests.find((request) => request.path === '/api/app/operations/recovery.checkpoint-retry')
+        ?.headers['x-openkit-request-id']
+    ).toBe('req_worker_retry');
+    await expect(
+      client.operations['scheduler.retry']({ workspaceId: 'ws_demo', queueEntryId: 'queue_denied' })
+    ).resolves.toEqual({
       retried: true,
     });
-    await expect(client.app.cancelSchedulerAdmission('ws_demo', 'queue_queued')).resolves.toEqual({
+    await expect(
+      client.operations['scheduler.cancel']({
+        workspaceId: 'ws_demo',
+        queueEntryId: 'queue_queued',
+      })
+    ).resolves.toEqual({
       cancelled: true,
     });
-    await expect(client.app.listSchedulerAdmissions('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['scheduler.list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ queueEntryId: 'queue_1', queuePosition: 1 }],
     });
 
@@ -3708,11 +3720,11 @@ describe('createCoreClient', () => {
       'GET /api/app/agents',
       'GET /api/app/agents/agent_demo',
       'POST /api/app/operations/attention.list',
-      'GET /api/app/recovery/interrupted-workers',
-      'POST /api/app/workspaces/ws_demo/threads/th_demo/recovery/interrupted-worker/turn_worker/retry',
-      'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_denied/retry',
-      'POST /api/app/workspaces/ws_demo/scheduler/admissions/queue_queued/cancel',
-      'GET /api/app/workspaces/ws_demo/scheduler/admissions',
+      'POST /api/app/operations/recovery.worker-list',
+      'POST /api/app/operations/recovery.checkpoint-retry',
+      'POST /api/app/operations/scheduler.retry',
+      'POST /api/app/operations/scheduler.cancel',
+      'POST /api/app/operations/scheduler.list',
     ]);
     expect(requests[6]?.body).toEqual({
       displayName: 'Owner',
@@ -3726,11 +3738,15 @@ describe('createCoreClient', () => {
       materialBase64: Buffer.from('workspace-secret').toString('base64'),
     });
     expect(requests.at(-6)?.body).toEqual({ workspaceId: 'ws_demo' });
-    expect(requests.at(-5)?.body).toBeNull();
-    expect(requests.at(-4)?.body).toEqual({ requestId: 'req_worker_retry' });
-    expect(requests.at(-3)?.body).toEqual({});
-    expect(requests.at(-2)?.body).toEqual({});
-    expect(requests.at(-1)?.body).toBeNull();
+    expect(requests.at(-5)?.body).toEqual({});
+    expect(requests.at(-4)?.body).toEqual({
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'turn_worker',
+    });
+    expect(requests.at(-3)?.body).toEqual({ workspaceId: 'ws_demo', queueEntryId: 'queue_denied' });
+    expect(requests.at(-2)?.body).toEqual({ workspaceId: 'ws_demo', queueEntryId: 'queue_queued' });
+    expect(requests.at(-1)?.body).toEqual({ workspaceId: 'ws_demo' });
   });
 
   it('routes OpenKit access-token administration through app-owned schemas', async () => {
@@ -3924,9 +3940,11 @@ describe('createCoreClient', () => {
         },
       },
       'GET /api/setup/diagnostics': { body: setupDiagnostics() },
-      'GET /api/app/automations': { body: { items: [automation()] } },
-      'POST /api/app/automations': { body: automation() },
-      'PATCH /api/app/automations/auto_demo': { body: { ...automation(), status: 'enabled' } },
+      'POST /api/app/operations/automation.list': { body: { items: [automation()] } },
+      'POST /api/app/operations/automation.create': { body: automation() },
+      'POST /api/app/operations/automation.update': {
+        body: { ...automation(), status: 'enabled' },
+      },
       'POST /api/turns/turn_demo/feedback': {
         body: {
           turnId: 'turn_demo',
@@ -3998,16 +4016,23 @@ describe('createCoreClient', () => {
       },
     });
     await expect(client.app.getSetupDiagnostics()).resolves.toEqual(setupDiagnostics());
-    await expect(client.app.listAutomations()).resolves.toEqual({ items: [automation()] });
+    await expect(client.operations['automation.list']({})).resolves.toEqual({
+      items: [automation()],
+    });
     await expect(
-      client.app.createAutomation({
+      client.operations['automation.create']({
         name: 'Demo automation',
         workspaceId: 'ws_demo',
         cron: '0 9 * * *',
         prompt: 'Summarize status.',
       })
     ).resolves.toEqual(automation());
-    await expect(client.app.updateAutomation('auto_demo', { status: 'enabled' })).resolves.toEqual({
+    await expect(
+      client.operations['automation.update']({
+        automationId: 'auto_demo',
+        status: 'enabled',
+      })
+    ).resolves.toEqual({
       ...automation(),
       status: 'enabled',
     });
@@ -4489,7 +4514,7 @@ describe('createCoreClient', () => {
         body: { schemas: [{ kind: 'server', title: 'Server config', schema: {} }] },
       },
       'DELETE /api/admin/config/file': { status: 204 },
-      'DELETE /api/app/automations/auto_demo': { status: 204 },
+      'POST /api/app/operations/automation.delete': { status: 204 },
     });
 
     await expect(
@@ -4519,12 +4544,14 @@ describe('createCoreClient', () => {
       })
     ).resolves.toBeUndefined();
     expect(client.runtimeConfig).not.toHaveProperty('restartStaleSession');
-    await expect(client.app.deleteAutomation('auto_demo')).resolves.toBeUndefined();
+    await expect(
+      client.operations['automation.delete']({ automationId: 'auto_demo' })
+    ).resolves.toBeNull();
   });
 
   it('preserves typed API errors for delete failures', async () => {
     const { client } = createFakeClient({
-      'DELETE /api/app/automations/auto_demo': {
+      'POST /api/app/operations/automation.delete': {
         body: {
           ...apiError('automation_not_found', 'Automation not found.'),
           details: { automationId: 'auto_demo' },
@@ -4535,7 +4562,9 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.app.deleteAutomation('auto_demo')).rejects.toMatchObject({
+    await expect(
+      client.operations['automation.delete']({ automationId: 'auto_demo' })
+    ).rejects.toMatchObject({
       code: 'automation_not_found',
       details: { automationId: 'auto_demo' },
       message: 'Automation not found.',

@@ -399,78 +399,6 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/automations']?.get).toMatchObject({
-      operationId: 'listAutomations',
-      tags: ['automations'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListAutomationsResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/automations']?.post).toMatchObject({
-      operationId: 'createAutomation',
-      tags: ['automations'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/CreateAutomationRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '201': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/AutomationRecord',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/automations/{automationId}']?.patch).toMatchObject({
-      operationId: 'updateAutomation',
-      tags: ['automations'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/UpdateAutomationRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/AutomationRecord',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/automations/{automationId}']?.delete).toMatchObject({
-      operationId: 'deleteAutomation',
-      tags: ['automations'],
-      responses: {
-        '204': {
-          description: 'Automation deleted.',
-        },
-      },
-    });
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/agents/health/refresh']?.post
     ).toMatchObject({
@@ -828,21 +756,6 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/recovery/interrupted-workers']?.get).toMatchObject({
-      operationId: 'listInterruptedWorkers',
-      tags: ['app-utils'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListInterruptedWorkerStatesResponse',
-              },
-            },
-          },
-        },
-      },
-    });
     expect(document.paths['/api/app/workspaces/{workspaceId}/workers']?.get).toMatchObject({
       operationId: 'listWorkspaceWorkers',
       tags: ['agents'],
@@ -852,96 +765,6 @@ describe('app api openapi projection', () => {
             'application/json': {
               schema: {
                 $ref: '#/components/schemas/WorkspaceWorkersResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'retryInterruptedWorkerCheckpoint',
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/scheduler/admissions']?.get
-    ).toMatchObject({
-      operationId: 'listSchedulerAdmissions',
-      tags: ['app-utils'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListSchedulerAdmissionsResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/retry']
-        ?.post
-    ).toMatchObject({
-      operationId: 'retrySchedulerAdmission',
-      tags: ['app-utils'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'queueEntryId', in: 'path', required: true }),
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RetrySchedulerAdmissionResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/cancel']
-        ?.post
-    ).toMatchObject({
-      operationId: 'cancelSchedulerAdmission',
-      tags: ['app-utils'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'queueEntryId', in: 'path', required: true }),
-      ],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/CancelSchedulerAdmissionResponse',
               },
             },
           },
@@ -2641,10 +2464,6 @@ describe('app api openapi projection', () => {
       'getGenerativePresentationResource',
       'refreshGenerativePresentation',
       'submitGenerativePresentationAction',
-      'listAutomations',
-      'createAutomation',
-      'updateAutomation',
-      'deleteAutomation',
       'searchApp',
       'listAgentCatalog',
       'getAgentCatalogEntry',
@@ -2662,9 +2481,6 @@ describe('app api openapi projection', () => {
       'updateMcpBinding',
       'listPluginCatalog',
       'importPlugin',
-      'listSchedulerAdmissions',
-      'retrySchedulerAdmission',
-      'cancelSchedulerAdmission',
       'getCapabilityUsage',
       'listWorkspaceEvidenceBundles',
       'listWorkspaceRuntimeEvidence',
@@ -2676,8 +2492,6 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
       'getWorkspaceDashboard',
-      'listInterruptedWorkers',
-      'retryInterruptedWorkerCheckpoint',
       'refreshAgentHealth',
       'listWorkspaceMembers',
       'listWorkspaceInvitations',
@@ -2858,5 +2672,46 @@ describe('Knowledge OpenAPI derivation', () => {
     expect(Object.keys(document.paths).filter((path) => /\/knowledge(?:\/|$)/.test(path))).toEqual(
       []
     );
+  });
+});
+
+describe('automation, scheduler and recovery OpenAPI projection', () => {
+  it('derives nine exact contracts and bodyless deletion without former bindings', () => {
+    const document = createAppOpenApiDocument();
+    for (const [id, status] of [
+      ['automation.list', '200'],
+      ['automation.create', '201'],
+      ['automation.update', '200'],
+      ['automation.delete', '204'],
+      ['recovery.worker-list', '200'],
+      ['recovery.checkpoint-retry', '200'],
+      ['scheduler.list', '200'],
+      ['scheduler.retry', '200'],
+      ['scheduler.cancel', '200'],
+    ] as const) {
+      const operation = document.paths[`/api/app/operations/${id}`].post;
+      expect(operation.operationId).toBe(id);
+      expect(operation.requestBody.content['application/json'].schema).toEqual({
+        $ref: `#/components/schemas/${id}.input`,
+      });
+      const response = operation.responses[status];
+      if (status === '204') expect(response).not.toHaveProperty('content');
+      else
+        expect(response).toMatchObject({
+          content: {
+            'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
+          },
+        });
+    }
+    for (const path of [
+      '/api/app/automations',
+      '/api/app/automations/{automationId}',
+      '/api/app/recovery/interrupted-workers',
+      '/api/app/workspaces/{workspaceId}/scheduler/admissions',
+      '/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/retry',
+      '/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/cancel',
+      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry',
+    ])
+      expect(document.paths).not.toHaveProperty(path);
   });
 });

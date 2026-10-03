@@ -78,7 +78,7 @@ This specification keeps route and client projection detail. That detail is tran
 The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal reads and the Goal operations, workspace synchronization read models, search, quick chat, automations, diagnostics, setup diagnostics, and feedback.
+- `client.app`: dashboards, Goal reads and the Goal operations, workspace synchronization read models, search, quick chat, diagnostics, setup diagnostics, and feedback.
 - `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
 - `client.providerSubscriptions`: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
@@ -204,7 +204,7 @@ Auth responses now use concrete schemas instead of `unknown`.
 
 `artifact.read` returns the `GetArtifactResponseSchema` payload type.
 
-Empty successful delete routes return `void` without parsing through `z.never`.
+Definition-derived empty deletions return their declared logical `null`; retained hand-maintained empty delete methods return `void` without parsing through `z.never`.
 
 For Turn SSE, `@openkit/core-client` is the sole decoder of terminal-affiliated envelopes and projects the Core-owned classification, cursor, delivery, termination, and recovery semantics through its async iterator. Web and other consumers receive only admitted events and do not repeat outer-envelope, embedded-Turn, terminal-status, or exact-owner decoding.
 
@@ -217,6 +217,8 @@ After `ProtocolValidationError`, the failed subscription exposes no private curs
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
 
 ## Current Implementation Projection
+
+The four Automation, three Scheduler and two Recovery operations use the definition-derived `client.operations[id](input)` map. Their former `client.app` members and mappings are absent. The generic transport maps a declared bodyless HTTP 204 to logical `null` through the operation output schema, while retaining normal API-error conversion and JSON response validation. Recovery input contains the exact Workspace, Thread, Turn and request identities; the UI checkpoint identifier remains local.
 
 Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 

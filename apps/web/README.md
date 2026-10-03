@@ -366,3 +366,5 @@ Workspace discovery and account admission use `client.operations['workspace.list
 Artifact inventory, inspection, import, introduction, Action Center Review decisions and Administration inspection use definition-derived `client.operations` with explicit selectors. Existing cache keys, request identity, byte digests and Review refetch ownership remain with their hooks.
 
 Conversation targets/navigation/submission, Task entry, attention reads, approval decisions, question answers and withdrawal use definition-derived `client.operations` with one selector object. Existing retry identities, caches and exact-effect disclosure remain with the Chat and Workspace hooks.
+
+The Operations screen invokes `automation.*`, `scheduler.*` and `recovery.*` through `client.operations` with complete logical selector objects. Recovery retry preserves Workspace, Thread, Turn and request identities; its UI checkpoint id is excluded from the strict request. Optimistic state, rollback and frozen retry identities remain covered by `screens/operations/operations.test.tsx`.

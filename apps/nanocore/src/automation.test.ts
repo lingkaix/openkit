@@ -1,38 +1,42 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Hono } from 'hono';
-
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import type { AuthVariables } from './auth/middleware.js';
-import { registerAutomationRoutes } from './automation-routes.js';
+import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('automation app API', () => {
   it('lists and creates local automation definitions', async () => {
     const app = createApp({ store: createDemoStore() });
 
-    const emptyRes = await app.request('/api/app/automations');
+    const emptyRes = await app.request(...operationRequest('automation.list', {}));
     expect(emptyRes.status).toBe(200);
     await expect(emptyRes.json()).resolves.toEqual({ items: [] });
 
-    const createRes = await app.request('/api/app/automations', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: 'Morning status',
-        workspaceId: 'ws_demo',
-        cron: '0 9 * * *',
-        prompt: 'Summarize active threads',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const createRes = await app.request(
+      ...operationRequest(
+        'automation.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Morning status',
+            workspaceId: 'ws_demo',
+            cron: '0 9 * * *',
+            prompt: 'Summarize active threads',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(createRes.status).toBe(201);
     await expect(createRes.json()).resolves.toMatchObject({
@@ -41,7 +45,7 @@ describe('automation app API', () => {
       status: 'paused',
     });
 
-    const listRes = await app.request('/api/app/automations');
+    const listRes = await app.request(...operationRequest('automation.list', {}));
     await expect(listRes.json()).resolves.toMatchObject({
       items: [{ name: 'Morning status', cron: '0 9 * * *' }],
     });
@@ -49,23 +53,35 @@ describe('automation app API', () => {
 
   it('updates and deletes local automation definitions', async () => {
     const app = createApp({ store: createDemoStore() });
-    const createRes = await app.request('/api/app/automations', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: 'Morning status',
-        workspaceId: 'ws_demo',
-        cron: '0 9 * * *',
-        prompt: 'Summarize active threads',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const createRes = await app.request(
+      ...operationRequest(
+        'automation.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Morning status',
+            workspaceId: 'ws_demo',
+            cron: '0 9 * * *',
+            prompt: 'Summarize active threads',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
     const automation = (await createRes.json()) as { id: string };
 
-    const enableRes = await app.request(`/api/app/automations/${automation.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'enabled' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const enableRes = await app.request(
+      ...operationRequest(
+        'automation.update',
+        { automationId: automation.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ status: 'enabled' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(enableRes.status).toBe(200);
     await expect(enableRes.json()).resolves.toMatchObject({
@@ -73,13 +89,19 @@ describe('automation app API', () => {
       status: 'enabled',
     });
 
-    const deleteRes = await app.request(`/api/app/automations/${automation.id}`, {
-      method: 'DELETE',
-    });
+    const deleteRes = await app.request(
+      ...operationRequest(
+        'automation.delete',
+        { automationId: automation.id },
+        {
+          method: 'DELETE',
+        }
+      )
+    );
 
     expect(deleteRes.status).toBe(204);
 
-    const listRes = await app.request('/api/app/automations');
+    const listRes = await app.request(...operationRequest('automation.list', {}));
     await expect(listRes.json()).resolves.toEqual({ items: [] });
   });
 
@@ -89,41 +111,32 @@ describe('automation app API', () => {
       throw new Error('Collection routes must not enumerate every Workspace.');
     });
     const automationStore = new AutomationStore();
-    const app = new Hono<{ Variables: AuthVariables }>();
-    app.use('*', async (c, next) => {
-      c.set('actor', {
-        kind: 'session',
-        userId: c.req.header('x-test-user') ?? 'user_first',
-      });
-      await next();
-    });
-    registerAutomationRoutes({
-      app,
-      authorizedWorkspaceIds: () => ['ws_demo'],
+    const operations = createAutomationOperationImplementations({
+      coreDb: undefined,
+      store,
       automationStore,
-      requestStore: () => store,
     });
-
-    const created = await app.request('/api/app/automations', {
-      body: JSON.stringify({
+    const first = { kind: 'user', id: 'user_first' } as const;
+    const second = { kind: 'user', id: 'user_second' } as const;
+    const context = { kind: 'public', actor: { kind: 'session', userId: 'user_first' } } as const;
+    const created = await operations['automation.create'](
+      {
         cron: '0 9 * * *',
         name: 'Morning status',
         prompt: 'Summarize active threads',
         workspaceId: 'ws_demo',
-      }),
-      headers: { 'content-type': 'application/json', 'x-test-user': 'user_first' },
-      method: 'POST',
+      },
+      first,
+      context,
+      ['ws_demo']
+    );
+    expect(created.status).toBe('paused');
+    expect(await operations['automation.list']({}, first, context, ['ws_demo'])).toMatchObject({
+      items: [{ name: 'Morning status' }],
     });
-    const firstList = await app.request('/api/app/automations', {
-      headers: { 'x-test-user': 'user_first' },
+    expect(await operations['automation.list']({}, second, context, ['ws_demo'])).toEqual({
+      items: [],
     });
-    const secondList = await app.request('/api/app/automations', {
-      headers: { 'x-test-user': 'user_second' },
-    });
-
-    expect(created.status).toBe(201);
-    await expect(firstList.json()).resolves.toMatchObject({ items: [{ name: 'Morning status' }] });
-    await expect(secondList.json()).resolves.toEqual({ items: [] });
     expect(listWorkspaces).not.toHaveBeenCalled();
   });
 
@@ -178,19 +191,25 @@ describe('automation app API', () => {
         scope: 'workspace',
         workspaceIds: [allowedWorkspace.id],
       });
-      const create = await app.request('/api/app/automations', {
-        body: JSON.stringify({
-          cron: '0 9 * * *',
-          name: 'Allowed automation',
-          prompt: 'Summarize active threads',
-          workspaceId: allowedWorkspace.id,
-        }),
-        headers: {
-          authorization: `Bearer ${workspaceToken.secret}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
+      const create = await app.request(
+        ...operationRequest(
+          'automation.create',
+          {},
+          {
+            body: JSON.stringify({
+              cron: '0 9 * * *',
+              name: 'Allowed automation',
+              prompt: 'Summarize active threads',
+              workspaceId: allowedWorkspace.id,
+            }),
+            headers: {
+              authorization: `Bearer ${workspaceToken.secret}`,
+              'content-type': 'application/json',
+            },
+            method: 'POST',
+          }
+        )
+      );
 
       expect(create.status).toBe(201);
       const allowedAutomation = (await create.json()) as { id: string; workspaceId: string };
@@ -206,27 +225,45 @@ describe('automation app API', () => {
         scope: 'workspace-readonly',
         workspaceIds: [allowedWorkspace.id],
       });
-      const list = await app.request('/api/app/automations', {
-        headers: { authorization: `Bearer ${readonlyToken.secret}` },
-      });
+      const list = await app.request(
+        ...operationRequest(
+          'automation.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${readonlyToken.secret}` },
+          }
+        )
+      );
 
       expect(list.status).toBe(200);
       await expect(list.json()).resolves.toEqual({
         items: [expect.objectContaining(allowedAutomation)],
       });
 
-      const deniedUpdate = await app.request(`/api/app/automations/${deniedAutomation.id}`, {
-        body: JSON.stringify({ status: 'enabled' }),
-        headers: {
-          authorization: `Bearer ${workspaceToken.secret}`,
-          'content-type': 'application/json',
-        },
-        method: 'PATCH',
-      });
-      const deniedDelete = await app.request(`/api/app/automations/${deniedAutomation.id}`, {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
-        method: 'DELETE',
-      });
+      const deniedUpdate = await app.request(
+        ...operationRequest(
+          'automation.update',
+          { automationId: deniedAutomation.id },
+          {
+            body: JSON.stringify({ status: 'enabled' }),
+            headers: {
+              authorization: `Bearer ${workspaceToken.secret}`,
+              'content-type': 'application/json',
+            },
+            method: 'PATCH',
+          }
+        )
+      );
+      const deniedDelete = await app.request(
+        ...operationRequest(
+          'automation.delete',
+          { automationId: deniedAutomation.id },
+          {
+            headers: { authorization: `Bearer ${workspaceToken.secret}` },
+            method: 'DELETE',
+          }
+        )
+      );
 
       expect(deniedUpdate.status).toBe(403);
       expect(deniedDelete.status).toBe(403);
@@ -267,9 +304,15 @@ describe('automation app API', () => {
           )
           .run(transferredAt, transferredAt, allowedWorkspace.id, 'user_owner');
       })();
-      const removed = await app.request('/api/app/automations', {
-        headers: { authorization: `Bearer ${readonlyToken.secret}` },
-      });
+      const removed = await app.request(
+        ...operationRequest(
+          'automation.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${readonlyToken.secret}` },
+          }
+        )
+      );
 
       expect(removed.status).toBe(200);
       await expect(removed.json()).resolves.toEqual({ items: [] });

@@ -171,7 +171,7 @@ export function pathForSearchHit(hit: AppSearchHit): string {
 }
 
 /**
- * Lists interrupted workers through `listInterruptedWorkers` and keeps only public fields.
+ * Lists interrupted workers through `client.operations['recovery.worker-list']` and keeps only public fields.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe worker rows.
@@ -181,7 +181,7 @@ export function useInterruptedWorkers(workspaceId: string | null) {
   return useQuery({
     queryKey: operationsKeys.workers,
     queryFn: async (): Promise<RecoveryWorkerRow[]> => {
-      const payload = await client.app.listInterruptedWorkers();
+      const payload = await client.operations['recovery.worker-list']({});
       return payload.items.flatMap((item) => {
         const checkpointId = safeText(item.checkpointId);
         const rowWorkspaceId = safeText(item.workspaceId);
@@ -216,7 +216,7 @@ export function useInterruptedWorkers(workspaceId: string | null) {
 }
 
 /**
- * Lists selected-Workspace scheduler admissions through `listSchedulerAdmissions`.
+ * Lists selected-Workspace scheduler admissions through `client.operations['scheduler.list']`.
  *
  * @param workspaceId Validated selected Workspace, or null before discovery settles.
  * @returns TanStack query of product-safe admission rows.
@@ -226,7 +226,9 @@ export function useSchedulerAdmissions(workspaceId: string | null) {
   return useQuery({
     queryKey: operationsKeys.admissions(workspaceId ?? ''),
     queryFn: async (): Promise<RecoveryAdmissionRow[]> => {
-      const payload = await client.app.listSchedulerAdmissions(workspaceId as string);
+      const payload = await client.operations['scheduler.list']({
+        workspaceId: workspaceId as string,
+      });
       return payload.items.flatMap((item) => {
         if (item.status !== 'queued' && item.status !== 'denied') return [];
         return [
@@ -245,7 +247,7 @@ export function useSchedulerAdmissions(workspaceId: string | null) {
 }
 
 /**
- * Releases one interrupted worker through `retryInterruptedWorkerCheckpoint`.
+ * Releases one interrupted worker through `client.operations['recovery.checkpoint-retry']`.
  *
  * @returns Mutation that does not project the command result into the DOM.
  */
@@ -253,7 +255,10 @@ export function useRetryInterruptedWorker() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (input: RetryInterruptedWorkerInput) =>
-      client.app.retryInterruptedWorkerCheckpoint(input.workspaceId, input.threadId, input.turnId, {
+      client.operations['recovery.checkpoint-retry']({
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: input.turnId,
         requestId: input.requestId,
       }),
     retry: false,
@@ -261,29 +266,27 @@ export function useRetryInterruptedWorker() {
 }
 
 /**
- * Requeues one denied scheduler admission through `retrySchedulerAdmission`.
+ * Requeues one denied scheduler admission through `client.operations['scheduler.retry']`.
  *
  * @returns Mutation over the typed client; settlement stays with the admissions read.
  */
 export function useRetrySchedulerAdmission() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (input: SchedulerAdmissionTarget) =>
-      client.app.retrySchedulerAdmission(input.workspaceId, input.queueEntryId),
+    mutationFn: (input: SchedulerAdmissionTarget) => client.operations['scheduler.retry'](input),
     retry: false,
   });
 }
 
 /**
- * Cancels one queued or denied scheduler admission through `cancelSchedulerAdmission`.
+ * Cancels one queued or denied scheduler admission through `client.operations['scheduler.cancel']`.
  *
  * @returns Mutation over the typed client; settlement stays with the admissions read.
  */
 export function useCancelSchedulerAdmission() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (input: SchedulerAdmissionTarget) =>
-      client.app.cancelSchedulerAdmission(input.workspaceId, input.queueEntryId),
+    mutationFn: (input: SchedulerAdmissionTarget) => client.operations['scheduler.cancel'](input),
     retry: false,
   });
 }

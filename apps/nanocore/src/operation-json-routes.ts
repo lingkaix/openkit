@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { AutomationOperationError } from './automation-operations.js';
 import { asKernelApiError } from './kernel-routes.js';
 import type { FsStore } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
@@ -12,6 +13,7 @@ import {
   OperationInvocationError,
 } from './operation-invocation.js';
 import { GoalCommandError } from './runtime/goal-owner.js';
+import { SchedulerAdmissionOperationError } from './runtime/scheduler-admission-operations.js';
 
 /** Projects every implemented JSON operation definition onto native invocation, with trusted actor and header identity. */
 export function registerOperationJsonRoutes(
@@ -47,7 +49,7 @@ export function registerOperationJsonRoutes(
             : args;
         const parsed = definition.inputSchema.safeParse(input);
         if (!parsed.success) return asInvalidRequestError(parsed.error);
-        let successStatus: 200 | 201 | 202 =
+        let successStatus: 200 | 201 | 202 | 204 =
           'successStatus' in definition ? definition.successStatus : 200;
         const invoke = createOperationInvocation({
           ...dependencies,
@@ -60,11 +62,17 @@ export function registerOperationJsonRoutes(
           kind: 'public',
           actor: c.get('actor'),
         });
-        return c.json(output, successStatus);
+        return successStatus === 204 ? c.body(null, 204) : c.json(output, successStatus);
       } catch (error) {
         if (error instanceof HTTPException) return error.getResponse();
-        if (error instanceof OperationInvocationError)
+        if (error instanceof OperationInvocationError) {
+          // These owners retain their former plain-text HTTP refusal projections.
+          if (error.cause instanceof AutomationOperationError && error.status === 500)
+            return c.text('Internal Server Error', 500);
+          if (error.cause instanceof SchedulerAdmissionOperationError && error.status === 404)
+            return c.text(error.message, 404);
           return asApiError(error.message, error.code, error.status);
+        }
         if (error instanceof GoalCommandError)
           return asApiError(error.message, error.code, error.status);
         // Administration preserves the HTTP framework's unexpected-error response.

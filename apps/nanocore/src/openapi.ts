@@ -11,17 +11,14 @@ import {
   ApplyAdministrationConfigurationResponseSchema,
   AppSearchResponseSchema,
   AppUpdateStatusResponseSchema,
-  AutomationRecordSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
   CancelProviderSubscriptionAccountLoginRequestSchema,
-  CancelSchedulerAdmissionResponseSchema,
   CapabilityUsageResponseSchema,
   CatalogMutationResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  CreateAutomationRequestSchema,
   CreateLightAppRequestSchema,
   CreateLightAppResponseSchema,
   CreateMcpConfigRequestSchema,
@@ -63,16 +60,13 @@ import {
   LightAppBatchResponseSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  ListAutomationsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
-  ListInterruptedWorkerStatesResponseSchema,
   ListLightAppRecordsResponseSchema,
   ListLightAppsResponseSchema,
   ListMcpCatalogResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
-  ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
   ListServerVaultUseRecordsResponseSchema,
@@ -128,9 +122,6 @@ import {
   RestoreThreadMaterialResponseSchema,
   RetireLightAppRequestSchema,
   RetireLightAppResponseSchema,
-  RetryInterruptedWorkerCheckpointRequestSchema,
-  RetryInterruptedWorkerCheckpointResponseSchema,
-  RetrySchedulerAdmissionResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
   RotateOpenKitAccessTokenRequestSchema,
@@ -175,7 +166,6 @@ import {
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   UpdateAgentNativeEnvironmentRequestSchema,
-  UpdateAutomationRequestSchema,
   UpdateLightAppRecordRequestSchema,
   UpdateLightAppRecordResponseSchema,
   UpdateLightAppSchemaRequestSchema,
@@ -374,8 +364,8 @@ function appJsonOperation<const OperationId extends string>(input: {
   operationId: OperationId;
   tag: string;
   summary: string;
-  responseStatus: '200' | '201' | '202';
-  responseStatuses?: readonly ('200' | '201' | '202')[];
+  responseStatus: '200' | '201' | '202' | '204';
+  responseStatuses?: readonly ('200' | '201' | '202' | '204')[];
   responseSchema: string;
   responseDescription?: string;
   requestSchema?: string;
@@ -406,11 +396,15 @@ function appJsonOperation<const OperationId extends string>(input: {
           status,
           {
             description: input.responseDescription ?? input.summary,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: `#/components/schemas/${input.responseSchema}` },
-              },
-            },
+            ...(status === '204'
+              ? {}
+              : {
+                  content: {
+                    [JSON_CONTENT_TYPE]: {
+                      schema: { $ref: `#/components/schemas/${input.responseSchema}` },
+                    },
+                  },
+                }),
           },
         ])
       ),
@@ -1365,133 +1359,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/automations': {
-        get: {
-          operationId: 'listAutomations',
-          tags: ['automations'],
-          summary: 'List configured automations.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          responses: {
-            '200': {
-              description: 'Automation records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListAutomationsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'createAutomation',
-          tags: ['automations'],
-          summary: 'Create one automation.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateAutomationRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Created automation record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AutomationRecord' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/automations/{automationId}': {
-        patch: {
-          operationId: 'updateAutomation',
-          tags: ['automations'],
-          summary: 'Update one automation.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'automationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/UpdateAutomationRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Updated automation record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AutomationRecord' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        delete: {
-          operationId: 'deleteAutomation',
-          tags: ['automations'],
-          summary: 'Delete one automation.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'automationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '204': {
-              description: 'Automation deleted.',
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/agents/health/refresh': {
         post: {
           operationId: 'refreshAgentHealth',
@@ -1829,171 +1696,6 @@ export function createAppOpenApiDocument() {
               description: 'Protocol error envelope.',
               content: {
                 [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/recovery/interrupted-workers': {
-        get: {
-          operationId: 'listInterruptedWorkers',
-          tags: ['app-utils'],
-          summary: 'List interrupted worker recovery states.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          responses: {
-            '200': {
-              description: 'Interrupted worker recovery states.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListInterruptedWorkerStatesResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry':
-        {
-          post: {
-            operationId: 'retryInterruptedWorkerCheckpoint',
-            tags: ['app-utils'],
-            summary: 'Release one interrupted worker attempt for a later retry.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, TURN_ID_PARAMETER],
-            requestBody: {
-              required: true,
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointRequest',
-                  },
-                },
-              },
-            },
-            responses: {
-              '200': {
-                description: 'Checkpoint retry result.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/RetryInterruptedWorkerCheckpointResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/scheduler/admissions': {
-        get: {
-          operationId: 'listSchedulerAdmissions',
-          tags: ['app-utils'],
-          summary: 'List workspace scheduler admissions with public queue state.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace scheduler admission read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListSchedulerAdmissionsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/retry': {
-        post: {
-          operationId: 'retrySchedulerAdmission',
-          tags: ['app-utils'],
-          summary: 'Requeue one denied scheduler admission.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'queueEntryId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Scheduler admission retry result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RetrySchedulerAdmissionResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/scheduler/admissions/{queueEntryId}/cancel': {
-        post: {
-          operationId: 'cancelSchedulerAdmission',
-          tags: ['app-utils'],
-          summary: 'Cancel one scheduler admission.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'queueEntryId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Scheduler admission cancellation result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CancelSchedulerAdmissionResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
               },
             },
           },
@@ -4459,27 +4161,17 @@ export function createAppOpenApiDocument() {
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
-        AutomationRecord: toJsonSchema(AutomationRecordSchema),
         CancelProviderSubscriptionAccountLoginRequest: toJsonSchema(
           CancelProviderSubscriptionAccountLoginRequestSchema
         ),
         CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
-        RetryInterruptedWorkerCheckpointRequest: toJsonSchema(
-          RetryInterruptedWorkerCheckpointRequestSchema
-        ),
-        RetryInterruptedWorkerCheckpointResponse: toJsonSchema(
-          RetryInterruptedWorkerCheckpointResponseSchema
-        ),
-        RetrySchedulerAdmissionResponse: toJsonSchema(RetrySchedulerAdmissionResponseSchema),
         CatalogMutationResponse: toJsonSchema(CatalogMutationResponseSchema),
-        CancelSchedulerAdmissionResponse: toJsonSchema(CancelSchedulerAdmissionResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
           ConsumeOpenKitBootstrapTokenRequestSchema
         ),
         ConsumeOpenKitBootstrapTokenResponse: toJsonSchema(
           ConsumeOpenKitBootstrapTokenResponseSchema
         ),
-        CreateAutomationRequest: toJsonSchema(CreateAutomationRequestSchema),
         CreateMcpConfigRequest: toJsonSchema(CreateMcpConfigRequestSchema),
         CreateMcpConfigResponse: toJsonSchema(CreateMcpConfigResponseSchema),
         DecideSkillCandidateRequest: toJsonSchema(DecideSkillCandidateRequestSchema),
@@ -4501,13 +4193,9 @@ export function createAppOpenApiDocument() {
           ListAgentEnvironmentPackageSnapshotsResponseSchema
         ),
         ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
-        ListInterruptedWorkerStatesResponse: toJsonSchema(
-          ListInterruptedWorkerStatesResponseSchema
-        ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
-        ListSchedulerAdmissionsResponse: toJsonSchema(ListSchedulerAdmissionsResponseSchema),
         ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
         ListServerPermissionDecisionsResponse: toJsonSchema(
           ListServerPermissionDecisionsResponseSchema
@@ -4531,7 +4219,6 @@ export function createAppOpenApiDocument() {
         ListWorkspacePermissionDecisionsResponse: toJsonSchema(
           ListWorkspacePermissionDecisionsResponseSchema
         ),
-        ListAutomationsResponse: toJsonSchema(ListAutomationsResponseSchema),
         ListStagedWorkspaceReviewsResponse: toJsonSchema(ListStagedWorkspaceReviewsResponseSchema),
         ListWorkspaceApplyPlansResponse: toJsonSchema(ListWorkspaceApplyPlansResponseSchema),
         ListWorkspaceReconciliationRecordsResponse: toJsonSchema(
@@ -4640,7 +4327,6 @@ export function createAppOpenApiDocument() {
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
         TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
-        UpdateAutomationRequest: toJsonSchema(UpdateAutomationRequestSchema),
         UpdateMcpBindingRequest: toJsonSchema(UpdateMcpBindingRequestSchema),
         UpdateProviderSubscriptionAccountRequest: toJsonSchema(
           UpdateProviderSubscriptionAccountRequestSchema

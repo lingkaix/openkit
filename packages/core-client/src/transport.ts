@@ -14,12 +14,13 @@ export interface ClientTransport {
   getJson<TSchema extends z.ZodType>(path: string, schema: TSchema): Promise<z.infer<TSchema>>;
   /** Fetches one successful response body with an exact media type. */
   getStream(path: string, mediaType: string): Promise<ReadableStream<Uint8Array>>;
-  /** Posts a JSON body and validates a JSON response. */
+  /** Posts a JSON body and validates JSON or declared empty-success logical null. */
   postJson<TInput, TSchema extends z.ZodType>(
     path: string,
     input: TInput,
     schema: TSchema,
-    extraHeaders?: HeadersInit
+    extraHeaders?: HeadersInit,
+    emptySuccess?: boolean
   ): Promise<z.infer<TSchema>>;
   /** Posts one raw body and validates a JSON response. */
   postStream<TSchema extends z.ZodType>(
@@ -126,7 +127,8 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     path: string,
     input: unknown,
     schema: TSchema,
-    extraHeaders?: HeadersInit
+    extraHeaders?: HeadersInit,
+    emptySuccess = false
   ): Promise<z.infer<TSchema>> => {
     const response = await fetcher(url(path), {
       credentials: 'include',
@@ -135,6 +137,16 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
       body: JSON.stringify(input),
     });
 
+    if (emptySuccess && response.ok) {
+      if (response.status !== 204 || (await response.arrayBuffer()).byteLength !== 0) {
+        throw new ProtocolValidationError({
+          path: [],
+          code: 'invalid_payload',
+          message: 'Declared empty success requires HTTP 204 with no response bytes.',
+        });
+      }
+      return schema.parse(null);
+    }
     return parseJsonResponse(response, schema);
   };
 
@@ -187,7 +199,8 @@ export function createClientTransport(options: ClientTransportOptions): ClientTr
     getStream,
     headers: options.headers,
     patchJson: (path, input, schema, headers) => sendJson('PATCH', path, input, schema, headers),
-    postJson: (path, input, schema, headers) => sendJson('POST', path, input, schema, headers),
+    postJson: (path, input, schema, headers, emptySuccess) =>
+      sendJson('POST', path, input, schema, headers, emptySuccess),
     postStream,
     putJson: (path, input, schema, headers) => sendJson('PUT', path, input, schema, headers),
     url,

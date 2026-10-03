@@ -537,7 +537,7 @@ function schedulerAdmissionRows(
           requestedAgentId: entry.requestedAgentId,
           priorityClass: entry.priorityClass,
         },
-        actions: schedulerAdmissionActions(workspaceId, entry),
+        actions: schedulerAdmissionActions(entry),
       };
     });
 }
@@ -683,22 +683,27 @@ function schedulerAdmissionSummary(entry: SchedulerAdmissionEntryRecord): string
 /**
  * Returns executable actions for one scheduler admission row.
  *
- * @param workspaceId Workspace id for route construction.
  * @param entry Scheduler admission entry.
  * @returns Actions backed by public App API routes.
  */
-function schedulerAdmissionActions(
-  workspaceId: string,
-  entry: SchedulerAdmissionEntryRecord
-): HumanAttentionAction[] {
-  const href = `/api/app/workspaces/${workspaceId}/scheduler/admissions/${entry.queueEntryId}`;
+function schedulerAdmissionActions(entry: SchedulerAdmissionEntryRecord): HumanAttentionAction[] {
   const actions: HumanAttentionAction[] = [openThreadAction(entry.threadId)];
 
   if (entry.status === 'denied') {
-    actions.push({ kind: 'retry_work', label: 'Retry', method: 'POST', href: `${href}/retry` });
+    actions.push({
+      kind: 'retry_work',
+      label: 'Retry',
+      method: 'POST',
+      href: '/api/app/operations/scheduler.retry',
+    });
   }
 
-  actions.push({ kind: 'abort', label: 'Cancel', method: 'POST', href: `${href}/cancel` });
+  actions.push({
+    kind: 'abort',
+    label: 'Cancel',
+    method: 'POST',
+    href: '/api/app/operations/scheduler.cancel',
+  });
 
   return actions;
 }
@@ -756,7 +761,7 @@ function checkpointRows(
             kind: 'retry_from_checkpoint',
             label: 'Retry',
             method: 'POST',
-            href: `/api/app/workspaces/${workspaceId}/threads/${checkpoint.threadId}/recovery/interrupted-worker/${checkpoint.turnId}/retry`,
+            href: '/api/app/operations/recovery.checkpoint-retry',
           },
         ]
       : [openThreadAction(checkpoint.threadId)],

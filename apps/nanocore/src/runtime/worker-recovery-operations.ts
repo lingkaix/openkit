@@ -1,23 +1,18 @@
+import type { RECOVERY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   ListInterruptedWorkerStatesResponseSchema,
-  RetryInterruptedWorkerCheckpointRequestSchema,
   type RetryInterruptedWorkerCheckpointResponse,
   RetryInterruptedWorkerCheckpointResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
-import type { Context, Hono } from 'hono';
-
-import {
-  asApiError,
-  asCommandError,
-  asInvalidRequestError,
-  publishedErrorMessage,
-} from '../api-errors.js';
-import type { AuthVariables } from '../auth/middleware.js';
-import { assertAuthorizedWorkspaceLineage } from '../auth/operation-authorizer.js';
+import { publishedErrorMessage } from '../api-errors.js';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
-import { registerAppApiRoute } from '../openapi.js';
+import type {
+  OperationImplementations,
+  OperationInvocationDependencies,
+} from '../operation-invocation.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -28,118 +23,80 @@ import {
   resolveInterruptedWorkerRetryDecision,
 } from './worker-recovery.js';
 
-/**
- * Registers the complete interrupted-worker recovery App API feature path.
- *
- * @param dependencies Hono app and concrete recovery dependencies.
- */
-export function registerWorkerRecoveryRoutes({
-  app,
-  authorizedWorkspaceIds,
-  coreDb,
-  repositoryWorkspaceDb,
-  requestStore,
-}: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly authorizedWorkspaceIds: (
-    context: Context<{ Variables: AuthVariables }>
-  ) => readonly string[];
-  readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-}): void {
-  registerAppApiRoute(app, 'listInterruptedWorkers', (c) => {
-    try {
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
-      }
-
-      const store = requestStore(c);
-      const userId = c.get('actor')?.userId;
-
-      return c.json(
-        ListInterruptedWorkerStatesResponseSchema.parse({
-          items: authorizedWorkspaceIds(c).flatMap((workspaceId) => {
-            const workspaceDb = repositoryWorkspaceDb(workspaceId);
+/** Recovery projection failure preserves the command owner's published status and code. */
+export class RecoveryOperationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status = 400
+  ) {
+    super(message);
+  }
+}
+/** Joins recovery listing and release to the unchanged checkpoint, receipt and cleanup owners. */
+export function createRecoveryOperationImplementations(
+  dependencies: OperationInvocationDependencies
+): Pick<OperationImplementations, keyof typeof RECOVERY_OPERATION_DEFINITIONS> {
+  const { repositoryWorkspaceDb } = dependencies;
+  // Native invocation admits Core storage before entering this family.
+  const coreDb = dependencies.coreDb!;
+  const store = dependencies.store!;
+  return {
+    'recovery.worker-list': (_input, actor, context, workspaceIds) => {
+      try {
+        return ListInterruptedWorkerStatesResponseSchema.parse({
+          items: workspaceIds.flatMap((workspaceId) => {
+            const workspaceDb = repositoryWorkspaceDb!(workspaceId);
             try {
               return materializeInterruptedWorkerStates(coreDb, store, workspaceDb, (checkpoint) =>
-                isThreadIdVisible(store, checkpoint.workspaceId, checkpoint.threadId, userId)
+                isThreadIdVisible(
+                  store,
+                  checkpoint.workspaceId,
+                  checkpoint.threadId,
+                  actor.id,
+                  context.kind === 'public' &&
+                    isCurrentDeploymentAdministrator(coreDb, context.actor)
+                )
               );
             } finally {
               workspaceDb.sqlite.close();
             }
           }),
-        })
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error), 'recovery_list_failed', 400);
-    }
-  });
-
-  registerAppApiRoute(app, 'retryInterruptedWorkerCheckpoint', async (c) => {
-    const parsed = RetryInterruptedWorkerCheckpointRequestSchema.safeParse(
-      await c.req.json().catch(() => ({}))
-    );
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    const turnId = c.req.param('turnId');
-    const store = requestStore(c);
-    let turn: ReturnType<FsStore['getTurnById']>;
-
-    try {
-      turn = store.getTurnById(turnId);
-    } catch (error) {
-      return asCommandError(error, 'recovery_retry_failed', 400);
-    }
-    assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), turn.workspaceId);
-
-    try {
-      store.getWorkspace(workspaceId);
-      store.getThread(workspaceId, threadId);
-
-      if (!coreDb) {
-        return asApiError(
-          'Recovery storage is unavailable for this NanoCore instance.',
-          'recovery_storage_unavailable',
-          503
-        );
+        });
+      } catch (error) {
+        throw new RecoveryOperationError('recovery_list_failed', publishedErrorMessage(error));
       }
-
-      const workspaceDb = repositoryWorkspaceDb(workspaceId);
+    },
+    'recovery.checkpoint-retry': async (input) => {
       try {
-        const response = runInterruptedWorkerRetryCommand({
-          authorityActor: turn.triggerActor,
-          coreDb,
-          requestId: parsed.data.requestId,
-          store,
-          threadId,
-          turnId,
-          workspaceDb,
-          workspaceId,
-        });
-
-        await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-          threadId,
-          turnId,
-          workspaceId,
-        });
-
-        return c.json(response);
-      } finally {
-        workspaceDb.sqlite.close();
+        const turn = store.getTurnById(input.turnId);
+        store.getWorkspace(input.workspaceId);
+        store.getThread(input.workspaceId, input.threadId);
+        const workspaceDb = repositoryWorkspaceDb!(input.workspaceId);
+        try {
+          const response = runInterruptedWorkerRetryCommand({
+            ...input,
+            authorityActor: turn.triggerActor,
+            coreDb,
+            store,
+            workspaceDb,
+          });
+          await clearWorkerCheckpointAfterTerminalState(workspaceDb, input);
+          return response;
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      } catch (error) {
+        if (
+          error instanceof RecoveryOperationError ||
+          error instanceof TurnStartValidationError ||
+          error instanceof IdempotencyKeyConflictError
+        )
+          throw error;
+        throw new RecoveryOperationError('recovery_retry_failed', publishedErrorMessage(error));
       }
-    } catch (error) {
-      return asCommandError(error, 'recovery_retry_failed', 400);
-    }
-  });
+    },
+  };
 }
 
 /**
