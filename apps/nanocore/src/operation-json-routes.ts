@@ -1,4 +1,5 @@
 import {
+  CORE_COMMAND_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
   WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
@@ -37,7 +38,11 @@ export function registerOperationJsonRoutes(
       try {
         const body: unknown = await c.req.json().catch(() => null);
         if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-          throw new OperationInvocationError('invalid_request', 'Invalid operation input.', 400);
+          throw new OperationInvocationError(
+            'inputErrorCode' in definition ? definition.inputErrorCode : 'invalid_request',
+            'Invalid operation input.',
+            400
+          );
         }
         const args = body as Record<string, unknown>;
         const requestId = c.req.header('x-openkit-request-id');
@@ -57,7 +62,11 @@ export function registerOperationJsonRoutes(
             ? { ...args, requestId }
             : args;
         const parsed = definition.inputSchema.safeParse(input);
-        if (!parsed.success) return asInvalidRequestError(parsed.error);
+        if (!parsed.success)
+          return asInvalidRequestError(
+            parsed.error,
+            'inputErrorCode' in definition ? definition.inputErrorCode : 'invalid_request'
+          );
         let successStatus: 200 | 201 | 202 | 204 =
           'successStatus' in definition ? definition.successStatus : 200;
         const invoke = createOperationInvocation({
@@ -70,6 +79,7 @@ export function registerOperationJsonRoutes(
         const output = await invoke(id as keyof typeof OPERATION_DEFINITIONS, input, {
           kind: 'public',
           actor: c.get('actor'),
+          signal: c.req.raw.signal,
         });
         return successStatus === 204 ? c.body(null, 204) : c.json(output, successStatus);
       } catch (error) {
@@ -109,6 +119,8 @@ export function registerOperationJsonRoutes(
         if (id.startsWith('kernel.')) return asCommandError(error, 'invalid_request', 400);
         // Synchronization's native owners retain their handler fallbacks; unexpected admission failures reach the app error handler.
         if (id.startsWith('sync.')) throw error;
+        // Temporary B1 admission debt: the generic fallback turns unexpected admission failures into Thread-shaped 404s; remove this branch in the shared family-contract change that replaces all per-family branches with one error projection.
+        if (Object.hasOwn(CORE_COMMAND_OPERATION_DEFINITIONS, id)) throw error;
         return asCommandError(error, definition.mutating ? 'thread_create_failed' : 'not_found');
       }
     });

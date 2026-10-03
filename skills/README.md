@@ -69,3 +69,5 @@ All Kernel and Generative UI CLI entries derive from the shared operation tables
 All fifteen `sync.*` CLI entries derive their contracts and execution from the shared synchronization definitions, including strict inputs and header request identities. The hand-written synchronization catalog rows are removed.
 
 The sixteen Workspace sharing and lifecycle operations derive their canonical IDs, complete strict inputs and `client.operations` handlers from the composed definitions. Invitation creation preserves secret stdin handling. Canonical-user invitation, leave and deleted-recovery operations accept the implicit local actor or a currently usable administrator bearer; ordinary Workspace bearers do not become session credentials. The old literal catalog rows and client method mappings are removed.
+
+The eleven ordinary core commands and Quick Chat rows derive from `CORE_COMMAND_OPERATION_DEFINITIONS` through `strictShared` in `openkit-operations.mjs`. Their literal rows and former Core Client mappings are removed; `pnpm build:openkit` rebuilds the bundled CLI.

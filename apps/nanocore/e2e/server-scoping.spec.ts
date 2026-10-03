@@ -23,7 +23,7 @@ describe('nanocore e2e server workspace scoping', () => {
     const secondCookie = await signUpAndCookie(harness.baseUrl, 'scope-b@example.com', 'Scope B');
 
     const createResponse = await postJson(
-      `${harness.baseUrl}/api/workspaces`,
+      `${harness.baseUrl}/api/app/operations/workspace.create`,
       { name: 'User A private workspace', requestId: randomUUID() },
       firstCookie
     );
@@ -39,12 +39,11 @@ describe('nanocore e2e server workspace scoping', () => {
     const secondList = (await secondListResponse.json()) as {
       items: Array<{ workspace: { id: string } }>;
     };
-    const secondGetResponse = await fetch(
-      `${harness.baseUrl}/api/workspaces/${createdWorkspace.id}`,
-      {
-        headers: { cookie: secondCookie },
-      }
-    );
+    const secondGetResponse = await fetch(`${harness.baseUrl}/api/app/operations/workspace.read`, {
+      method: 'POST',
+      headers: { cookie: secondCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: createdWorkspace.id }),
+    });
     const secondGetBody = (await secondGetResponse.json()) as { code: string };
 
     expect(createResponse.status).toBe(201);

@@ -80,7 +80,7 @@ describe('nanocore e2e server auth', () => {
     const ownerCookie = cookieHeader(ownerSignUp);
     const editorCookie = cookieHeader(editorSignUp);
     const created = await postJson(
-      `${harness.baseUrl}/api/workspaces`,
+      `${harness.baseUrl}/api/app/operations/workspace.create`,
       {
         name: 'Restarted Shared Workspace',
         requestId: '10000000-0000-4000-8000-000000000001',
@@ -159,8 +159,10 @@ describe('nanocore e2e server auth', () => {
     );
     expect(removed.status).toBe(200);
 
-    const denied = await fetch(`${harness.baseUrl}/api/workspaces/${workspace.id}`, {
-      headers: { cookie: editorCookie },
+    const denied = await fetch(`${harness.baseUrl}/api/app/operations/workspace.read`, {
+      method: 'POST',
+      headers: { cookie: editorCookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: workspace.id }),
     });
     expect(denied.status).toBe(403);
     await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });

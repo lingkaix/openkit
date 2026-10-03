@@ -30,7 +30,6 @@ function makeClient(): CoreClient {
     },
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
     },
     runtimeConfig: {
       listFiles: vi.fn().mockRejectedValue(
@@ -48,6 +47,7 @@ function makeClient(): CoreClient {
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
 
       'workspace.list': vi.fn().mockResolvedValue({

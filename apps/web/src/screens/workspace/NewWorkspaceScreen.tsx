@@ -13,13 +13,7 @@ import {
 import { useWorkspaceStore } from '../workspace-store';
 import { useCreateWorkspace } from './data';
 
-/**
- * New workspace form (WP-6, board 07 companion route).
- *
- * Honest create against `core.createWorkspace`. On success, selects the new
- * workspace and returns to Overview. When disconnected, the form stays calm and
- * points back to Overview rather than inventing a kernel API.
- */
+/** Creates through `workspace.create`, selects the new Workspace and opens its overview. */
 export function NewWorkspaceScreen() {
   const navigate = useNavigate();
   const create = useCreateWorkspace();

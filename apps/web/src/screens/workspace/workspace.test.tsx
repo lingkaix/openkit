@@ -97,7 +97,12 @@ const OPEN_ONLY_ROW = {
     itemId: 'i2',
   },
   actions: [
-    { kind: 'answer_question', label: 'Answer', method: 'POST', href: '/api/turns' },
+    {
+      kind: 'answer_question',
+      label: 'Answer',
+      method: 'POST',
+      href: '/api/app/operations/question.answer',
+    },
     { kind: 'open_thread', label: 'Open', method: 'GET', href: '/api/workspaces/ws1/threads/th2' },
   ],
 };
@@ -673,45 +678,10 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
 
-      createWorkspace: vi.fn().mockResolvedValue({
-        id: 'ws-new',
-        name: 'New workspace',
-        kind: 'general',
-        status: 'active',
-        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
-        createdAt: TIMESTAMP_NEW,
-        updatedAt: TIMESTAMP_NEW,
-      }),
       ...overrides.core,
     },
     app: {
-      getWorkspaceDashboard: vi.fn().mockResolvedValue({
-        workspace: { id: WORKSPACE_A.id, name: WORKSPACE_A.name },
-        counts: {
-          threadCount: 2,
-          artifactCount: 0,
-          knowledgeEntryCount: 0,
-          providerCount: 1,
-        },
-        defaultContext: { agentId: null },
-        agentHealth: [],
-        recentThreads: [],
-        activeWork: [
-          {
-            threadId: 'th1',
-            title: 'Competitive pricing report',
-            status: 'running',
-            mode: 'goal',
-            agentId: 'agent_scout',
-            summary: '4 of 6 steps moving',
-            updatedAt: TIMESTAMP_NEW,
-          },
-        ],
-        recentCompletions: [],
-        attentionNeeded: [],
-      }),
       listWorkspaceWorkers: vi.fn().mockImplementation(async (workspaceId: string) => ({
         workspaceId,
         items: [],
@@ -741,6 +711,41 @@ function makeClient(
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'workspace.create': vi.fn().mockResolvedValue({
+        id: 'ws-new',
+        name: 'New workspace',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: TIMESTAMP_NEW,
+        updatedAt: TIMESTAMP_NEW,
+      }),
+      'workspace.dashboard': vi.fn().mockResolvedValue({
+        workspace: { id: WORKSPACE_A.id, name: WORKSPACE_A.name },
+        counts: {
+          threadCount: 2,
+          artifactCount: 0,
+          knowledgeEntryCount: 0,
+          providerCount: 1,
+        },
+        defaultContext: { agentId: null },
+        agentHealth: [],
+        recentThreads: [],
+        activeWork: [
+          {
+            threadId: 'th1',
+            title: 'Competitive pricing report',
+            status: 'running',
+            mode: 'goal',
+            agentId: 'agent_scout',
+            summary: '4 of 6 steps moving',
+            updatedAt: TIMESTAMP_NEW,
+          },
+        ],
+        recentCompletions: [],
+        attentionNeeded: [],
+      }),
       'approval.respond': vi.fn().mockResolvedValue({}),
       'pending-request.withdraw': vi.fn().mockResolvedValue({}),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
@@ -5939,10 +5944,11 @@ describe('Archived threads', () => {
     };
     const updateThread = vi.fn().mockResolvedValue({ ...archivedThread, status: 'active' });
     const client = makeClient({
-      core: {
-        listThreads: vi.fn().mockResolvedValue({ items: [archivedThread, previewOnlyThread] }),
-        updateThread,
+      operations: {
+        'thread.list': vi.fn().mockResolvedValue({ items: [archivedThread, previewOnlyThread] }),
+        'thread.update': updateThread,
       },
+      core: {},
     });
     renderApp('/workspace/archived', client);
 
@@ -5978,7 +5984,10 @@ describe('New workspace (board 07)', () => {
       createdAt: TIMESTAMP_NEW,
       updatedAt: TIMESTAMP_NEW,
     });
-    const client = makeClient({ core: { createWorkspace } });
+    const client = makeClient({
+      operations: { 'workspace.create': createWorkspace },
+      core: {},
+    });
     renderApp('/settings/workspaces/new', client);
     await user.type(await screen.findByRole('textbox', { name: 'Name' }), 'Launch prep');
     await user.click(screen.getByRole('button', { name: /Create workspace/i }));

@@ -243,8 +243,9 @@ create_workspace() {
   curl -fsS \
     --request POST \
     --header 'content-type: application/json' \
+    --header "x-openkit-request-id: $(node -e 'process.stdout.write(crypto.randomUUID())')" \
     --data "${payload}" \
-    "${BASE_URL}/api/workspaces"
+    "${BASE_URL}/api/app/operations/workspace.create"
 }
 
 read_workspace_id() {

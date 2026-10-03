@@ -185,7 +185,6 @@ function createPassingTaskModeFixture(options) {
             ],
           }),
         },
-        core: { createWorkspace: async () => ({ id: workspaceId }) },
         repositories: {
           setDefault: async () => {
             throw new Error('repositories.setDefault must not configure Task Mode acceptance.');
@@ -200,6 +199,7 @@ function createPassingTaskModeFixture(options) {
             options.onReviewDecision?.(receivedWorkspaceId, reviewId, input);
             return { review: { id: reviewId, status: 'rejected' } };
           },
+          'workspace.create': async () => ({ id: workspaceId }),
           'task.start': async () => ({
             evidence: { reviewIds: options.reviewIds ?? [] },
             state: 'completed',
@@ -252,7 +252,6 @@ function createDistinctTaskModeActorClients(options) {
       listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
       listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
     },
-    core: { createWorkspace: refuse('admin client must not create a Workspace') },
     repositories: {
       setDefault: refuse('admin client must not set a repository'),
     },
@@ -262,6 +261,7 @@ function createDistinctTaskModeActorClients(options) {
     },
     operations: {
       'sync.review-decide': refuse('admin client must not submit review cleanup'),
+      'workspace.create': refuse('admin client must not create a Workspace'),
       'task.start': refuse('admin client must not start Task Mode'),
 
       'thread.create': refuse('admin client must not create a Thread'),
@@ -299,10 +299,10 @@ function createDistinctTaskModeActorClients(options) {
     productCalls,
     'createThread'
   );
-  product.core.createWorkspace = track(
-    product.core.createWorkspace,
+  product.operations['workspace.create'] = track(
+    product.operations['workspace.create'],
     productCalls,
-    'createWorkspace'
+    'workspace.create'
   );
   product.operations['thread.items'] = track(
     product.operations['thread.items'],
@@ -562,9 +562,9 @@ describe('real Task Mode worker L3 test policy', () => {
     });
     const fixture = createPassingTaskModeFixture({ workerImageRef });
     const calls = [];
-    const originalCreateWorkspace = fixture.clients.core.core.createWorkspace;
-    fixture.clients.core.core.createWorkspace = async (...args) => {
-      calls.push('createWorkspace');
+    const originalCreateWorkspace = fixture.clients.core.operations['workspace.create'];
+    fixture.clients.core.operations['workspace.create'] = async (...args) => {
+      calls.push('workspace.create');
       return originalCreateWorkspace(...args);
     };
     const originalCreateThread = fixture.clients.core.operations['thread.create'];
@@ -628,7 +628,7 @@ describe('real Task Mode worker L3 test policy', () => {
       });
       assert.equal(result.status, 'ok');
       assert.deepEqual(calls.slice(0, 5), [
-        'createWorkspace',
+        'workspace.create',
         'createThread',
         'createFile',
         'reload',
@@ -825,7 +825,7 @@ describe('real Task Mode worker L3 test policy', () => {
         new Set(productCalls),
         new Set([
           'createThread',
-          'createWorkspace',
+          'workspace.create',
           'getCapabilityUsage',
           'listAgentEnvironmentPackageSnapshots',
           'listThreadItems',
@@ -835,7 +835,7 @@ describe('real Task Mode worker L3 test policy', () => {
         ])
       );
       assert.deepEqual(productCalls.slice(0, 3), [
-        'createWorkspace',
+        'workspace.create',
         'createThread',
         'startTaskMode',
       ]);

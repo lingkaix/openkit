@@ -254,6 +254,8 @@ Worker-proposed-file Workspace Sync review-to-apply remains in the ordinary-user
 
 ## Current Implementation Projection
 
+The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
+
 The current Web implementation is a React and Vite SPA whose route catalog, app shell, sidebar, and unified Composer project NanoCore state through `@openkit/core-client`. TanStack Query owns server-state access, while Zustand remains limited to UI-only state. The existing 147-operation disposition contract and the accepted unified Composer projection are implemented.
 
 - Live surfaces currently cover Workspace overview and Action Center rows, Chat and Task Threads, Goal planning and steering, Artifact Review, Artifact inventory/import/introduction, Knowledge page CRUD and the release-ready Knowledge Manager workflows, Agent catalog/detail/health, recovery and scheduler admission, Workspace Sync review-to-apply and recovery evidence, user-scoped import plus project-Workspace portability, first-run and Workspace creation, appearance and Workspace-authorized general settings, the Settings Debug component catalog and inspection reads, and selected-Workspace Usage and audit reads.

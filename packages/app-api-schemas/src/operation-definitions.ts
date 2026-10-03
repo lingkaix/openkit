@@ -35,6 +35,7 @@ import {
   SubmitConversationRequestSchema,
   SubmitConversationResponseSchema,
 } from './chat-mode.js';
+import { CORE_COMMAND_OPERATION_DEFINITIONS } from './core-commands.js';
 import {
   ConversationNavigationResponseSchema,
   ListThreadItemsResponseSchema,
@@ -716,6 +717,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...AUTOMATION_OPERATION_DEFINITIONS,
   ...SCHEDULER_OPERATION_DEFINITIONS,
   ...RECOVERY_OPERATION_DEFINITIONS,
+  ...CORE_COMMAND_OPERATION_DEFINITIONS,
   ...KERNEL_OPERATION_DEFINITIONS,
   ...KERNEL_REMAINING_OPERATION_DEFINITIONS,
   ...GENERATIVE_UI_OPERATION_DEFINITIONS,

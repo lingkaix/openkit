@@ -769,11 +769,11 @@ async function readNanoCoreOwnerSnapshot(config, lineage) {
 }
 
 /** Starts the existing real Task runner while exposing only its public lineage coordinates. */
-async function startRealTaskAttempt(config, scenarioId) {
+export async function startRealTaskAttempt(config, scenarioId) {
   const workspace = await appRequest(
     config,
     'POST',
-    '/api/workspaces',
+    '/api/app/operations/workspace.create',
     { name: `NanoHost Unit F ${scenarioId}`, requestId: randomUUID() },
     'product'
   );
@@ -1403,8 +1403,7 @@ export function adjudicateNanoHostF1Continuation({
 }
 
 /** Interrupts a surviving fault Task through the existing product owner. */
-async function interruptFaultTask(config, lineage) {
-  const turnPath = `/api/workspaces/${lineage.workspaceId}/threads/${lineage.threadId}/turns/${lineage.turnId}`;
+export async function interruptFaultTask(config, lineage) {
   const isTerminal = (turn) =>
     ['cancelled', 'completed', 'failed', 'interrupted'].includes(turn?.status);
   if (
@@ -1423,7 +1422,7 @@ async function interruptFaultTask(config, lineage) {
     await appRequest(
       config,
       'POST',
-      `${turnPath}/interrupt`,
+      '/api/app/operations/turn.interrupt',
       {
         requestId: randomUUID(),
         threadId: lineage.threadId,

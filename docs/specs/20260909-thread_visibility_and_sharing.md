@@ -82,6 +82,8 @@ Ordinary Workspace export includes shared Threads and admitted shared outputs. A
 
 ## Current Implementation Projection
 
+The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
+
 Durable Thread visibility and authenticated private ownership are implemented for creation, with `openkit.thread-visibility.v1` gating canonical envelopes. Public Thread creation defaults to private; callers creating formal work explicitly request `visibility: workspace`. Quick Chat and administration remain private, and direct Task/Goal admission rejects private history rather than converting it. Cutover classifies owner-bound Quick Chat and formal Task/Goal inception from durable lineage; ambiguous project history blocks loading pending explicit classification. Missing or contradictory current visibility is never repaired into shared visibility.
 
 Workspace dashboard, Thread dashboard and App search enforce current Workspace eligibility plus Thread audience before dependent discovery. Their Artifact metadata follows immutable origin, and dashboard counts describe eligible records. The bundled CLI exposes these reads through the existing Core Client. Standalone Artifact metadata and content delivery resolve immutable origin audience. File-backed Thread records remain canonical; these projections do not establish completion of the broader contract.

@@ -46,6 +46,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
@@ -806,16 +807,22 @@ describe('Worker environment App composition', () => {
         turnExecutor: executor,
       });
 
-      const predecessorResponse = await app.request('/api/turns', {
-        method: 'POST',
-        headers: { ...sessionHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          input: 'Keep the resident Worker active until replacement.',
-          requestId: '44444444-4444-4444-8444-444444444444',
-          threadId: productThread.id,
-          workspaceId: productWorkspace.id,
-        }),
-      });
+      const predecessorResponse = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            headers: { ...sessionHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              input: 'Keep the resident Worker active until replacement.',
+              requestId: '44444444-4444-4444-8444-444444444444',
+              threadId: productThread.id,
+              workspaceId: productWorkspace.id,
+            }),
+          }
+        )
+      );
       const predecessor = (await predecessorResponse.json()) as {
         id: string;
         status: string;

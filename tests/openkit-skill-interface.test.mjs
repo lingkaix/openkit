@@ -705,7 +705,7 @@ test('one catalog covers the checked App API and public Core projection', async 
 
   assert.equal(
     operationExclusions.filter((entry) =>
-      ['getWorkspaceDashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
+      ['workspace.dashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
     ).length,
     0
   );
@@ -2829,10 +2829,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
   for (const [id, operationId, method, input, args] of [
     [
       'workspace.dashboard',
-      'getWorkspaceDashboard',
-      'getWorkspaceDashboard',
+      'workspace.dashboard',
+      'workspace.dashboard',
       { workspaceId: 'ws_team' },
-      ['ws_team'],
+      [{ workspaceId: 'ws_team' }],
     ],
     [
       'thread.dashboard',
@@ -2869,7 +2869,11 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     const result = await entry.handler(
       {
         client: {
-          [id === 'thread.dashboard' || id === 'conversation.navigation' ? 'operations' : 'app']: {
+          [id === 'thread.dashboard' ||
+          id === 'conversation.navigation' ||
+          id === 'workspace.dashboard'
+            ? 'operations'
+            : 'app']: {
             [method]: async (...values) => {
               observed = values;
               return { items: [] };
@@ -2890,7 +2894,7 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
 
 test('bundled dashboard and search reads retain authorization errors without leaking credentials', async () => {
   for (const [operation, input, path] of [
-    ['workspace.dashboard', { workspaceId: 'ws_team' }, '/api/app/workspaces/ws_team/dashboard'],
+    ['workspace.dashboard', { workspaceId: 'ws_team' }, '/api/app/operations/workspace.dashboard'],
     [
       'thread.dashboard',
       { workspaceId: 'ws_team', threadId: 'th_private' },
@@ -2910,7 +2914,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         [
           dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
+          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
           return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };

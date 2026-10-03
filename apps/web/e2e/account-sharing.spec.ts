@@ -149,7 +149,8 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
   await page.getByRole('textbox', { name: 'Name' }).fill(workspaceName);
   const response = page.waitForResponse(
     (candidate) =>
-      candidate.url().endsWith('/api/workspaces') && candidate.request().method() === 'POST'
+      candidate.url().endsWith('/api/app/operations/workspace.create') &&
+      candidate.request().method() === 'POST'
   );
   await page.getByRole('button', { name: 'Create workspace' }).click();
   const body = (await (await response).json()) as { id: string };

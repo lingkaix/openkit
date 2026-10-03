@@ -808,15 +808,21 @@ describe('pending requests', () => {
       .prepare('SELECT * FROM pending_requests WHERE request_id = ?')
       .get(record.requestId);
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
-    const response = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '00000000-0000-4000-8000-000000000769',
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '00000000-0000-4000-8000-000000000769',
+          }),
+        }
+      )
+    );
     expect(response.status).toBe(200);
     expect(
       db.sqlite.prepare('SELECT * FROM pending_requests WHERE request_id = ?').get(record.requestId)
@@ -1086,15 +1092,21 @@ describe('pending requests', () => {
             "UPDATE pending_requests SET disposition='denied-not-executed', disposition_reason='membership-revoked' WHERE request_id='ap_person_late'"
           )
           .run();
-        const refused = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            requestId: '00000000-0000-4000-8000-000000000761',
-          }),
-        });
+        const refused = await app.request(
+          ...operationRequest(
+            'thread.archive',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                requestId: '00000000-0000-4000-8000-000000000761',
+              }),
+            }
+          )
+        );
         expect(refused.status).toBe(409);
         expect(await refused.json()).toMatchObject({ code: 'thread_busy' });
         if (cause === 'boot') store.setTurnAdmissionHooks(null);
@@ -1104,15 +1116,21 @@ describe('pending requests', () => {
             openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),
           });
       } else {
-        const archived = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            requestId: '00000000-0000-4000-8000-000000000762',
-          }),
-        });
+        const archived = await app.request(
+          ...operationRequest(
+            'thread.archive',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                requestId: '00000000-0000-4000-8000-000000000762',
+              }),
+            }
+          )
+        );
         expect(archived.status).toBe(200);
       }
       const invalidated = readPendingRequest(db.sqlite, 'ap_person_late')!;
@@ -1794,28 +1812,40 @@ describe('pending requests', () => {
     } finally {
       db.sqlite.close();
     }
-    const busy = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000706',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-      }),
-    });
+    const busy = await app.request(
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000706',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+          }),
+        }
+      )
+    );
     expect(busy.status).toBe(409);
     await expect(busy.json()).resolves.toMatchObject({ code: 'thread_busy' });
     expect(store.getThread('ws_demo', 'th_demo').status).not.toBe('archived');
     store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
-    const archived = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        requestId: '00000000-0000-4000-8000-000000000707',
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-      }),
-    });
+    const archived = await app.request(
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000707',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+          }),
+        }
+      )
+    );
     expect(archived.status, await archived.clone().text()).toBe(200);
     expect(store.getThread('ws_demo', 'th_demo').status).toBe('archived');
     const recorded = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');

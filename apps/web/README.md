@@ -376,3 +376,7 @@ Generative presentation reads, refreshes and actions use `client.operations` wit
 Workspace Changes uses definition-derived `client.operations` for all fifteen synchronization reads and decisions with explicit Workspace and child selectors. Existing request generation, mutation state, refetch ownership and UI outcomes remain with the hooks.
 
 Account invitation decisions, selected-Workspace member management, leave and ownership transfer use canonical `client.operations` inputs with logical selectors and retained request IDs. Their UI confirmation, conflict refresh, exact retry and selected-Workspace reconciliation remain in the account owner.
+
+Workspace creation, read and rename, Workspace dashboard, Thread list/rename/archive, Turn start/interrupt/feedback and Quick Chat use the definition-derived Core Client operation map with complete logical inputs. Existing request identities and UI outcomes remain owned by their current mutation hooks and screens.
+
+The local self-check's answer waits share `e2e/_lib/question-answer-response.ts`, which observes the browser's `question.answer` submission rather than an internal worker continuation. Its focused transport regression executes the real Core Client operation and retains the E2E successful-response and visible-answer checks.

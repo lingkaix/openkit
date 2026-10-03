@@ -39,7 +39,6 @@ const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
 );
 const PROJECTED_APP_API_ROUTE_PATTERN = /^\/api\/(?:app|setup|admin)(?:\/|$)/;
-const TURN_FEEDBACK_ROUTE = '/api/turns/:turnId/feedback';
 const NON_APP_API_ROUTE_PATTERNS = [
   /^\/v1(?:\/|$)/,
   /^\/internal(?:\/|$)/,
@@ -93,15 +92,7 @@ const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../skills/',
 ];
 const DIRECT_CORE_GATEWAY_OPERATION_KEYS = [
-  'POST /api/workspaces',
-  'GET /api/workspaces/:workspaceId',
-  'PATCH /api/workspaces/:workspaceId',
-  'GET /api/workspaces/:workspaceId/threads',
-  'PATCH /api/workspaces/:workspaceId/threads/:threadId',
-  'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
   'GET /api/workspaces/:workspaceId/threads/:threadId/events',
-  'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt',
-  'POST /api/turns',
   'POST /v1/chat/completions',
   'POST /v1/responses',
 ] as const;
@@ -151,15 +142,11 @@ function normalizeHonoRoutePath(path: string): string {
 /**
  * Checks whether one runtime route belongs to the projected public App API.
  *
- * @param method Uppercase HTTP method from Hono.
  * @param path Hono route path.
  * @returns True when the route must have an OpenAPI operation.
  */
-function isProjectedAppApiRoute(method: string, path: string): boolean {
-  return (
-    PROJECTED_APP_API_ROUTE_PATTERN.test(path) ||
-    (method === 'POST' && path === TURN_FEEDBACK_ROUTE)
-  );
+function isProjectedAppApiRoute(path: string): boolean {
+  return PROJECTED_APP_API_ROUTE_PATTERN.test(path);
 }
 
 describe('app api openapi projection', () => {
@@ -241,7 +228,7 @@ describe('app api openapi projection', () => {
   it('does not publish caller provider or model authority for Internal Core Role requests', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
-    for (const name of ['QuickChatRequest', 'conversation.submit.input'] as const) {
+    for (const name of ['chat.quick.input', 'conversation.submit.input'] as const) {
       expect(schemas[name]).toMatchObject({ additionalProperties: false });
       expect(schemas[name]).not.toHaveProperty('properties.providerId');
       expect(schemas[name]).not.toHaveProperty('properties.model');
@@ -754,14 +741,15 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/quick-chat']?.post).toMatchObject({
-      operationId: 'quickChat',
-      tags: ['app-utils'],
+    expect(document.paths['/api/app/quick-chat']).toBeUndefined();
+    expect(document.paths['/api/app/operations/chat.quick']?.post).toMatchObject({
+      operationId: 'chat.quick',
+      tags: ['chat'],
       requestBody: {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/QuickChatRequest',
+              $ref: '#/components/schemas/chat.quick.input',
             },
           },
         },
@@ -771,7 +759,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/QuickChatResponse',
+                $ref: '#/components/schemas/chat.quick.output',
               },
             },
           },
@@ -809,15 +797,15 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/turns/{turnId}/feedback']?.post).toMatchObject({
-      operationId: 'submitTurnFeedback',
-      tags: ['app-utils'],
-      parameters: [expect.objectContaining({ name: 'turnId', in: 'path', required: true })],
+    expect(document.paths['/api/turns/{turnId}/feedback']).toBeUndefined();
+    expect(document.paths['/api/app/operations/turn.feedback']?.post).toMatchObject({
+      operationId: 'turn.feedback',
+      tags: ['turn'],
       requestBody: {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/SubmitTurnFeedbackRequest',
+              $ref: '#/components/schemas/turn.feedback.input',
             },
           },
         },
@@ -827,7 +815,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/TurnFeedbackResponse',
+                $ref: '#/components/schemas/turn.feedback.output',
               },
             },
           },
@@ -891,16 +879,16 @@ describe('app api openapi projection', () => {
       expect(document.components.schemas).not.toHaveProperty(schemaName);
     }
 
-    expect(document.paths['/api/app/workspaces/{workspaceId}/dashboard']?.get).toMatchObject({
-      operationId: 'getWorkspaceDashboard',
-      tags: ['dashboards'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
+    expect(document.paths['/api/app/workspaces/{workspaceId}/dashboard']).toBeUndefined();
+    expect(document.paths['/api/app/operations/workspace.dashboard']?.post).toMatchObject({
+      operationId: 'workspace.dashboard',
+      tags: ['workspace'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/WorkspaceDashboardResponse',
+                $ref: '#/components/schemas/workspace.dashboard.output',
               },
             },
           },
@@ -1875,21 +1863,19 @@ describe('app api openapi projection', () => {
     const unsupportedMethodRoutes = app.routes
       .filter(
         ({ method, path }) =>
-          (method === 'ALL' && isProjectedAppApiRoute(method, path)) ||
+          (method === 'ALL' && isProjectedAppApiRoute(path)) ||
           (method !== 'ALL' && !OPENAPI_ROUTE_METHOD_SET.has(method))
       )
       .map(({ method, path }) => `${method} ${path}`);
     const explicitRoutes = app.routes.filter(({ method }) => OPENAPI_ROUTE_METHOD_SET.has(method));
     const unclassifiedRoutes = explicitRoutes
       .filter(
-        ({ method, path }) =>
-          !isProjectedAppApiRoute(method, path) &&
+        ({ path }) =>
+          !isProjectedAppApiRoute(path) &&
           !NON_APP_API_ROUTE_PATTERNS.some((pattern) => pattern.test(path))
       )
       .map(({ method, path }) => `${method} ${path}`);
-    const liveRoutes = explicitRoutes.filter(({ method, path }) =>
-      isProjectedAppApiRoute(method, path)
-    );
+    const liveRoutes = explicitRoutes.filter(({ path }) => isProjectedAppApiRoute(path));
     const document = createAppOpenApiDocument();
     const unsupportedRoutes = liveRoutes
       .filter(
@@ -2030,7 +2016,7 @@ describe('app api openapi projection', () => {
   });
 
   it('pins one representative for every Workspace resolver and each non-Workspace exception', () => {
-    expect(PUBLIC_OPERATION_ACCESS.quickChat).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['chat.quick']).toMatchObject({
       mutating: true,
       policyOperation: 'turn.run',
       resolver: 'actor-quick-chat-workspace',
@@ -2042,7 +2028,7 @@ describe('app api openapi projection', () => {
       resolver: 'authorized-workspace-set',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS['POST /api/turns']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['turn.start']).toMatchObject({
       mutating: true,
       policyOperation: 'turn.run',
       resolver: 'body-workspace',
@@ -2063,10 +2049,10 @@ describe('app api openapi projection', () => {
       resolver: 'opaque-child-workspace',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS['GET /api/workspaces/:workspaceId']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['workspace.read']).toMatchObject({
       mutating: false,
       policyOperation: 'workspace.read',
-      resolver: 'path-workspace',
+      resolver: 'body-workspace',
       scope: 'workspace',
     });
     expect(PUBLIC_OPERATION_ACCESS['thread.read']).toMatchObject({
@@ -2075,7 +2061,7 @@ describe('app api openapi projection', () => {
       resolver: 'body-workspace',
       scope: 'workspace',
     });
-    expect(PUBLIC_OPERATION_ACCESS['POST /api/workspaces']).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['workspace.create']).toMatchObject({
       authentication: 'canonical-user',
       mutating: true,
       policyOperation: 'workspace.write',
@@ -2270,7 +2256,7 @@ describe('app api openapi projection', () => {
 
     const exclusions = new Set<string>(APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS);
     const liveOperations = app.routes
-      .filter(({ method, path }) => isProjectedAppApiRoute(method, path))
+      .filter(({ path }) => isProjectedAppApiRoute(path))
       .map(({ method, path }) => `${method} ${normalizeHonoRoutePath(path)}`)
       .filter((operation) => !exclusions.has(operation));
     const registeredOperations = getRegisteredAppApiOperationIds(app).map((operationId) =>
@@ -2385,7 +2371,6 @@ describe('app api openapi projection', () => {
       'validateRuntimeConfig',
       'applyAdministrationConfiguration',
       'submitAdministrationConversation',
-      'quickChat',
       'listWorkspaceMaterials',
       'createWorkspaceMaterial',
       'getWorkspaceMaterial',
@@ -2424,9 +2409,7 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultInjectionPlans',
       'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
-      'getWorkspaceDashboard',
       'refreshAgentHealth',
-      'submitTurnFeedback',
       ...Object.keys(OPERATION_DEFINITIONS),
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',

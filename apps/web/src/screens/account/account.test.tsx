@@ -491,7 +491,7 @@ function makeClient(overrides: ClientOverrides = {}) {
       snapshot: vi.fn().mockReturnValue(null),
       supports: vi.fn().mockReturnValue(false),
     },
-    core: { listThreads: vi.fn().mockResolvedValue({ items: [] }), meta: forbidden.meta },
+    core: { meta: forbidden.meta },
     runtimeConfig: {
       getFile: forbidden.runtimeConfig,
       listFiles: forbidden.runtimeConfig,
@@ -502,6 +502,7 @@ function makeClient(overrides: ClientOverrides = {}) {
       'workspace.access-recovery-read': forbidden.admin,
       'workspace.access-recover': forbidden.admin,
       'workspace.list': listAuthorizedWorkspaces,
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.operations,
     },
   } as unknown as CoreClient;

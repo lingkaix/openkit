@@ -22,3 +22,5 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 `FsStore.getApprovalProjectionLineage` returns only Workspace and Thread selectors from the existing Approval map under the selected Workspace for opaque-child admission. The Pending Request command owner still decides missing or contradictory canonical-record outcomes.
 
 `AutomationStore.getAutomationLineage` selects only Workspace and user ownership from the existing process-local record maps for opaque-child admission. `listAuthorizedAutomations` applies admitted Workspace candidates and current administrator eligibility. `FsStore.getTurnLineage` returns only Workspace and Thread selectors from the existing Turn map before addressed-Turn content access. These selectors add no index or durable owner.
+
+`FsStore.getTurnLineage` reads only the existing opaque Turn map's Workspace and Thread selectors for admission. It does not read response-visible Turn content or scan Workspaces; the native feedback owner reads the Turn after authorization.

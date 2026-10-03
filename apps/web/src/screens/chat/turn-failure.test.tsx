@@ -150,8 +150,7 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
-      startTurn: vi.fn(),
+
       ...core,
     },
     app: {
@@ -159,6 +158,8 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
+      'turn.start': vi.fn(),
       'conversation.targets': vi.fn().mockResolvedValue({
         workspaceId: 'ws1',
         threadId: 'th_82',
@@ -324,7 +325,7 @@ describe('task turn failure (dashboard reload)', () => {
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.getByText('Worker Turn accepted')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-    await waitFor(() => expect(client.core.startTurn).not.toHaveBeenCalled());
+    await waitFor(() => expect(client.operations['turn.start']).not.toHaveBeenCalled());
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
   });

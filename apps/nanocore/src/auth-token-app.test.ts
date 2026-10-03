@@ -10,6 +10,7 @@ import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 const OWNER_SESSION_HEADER = 'x-openkit-test-owner-session';
 const MEMBER_SESSION_HEADER = 'x-openkit-test-member-session';
@@ -221,17 +222,23 @@ describe('server-mode access-token auth', () => {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({}),
       });
-      const memberWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [MEMBER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Member owned workspace',
-          requestId: '11111111-1111-4111-8111-111111111111',
-        }),
-      });
+      const memberWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [MEMBER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Member owned workspace',
+              requestId: '11111111-1111-4111-8111-111111111111',
+            }),
+          }
+        )
+      );
       const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
       const adminWorkspaceList = await app.request('/api/app/operations/workspace.list', {
         ...{
@@ -247,17 +254,23 @@ describe('server-mode access-token auth', () => {
       const adminWorkspaceListBody = (await adminWorkspaceList.json()) as {
         items: Array<{ workspace: { id: string } }>;
       };
-      const adminCreated = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${issued.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Admin created workspace',
-          requestId: '22222222-2222-4222-8222-222222222222',
-        }),
-      });
+      const adminCreated = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${issued.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Admin created workspace',
+              requestId: '22222222-2222-4222-8222-222222222222',
+            }),
+          }
+        )
+      );
       const adminCreatedBody = (await adminCreated.json()) as { id: string; ownerUserId?: string };
       const sessionAllowed = await app.request('/api/app/operations/workspace.list', {
         ...{
@@ -338,17 +351,23 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
 
-      const createdWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Owned token workspace',
-          requestId: '44444444-4444-4444-8444-444444444444',
-        }),
-      });
+      const createdWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Owned token workspace',
+              requestId: '44444444-4444-4444-8444-444444444444',
+            }),
+          }
+        )
+      );
       const workspace = (await createdWorkspace.json()) as { id: string };
       const listed = await app.request('/api/app/operations/workspace.list', {
         ...{
@@ -400,17 +419,23 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
-      const workspaceResponse = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Token administration workspace',
-          requestId: '33333333-3333-4333-8333-333333333333',
-        }),
-      });
+      const workspaceResponse = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Token administration workspace',
+              requestId: '33333333-3333-4333-8333-333333333333',
+            }),
+          }
+        )
+      );
       const workspace = (await workspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -562,17 +587,23 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
-      const workspaceResponse = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Rotated token workspace',
-          requestId: '55555555-5555-4555-8555-555555555555',
-        }),
-      });
+      const workspaceResponse = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Rotated token workspace',
+              requestId: '55555555-5555-4555-8555-555555555555',
+            }),
+          }
+        )
+      );
       const workspace = (await workspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -594,12 +625,24 @@ describe('server-mode access-token auth', () => {
         rotatedRecord: { status: string; tokenId: string };
         token: string;
       };
-      const oldStillWorks = await app.request(`/api/workspaces/${workspace.id}`, {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
-      });
-      const newWorks = await app.request(`/api/workspaces/${workspace.id}`, {
-        headers: { authorization: `Bearer ${rotatedBody.token}` },
-      });
+      const oldStillWorks = await app.request(
+        ...operationRequest(
+          'workspace.read',
+          { workspaceId: workspace.id },
+          {
+            headers: { authorization: `Bearer ${workspaceToken.secret}` },
+          }
+        )
+      );
+      const newWorks = await app.request(
+        ...operationRequest(
+          'workspace.read',
+          { workspaceId: workspace.id },
+          {
+            headers: { authorization: `Bearer ${rotatedBody.token}` },
+          }
+        )
+      );
 
       expect(workspaceResponse.status).toBe(201);
       expect(rotated.status).toBe(200);
@@ -654,9 +697,15 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
 
-      const unbound = await app.request('/api/app/workspaces/ws_denied/dashboard', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
-      });
+      const unbound = await app.request(
+        ...operationRequest(
+          'workspace.dashboard',
+          { workspaceId: 'ws_denied' },
+          {
+            headers: { authorization: `Bearer ${workspaceToken.secret}` },
+          }
+        )
+      );
       const readonlyWrite = await ((input: Record<string, unknown>) =>
         app.request('/api/app/operations/thread.create', {
           method: 'POST',
@@ -698,29 +747,41 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
 
-      const allowedWorkspaceResponse = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Allowed',
-          requestId: '11111111-1111-4111-8111-111111111111',
-        }),
-      });
+      const allowedWorkspaceResponse = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Allowed',
+              requestId: '11111111-1111-4111-8111-111111111111',
+            }),
+          }
+        )
+      );
       const allowedWorkspace = (await allowedWorkspaceResponse.json()) as { id: string };
-      const deniedWorkspaceResponse = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Denied',
-          requestId: '22222222-2222-4222-8222-222222222222',
-        }),
-      });
+      const deniedWorkspaceResponse = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Denied',
+              requestId: '22222222-2222-4222-8222-222222222222',
+            }),
+          }
+        )
+      );
       const deniedWorkspace = (await deniedWorkspaceResponse.json()) as { id: string };
       const workspaceToken = createOpenKitAccessTokenRecord(coreDb, {
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -816,28 +877,40 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
-      const ownerWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Owner workspace',
-          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        }),
-      });
-      const memberWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [MEMBER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Member workspace',
-          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        }),
-      });
+      const ownerWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Owner workspace',
+              requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            }),
+          }
+        )
+      );
+      const memberWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [MEMBER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Member workspace',
+              requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            }),
+          }
+        )
+      );
       const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
       const issuedToMember = await app.request('/api/app/auth/tokens', {
         method: 'POST',
@@ -936,21 +1009,33 @@ describe('server-mode access-token auth', () => {
       const bearerMine = await app.request('/api/app/auth/my-admin-tokens', {
         headers: { authorization: `Bearer ${admin.secret}` },
       });
-      const otherWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: {
-          [MEMBER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: 'Member only',
-          requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        }),
-      });
+      const otherWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [MEMBER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: 'Member only',
+              requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+            }),
+          }
+        )
+      );
       const otherWorkspaceBody = (await otherWorkspace.json()) as { id: string };
-      const bypassDenied = await app.request(`/api/workspaces/${otherWorkspaceBody.id}`, {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const bypassDenied = await app.request(
+        ...operationRequest(
+          'workspace.read',
+          { workspaceId: otherWorkspaceBody.id },
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
       const revoked = await app.request(`/api/app/auth/tokens/${admin.tokenId}/revoke`, {
         method: 'POST',
         headers: { [OWNER_SESSION_HEADER]: '1' },

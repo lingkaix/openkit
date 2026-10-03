@@ -205,7 +205,7 @@ Keep Chat Mode and Knowledge Store routes available in Quick Chat. Route model-b
 
 Each active local or server user receives one deterministic top-level Quick Chat Workspace and canonical owner membership before product use; the shared process store no longer uses user-scoped physical ownership. The complete sharing lifecycle rejects invitation, role change, removal, leave, transfer, administrator recovery, and portable source-authority reuse for Quick Chat, while the centralized guard rejects repository setup, Task Mode, Goal Mode, project-worker hosting, and direct worker-Turn entry. The specification remains Partial only because the rebuilt Web must still project Quick Chat's project-only affordance boundary under S10; the kernel and App API ownership contract is implemented.
 
-`apps/nanocore/src/app.ts` owns repository setup, Task Mode, Goal Mode, Chat Mode, and worker-turn routes.
+`apps/nanocore/src/app.ts` composes native mode and Turn owners with the definition-derived JSON and MCP bindings. `chat.quick` derives its Workspace from the trusted actor, provisions a presented usable administrator bearer through the existing owner, and retains provider errors, deadline and cancellation behavior. Its former JSON route and client method are absent.
 
 `apps/nanocore/src/mode-entry-routes.ts` still owns a direct `callQuickChatProvider` function, and `apps/nanocore/src/quick-chat.test.ts` currently asserts that no Internal Agent Runner is used. Those bytes are implementation divergence from the accepted shared-loop design and must be replaced rather than preserved when the Internal Agent Loop implementation reaches Quick Chat.
 

@@ -547,7 +547,7 @@ export function useCreateWorkspace() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (name: string): Promise<WorkspaceRecord> =>
-      client.core.createWorkspace({ name, requestId: createRequestId() }),
+      client.operations['workspace.create']({ name, requestId: createRequestId() }),
     onSuccess: (workspace) => {
       queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {
         if (!current) return [workspace];

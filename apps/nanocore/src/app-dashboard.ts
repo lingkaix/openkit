@@ -18,17 +18,15 @@ import {
   type ThreadSchema,
   type TurnSchema,
 } from '@openkit/protocol';
-import type { Context, Hono } from 'hono';
-import { asApiError, publishedErrorMessage } from './api-errors.js';
+import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
-import type { AuthVariables } from './auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import { projectThreadTaskInputs } from './context/worker-context-projection.js';
+import { CoreCommandError } from './core-command-errors.js';
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
-import { registerAppApiRoute } from './openapi.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
@@ -461,92 +459,85 @@ function buildWorkspaceWorkSections(
   };
 }
 
-/**
- * Registers workspace and thread dashboard routes.
- *
- * @param dependencies Hono app and current dashboard data owners.
- */
-export function registerDashboardRoutes({
-  app,
-  coreDb,
-  requestStore,
-  runtimeConfigManager,
-}: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly coreDb: CoreDb | undefined;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-  readonly runtimeConfigManager: RuntimeConfigManager;
-}): void {
-  registerAppApiRoute(app, 'getWorkspaceDashboard', (c) => {
-    try {
-      const store = requestStore(c);
-      const workspaceId = c.req.param('workspaceId');
-      const actor = c.get('actor');
-      const approvalDecisionAuthorized =
-        coreDb === undefined ||
-        (actor !== undefined &&
-          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-            mutating: true,
-            policyOperation: 'approval.respond',
-          }));
-      const turnDecisionAuthorized =
-        coreDb === undefined ||
-        (actor !== undefined &&
-          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-            mutating: true,
-            policyOperation: 'turn.run',
-          }));
-      const workspace = store.getWorkspace(workspaceId);
-      const resources = store.getWorkspaceResources(workspaceId);
-      const threads = store
-        .listThreads(workspaceId)
-        .filter((thread) => isThreadVisible(store, thread, actor?.userId))
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      const snapshot = runtimeConfigManager.current();
-      const providerCount = snapshot.providerRegistry.list().length;
-      const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
-      const workspaceArtifacts = listOutputArtifacts(store, coreDb, workspaceId, actor?.userId);
-      const counts = {
-        ...workspace.counts,
-        threadCount: threads.length,
-        artifactCount: workspaceArtifacts.length,
-      };
-      const workSections = buildWorkspaceWorkSections(
-        store,
-        workspaceId,
-        threads,
-        workspaceArtifacts,
-        approvalDecisionAuthorized,
-        turnDecisionAuthorized,
-        actor?.userId ?? null
-      );
+/** Reads the existing Workspace dashboard after primary admission; audience filtering includes current administrator eligibility. */
+export function readWorkspaceDashboard(input: {
+  store: FsStore;
+  coreDb: CoreDb | undefined;
+  runtimeConfigManager: RuntimeConfigManager;
+  actor: import('./auth/identity.js').Actor;
+  workspaceId: string;
+  administratorEligible: boolean;
+}) {
+  const { store, coreDb, runtimeConfigManager, actor, workspaceId, administratorEligible } = input;
+  try {
+    const approvalDecisionAuthorized =
+      coreDb === undefined ||
+      (actor !== undefined &&
+        isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+          mutating: true,
+          policyOperation: 'approval.respond',
+        }));
+    const turnDecisionAuthorized =
+      coreDb === undefined ||
+      (actor !== undefined &&
+        isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+          mutating: true,
+          policyOperation: 'turn.run',
+        }));
+    const workspace = store.getWorkspace(workspaceId);
+    const resources = store.getWorkspaceResources(workspaceId);
+    const threads = store
+      .listThreads(workspaceId)
+      .filter((thread) => isThreadVisible(store, thread, actor.userId, administratorEligible))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const snapshot = runtimeConfigManager.current();
+    const providerCount = snapshot.providerRegistry.list().length;
+    const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
+    const workspaceArtifacts = listOutputArtifacts(
+      store,
+      coreDb,
+      workspaceId,
+      actor.userId,
+      administratorEligible
+    );
+    const counts = {
+      ...workspace.counts,
+      threadCount: threads.length,
+      artifactCount: workspaceArtifacts.length,
+    };
+    const workSections = buildWorkspaceWorkSections(
+      store,
+      workspaceId,
+      threads,
+      workspaceArtifacts,
+      approvalDecisionAuthorized,
+      turnDecisionAuthorized,
+      actor?.userId ?? null
+    );
 
-      return c.json(
-        WorkspaceDashboardResponseSchema.parse({
-          workspace: { ...workspace, counts },
-          counts: {
-            ...counts,
-            providerCount,
-          },
-          defaultContext: {
-            agentId: defaultAgentId,
-          },
-          agentHealth: resources.agents.map((agent) => ({
-            agentId: agent.id,
-            status: agent.health.status,
-            message: agent.health.message,
-            checkedAt: agent.health.checkedAt,
-          })),
-          recentThreads: threads.slice(0, 10),
-          activeWork: workSections.activeWork,
-          recentCompletions: workSections.recentCompletions,
-          attentionNeeded: workSections.attentionNeeded,
-        })
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    }
-  });
+    return WorkspaceDashboardResponseSchema.parse({
+      workspace: { ...workspace, counts },
+      counts: {
+        ...counts,
+        providerCount,
+      },
+      defaultContext: {
+        agentId: defaultAgentId,
+      },
+      agentHealth: resources.agents.map((agent) => ({
+        agentId: agent.id,
+        status: agent.health.status,
+        message: agent.health.message,
+        checkedAt: agent.health.checkedAt,
+      })),
+      recentThreads: threads.slice(0, 10),
+      activeWork: workSections.activeWork,
+      recentCompletions: workSections.recentCompletions,
+      attentionNeeded: workSections.attentionNeeded,
+    });
+  } catch (error) {
+    throw new CoreCommandError('not_found', publishedErrorMessage(error), 404);
+  }
 }
 
 /** Builds the existing dashboard after primary Workspace admission and addressed-Thread audience resolution. */

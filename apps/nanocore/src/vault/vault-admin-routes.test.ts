@@ -17,6 +17,7 @@ import type { BetterAuthServer } from '../auth/middleware.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
 import { getVaultReference, importUnboundWorkspaceVaultReference } from './vault-references.js';
@@ -88,14 +89,20 @@ describe('vault admin app API', () => {
   it('creates, rotates and revokes workspace secrets and gateway-only grants without exposing material', async () => {
     const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
-    const workspaceResponse = await app.request('/api/workspaces', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: 'Vault CRUD test',
-        requestId: '00000000-0000-4000-8000-000000000066',
-      }),
-    });
+    const workspaceResponse = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Vault CRUD test',
+            requestId: '00000000-0000-4000-8000-000000000066',
+          }),
+        }
+      )
+    );
     expect(workspaceResponse.status).toBe(201);
     const workspace = await workspaceResponse.json();
     const workspaceId = workspace.id;

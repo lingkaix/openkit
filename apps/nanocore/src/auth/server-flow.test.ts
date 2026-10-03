@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -24,6 +23,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
@@ -221,14 +221,20 @@ async function readDefaultScope(
   app: ReturnType<typeof createApp>,
   cookie: string
 ): Promise<{ workspaceId: string; threadId: string }> {
-  const workspaceRes = await app.request('/api/workspaces', {
-    method: 'POST',
-    headers: { cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      name: 'Server Flow Workspace',
-      requestId: randomUUID(),
-    }),
-  });
+  const workspaceRes = await app.request(
+    ...operationRequest(
+      'workspace.create',
+      {},
+      {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Server Flow Workspace',
+          requestId: randomUUID(),
+        }),
+      }
+    )
+  );
   const workspaceBody = (await workspaceRes.json()) as { id?: string };
   const workspaceId = workspaceBody.id;
 
@@ -325,14 +331,20 @@ describe('server auth flow', () => {
         ],
       });
 
-      const createWorkspace = await app.request('/api/workspaces', {
-        method: 'POST',
-        headers: { cookie: firstCookie, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '0190f4c8-0000-7000-8000-000000000401',
-          name: 'First private workspace',
-        }),
-      });
+      const createWorkspace = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            method: 'POST',
+            headers: { cookie: firstCookie, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000401',
+              name: 'First private workspace',
+            }),
+          }
+        )
+      );
 
       expect(createWorkspace.status).toBe(201);
 
@@ -370,9 +382,15 @@ describe('server auth flow', () => {
       expect(secondSignUp.status).toBe(200);
 
       const secondCookie = sessionCookie(secondSignUp);
-      const crossUserGet = await app.request(`/api/workspaces/${firstWorkspace.id}`, {
-        headers: { cookie: secondCookie },
-      });
+      const crossUserGet = await app.request(
+        ...operationRequest(
+          'workspace.read',
+          { workspaceId: firstWorkspace.id },
+          {
+            headers: { cookie: secondCookie },
+          }
+        )
+      );
 
       expect(crossUserGet.status).toBe(403);
       await expect(crossUserGet.json()).resolves.toMatchObject({
@@ -569,19 +587,31 @@ describe('server auth flow', () => {
       seedWritableGitRepository(firstRepositoryPath);
       seedWritableGitRepository(secondRepositoryPath);
 
-      const firstRequest = app.request('/api/turns', {
-        method: 'POST',
-        headers: { cookie: sessionCookie(firstSignUp), 'content-type': 'application/json' },
-        body: JSON.stringify({ ...requestBody, ...firstScope }),
-      });
+      const firstRequest = app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            headers: { cookie: sessionCookie(firstSignUp), 'content-type': 'application/json' },
+            body: JSON.stringify({ ...requestBody, ...firstScope }),
+          }
+        )
+      );
 
       await waitForStartCount(executor, 1);
 
-      const secondRequest = app.request('/api/turns', {
-        method: 'POST',
-        headers: { cookie: sessionCookie(secondSignUp), 'content-type': 'application/json' },
-        body: JSON.stringify({ ...requestBody, ...secondScope }),
-      });
+      const secondRequest = app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            headers: { cookie: sessionCookie(secondSignUp), 'content-type': 'application/json' },
+            body: JSON.stringify({ ...requestBody, ...secondScope }),
+          }
+        )
+      );
 
       await waitForStartCount(executor, 2);
       executor.release();

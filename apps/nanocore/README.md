@@ -332,7 +332,7 @@ curl -i http://127.0.0.1:3000/api/auth/sign-in/email \
   --data '{"email":"user@example.com","password":"password123456"}'
 ```
 
-Use the returned session cookie for protected APIs such as `/api/workspaces`. Sign out with `POST /api/auth/sign-out`.
+Use the returned session cookie for protected JSON operations such as `POST /api/app/operations/workspace.list` with input `{}`. Sign out with `POST /api/auth/sign-out`.
 
 ## NanoHost Worker Mode
 
@@ -453,3 +453,5 @@ Workspace synchronization uses fifteen definition-derived `sync.*` operations th
 Workspace lifecycle operations use the definition-derived JSON, MCP, client and CLI projections. The sixteen sharing, access-recovery, user-disable, deletion and deleted-recovery joins retain existing receipts, mutation fences, typed errors and deletion phases; current administrator sessions and bearers use the same eligibility without creating memberships. Run `pnpm --filter @openkit/nanocore exec vitest run src/workspace-lifecycle-operations.test.ts src/workspace-sharing-routes.test.ts src/workspace-deletion-routes.test.ts src/remote-mcp-routes.test.ts` for the cutover and lifecycle regressions. The retained test file names identify historical regression suites, not live registrars.
 
 Vault injection-plan storage types and Workspace archive validation derive visibility from `@openkit/app-api-schemas`. The governance-route regression lists a Workspace grant's runtime-env plan through the public HTTP endpoint and checks the complete non-secret response.
+
+The worker Responses relay runner selects the Workspace default Agent through the administrator configuration file owner: it reads and updates the exact revision, activates through safe reload, reads back that revision and selection, and checks the resulting Task's Agent and AEP evidence. Workspace record update is not a configuration editor. Local runner stand-ins cover activation refusal and contradictory Task selection without contacting a provider or host.

@@ -267,16 +267,22 @@ describe('SimulatedTurnExecutor', () => {
 
     try {
       await linkRepository(app);
-      const turnResponse = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000211',
-          input: 'Simulated scheduled worker run',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnResponse = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000211',
+              input: 'Simulated scheduled worker run',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = (await turnResponse.json()) as { id: string };
 
       expect(turnResponse.status, JSON.stringify(turn)).toBe(202);
@@ -986,16 +992,22 @@ describe('SimulatedTurnExecutor', () => {
     try {
       await linkRepository(app);
 
-      const turnResponse = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000240',
-          input: 'Exercise simulated command output.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnResponse = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000240',
+              input: 'Exercise simulated command output.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = (await turnResponse.json()) as { id: string };
       const commandItemId = `it_command_${turn.id}`;
       const commandEvents = store.getTurnEvents(turn.id).filter((event) => {
@@ -1046,16 +1058,22 @@ describe('SimulatedTurnExecutor', () => {
     const startSpy = vi.spyOn(executor, 'startTurn');
 
     try {
-      const turnResponse = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000314',
-          input: 'Use the exact remote Git source',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnResponse = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000314',
+              input: 'Use the exact remote Git source',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = (await turnResponse.json()) as { agentSessionId?: string; id?: string };
       const admissions = coreDb.sqlite
         .prepare(
@@ -1148,16 +1166,22 @@ describe('SimulatedTurnExecutor', () => {
 
     try {
       expect(existsSync(canaryPath)).toBe(false);
-      const turnResponse = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId,
-          input: 'Reject an invalid remote Git source',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnResponse = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId,
+              input: 'Reject an invalid remote Git source',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const payload = (await turnResponse.json()) as Record<string, unknown>;
 
       expect.soft(turnResponse.status, JSON.stringify(payload)).toBe(409);

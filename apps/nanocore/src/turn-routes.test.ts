@@ -27,10 +27,7 @@ import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import {
-  createAppWithWorkspaceAuthority as createApp,
-  createApp as createUnbackedApp,
-} from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -370,20 +367,23 @@ describe('generic turn routes', () => {
       LOCAL_ACTOR
     );
     const executor = new RecordingTurnExecutor();
-    const app = createUnbackedApp({ store, turnExecutor: executor });
+    const app = createApp({ store, turnExecutor: executor });
 
     const response = await app.request(
-      `/api/workspaces/ws_demo/threads/th_missing/turns/${turn.id}/interrupt`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000306',
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'turn.interrupt',
+        { workspaceId: 'ws_demo', threadId: 'th_missing', turnId: turn.id },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000306',
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workspaceId: turn.workspaceId,
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
     const payload = (await response.json()) as { readonly code?: string };
 
@@ -396,7 +396,7 @@ describe('generic turn routes', () => {
     }).toEqual({
       commandRecords: 0,
       executorCalls: 0,
-      responseCode: 'turn_interrupt_failed',
+      responseCode: 'not_found',
       responseStatus: 404,
       turnStatus: 'running',
     });
@@ -409,17 +409,20 @@ describe('generic turn routes', () => {
     const app = createApp({ store, turnExecutor: executor });
 
     const response = await app.request(
-      `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000307',
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'turn.interrupt',
+        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000307',
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workspaceId: turn.workspaceId,
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
     const payload = (await response.json()) as { readonly code?: string };
 
@@ -449,17 +452,20 @@ describe('generic turn routes', () => {
     const app = createApp({ store, turnExecutor: executor });
 
     const response = await app.request(
-      `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000308',
-          threadId: turn.threadId,
-          turnId: turn.id,
-          workspaceId: turn.workspaceId,
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'turn.interrupt',
+        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000308',
+            threadId: turn.threadId,
+            turnId: turn.id,
+            workspaceId: turn.workspaceId,
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
     const payload = (await response.json()) as { readonly code?: string };
     const storedTurn = store.getTurn(turn.workspaceId, turn.threadId, turn.id);
@@ -487,17 +493,23 @@ describe('generic turn routes', () => {
     const startRequestId = '00000000-0000-4000-8000-000000000410';
 
     try {
-      const startResponse = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: 'agent_codex_host',
-          input: 'Pause for the responsible user.',
-          requestId: startRequestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
-      });
+      const startResponse = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: 'agent_codex_host',
+              input: 'Pause for the responsible user.',
+              requestId: startRequestId,
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json', 'x-user-id': 'user_local' },
+          }
+        )
+      );
       expect(startResponse.status, await startResponse.clone().text()).toBe(202);
       const turn = TurnSchema.parse(await startResponse.json());
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
@@ -616,17 +628,23 @@ describe('generic turn routes', () => {
     );
     const requestId = '00000000-0000-4000-8000-000000000399';
     try {
-      const response = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: manifest.id,
-          input: 'Prepare this admitted Agent',
-          requestId,
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: manifest.id,
+              input: 'Prepare this admitted Agent',
+              requestId,
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       expect(ApiErrorSchema.parse(await response.json()).code).toBe(
         failure === 'capacity'
           ? 'scheduler_admission_deferred'
@@ -707,17 +725,23 @@ describe('generic turn routes', () => {
     const fixture = await createSchedulerFixture(executor, 'completed-lease');
 
     try {
-      const response = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: 'agent_codex_host',
-          input: 'Complete synchronously',
-          requestId: '00000000-0000-4000-8000-000000000301',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: 'agent_codex_host',
+              input: 'Complete synchronously',
+              requestId: '00000000-0000-4000-8000-000000000301',
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = TurnSchema.parse(await response.json());
 
       expect(response.status).toBe(202);
@@ -736,17 +760,23 @@ describe('generic turn routes', () => {
     const fixture = await createSchedulerFixture(executor, 'remote-placement', 'remote');
 
     try {
-      const response = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: 'agent_codex_host',
-          input: 'Run on the remote target',
-          requestId: '00000000-0000-4000-8000-000000000309',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: 'agent_codex_host',
+              input: 'Run on the remote target',
+              requestId: '00000000-0000-4000-8000-000000000309',
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const admission = fixture.coreDb.sqlite
         .prepare(
           `SELECT required_pool_constraints_json AS requiredPoolConstraints
@@ -834,30 +864,39 @@ describe('generic turn routes', () => {
     const fixture = await createSchedulerFixture(executor, 'interrupt-lease');
 
     try {
-      const startResponse = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: 'agent_codex_host',
-          input: 'Keep running until interrupted',
-          requestId: '00000000-0000-4000-8000-000000000302',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const startResponse = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: 'agent_codex_host',
+              input: 'Keep running until interrupted',
+              requestId: '00000000-0000-4000-8000-000000000302',
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const startedTurn = TurnSchema.parse(await startResponse.json());
       const interruptResponse = await fixture.app.request(
-        `/api/workspaces/ws_demo/threads/th_demo/turns/${startedTurn.id}/interrupt`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000303',
-            threadId: 'th_demo',
-            turnId: startedTurn.id,
-            workspaceId: 'ws_demo',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'turn.interrupt',
+          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: startedTurn.id },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000303',
+              threadId: 'th_demo',
+              turnId: startedTurn.id,
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const interruptedTurn = TurnSchema.parse(await interruptResponse.json());
 
@@ -897,19 +936,31 @@ describe('generic turn routes', () => {
     };
 
     try {
-      const firstResponse = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: { 'content-type': 'application/json' },
-      });
+      const firstResponse = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const firstTurn = TurnSchema.parse(await firstResponse.json());
       manifest.requiredFeatures = ['unsupported.replay.feature'];
 
-      const replayResponse = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: { 'content-type': 'application/json' },
-      });
+      const replayResponse = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const replayPayload = (await replayResponse.json()) as { readonly id?: string };
 
       expect({
@@ -954,14 +1005,20 @@ describe('generic turn routes', () => {
       workspaceId: 'ws_demo',
     };
     const request = () =>
-      fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: {
-          authorization: `Bearer ${issued.secret}`,
-          'content-type': 'application/json',
-        },
-      });
+      fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: {
+              authorization: `Bearer ${issued.secret}`,
+              'content-type': 'application/json',
+            },
+          }
+        )
+      );
 
     try {
       const first = await request();
@@ -1013,17 +1070,23 @@ describe('generic turn routes', () => {
     rmSync(sourceCatalogPath, { force: true });
 
     try {
-      const response = await fixture.app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          agentId: 'agent_codex_host',
-          input: 'Do not admit an invalid thread',
-          requestId,
-          threadId,
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const response = await fixture.app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              agentId: 'agent_codex_host',
+              input: 'Do not admit an invalid thread',
+              requestId,
+              threadId,
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const payload = (await response.json()) as { readonly code?: string };
       const admissionCount = (
         fixture.coreDb.sqlite

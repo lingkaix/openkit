@@ -197,7 +197,7 @@ registerOperations(catalog, ['setMyAdminAccessTokenDefault'], {
   policyOperation: 'api.call',
   scope: 'user',
 });
-registerOperations(catalog, ['importWorkspaceArchive', 'POST /api/workspaces'], {
+registerOperations(catalog, ['importWorkspaceArchive'], {
   authentication: 'canonical-user',
   mutating: true,
   policyOperation: 'workspace.write',
@@ -211,12 +211,6 @@ registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'],
   workspaceResolver: 'gateway-metadata-workspace',
 });
 
-registerOperations(catalog, ['quickChat'], {
-  mutating: true,
-  policyOperation: 'turn.run',
-  resolver: 'actor-quick-chat-workspace',
-  scope: 'workspace',
-});
 registerOperations(
   catalog,
   ['submitAdministrationConversation', 'applyAdministrationConfiguration'],
@@ -234,18 +228,6 @@ registerOperations(catalog, ['listAgentCatalog', 'getAgentCatalogEntry', 'search
   resolver: 'authorized-workspace-set',
   scope: 'workspace',
 });
-registerOperations(catalog, ['POST /api/turns'], {
-  mutating: true,
-  policyOperation: 'turn.run',
-  resolver: 'body-workspace',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['submitTurnFeedback'], {
-  mutating: true,
-  policyOperation: 'workspace.write',
-  resolver: 'opaque-child-workspace',
-  scope: 'workspace',
-});
 
 registerOperations(catalog, ['refreshAgentHealth'], {
   mutating: true,
@@ -253,21 +235,12 @@ registerOperations(catalog, ['refreshAgentHealth'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(
-  catalog,
-  [
-    'getWorkspaceDashboard',
-    'listWorkspaceWorkers',
-    'listWorkspaceMaterials',
-    'GET /api/workspaces/:workspaceId',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'workspace.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
+registerOperations(catalog, ['listWorkspaceWorkers', 'listWorkspaceMaterials'], {
+  mutating: false,
+  policyOperation: 'workspace.read',
+  resolver: 'path-workspace',
+  scope: 'workspace',
+});
 
 registerOperations(catalog, ['createWorkspaceMaterial'], {
   mutating: true,
@@ -349,29 +322,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['PATCH /api/workspaces/:workspaceId'], {
-  mutating: true,
-  policyOperation: 'workspace.lifecycle',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads'], {
-  mutating: false,
-  policyOperation: 'thread.read',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-
-registerOperations(
-  catalog,
-  ['POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt'],
-  {
-    mutating: true,
-    policyOperation: 'turn.run',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
 registerOperations(
   catalog,
   ['listWorkerEnvironments', 'selectWorkerEnvironment', 'getWorkerEnvironmentStatus'],
@@ -419,8 +369,6 @@ registerOperations(
     'unbindThreadMaterial',
     'excludeThreadMaterial',
     'restoreThreadMaterial',
-    'PATCH /api/workspaces/:workspaceId/threads/:threadId',
-    'POST /api/workspaces/:workspaceId/threads/:threadId/archive',
   ],
   {
     mutating: true,

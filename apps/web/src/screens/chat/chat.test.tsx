@@ -188,8 +188,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
   const client = {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      startTurn: vi.fn().mockResolvedValue({ id: 'turn1' }),
+
       ...core,
     },
     app: {
@@ -197,6 +196,8 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'turn.start': vi.fn().mockResolvedValue({ id: 'turn1' }),
       'approval.respond': vi.fn().mockResolvedValue({}),
       'conversation.targets': vi
         .fn()
@@ -254,7 +255,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         'conversation.navigation': CoreClient['operations']['conversation.navigation'];
       }
     )['conversation.navigation'] = vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
-      const listed = await client.core.listThreads(workspaceId);
+      const listed = await client.operations['thread.list']({ workspaceId: workspaceId });
       return {
         items: listed.items
           .filter((thread) => thread.status === 'active')
@@ -864,7 +865,10 @@ describe('chat starter (board 01)', () => {
     });
     renderApp(
       '/chat',
-      makeClient({ listThreads }, { 'conversation.navigation': listConversationNavigation })
+      makeClient(
+        { 'thread.list': listThreads },
+        { 'conversation.navigation': listConversationNavigation }
+      )
     );
 
     const recent = (await screen.findByText('Recent')).closest('section');
@@ -998,8 +1002,8 @@ describe('chat starter (board 01)', () => {
     const submitConversation = vi.fn().mockResolvedValue(STARTER_CHAT_MODE_RESPONSE);
     const quickChat = vi.fn();
     const client = makeClient(
-      { 'thread.create': createThread, 'thread.read': getThread, startTurn },
-      { quickChat, 'conversation.submit': submitConversation }
+      { 'thread.create': createThread, 'thread.read': getThread, 'turn.start': startTurn },
+      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1079,9 +1083,9 @@ describe('chat starter (board 01)', () => {
       '/chat/ws2/th1',
       makeClient({
         'thread.read': vi.fn().mockResolvedValue(workspaceBThread),
-        listThreads: vi
+        'thread.list': vi
           .fn()
-          .mockImplementation((workspaceId: string) =>
+          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
           ),
       })
@@ -1184,9 +1188,9 @@ describe('chat starter (board 01)', () => {
         {
           'thread.create': vi.fn().mockResolvedValue(origin),
           'thread.read': getThread,
-          listThreads: vi
+          'thread.list': vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               Promise.resolve({ items: [workspaceId === 'ws2' ? destination : origin] })
             ),
         },
@@ -1231,9 +1235,9 @@ describe('chat starter (board 01)', () => {
         {
           'thread.create': vi.fn().mockResolvedValue(origin),
           'thread.read': getThread,
-          listThreads: vi
+          'thread.list': vi
             .fn()
-            .mockImplementation((workspaceId: string) =>
+            .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
               Promise.resolve({ items: [workspaceId === 'ws2' ? other : origin] })
             ),
         },
@@ -1265,10 +1269,10 @@ describe('chat starter (board 01)', () => {
     const client = makeClient(
       {
         'thread.create': createThread,
-        startTurn,
+        'turn.start': startTurn,
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
       },
-      { quickChat, 'conversation.submit': submitConversation }
+      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -1963,7 +1967,7 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient({
       ...(disconnected ? { meta: vi.fn().mockRejectedValue(new Error('down')) } : {}),
       'thread.items': vi.fn().mockResolvedValue({ items: secretItems, nextCursor: null }),
-      startTurn,
+      'turn.start': startTurn,
     });
     renderApp('/chat/ws1/th1', client);
 
@@ -1981,9 +1985,9 @@ describe('chat thread (boards 02/03)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        startTurn,
+        'turn.start': startTurn,
       },
-      { quickChat, 'conversation.submit': submitConversation }
+      { 'chat.quick': quickChat, 'conversation.submit': submitConversation }
     );
     renderApp('/chat/ws1/th1', client);
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -2194,7 +2198,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .fn()
       .mockReturnValueOnce(firstRename.promise)
       .mockResolvedValueOnce({ ...THREAD, name: 'Market map' });
-    const client = makeClient({ updateThread });
+    const client = makeClient({ 'thread.update': updateThread });
 
     renderApp('/chat/ws1/th1', client);
 
@@ -2226,7 +2230,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const user = userEvent.setup();
     const archiveResult = createDeferred<typeof THREAD>();
     const archiveThread = vi.fn().mockReturnValue(archiveResult.promise);
-    const client = makeClient({ archiveThread });
+    const client = makeClient({ 'thread.archive': archiveThread });
 
     renderApp('/chat/ws1/th1', client);
 
@@ -2248,7 +2252,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       },
     });
     const client = makeClient(
-      { interruptTurn, subscribeTurnEvents },
+      { 'turn.interrupt': interruptTurn, subscribeTurnEvents },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
@@ -2320,10 +2324,10 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
     const method =
       command === 'rename'
-        ? 'updateThread'
+        ? 'thread.update'
         : command === 'archive'
-          ? 'archiveThread'
-          : 'interruptTurn';
+          ? 'thread.archive'
+          : 'turn.interrupt';
     const client = makeClient(
       {
         [method]: mutation,
@@ -2332,9 +2336,9 @@ describe('thread lifecycle and attribution (S7)', () => {
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
-        listThreads: vi
+        'thread.list': vi
           .fn()
-          .mockImplementation((workspaceId: string) =>
+          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
           ),
         'thread.items': vi
@@ -2475,10 +2479,10 @@ describe('thread lifecycle and attribution (S7)', () => {
     });
     const method =
       command === 'rename'
-        ? 'updateThread'
+        ? 'thread.update'
         : command === 'archive'
-          ? 'archiveThread'
-          : 'interruptTurn';
+          ? 'thread.archive'
+          : 'turn.interrupt';
     const client = makeClient(
       {
         [method]: mutation,
@@ -2487,9 +2491,9 @@ describe('thread lifecycle and attribution (S7)', () => {
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
-        listThreads: vi
+        'thread.list': vi
           .fn()
-          .mockImplementation((workspaceId: string) =>
+          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
           ),
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -2643,7 +2647,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       },
     });
     const client = makeClient(
-      { interruptTurn, subscribeTurnEvents },
+      { 'turn.interrupt': interruptTurn, subscribeTurnEvents },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
@@ -2701,7 +2705,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       preview: 'Workspace B teardown',
     };
     const client = makeClient({
-      updateThread,
+      'thread.update': updateThread,
       'thread.read': vi
         .fn()
         .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
@@ -2737,7 +2741,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('archive rejected'))
       .mockResolvedValueOnce({ ...THREAD, status: 'archived' });
-    const client = makeClient({ archiveThread });
+    const client = makeClient({ 'thread.archive': archiveThread });
 
     renderApp('/chat/ws1/th1', client);
     await user.click(await screen.findByRole('button', { name: 'Archive thread' }));
@@ -2772,7 +2776,7 @@ describe('thread lifecycle and attribution (S7)', () => {
       },
     });
     const client = makeClient(
-      { interruptTurn, subscribeTurnEvents },
+      { 'turn.interrupt': interruptTurn, subscribeTurnEvents },
       {
         'thread.dashboard': vi.fn().mockResolvedValue({
           pendingRequests: [
@@ -4093,7 +4097,7 @@ describe('open thread external activity', () => {
     renderApp(
       '/chat/ws1/th1',
       makeClient(
-        { 'thread.items': listThreadItems, listThreads },
+        { 'thread.items': listThreadItems, 'thread.list': listThreads },
         { 'thread.dashboard': getThreadDashboard }
       )
     );
@@ -4463,7 +4467,7 @@ describe('open thread external activity', () => {
         {
           'thread.read': getThread,
           'thread.items': listThreadItems,
-          listThreads: vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
+          'thread.list': vi.fn(async ({ workspaceId }: { workspaceId: string }) => ({
             items: workspaceId === 'ws1' ? [THREAD, otherThread] : [otherThread],
           })),
         },
@@ -4520,9 +4524,13 @@ describe('task thread (board 04)', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        startTurn,
+        'turn.start': startTurn,
       },
-      { quickChat, 'conversation.submit': submitConversation, 'task.start': startTaskMode }
+      {
+        'chat.quick': quickChat,
+        'conversation.submit': submitConversation,
+        'task.start': startTaskMode,
+      }
     );
 
     renderApp('/tasks/ws1/th1', client);
@@ -4726,9 +4734,13 @@ describe('mode entry and feedback (S8)', () => {
             registryRevision: 1,
           })),
         }),
-        startTurn,
+        'turn.start': startTurn,
       },
-      { quickChat, 'conversation.submit': submitConversation, 'task.start': startTaskMode }
+      {
+        'chat.quick': quickChat,
+        'conversation.submit': submitConversation,
+        'task.start': startTaskMode,
+      }
     );
 
     renderApp('/chat/ws_quick_chat/th1', client);
@@ -4776,9 +4788,9 @@ describe('mode entry and feedback (S8)', () => {
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
-        listThreads: vi
+        'thread.list': vi
           .fn()
-          .mockImplementation((workspaceId: string) =>
+          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
           ),
         'thread.items': vi
@@ -4909,9 +4921,9 @@ describe('mode entry and feedback (S8)', () => {
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve(workspaceId === 'ws2' ? workspaceBThread : THREAD)
           ),
-        listThreads: vi
+        'thread.list': vi
           .fn()
-          .mockImplementation((workspaceId: string) =>
+          .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({ items: [workspaceId === 'ws2' ? workspaceBThread : THREAD] })
           ),
         'thread.items': vi
@@ -4929,7 +4941,7 @@ describe('mode entry and feedback (S8)', () => {
           .mockImplementation(({ workspaceId }: { workspaceId: string; threadId?: string }) =>
             Promise.resolve({ turns: [workspaceId === 'ws2' ? workspaceBTurn : COMPLETED_TURN] })
           ),
-        submitTurnFeedback,
+        'turn.feedback': submitTurnFeedback,
       }
     );
     const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
@@ -4938,7 +4950,7 @@ describe('mode entry and feedback (S8)', () => {
 
     await user.click(await screen.findByRole('button', { name: /bad/i }));
     await waitFor(() =>
-      expect(submitTurnFeedback).toHaveBeenCalledWith('t1', { rating: 'bad', note: null })
+      expect(submitTurnFeedback).toHaveBeenCalledWith({ turnId: 't1', rating: 'bad', note: null })
     );
 
     await switchToThread(user, 'Market research', 'Second workspace', 'Workspace B teardown');
@@ -5007,7 +5019,7 @@ describe('mode entry and feedback (S8)', () => {
           ],
           turns: [COMPLETED_TURN],
         }),
-        submitTurnFeedback,
+        'turn.feedback': submitTurnFeedback,
       }
     );
 
@@ -5021,7 +5033,8 @@ describe('mode entry and feedback (S8)', () => {
     const badButton = badButtons[0]!;
 
     await user.click(goodButton);
-    expect(submitTurnFeedback).toHaveBeenNthCalledWith(1, 't1', {
+    expect(submitTurnFeedback).toHaveBeenNthCalledWith(1, {
+      turnId: 't1',
       rating: 'good',
       note: null,
     });
@@ -5033,7 +5046,8 @@ describe('mode entry and feedback (S8)', () => {
     await waitFor(() => expect(goodButton).toHaveAttribute('aria-pressed', 'true'));
 
     await user.click(badButton);
-    expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, 't1', {
+    expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, {
+      turnId: 't1',
       rating: 'bad',
       note: null,
     });
@@ -5089,7 +5103,7 @@ describe('mode entry and feedback (S8)', () => {
           ],
           turns: [COMPLETED_TURN],
         }),
-        submitTurnFeedback,
+        'turn.feedback': submitTurnFeedback,
       }
     );
 
@@ -5106,7 +5120,8 @@ describe('mode entry and feedback (S8)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
-      expect(submitTurnFeedback).toHaveBeenNthCalledWith(3, 't1', {
+      expect(submitTurnFeedback).toHaveBeenNthCalledWith(3, {
+        turnId: 't1',
         rating: 'bad',
         note: null,
       })
@@ -5162,7 +5177,7 @@ describe('mode entry and feedback (S8)', () => {
           ],
           turns: [COMPLETED_TURN],
         }),
-        submitTurnFeedback,
+        'turn.feedback': submitTurnFeedback,
       }
     );
     const queryClient = renderApp('/chat/ws1/th1', client, (cache) => {
@@ -5181,7 +5196,8 @@ describe('mode entry and feedback (S8)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
-      expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, 't1', {
+      expect(submitTurnFeedback).toHaveBeenNthCalledWith(2, {
+        turnId: 't1',
         rating: 'bad',
         note: null,
       })
@@ -5609,7 +5625,7 @@ describe('Worker environment Advanced choice', () => {
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-          listThreads: vi.fn().mockResolvedValue({ items: [THREAD, attachedThread] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [THREAD, attachedThread] }),
         },
         { listWorkerEnvironments, selectWorkerEnvironment }
       )
@@ -5662,7 +5678,7 @@ describe('Worker environment Advanced choice', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
       { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
@@ -5728,7 +5744,7 @@ describe('Worker environment Advanced choice', () => {
           items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
         }),
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
-        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
       { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
@@ -5810,7 +5826,7 @@ describe('Worker environment Advanced choice', () => {
       makeClient(
         {
           'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: threadId }),
-          listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
           'artifact.list': vi.fn().mockResolvedValue({
             items: [{ id: 'existing-brief', version: 2, title: 'Existing brief' }],
           }),
@@ -5909,7 +5925,7 @@ describe('Worker environment Advanced choice', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
       { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
     );
@@ -5952,7 +5968,7 @@ describe('Worker environment Advanced choice', () => {
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-        listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
       { listWorkerEnvironments, selectWorkerEnvironment }
     );
@@ -5999,7 +6015,7 @@ describe('Worker environment Advanced choice', () => {
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-          listThreads: vi.fn().mockResolvedValue({ items: [THREAD, otherThread] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [THREAD, otherThread] }),
         },
         { listWorkerEnvironments, selectWorkerEnvironment }
       )
@@ -6054,7 +6070,7 @@ describe('Worker environment Advanced choice', () => {
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
-          listThreads: vi.fn().mockResolvedValue({ items: [THREAD] }),
+          'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
         },
         { listWorkerEnvironments }
       )

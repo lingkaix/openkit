@@ -312,7 +312,7 @@ async function readSemanticSnapshot(
   baseUrl: string,
   workspaceId: string
 ): Promise<SemanticSnapshot> {
-  const workspace = await getJson(`${baseUrl}/api/workspaces/${workspaceId}`);
+  const workspace = (await runCli(baseUrl, 'workspace.read', { workspaceId })).data;
   const knowledge = requiredArray(
     (await runCli(baseUrl, 'knowledge.list', { workspaceId })).data.items
   )
@@ -322,7 +322,7 @@ async function readSemanticSnapshot(
     }))
     .sort(compareJson);
   const threads = requiredArray(
-    (await getJson(`${baseUrl}/api/workspaces/${workspaceId}/threads`)).items
+    (await runCli(baseUrl, 'thread.list', { workspaceId })).data.items
   ).sort((left, right) =>
     String(readPath(left, 'name')).localeCompare(String(readPath(right, 'name')))
   );
@@ -473,17 +473,6 @@ async function createGitRepository(prefix: string): Promise<string> {
   });
   await writeFile(join(repositoryRoot, 'README.md'), '# Portable CI fixture\n');
   return repositoryRoot;
-}
-
-/** Fetches one successful JSON response. */
-async function getJson(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(`GET ${url} failed with ${response.status}: ${await response.text()}`);
-  }
-
-  return (await response.json()) as Record<string, unknown>;
 }
 
 /** Stops only the isolated child process owned by this runner. */

@@ -262,19 +262,30 @@ describe('dashboard and search Thread audiences', () => {
         const own = userId === 'user_local' ? threads[0]! : threads[1]!;
         const denied = userId === 'user_local' ? threads[1]! : threads[0]!;
         const readItems = vi.spyOn(store, 'listThreadItems');
-        const dashboard = await app.request(`/api/app/workspaces/${workspace.id}/dashboard`, {
-          headers,
-        });
+        const dashboard = await app.request(
+          ...operationRequest(
+            'workspace.dashboard',
+            { workspaceId: workspace.id },
+            {
+              headers,
+            }
+          )
+        );
         expect(dashboard.status).toBe(200);
         const body = await dashboard.json();
         expect(body.recentThreads.map((thread: { id: string }) => thread.id).sort()).toEqual(
-          [own.id, threads[2]!.id, threads[3]!.id].sort()
+          [
+            own.id,
+            ...(scope === 'server-admin' ? [denied.id] : []),
+            threads[2]!.id,
+            threads[3]!.id,
+          ].sort()
         );
-        expect(body.counts.threadCount).toBe(3);
-        expect(body.counts.artifactCount).toBe(3);
+        expect(body.counts.threadCount).toBe(scope === 'server-admin' ? 4 : 3);
+        expect(body.counts.artifactCount).toBe(scope === 'server-admin' ? 4 : 3);
         expect(body.workspace.counts).toEqual({
-          threadCount: 3,
-          artifactCount: 3,
+          threadCount: scope === 'server-admin' ? 4 : 3,
+          artifactCount: scope === 'server-admin' ? 4 : 3,
           knowledgeEntryCount: 0,
         });
         const deniedArtifactId = userId === 'user_local' ? 'ar_other-private' : 'ar_local-private';
@@ -291,8 +302,12 @@ describe('dashboard and search Thread audiences', () => {
             'ar_Goal',
           ].sort()
         );
-        const record = await app.request(`/api/workspaces/${workspace.id}`, { headers });
-        expect(await record.json()).toMatchObject({ counts: { artifactCount: 3 } });
+        const record = await app.request(
+          ...operationRequest('workspace.read', { workspaceId: workspace.id }, { headers })
+        );
+        expect(await record.json()).toMatchObject({
+          counts: { artifactCount: scope === 'server-admin' ? 4 : 3 },
+        });
         {
           const hidden = await app.request(
             ...operationRequest(
@@ -392,7 +407,8 @@ describe('dashboard and search Thread audiences', () => {
           hits.items.filter((item: { kind: string }) => item.kind === 'artifact')
         ).toHaveLength(3);
         for (const hidden of [denied, threads[4]!, threads[5]!]) {
-          expect(readItems.mock.calls.some((args) => args[1] === hidden.id)).toBe(false);
+          if (scope !== 'server-admin' || hidden.id !== denied.id)
+            expect(readItems.mock.calls.some((args) => args[1] === hidden.id)).toBe(false);
           const direct = await app.request('/api/app/operations/thread.dashboard', {
             ...{ headers },
             method: 'POST',

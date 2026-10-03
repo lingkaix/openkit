@@ -495,7 +495,7 @@ async function executeTaskModeRealWorkerTest({
     diagnostics.boot?.acceptingProductWork === true,
     'Target NanoCore is not accepting product work.'
   );
-  const acceptanceWorkspace = await clients.core.core.createWorkspace({
+  const acceptanceWorkspace = await clients.core.operations['workspace.create']({
     name: 'Task Mode real worker acceptance',
   });
   const workspaceId = acceptanceWorkspace.id;

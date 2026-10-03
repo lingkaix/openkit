@@ -457,7 +457,7 @@ function projectAuditAndDecisions(
 /**
  * Projects a workspace record into a secret-safe display shape.
  *
- * @param workspace Workspace from `core.getWorkspace`.
+ * @param workspace Workspace from `workspace.read`.
  * @returns Workspace with no secret-shaped fields.
  */
 export function projectWorkspace(workspace: WorkspaceRecord): WorkspaceRecord {
@@ -696,7 +696,10 @@ export function useSettingsWorkspace(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: settingsKeys.workspace(workspaceId ?? ''),
-    queryFn: async () => projectWorkspace(await client.core.getWorkspace(workspaceId as string)),
+    queryFn: async () =>
+      projectWorkspace(
+        await client.operations['workspace.read']({ workspaceId: workspaceId as string })
+      ),
     enabled: Boolean(workspaceId),
   });
 }
@@ -859,9 +862,10 @@ export function useUpdateWorkspaceName(workspaceId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (name: string): Promise<WorkspaceRecord> =>
-      client.core.updateWorkspace(workspaceId as string, {
+      client.operations['workspace.update']({
         name,
         requestId: createRequestId(),
+        workspaceId: workspaceId as string,
       }),
     onSuccess: (workspace) => {
       if (workspaceId) {

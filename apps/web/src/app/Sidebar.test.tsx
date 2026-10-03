@@ -105,8 +105,11 @@ describe('conversation navigation sidebar', () => {
         })
     );
     const client = {
-      core: {
-        updateThread: async (input: { name?: string; status?: 'active' }) => {
+      core: {},
+      app: {},
+
+      operations: {
+        'thread.update': async (input: { name?: string; status?: 'active' }) => {
           rows[2]!.thread = {
             ...rows[2]!.thread,
             ...(input.name ? { name: input.name } : {}),
@@ -114,14 +117,10 @@ describe('conversation navigation sidebar', () => {
           };
           return rows[2]!.thread;
         },
-        archiveThread: async () => {
+        'thread.archive': async () => {
           rows[2]!.thread = { ...rows[2]!.thread, status: 'archived' };
           return rows[2]!.thread;
         },
-      },
-      app: {},
-
-      operations: {
         'conversation.submit': submitConversation,
 
         'conversation.navigation': list,

@@ -2,21 +2,23 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('workspace dashboard app API', () => {
   it('returns aggregate workspace status and default execution context', async () => {
     const app = createApp({ store: createDemoStore() });
-    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const res = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -56,7 +58,9 @@ describe('workspace dashboard app API', () => {
       ]),
       store: createDemoStore(),
     });
-    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const res = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+    );
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -146,7 +150,9 @@ describe('workspace dashboard app API', () => {
       updatedAt: activeTurn.startedAt ?? completedAt,
     });
     const app = createApp({ store });
-    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const res = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+    );
 
     expect(res.status).toBe(200);
     const dashboard = await res.json();
@@ -278,7 +284,9 @@ describe('workspace dashboard app API', () => {
     const completedAt = '2026-07-19T00:04:00.000Z';
     store.updateTurn(completedTurn.id, { status: 'completed', completedAt });
     const app = createApp({ store });
-    const res = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const res = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+    );
 
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -327,7 +335,9 @@ describe('workspace dashboard app API', () => {
     });
     const app = createApp({ store });
 
-    const response = await app.request('/api/app/workspaces/ws_demo/dashboard');
+    const response = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ attentionNeeded: [] });
@@ -403,9 +413,15 @@ describe('workspace dashboard app API', () => {
     });
 
     try {
-      const response = await app.request('/api/app/workspaces/ws_demo/dashboard', {
-        headers: { authorization: `Bearer ${readonlyToken.secret}` },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'workspace.dashboard',
+          { workspaceId: 'ws_demo' },
+          {
+            headers: { authorization: `Bearer ${readonlyToken.secret}` },
+          }
+        )
+      );
 
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({

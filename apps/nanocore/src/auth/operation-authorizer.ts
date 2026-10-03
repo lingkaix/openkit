@@ -1,9 +1,5 @@
 import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import {
-  type ActorRef,
-  responsibleUserIdForActor,
-  SubmitTurnInputRequestSchema,
-} from '@openkit/protocol';
+import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
@@ -166,14 +162,6 @@ interface OperationRoute {
 interface AuthorizedWorkspace {
   /** Effective fixed role. */
   readonly effectiveRole: WorkspaceRole;
-  /** Canonical Workspace id. */
-  readonly workspaceId: string;
-}
-
-/** Owner resolved from an opaque child record without a parallel ACL. */
-interface OpaqueChildOwner {
-  /** Thread id when the child is Thread-scoped. */
-  readonly threadId?: string;
   /** Canonical Workspace id. */
   readonly workspaceId: string;
 }
@@ -561,7 +549,7 @@ async function authorizeWorkspaceOperation(
     kind: 'workspace',
     policyOperation: route.access.policyOperation,
   });
-  return denyIfThreadInaccessible(context, actor, route, input, authorized.workspaceId);
+  return denyIfThreadInaccessible(context, actor, input, authorized.workspaceId);
 }
 
 /** Checks current original-owner or administrator authority; the deletion owner still requires the exact recorded request. */
@@ -622,9 +610,9 @@ async function resolveWorkspaceId(
         }
         return input.quickChatWorkspaceIdForUser(actor.userId);
       case 'body-workspace':
-        return bodyWorkspaceId(context, route.operationKey);
       case 'opaque-child-workspace':
-        return opaqueChildWorkspaceId(context, actor, route.operationKey, input);
+        // These migrated selectors are admitted by native operation invocation.
+        return null;
       case 'path-workspace':
       case 'workspace-child-lineage':
         return nonempty(context.req.param('workspaceId'));
@@ -684,24 +672,21 @@ export function authorizeWorkspace(
 /**
  * Applies Thread audience after current Workspace eligibility for any addressed existing Thread.
  *
- * Missing, corrupt, Workspace-mismatched, and inaccessible Threads fail as the same 404 before
- * disclosure or effect. The check is independent of the catalog policy operation, including writes.
+ * Missing, corrupt, Workspace-mismatched, and inaccessible Threads fail as the same 404 before disclosure or effect. The check is independent of the catalog policy operation, including writes.
  *
  * @param context Authenticated request context.
  * @param actor Authenticated request actor.
- * @param route Exact Workspace operation route.
  * @param input Existing lineage owners.
  * @param workspaceId Already authorized Workspace id.
  * @returns Uniform Thread-not-found response, or null when the operation does not address a Thread or the actor may see it.
  */
-async function denyIfThreadInaccessible(
+function denyIfThreadInaccessible(
   context: Context<{ Variables: AuthVariables }>,
   actor: Actor,
-  route: OperationRoute & { readonly access: WorkspaceOperationAccess },
   input: RegisterOperationAccessGuardsInput,
   workspaceId: string
-): Promise<Response | null> {
-  const threadId = await requestedThreadId(context, actor, route, input);
+): Response | null {
+  const threadId = nonempty(context.req.param('threadId'));
   if (threadId === null) {
     return null;
   }
@@ -709,108 +694,6 @@ async function denyIfThreadInaccessible(
     return null;
   }
   return threadNotFound();
-}
-
-/**
- * Resolves the existing Thread addressed by path, body, or opaque child owner.
- *
- * @param context Authenticated request context.
- * @param actor Authenticated request actor.
- * @param route Exact Workspace operation route.
- * @param input Existing lineage owners.
- * @returns Thread id when the operation addresses an existing Thread, or null when it does not.
- */
-async function requestedThreadId(
-  context: Context<{ Variables: AuthVariables }>,
-  actor: Actor,
-  route: OperationRoute & { readonly access: WorkspaceOperationAccess },
-  input: RegisterOperationAccessGuardsInput
-): Promise<string | null> {
-  const pathThreadId = nonempty(context.req.param('threadId'));
-  if (pathThreadId) {
-    return pathThreadId;
-  }
-  if (route.operationKey === 'POST /api/turns') {
-    const parsed = SubmitTurnInputRequestSchema.safeParse(
-      await context.req.raw
-        .clone()
-        .json()
-        .catch(() => null)
-    );
-    return parsed.success ? parsed.data.threadId : null;
-  }
-  try {
-    const owner = opaqueChildOwner(context, actor, route.operationKey, input);
-    return owner?.threadId ?? null;
-  } catch {
-    return '';
-  }
-}
-
-/**
- * Parses a required Workspace id through the exact body schema for one catalog operation.
- *
- * @param context Hono request context.
- * @param operationKey Exact body-owned operation.
- * @returns Canonical Workspace id, or null when the body is invalid for that operation.
- */
-async function bodyWorkspaceId(
-  context: Context<{ Variables: AuthVariables }>,
-  operationKey: string
-): Promise<string | null> {
-  const body = await context.req.raw
-    .clone()
-    .json()
-    .catch(() => null);
-  if (operationKey === 'POST /api/turns') {
-    const parsed = SubmitTurnInputRequestSchema.safeParse(body);
-    return parsed.success ? parsed.data.workspaceId : null;
-  }
-  return null;
-}
-
-/**
- * Resolves an opaque public child through its existing record owner.
- *
- * @param context Hono request context.
- * @param actor Authenticated request actor.
- * @param operationKey Exact opaque-child operation.
- * @param input Existing lineage owners.
- * @returns Canonical Workspace id, or null when the child cannot be resolved.
- */
-function opaqueChildWorkspaceId(
-  context: Context<{ Variables: AuthVariables }>,
-  actor: Actor,
-  operationKey: string,
-  input: RegisterOperationAccessGuardsInput
-): string | null {
-  return opaqueChildOwner(context, actor, operationKey, input)?.workspaceId ?? null;
-}
-
-/**
- * Resolves Workspace and optional Thread owners from the same opaque child records.
- *
- * @param context Hono request context.
- * @param actor Authenticated request actor.
- * @param operationKey Exact opaque-child operation.
- * @param input Existing lineage owners.
- * @returns Opaque child owner, or null when the child cannot be resolved.
- */
-function opaqueChildOwner(
-  context: Context<{ Variables: AuthVariables }>,
-  _actor: Actor,
-  operationKey: string,
-  input: RegisterOperationAccessGuardsInput
-): OpaqueChildOwner | null {
-  if (operationKey === 'submitTurnFeedback') {
-    const turnId = nonempty(context.req.param('turnId'));
-    if (!turnId) {
-      return null;
-    }
-    const turn = input.store.getTurnById(turnId);
-    return { threadId: turn.threadId, workspaceId: turn.workspaceId };
-  }
-  return null;
 }
 
 /**

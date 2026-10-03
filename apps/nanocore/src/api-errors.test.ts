@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
-import { registerThreadRoutes } from './thread-routes.js';
+import { createAppWithWorkspaceAuthority } from './test-support/app.js';
+import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 it.each([
   'string',
@@ -47,15 +49,14 @@ it('preserves authored errors and route-specific code and status', async () => {
   const command = asCommandError(error, 'command_missing', 409);
   expect(command.status).toBe(409);
   expect(await command.json()).toMatchObject({ code: 'command_missing', message: error.message });
-  const app = new Hono<{ Variables: AuthVariables }>();
-  registerThreadRoutes({
-    app,
-    inflightCommands: new WeakMap(),
-    requestStore: () => {
-      throw error;
-    },
+  const store = createDemoStore();
+  const app = createAppWithWorkspaceAuthority({ store });
+  vi.spyOn(store, 'listThreads').mockImplementation(() => {
+    throw error;
   });
-  const response = await app.request('/api/workspaces/ws_demo/threads');
+  const response = await app.request(
+    ...operationRequest('thread.list', { workspaceId: 'ws_demo' })
+  );
   expect(response.status).toBe(404);
   expect(await response.json()).toMatchObject({ code: 'not_found', message: error.message });
 });

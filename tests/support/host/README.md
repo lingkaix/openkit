@@ -19,3 +19,5 @@ The Unit F blocked-create runner establishes a fresh NanoHost epoch through the 
 F1 captures its process-continuity baseline after the Task reaches its durable post-launch barrier and before restarting NanoCore. Its initial epoch observation remains available for cleanup if Task lineage cannot be resolved; prior Task sandbox replacement is outside the restart interval.
 
 Configured readiness and decommission use the definition-derived JSON bindings `POST /api/app/operations/nanohost.runtime-target` and `POST /api/app/operations/nanohost.decommission` with empty JSON objects. Credential delivery stays in curl stdin configuration and the existing attempt-local sink lifecycle. The Unit F runner reads the same canonical readiness operation.
+
+The Unit F Task setup and fault interruption helpers use `workspace.create` and `turn.interrupt` through the canonical JSON operation binding with exact request identity and complete lineage. Their local stand-ins in `tests/nanohost-unit-f-runner.test.mjs` refuse retired Core URLs; these helpers are exported only to exercise those existing request owners without a host workload.

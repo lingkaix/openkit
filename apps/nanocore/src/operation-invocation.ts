@@ -35,7 +35,6 @@ import {
 } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import {
-  assertAuthorizedWorkspaceLineage,
   authorizedWorkspaceSet,
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
@@ -52,6 +51,8 @@ import {
 } from './automation-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
+import { CoreCommandError } from './core-command-errors.js';
+import { createCoreCommandOperationImplementations } from './core-command-operations.js';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import {
@@ -66,10 +67,8 @@ import {
 } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
-import type {
-  createTaskStartOperation,
-  registerQuickAndChatModeRoutes,
-} from './mode-entry-routes.js';
+import { quickChatWorkspaceIdForUser } from './lib/store.js';
+import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
 import {
   executeGoalOperation,
@@ -106,8 +105,9 @@ import {
   WorkspaceTransferOperationError,
 } from './storage/workspace-transfer-operations.js';
 import { createThread } from './thread-routes.js';
-import { readTurn } from './turn-routes.js';
+import { readTurn, type TurnStartDependencies } from './turn-routes.js';
 import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
+import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   createWorkspaceSharingOperationImplementations,
@@ -116,7 +116,7 @@ import {
 
 /** Trusted entry context, constructed by authentication or Worker supply assembly. */
 export type OperationInvocationContext =
-  | { readonly kind: 'public'; readonly actor: Actor }
+  | { readonly kind: 'public'; readonly actor: Actor; readonly signal?: AbortSignal }
   | { readonly kind: 'task'; readonly actor: Actor; readonly traceId: string }
   | {
       readonly kind: 'coordinator';
@@ -151,8 +151,12 @@ export interface OperationInvocationDependencies {
   readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;
   /** Reconciles existing deletion fences after canonical user disable commits. */
   readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
+  /** Existing worker Turn admission owner inputs. */
+  readonly turnStartServices?: TurnStartDependencies;
+  /** Existing interrupt executor; no separate worker lifecycle is created. */
+  readonly turnExecutor?: import('./runtime/types.js').TurnExecutor;
   /** Existing conversation owner, including process-local interruption handles. */
-  readonly conversationService?: ReturnType<typeof registerQuickAndChatModeRoutes>;
+  readonly conversationService?: ReturnType<typeof createConversationService>;
   /** Existing bounded Task admission command. */
   readonly taskStart?: ReturnType<typeof createTaskStartOperation>;
   /** Existing captured-call and pending outcome delivery dependencies. */
@@ -425,6 +429,7 @@ function createOperationImplementations(
       inflightCommands: dependencies.inflightCommands!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
+    ...createCoreCommandOperationImplementations(dependencies),
     ...createKernelOperationImplementations(dependencies),
     ...createRemainingKernelOperationImplementations(dependencies),
     ...createGenerativeUiOperationImplementations(dependencies),
@@ -488,7 +493,11 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
     );
     const parsed = definition.inputSchema.safeParse(assembled);
     if (!parsed.success)
-      throw new OperationInvocationError('invalid_request', 'Invalid operation input.', 400);
+      throw new OperationInvocationError(
+        'inputErrorCode' in definition ? definition.inputErrorCode : 'invalid_request',
+        'Invalid operation input.',
+        400
+      );
     const coreDb = dependencies.coreDb;
     const credential =
       context.kind === 'coordinator'
@@ -551,7 +560,8 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
     } else {
       if (
         definition.scope.kind !== 'body-workspace' &&
-        definition.scope.kind !== 'opaque-child-workspace'
+        definition.scope.kind !== 'opaque-child-workspace' &&
+        definition.scope.kind !== 'actor-quick-chat-workspace'
       )
         throw denied();
       const input = parsed.data as { workspaceId: string; threadId?: string; turnId?: string };
@@ -565,10 +575,17 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
                 isCurrentDeploymentAdministrator(coreDb, context.actor)
             )
           : null;
+      const turnLineage =
+        definition.scope.kind === 'opaque-child-workspace' &&
+        definition.target.kind === 'opaque-turn'
+          ? (dependencies.store?.getTurnLineage((parsed.data as { turnId: string }).turnId) ?? null)
+          : null;
       const workspaceId =
-        'field' in definition.scope
-          ? input[definition.scope.field]
-          : automationLineage?.workspaceId;
+        definition.scope.kind === 'actor-quick-chat-workspace'
+          ? quickChatWorkspaceIdForUser(publicActor(context).userId)
+          : 'field' in definition.scope
+            ? input[definition.scope.field]
+            : (automationLineage?.workspaceId ?? turnLineage?.workspaceId);
       if (!workspaceId) throw denied();
       if (
         !coreDb ||
@@ -577,6 +594,18 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         !dependencies.inflightCommands
       )
         throw denied();
+      if (
+        definition.scope.kind === 'actor-quick-chat-workspace' &&
+        context.kind !== 'worker' &&
+        context.actor.kind === 'token' &&
+        isCurrentDeploymentAdministrator(coreDb, context.actor)
+      ) {
+        ensureUserQuickChatWorkspace({
+          coreDb,
+          store: dependencies.store,
+          userId: context.actor.userId,
+        });
+      }
       const authorized =
         context.kind === 'worker'
           ? currentWorkerLineageWorkspaceAuthority(
@@ -592,13 +621,27 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
           (!authorized && !hasWorkspaceDeletionRetryAuthority(coreDb, context.actor, workspaceId))
         )
           throw denied();
-      } else if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
+      } else if (
+        !authorized ||
+        (definition.scope.kind === 'actor-quick-chat-workspace' &&
+          (typeof authorized === 'string' || authorized.effectiveRole !== 'owner')) ||
+        dependencies.workspaceMutationAdmission.isClosed(workspaceId)
+      )
         throw denied();
-      if (
-        definition.scope.kind === 'opaque-child-workspace' &&
-        definition.target.kind !== 'automation'
-      ) {
-        // Approval lineage stays within the already selected Workspace.
+      if (turnLineage) {
+        if (
+          !isThreadIdVisible(
+            dependencies.store,
+            workspaceId,
+            turnLineage.threadId,
+            responsibleUserIdForActor(actor) ?? undefined,
+            context.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, context.actor)
+          )
+        )
+          throw new OperationInvocationError('not_found', 'Thread not found.', 404);
+      }
+      if (definition.scope.kind === 'opaque-child-workspace' && 'field' in definition.scope) {
+        // This branch resolves only Pending Request lineage and fails closed for any other child family.
         const childId = (parsed.data as Record<string, unknown>)[
           definition.scope.childField
         ] as string;
@@ -651,9 +694,11 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         )
           throw new OperationInvocationError('not_found', 'Thread not found.', 404);
         if (definition.target.kind === 'addressed-turn') {
+          const turnId = input[definition.target.turnField]!;
           let turn: ReturnType<FsStore['getTurnLineage']>;
           try {
-            turn = dependencies.store.getTurnLineage(input[definition.target.turnField]!);
+            turn = dependencies.store.getTurnLineage(turnId);
+            if (!turn && id !== 'turn.interrupt') throw new Error(`Turn not found: ${turnId}`);
           } catch (error) {
             if (id === 'recovery.checkpoint-retry')
               throw new OperationInvocationError(
@@ -663,17 +708,13 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
               );
             throw error;
           }
-          assertAuthorizedWorkspaceLineage(
-            {
-              ...(authorized as {
-                workspaceId: string;
-                effectiveRole: import('./workspace-membership.js').WorkspaceRole;
-              }),
-              kind: 'workspace',
-              policyOperation: definition.policyOperation,
-            },
-            turn.workspaceId
-          );
+          if (!turn)
+            throw new OperationInvocationError(
+              'turn_interrupt_failed',
+              `Turn not found: ${turnId}`,
+              404
+            );
+          if (turn.workspaceId !== workspaceId) throw denied();
           // A caller-selected Thread cannot grant the actual Turn's private audience.
           if (
             turn.threadId !== input[definition.target.threadField] &&
@@ -762,6 +803,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         error instanceof KernelCommandError ||
         error instanceof GenerativeOperationError ||
         error instanceof WorkspaceSyncOperationError ||
+        error instanceof CoreCommandError ||
         error instanceof KnowledgeOperationError ||
         error instanceof ArtifactOperationError ||
         error instanceof HumanAttentionReadError ||

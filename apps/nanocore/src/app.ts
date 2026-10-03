@@ -30,7 +30,6 @@ import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import { registerWorkspaceWorkerRoutes } from './agents/workspace-workers.js';
 import { asApiError } from './api-errors.js';
-import { registerDashboardRoutes } from './app-dashboard.js';
 import { registerAppUpdateRoutes } from './app-update/app-update-routes.js';
 import {
   type AppUpdateHostTransport,
@@ -96,7 +95,7 @@ import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-routes.js';
 import { registerMaterialRoutes } from './material-routes.js';
-import { createTaskStartOperation, registerQuickAndChatModeRoutes } from './mode-entry-routes.js';
+import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-invocation.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
@@ -186,9 +185,8 @@ import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
-import { registerThreadRoutes } from './thread-routes.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
-import { interruptProductTurn, registerTurnRoutes } from './turn-routes.js';
+import { interruptProductTurn } from './turn-routes.js';
 import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import {
@@ -206,7 +204,6 @@ import {
 } from './workspace-deletion-request.js';
 import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import { registerWorkspaceRoutes } from './workspace-routes.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
@@ -310,21 +307,13 @@ function isProductWorkAdmissionRequest(method: string, path: string): boolean {
     }
   }
 
-  if (
-    method === 'POST' &&
-    (path === '/api/app/quick-chat' ||
-      path === '/api/turns' ||
-      path === '/v1/chat/completions' ||
-      path === '/v1/responses')
-  ) {
+  if (method === 'POST' && (path === '/v1/chat/completions' || path === '/v1/responses')) {
     return true;
   }
 
   return (
     ['DELETE', 'PATCH', 'POST', 'PUT'].includes(method) &&
-    (path === '/api/workspaces' ||
-      path.startsWith('/api/workspaces/') ||
-      path.startsWith('/api/app/workspaces/'))
+    (path.startsWith('/api/workspaces/') || path.startsWith('/api/app/workspaces/'))
   );
 }
 
@@ -1686,8 +1675,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     record: import('./runtime/pending-requests.js').PendingRequestRecord
   ): void => advanceGoalForThread(sqlite, record.threadId);
 
-  const chatService = registerQuickAndChatModeRoutes({
-    app,
+  const chatService = createConversationService({
     providerCredentialConfigured,
     assertProjectWorkspace,
     coreDb: options.coreDb,
@@ -1703,15 +1691,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     goalServices,
   });
 
-  const interruptInternalChatTurn = chatService.interrupt;
   const pendingAssistantDelivery = { startTurn: chatService.acceptPendingInput };
-
-  registerThreadRoutes({
-    app,
-    inflightCommands,
-    requestStore,
-    ...(options.coreDb ? { repositoryWorkspaceDb } : {}),
-  });
 
   registerMaterialRoutes({
     app,
@@ -1752,12 +1732,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     requestStore,
   });
-  registerDashboardRoutes({
-    app,
-    coreDb: options.coreDb,
-    requestStore,
-    runtimeConfigManager,
-  });
 
   const taskStart = createTaskStartOperation({
     assertProjectWorkspace,
@@ -1773,26 +1747,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerAgentHealthRoutes({
     app,
     requestStore,
-  });
-
-  registerWorkspaceRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    requestStore,
-  });
-
-  registerTurnRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    interruptInternalChatTurn,
-    providerCredentialResolver,
-    requestStore,
-    runtimeConfig,
-    schedulerEpoch,
-    turnExecutor,
-    workerPlacement,
   });
 
   const pendingWorkerDelivery = {
@@ -1964,6 +1918,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             }),
         }
       : {}),
+    turnStartServices: {
+      coreDb: options.coreDb,
+      inflightCommands,
+      providerCredentialResolver,
+      runtimeConfig,
+      schedulerEpoch,
+      turnExecutor,
+      workerPlacement,
+    },
+    turnExecutor,
+
     app,
     automationStore,
     conversationService: chatService,
@@ -1996,6 +1961,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             }),
         }
       : {}),
+    turnStartServices: {
+      coreDb: options.coreDb,
+      inflightCommands,
+      providerCredentialResolver,
+      runtimeConfig,
+      schedulerEpoch,
+      turnExecutor,
+      workerPlacement,
+    },
+    turnExecutor,
+
     app,
     automationStore,
     conversationService: chatService,

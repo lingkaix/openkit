@@ -86,8 +86,6 @@ import {
   ProviderSubscriptionsResponseSchema,
   PurgeWorkerEnvironmentRequestSchema,
   PurgeWorkerEnvironmentResponseSchema,
-  QuickChatRequestSchema,
-  QuickChatResponseSchema,
   RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
@@ -126,10 +124,8 @@ import {
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
   SubmitSkillCandidateRequestSchema,
-  SubmitTurnFeedbackRequestSchema,
   SubscriptionProviderIdSchema,
   TransferWorkspaceOwnershipRequestSchema,
-  TurnFeedbackResponseSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   UpdateAgentNativeEnvironmentRequestSchema,
@@ -146,7 +142,6 @@ import {
   VaultAdminUnlockResponseSchema,
   VaultAdminWorkspaceReferenceSchema,
   WorkspaceAccessRecoveryResponseSchema,
-  WorkspaceDashboardResponseSchema,
   WorkspaceDeletionResponseSchema,
   WorkspaceImportDryRunResponseSchema,
   WorkspaceImportResponseSchema,
@@ -204,12 +199,6 @@ const THREAD_ID_PARAMETER = {
   in: 'path',
   required: true,
   schema: { $ref: '#/components/schemas/ThreadId' },
-} as const;
-const TURN_ID_PARAMETER = {
-  name: 'turnId',
-  in: 'path',
-  required: true,
-  schema: { $ref: '#/components/schemas/TurnId' },
 } as const;
 const WORKSPACE_ID_PARAMETER = {
   name: 'workspaceId',
@@ -1317,40 +1306,6 @@ export function createAppOpenApiDocument() {
             responseDescription: 'Bounded xAI auto-top-up observation.',
           }),
         },
-      '/api/app/quick-chat': {
-        post: {
-          operationId: 'quickChat',
-          tags: ['app-utils'],
-          summary: 'Run one completed non-streaming quick chat request.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/QuickChatRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Completed quick chat response.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/QuickChatResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/administration/configuration/apply': {
         post: {
           operationId: 'applyAdministrationConfiguration',
@@ -1449,41 +1404,6 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/AppSearchResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/turns/{turnId}/feedback': {
-        post: {
-          operationId: 'submitTurnFeedback',
-          tags: ['app-utils'],
-          summary: 'Submit feedback for one turn.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [TURN_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitTurnFeedbackRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Stored turn feedback.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/TurnFeedbackResponse' },
                 },
               },
             },
@@ -1719,34 +1639,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/dashboard': {
-        get: {
-          operationId: 'getWorkspaceDashboard',
-          tags: ['dashboards'],
-          summary: 'Read one workspace dashboard read model.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace dashboard read model.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceDashboardResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-
       '/api/app/workspaces/{workspaceId}/materials': {
         get: appJsonOperation({
           operationId: 'listWorkspaceMaterials',
@@ -3164,8 +3056,6 @@ export function createAppOpenApiDocument() {
         ListWorkspaceVaultUseRecordsResponse: toJsonSchema(
           ListWorkspaceVaultUseRecordsResponseSchema
         ),
-        QuickChatRequest: toJsonSchema(QuickChatRequestSchema),
-        QuickChatResponse: toJsonSchema(QuickChatResponseSchema),
         PurgeWorkerEnvironmentRequest: toJsonSchema(PurgeWorkerEnvironmentRequestSchema),
         PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
         PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
@@ -3232,10 +3122,8 @@ export function createAppOpenApiDocument() {
         ),
         SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
-        SubmitTurnFeedbackRequest: toJsonSchema(SubmitTurnFeedbackRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
-        TurnFeedbackResponse: toJsonSchema(TurnFeedbackResponseSchema),
         UpdateMcpBindingRequest: toJsonSchema(UpdateMcpBindingRequestSchema),
         UpdateProviderSubscriptionAccountRequest: toJsonSchema(
           UpdateProviderSubscriptionAccountRequestSchema
@@ -3261,7 +3149,6 @@ export function createAppOpenApiDocument() {
         VaultAdminUnlockResponse: toJsonSchema(VaultAdminUnlockResponseSchema),
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
-        WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
         WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
       },

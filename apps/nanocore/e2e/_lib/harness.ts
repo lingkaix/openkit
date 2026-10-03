@@ -165,7 +165,7 @@ export async function startTurn(
   threadId: string,
   input: string
 ): Promise<Record<string, unknown>> {
-  return postJson(`${baseUrl}/api/turns`, {
+  return postJson(`${baseUrl}/api/app/operations/turn.start`, {
     workspaceId,
     threadId,
     input,
@@ -189,8 +189,15 @@ async function postJson(
 ): Promise<Record<string, unknown>> {
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: {
+      'content-type': 'application/json',
+      ...(typeof body.requestId === 'string' ? { 'x-openkit-request-id': body.requestId } : {}),
+    },
+    body: JSON.stringify(
+      url.includes('/api/app/operations/')
+        ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'requestId'))
+        : body
+    ),
   });
 
   if (!response.ok) {

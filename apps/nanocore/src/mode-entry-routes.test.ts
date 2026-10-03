@@ -1206,7 +1206,6 @@ describe('reasoning effort admission and replay', () => {
       });
     const app = makeApp(store);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
-    const url = entry === 'turn.start' ? '/api/turns' : '/api/app/operations/conversation.submit';
     const payload =
       entry === 'turn.start'
         ? {
@@ -1225,24 +1224,15 @@ describe('reasoning effort admission and replay', () => {
     const body = { ...payload, ...(supplied !== undefined ? { reasoningEffort: supplied } : {}) };
     const post = (targetApp: typeof app, input: unknown) =>
       targetApp.request(
-        ...(entry === 'turn.start'
-          ? ([
-              url,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(input),
-              },
-            ] as [string, RequestInit])
-          : operationRequest(
-              'conversation.submit',
-              { workspaceId: 'ws_demo', threadId: 'th_demo' },
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(input),
-              }
-            ))
+        ...operationRequest(
+          entry,
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(input),
+          }
+        )
       );
     try {
       const response = await post(app, body);
@@ -1317,7 +1307,6 @@ describe('reasoning effort admission and replay', () => {
     const store = createDemoStore();
     const app = createApp({ store });
     const before = store.listThreads('ws_demo').length;
-    const url = entry === 'turn.start' ? '/api/turns' : '/api/app/operations/conversation.submit';
     const input =
       entry === 'turn.start'
         ? {
@@ -1334,24 +1323,15 @@ describe('reasoning effort admission and replay', () => {
             reasoningEffort: 'default',
           };
     const response = await app.request(
-      ...(entry === 'turn.start'
-        ? ([
-            url,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(input),
-            },
-          ] as [string, RequestInit])
-        : operationRequest(
-            'conversation.submit',
-            { workspaceId: 'ws_demo', threadId: 'th_demo' },
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(input),
-            }
-          ))
+      ...operationRequest(
+        entry,
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
     );
     expect(response.status).toBe(400);
     expect(store.listThreads('ws_demo')).toHaveLength(before);

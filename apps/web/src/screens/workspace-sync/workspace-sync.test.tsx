@@ -476,7 +476,7 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
+
       ...core,
     },
     operations: {
@@ -497,6 +497,7 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
       'sync.reconciliation-list': vi.fn().mockResolvedValue({ items: [RECOVERY_RECORD] }),
       'sync.quarantine-list': vi.fn().mockResolvedValue({ items: [QUARANTINE_RECORD] }),
       'sync.recovery-decide': vi.fn(),
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       ...core,
       ...operations,
       'workspace.list': vi

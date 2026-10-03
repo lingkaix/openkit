@@ -349,16 +349,17 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi
-        .fn()
-        .mockImplementation((workspaceId: string) =>
-          Promise.resolve(ListThreadsResponseSchema.parse({ items: threadsFor(workspaceId) }))
-        ),
+
       ...overrides.core,
     },
     app: { ...overrides.app },
 
     operations: {
+      'thread.list': vi
+        .fn()
+        .mockImplementation((workspaceId: string) =>
+          Promise.resolve(ListThreadsResponseSchema.parse({ items: threadsFor(workspaceId) }))
+        ),
       'artifact.list': vi
         .fn()
         .mockImplementation(
@@ -893,9 +894,13 @@ describe('Artifacts', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
     expect(introduceWorkspaceArtifact).not.toHaveBeenCalled();
-    expect(vi.mocked(client.core.listThreads)).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(vi.mocked(client.operations['thread.list'])).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+    });
     expect(
-      vi.mocked(client.core.listThreads).mock.calls.every((call) => call[0] === WORKSPACE.id)
+      vi
+        .mocked(client.operations['thread.list'])
+        .mock.calls.every((call) => call[0].workspaceId === WORKSPACE.id)
     ).toBe(true);
 
     await selectListedOption(user, 'Conversation', THREAD_NAME);
@@ -980,9 +985,10 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listThreads },
+        core: {},
 
         operations: {
+          'thread.list': listThreads,
           'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
@@ -994,8 +1000,8 @@ describe('Artifacts', () => {
     await openArtifact(user, IMPORTED_ARTIFACT.title);
     expect(await screen.findByText(/no conversations/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /add to conversation/i })).toBeDisabled();
-    expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
-    expect(listThreads.mock.calls.every((call) => call[0] === WORKSPACE.id)).toBe(true);
+    expect(listThreads).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id });
+    expect(listThreads.mock.calls.every((call) => call[0].workspaceId === WORKSPACE.id)).toBe(true);
   });
 
   it('recovers a Thread-list failure without leaking private text', async () => {
@@ -1011,9 +1017,10 @@ describe('Artifacts', () => {
     renderApp(
       '/artifacts',
       makeClient({
-        core: { listThreads },
+        core: {},
 
         operations: {
+          'thread.list': listThreads,
           'artifact.list': vi
             .fn()
             .mockResolvedValue(ListArtifactsResponseSchema.parse({ items: [IMPORTED_ARTIFACT] })),
@@ -1032,7 +1039,7 @@ describe('Artifacts', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await selectListedOption(user, 'Conversation', THREAD_NAME);
     expect(screen.getByRole('button', { name: /add to conversation/i })).toBeEnabled();
-    expect(listThreads).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(listThreads).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id });
   });
 
   it.each([

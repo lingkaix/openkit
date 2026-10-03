@@ -110,8 +110,7 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      startTurn: vi.fn(),
+
       ...overrides.core,
     },
     app: {
@@ -161,6 +160,8 @@ function makeClient(
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'turn.start': vi.fn(),
       'conversation.submit': vi.fn(),
       'task.start': vi.fn(),
 
@@ -344,7 +345,7 @@ describe('Workspace Material Plane 1 S11', () => {
         })
       )
     );
-    expect(client.core.startTurn).not.toHaveBeenCalled();
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
   });
@@ -409,7 +410,7 @@ describe('Workspace Material Plane 1 S11', () => {
         sensitivity: 'restricted',
       })
     );
-    expect(client.core.startTurn).not.toHaveBeenCalled();
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
   });
@@ -487,7 +488,7 @@ describe('Workspace Material Plane 1 S11', () => {
 
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
-    expect(client.core.startTurn).not.toHaveBeenCalled();
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
 

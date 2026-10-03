@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,8 +17,10 @@ import {
 import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
+import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { AutomationStore } from './lib/automation-store.js';
 import * as invocation from './operation-invocation.js';
+import { feedbackFilePath } from './runtime/feedback.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
 import {
   createSchedulerAdmissionEntry,
@@ -31,6 +33,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real isolated credential, membership and Kernel owners behind the App listener. */
@@ -434,6 +437,131 @@ describe('remote MCP App endpoint', () => {
     } finally {
       f.coreDb.sqlite.close();
     }
+  });
+
+  it('gates every newly migrated command before MCP effects during closed boot admission', async () => {
+    let readiness = computeBootReadinessSnapshot({ bootId: 'boot_core_command_mcp' });
+    const f = await fixture('server', () => readiness);
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_remote_mcp',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Preserve this Turn', {
+      kind: 'user',
+      id: 'user_remote_mcp',
+    });
+    const workspaces = f.store.listWorkspaces();
+    const threads = f.store.listThreads('ws_demo');
+    const receipts = f.store.listCommandRequests();
+    const feedbackPath = feedbackFilePath(f.store, turn);
+    expect(existsSync(feedbackPath)).toBe(false);
+    readiness = computeBootReadinessSnapshot({
+      bootId: readiness.bootId,
+      subsystems: {
+        storage: {
+          state: 'failed',
+          reasons: [{ code: 'storage.failed', message: 'Unavailable.', blocks: ['product_work'] }],
+        },
+      },
+    });
+    for (const [operation, input] of [
+      ['workspace.create', { name: 'Blocked' }],
+      ['workspace.update', { workspaceId: 'ws_demo', name: 'Blocked' }],
+      ['thread.update', { workspaceId: 'ws_demo', threadId: 'th_demo', name: 'Blocked' }],
+      ['thread.archive', { workspaceId: 'ws_demo', threadId: 'th_demo' }],
+      ['turn.start', { workspaceId: 'ws_demo', threadId: 'th_demo', input: 'Blocked' }],
+      ['turn.interrupt', { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }],
+      ['turn.feedback', { turnId: turn.id, rating: 'good', note: 'Blocked' }],
+      ['chat.quick', { input: 'Blocked' }],
+    ] as const) {
+      const result = await f.call(
+        'call',
+        {
+          operation,
+          input: {
+            ...input,
+            ...(['turn.feedback', 'chat.quick'].includes(operation)
+              ? {}
+              : { requestId: randomUUID() }),
+          },
+        },
+        token.secret
+      );
+      expect(result.isError, operation).toBe(true);
+      expect(JSON.parse(result.content[0].text), operation).toEqual({
+        code: 'product_work_unavailable',
+        message: 'NanoCore is not accepting product work during the current boot readiness state.',
+      });
+      expect(f.store.listWorkspaces()).toEqual(workspaces);
+      expect(f.store.listThreads('ws_demo')).toEqual(threads);
+      expect(f.store.getTurnById(turn.id)).toEqual(turn);
+      expect(existsSync(feedbackPath)).toBe(false);
+      expect(f.store.listCommandRequests()).toEqual(receipts);
+    }
+  });
+
+  it('preserves the native interrupt refusal through MCP without a receipt or Turn write', async () => {
+    const f = await fixture();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_remote_mcp',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const turn = f.store.createTurn('ws_demo', 'th_demo', 'No assigned session', {
+      kind: 'user',
+      id: 'user_remote_mcp',
+    });
+    const receipts = f.store.listCommandRequests();
+    const result = await f.call(
+      'call',
+      {
+        operation: 'turn.interrupt',
+        input: {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: turn.id,
+          requestId: randomUUID(),
+        },
+      },
+      token.secret
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'turn_interrupt_failed' });
+    expect(f.store.getTurnById(turn.id)).toEqual(turn);
+    expect(f.store.listCommandRequests()).toEqual(receipts);
+  });
+
+  it('preserves a typed owner validation refusal through MCP without a Workspace or receipt write', async () => {
+    const f = await fixture();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_remote_mcp',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const workspace = f.store.getWorkspace('ws_demo');
+    const receipts = f.store.listCommandRequests();
+    vi.spyOn(f.store, 'updateWorkspace').mockImplementation(() => {
+      throw new KnowledgePageValidationError();
+    });
+    const result = await f.call(
+      'call',
+      {
+        operation: 'workspace.update',
+        input: { workspaceId: 'ws_demo', name: 'Refused', requestId: randomUUID() },
+      },
+      token.secret
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      code: 'invalid_request',
+      message: 'Knowledge Page validation failed.',
+    });
+    expect(f.store.getWorkspace('ws_demo')).toEqual(workspace);
+    expect(f.store.listCommandRequests()).toEqual(receipts);
   });
 
   it('challenges missing, unknown, malformed, expired and revoked credentials uniformly before dispatch', async () => {
@@ -919,3 +1047,55 @@ it('refuses user.disable through MCP closed product admission without changing t
     f.coreDb.sqlite.close();
   }
 });
+for (const projection of ['HTTP', 'MCP'] as const) {
+  it(`keeps turn.interrupt cross-Workspace lineage refusal typed through ${projection} without effects`, async () => {
+    const f = await fixture();
+    try {
+      const foreignWorkspace = f.store.createWorkspace('Foreign');
+      const foreignThread = f.store.createThread(foreignWorkspace.id, 'Foreign Thread');
+      const addressed = f.store.createTurn('ws_demo', 'th_demo', 'Addressed', {
+        kind: 'user',
+        id: 'user_remote_mcp',
+      });
+      const foreign = f.store.createTurn(foreignWorkspace.id, foreignThread.id, 'Foreign', {
+        kind: 'user',
+        id: 'user_remote_mcp',
+      });
+      const before = {
+        addressed: f.store.getTurnById(addressed.id),
+        foreign: f.store.getTurnById(foreign.id),
+        receipts: f.store.listCommandRequests(),
+      };
+      const input = {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: foreign.id,
+        requestId: randomUUID(),
+      };
+      const secret = f.token().secret;
+      if (projection === 'HTTP') {
+        const response = await f.app.request(
+          ...operationRequest(
+            'turn.interrupt',
+            {},
+            { body: JSON.stringify(input), headers: { authorization: `Bearer ${secret}` } }
+          )
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+      } else {
+        const result = await f.call('call', { operation: 'turn.interrupt', input }, secret);
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({
+          code: 'workspace_access_denied',
+          message: 'Workspace access denied.',
+        });
+      }
+      expect(f.store.getTurnById(addressed.id)).toEqual(before.addressed);
+      expect(f.store.getTurnById(foreign.id)).toEqual(before.foreign);
+      expect(f.store.listCommandRequests()).toEqual(before.receipts);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+}

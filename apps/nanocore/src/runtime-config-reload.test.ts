@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
@@ -13,6 +12,7 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -209,16 +209,22 @@ describe('runtime config reload API', () => {
     try {
       seedWritableGitRepository(repositoryPath);
 
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000301',
-          input: 'Run with version one',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnRes = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000301',
+              input: 'Run with version one',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = (await turnRes.json()) as { configVersion: number };
 
       expect(turn.configVersion, JSON.stringify(turn)).toBe(1);

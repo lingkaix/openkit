@@ -176,11 +176,17 @@ describe('workspace membership foundation', () => {
         dataRoot,
         mode: 'server',
       });
-      const response = await app.request('/api/workspaces', {
-        body: JSON.stringify({ name: 'Shared Workspace', requestId: randomUUID() }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            body: JSON.stringify({ name: 'Shared Workspace', requestId: randomUUID() }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       const workspace = (await response.json()) as { id: string };
       const registry = coreDb.sqlite
         .prepare(
@@ -254,16 +260,28 @@ describe('workspace membership foundation', () => {
         mode: 'server',
         store,
       });
-      const firstResponse = await firstApp.request('/api/workspaces', {
-        body: JSON.stringify({ name: 'First Workspace', requestId }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
-      const secondResponse = await secondApp.request('/api/workspaces', {
-        body: JSON.stringify({ name: 'Second Workspace', requestId }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const firstResponse = await firstApp.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            body: JSON.stringify({ name: 'First Workspace', requestId }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
+      const secondResponse = await secondApp.request(
+        ...operationRequest(
+          'workspace.create',
+          {},
+          {
+            body: JSON.stringify({ name: 'Second Workspace', requestId }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       const firstWorkspace = (await firstResponse.json()) as { id: string };
       const secondWorkspace = (await secondResponse.json()) as { id: string };
 

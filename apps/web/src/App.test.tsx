@@ -32,7 +32,6 @@ function makeClient(
     },
     core: {
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
     },
     runtimeConfig: {
       listFiles: vi.fn().mockRejectedValue(
@@ -50,6 +49,7 @@ function makeClient(
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
 
       'workspace.resources': vi.fn().mockResolvedValue({

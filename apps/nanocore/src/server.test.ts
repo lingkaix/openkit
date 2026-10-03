@@ -58,11 +58,13 @@ import {
   SseEventEnvelopeSchema,
   ThreadSchema,
 } from '@openkit/protocol';
+import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
 import { ensureLocalUser } from './auth/identity.js';
+import type { AuthVariables } from './auth/middleware.js';
 import { createNanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
 import {
@@ -86,6 +88,7 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -167,6 +170,7 @@ import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
+import { startTurn as startNativeTurn } from './turn-routes.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
 import {
   createVaultReference,
@@ -181,6 +185,7 @@ import {
   listVaultInjectionReceipts,
 } from './vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -1226,11 +1231,17 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const write = await app.request('/api/workspaces', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Blocked Workspace' }),
-    });
+    const write = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Blocked Workspace' }),
+        }
+      )
+    );
     const gateway = await app.request('/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1241,20 +1252,32 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ input: 'Hello', model: 'gpt-test' }),
     });
-    const quickChat = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ input: 'Hello' }),
-    });
-    const turn = await app.request('/api/turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'Hello',
-        threadId: 'th_blocked',
-        workspaceId: 'ws_blocked',
-      }),
-    });
+    const quickChat = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ input: 'Hello' }),
+        }
+      )
+    );
+    const turn = await app.request(
+      ...operationRequest(
+        'turn.start',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Hello',
+            threadId: 'th_blocked',
+            workspaceId: 'ws_blocked',
+          }),
+        }
+      )
+    );
 
     const threadCount = canonicalStore.listThreads('ws_demo').length;
     const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
@@ -1320,11 +1343,17 @@ describe('nanocore server', () => {
     expect(read.status).toBe(200);
 
     const diagnostics = await app.request('/api/app/diagnostics');
-    const write = await app.request('/api/workspaces', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Blocked Workspace' }),
-    });
+    const write = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'Blocked Workspace' }),
+        }
+      )
+    );
 
     const threadCount = canonicalStore.listThreads('ws_demo').length;
     const requestId = 'd366ec14-5110-43ab-b086-94a768a3d1d6';
@@ -4311,11 +4340,11 @@ describe('nanocore server', () => {
 
   it('allows credentialed browser CORS requests for server-mode auth', async () => {
     const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/workspaces', {
+    const res = await app.request('/api/app/operations/workspace.create', {
       method: 'OPTIONS',
       headers: {
         origin: 'http://127.0.0.1:4174',
-        'access-control-request-method': 'GET',
+        'access-control-request-method': 'POST',
       },
     });
 
@@ -4325,13 +4354,18 @@ describe('nanocore server', () => {
 
   it('returns a thin workspace record and separate resources payload', async () => {
     const canonicalStore = createDemoStore();
-    const app = createApp({ ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore });
+    const app = createApp(
+      { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
+      true
+    );
     const canonicalApp = createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
 
-    const workspaceRes = await app.request('/api/workspaces/ws_demo');
+    const workspaceRes = await app.request(
+      ...operationRequest('workspace.read', { workspaceId: 'ws_demo' })
+    );
     const resourcesRes = await canonicalApp.request('/api/app/operations/workspace.resources', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -4464,23 +4498,95 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('rejects new product turns without durable scheduler storage', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '0190f4c8-0000-7000-8000-000000000202',
-        input: 'Ship the update',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+  it('canonical HTTP turn.start preserves scheduler_unavailable 503 with real admission and no effects', async () => {
+    const coreDb = createCoreDb();
+    try {
+      ensureLocalUser(coreDb);
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+      const store = createDemoStore();
+      const before = {
+        turns: store.listThreadTurns('ws_demo', 'th_demo'),
+        receipts: store.listCommandRequests(),
+      };
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (c, next) => {
+        c.set('actor', { kind: 'local', userId: 'user_local' });
+        await next();
+      });
+      registerOperationJsonRoutes({
+        app,
+        coreDb,
+        store,
+        requestStore: () => store,
+        inflightCommands: new WeakMap(),
+        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        turnStartServices: {
+          coreDb: undefined,
+          inflightCommands: new WeakMap(),
+          providerCredentialResolver: () => null,
+          runtimeConfig: () =>
+            createInMemoryRuntimeConfigSnapshot({
+              agentManifests: [createTestAgentSetup().manifest],
+              openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
+              providerRegistry: testProviderRegistry(),
+            }),
+          schedulerEpoch: 1,
+          turnExecutor: new FakeTurnExecutor(),
+          workerPlacement: 'local',
+        },
+      });
+      const response = await app.request(
+        ...operationRequest(
+          'turn.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            body: JSON.stringify({
+              input: 'Ship the update',
+              requestId: '0190f4c8-0000-7000-8000-000000000202',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ code: 'scheduler_unavailable' });
+      expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual(before.turns);
+      expect(store.listCommandRequests()).toEqual(before.receipts);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
 
-    expect(res.status).toBe(503);
-    await expect(res.json()).resolves.toMatchObject({
-      code: 'scheduler_unavailable',
-    });
+  it('native turn.start refuses missing durable scheduler storage before effects', async () => {
+    const store = createDemoStore();
+    const before = store.listCommandRequests();
+    await expect(
+      startNativeTurn(
+        {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          requestId: '0190f4c8-0000-7000-8000-000000000202',
+          input: 'Ship the update',
+        },
+        store,
+        { kind: 'local', userId: 'user_local' },
+        {
+          coreDb: undefined,
+          inflightCommands: new WeakMap(),
+          providerCredentialResolver: () => null,
+          runtimeConfig: () =>
+            createInMemoryRuntimeConfigSnapshot({
+              agentManifests: [createTestAgentSetup().manifest],
+              openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
+              providerRegistry: testProviderRegistry(),
+            }),
+          schedulerEpoch: 1,
+          turnExecutor: new FakeTurnExecutor(),
+          workerPlacement: 'local',
+        }
+      )
+    ).rejects.toMatchObject({ status: 503, code: 'scheduler_unavailable' });
+    expect(store.listCommandRequests()).toEqual(before);
+    expect(store.listThreadTurns('ws_demo', 'th_demo')).toEqual([]);
   });
 
   it('starts scheduled turns without resolving Gateway credentials in Agent composition', async () => {
@@ -4511,16 +4617,22 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const res = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000216',
-          input: 'Run through scheduler',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000216',
+              input: 'Run through scheduler',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const turn = (await res.json()) as { id: string };
 
       expect(res.status).toBe(202);
@@ -7110,17 +7222,23 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const res = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000203',
-          input: 'Ship the update',
-          modelId: 'model_missing',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000203',
+              input: 'Ship the update',
+              modelId: 'model_missing',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -7140,16 +7258,22 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, store, turnExecutor: executor });
 
     try {
-      const res = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_quick_chat',
-          threadId: thread.id,
-          requestId: '0190f4c8-0000-7000-8000-000000000320',
-          input: 'Run a worker turn.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_quick_chat',
+              threadId: thread.id,
+              requestId: '0190f4c8-0000-7000-8000-000000000320',
+              input: 'Run a worker turn.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toMatchObject({
@@ -7250,16 +7374,28 @@ describe('nanocore server', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000501',
       name: 'Idempotent workspace',
     };
-    const workspaceFirst = await app.request('/api/workspaces', {
-      method: 'POST',
-      body: JSON.stringify(workspaceBody),
-      headers: jsonHeaders(),
-    });
-    const workspaceSecond = await app.request('/api/workspaces', {
-      method: 'POST',
-      body: JSON.stringify(workspaceBody),
-      headers: jsonHeaders(),
-    });
+    const workspaceFirst = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify(workspaceBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
+    const workspaceSecond = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify(workspaceBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
     const workspace = (await workspaceFirst.json()) as { id: string };
     const duplicateWorkspace = (await workspaceSecond.json()) as { id: string };
 
@@ -7272,16 +7408,28 @@ describe('nanocore server', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000502',
       name: 'Idempotent workspace renamed',
     };
-    const workspaceUpdateFirst = await app.request(`/api/workspaces/${workspace.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(workspaceUpdateBody),
-      headers: jsonHeaders(),
-    });
-    const workspaceUpdateSecond = await app.request(`/api/workspaces/${workspace.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(workspaceUpdateBody),
-      headers: jsonHeaders(),
-    });
+    const workspaceUpdateFirst = await app.request(
+      ...operationRequest(
+        'workspace.update',
+        { workspaceId: workspace.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(workspaceUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
+    const workspaceUpdateSecond = await app.request(
+      ...operationRequest(
+        'workspace.update',
+        { workspaceId: workspace.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(workspaceUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
 
     expect((await workspaceUpdateFirst.json()) as { id: string; name: string }).toMatchObject({
       id: workspace.id,
@@ -7448,16 +7596,28 @@ describe('nanocore server', () => {
       requestId: '0190f4c8-0000-7000-8000-000000000506',
       name: 'Idempotent thread updated',
     };
-    const threadUpdateFirst = await app.request(`/api/workspaces/ws_demo/threads/${thread.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(threadUpdateBody),
-      headers: jsonHeaders(),
-    });
-    const threadUpdateSecond = await app.request(`/api/workspaces/ws_demo/threads/${thread.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(threadUpdateBody),
-      headers: jsonHeaders(),
-    });
+    const threadUpdateFirst = await app.request(
+      ...operationRequest(
+        'thread.update',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(threadUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
+    const threadUpdateSecond = await app.request(
+      ...operationRequest(
+        'thread.update',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        {
+          method: 'PATCH',
+          body: JSON.stringify(threadUpdateBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
 
     expect((await threadUpdateFirst.json()) as { id: string; name: string }).toMatchObject({
       id: thread.id,
@@ -7471,18 +7631,27 @@ describe('nanocore server', () => {
     const threadArchiveBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000507',
     };
-    await app.request(`/api/workspaces/ws_demo/threads/${thread.id}/archive`, {
-      method: 'POST',
-      body: JSON.stringify(threadArchiveBody),
-      headers: jsonHeaders(),
-    });
+    await app.request(
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        {
+          method: 'POST',
+          body: JSON.stringify(threadArchiveBody),
+          headers: jsonHeaders(),
+        }
+      )
+    );
     const threadArchiveSecond = await app.request(
-      `/api/workspaces/ws_demo/threads/${thread.id}/archive`,
-      {
-        method: 'POST',
-        body: JSON.stringify(threadArchiveBody),
-        headers: jsonHeaders(),
-      }
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: thread.id },
+        {
+          method: 'POST',
+          body: JSON.stringify(threadArchiveBody),
+          headers: jsonHeaders(),
+        }
+      )
     );
 
     expect((await threadArchiveSecond.json()) as { id: string; status: string }).toMatchObject({
@@ -7507,27 +7676,45 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const first = app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: jsonHeaders(),
-      });
+      const first = app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: jsonHeaders(),
+          }
+        )
+      );
 
       await executor.waitForStart();
 
-      const second = app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: jsonHeaders(),
-      });
-      const competing = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...body,
-          requestId: '0190f4c8-0000-7000-8000-000000000517',
-        }),
-        headers: jsonHeaders(),
-      });
+      const second = app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: jsonHeaders(),
+          }
+        )
+      );
+      const competing = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              ...body,
+              requestId: '0190f4c8-0000-7000-8000-000000000517',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
+      );
 
       await Promise.resolve();
       expect(competing.status).toBe(409);
@@ -7574,16 +7761,28 @@ describe('nanocore server', () => {
     seedWritableGitRepository(repositoryPath);
 
     try {
-      const first = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: jsonHeaders(),
-      });
-      const replay = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: jsonHeaders(),
-      });
+      const first = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: jsonHeaders(),
+          }
+        )
+      );
+      const replay = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: jsonHeaders(),
+          }
+        )
+      );
       const admissionCountWhileActive = (
         coreDb.sqlite
           .prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries WHERE request_id = ?')
@@ -7605,11 +7804,17 @@ describe('nanocore server', () => {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      const accepted = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify(body),
-        headers: jsonHeaders(),
-      });
+      const accepted = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            headers: jsonHeaders(),
+          }
+        )
+      );
       const acceptedTurn = (await accepted.json()) as { id: string };
 
       expect(accepted.status).toBe(202);
@@ -7688,11 +7893,17 @@ describe('nanocore server', () => {
     });
 
     const cases = [
-      app.request('/api/workspaces/ws_demo', {
-        method: 'PATCH',
-        body: JSON.stringify({ name: 'Missing request id' }),
-        headers: jsonHeaders(),
-      }),
+      app.request(
+        ...operationRequest(
+          'workspace.update',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ name: 'Missing request id' }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
       canonicalApp.request(
         ...knowledgeOperationRequest(
           'knowledge.create',
@@ -7741,15 +7952,21 @@ describe('nanocore server', () => {
           },
           body: JSON.stringify(input),
         }))({ ...{ name: 'Missing request id' }, workspaceId: 'ws_demo' }),
-      app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          input: 'Missing request id',
-        }),
-        headers: jsonHeaders(),
-      }),
+      app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              input: 'Missing request id',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
+      ),
       app.request(
         ...operationRequest(
           'question.answer',
@@ -7806,28 +8023,46 @@ describe('nanocore server', () => {
   });
 
   it('updates and archives threads with request-correlated command schemas', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({ turnExecutor: new FakeTurnExecutor() }, true);
 
-    const missingRequestId = await app.request('/api/workspaces/ws_demo/threads/th_demo', {
-      method: 'PATCH',
-      body: JSON.stringify({ name: 'Missing request id' }),
-      headers: { 'content-type': 'application/json' },
-    });
-    const updateRes = await app.request('/api/workspaces/ws_demo/threads/th_demo', {
-      method: 'PATCH',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000208',
-        name: 'Protocol hardening',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
-    const archiveRes = await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-      method: 'POST',
-      body: JSON.stringify({
-        requestId: '0190f4c8-0000-7000-8000-000000000209',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const missingRequestId = await app.request(
+      ...operationRequest(
+        'thread.update',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ name: 'Missing request id' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    const updateRes = await app.request(
+      ...operationRequest(
+        'thread.update',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000208',
+            name: 'Protocol hardening',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+    const archiveRes = await app.request(
+      ...operationRequest(
+        'thread.archive',
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: '0190f4c8-0000-7000-8000-000000000209',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(missingRequestId.status).toBe(400);
     await expect(missingRequestId.json()).resolves.toMatchObject({
@@ -9970,19 +10205,22 @@ describe('nanocore server', () => {
       kind: 'user',
       id: 'user_local',
     });
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
     const interruptRes = await app.request(
-      `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: turn.id,
-          requestId: '0190f4c8-0000-7000-8000-000000000206',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'turn.interrupt',
+        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turn.id,
+            requestId: '0190f4c8-0000-7000-8000-000000000206',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
 
     expect(interruptRes.status).toBe(200);
@@ -10000,16 +10238,22 @@ describe('nanocore server', () => {
 
     try {
       const app = createApp({ coreDb, schedulerEpoch: 12, turnExecutor: executor });
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000211',
-          input: 'Work in the repository',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnRes = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000211',
+              input: 'Work in the repository',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(turnRes.status).toBe(202);
       expect(executor.startContexts).toHaveLength(1);
@@ -10158,16 +10402,22 @@ describe('nanocore server', () => {
         schedulerEpoch: 12,
         turnExecutor: executor,
       });
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000212',
-          input: 'Work with the authored source',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnRes = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000212',
+              input: 'Work with the authored source',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(turnRes.status).toBe(202);
       expect(executor.startContexts[0]?.workspaceDataSourceCatalog).toMatchObject({
@@ -10234,16 +10484,22 @@ describe('nanocore server', () => {
         store,
         turnExecutor: executor,
       });
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          input: 'Use the Workspace MCP server',
-          requestId: '0190f4c8-0000-7000-8000-000000000214',
-          threadId: 'th_demo',
-          workspaceId: 'ws_demo',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnRes = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              input: 'Use the Workspace MCP server',
+              requestId: '0190f4c8-0000-7000-8000-000000000214',
+              threadId: 'th_demo',
+              workspaceId: 'ws_demo',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(turnRes.status).toBe(202);
       expect(executor.startContexts[0]?.workspaceMcpServerCatalog).toMatchObject({
@@ -10316,16 +10572,22 @@ describe('nanocore server', () => {
         schedulerEpoch: 12,
         turnExecutor: executor,
       });
-      const turnRes = await app.request('/api/turns', {
-        method: 'POST',
-        body: JSON.stringify({
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          requestId: '0190f4c8-0000-7000-8000-000000000213',
-          input: 'Work with the blocked source',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const turnRes = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              requestId: '0190f4c8-0000-7000-8000-000000000213',
+              input: 'Work with the blocked source',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const payload = (await turnRes.json()) as Record<string, unknown>;
 
       expect(turnRes.status).toBe(409);
@@ -10342,61 +10604,73 @@ describe('nanocore server', () => {
   it('returns a protocol API error when interrupting with an invalid request body', async () => {
     const app = createApp({ turnExecutor: new FakeTurnExecutor() });
     const res = await app.request(
-      '/api/workspaces/ws_demo/threads/th_demo/turns/tu_missing/interrupt',
-      {
-        method: 'POST',
-        body: JSON.stringify({}),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'turn.interrupt',
+        { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: 'tu_missing' },
+        {
+          method: 'POST',
+          body: JSON.stringify({}),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
       code: 'invalid_request',
-      message: expect.stringContaining('turnId'),
+      message: expect.stringContaining('requestId'),
     });
   });
 
   it('returns the logical-model fallback error after quick chat routes are exhausted', async () => {
-    const app = createApp({
-      gatewayConfig: createTestGatewayConfig({
-        privateRoute: {
-          providerProfileId: 'openrouter',
-          providerModel: 'openai/gpt-5.2',
-        },
-      }),
-      providerCredentialResolver: () => 'test-key',
-      providerRegistry: new ProviderRegistry([
+    const app = createApp(
+      {
+        gatewayConfig: createTestGatewayConfig({
+          privateRoute: {
+            providerProfileId: 'openrouter',
+            providerModel: 'openai/gpt-5.2',
+          },
+        }),
+        providerCredentialResolver: () => 'test-key',
+        providerRegistry: new ProviderRegistry([
+          {
+            baseUrl: 'https://openrouter.ai/api/v1',
+            defaultModel: 'openai/gpt-5.2',
+            displayName: 'OpenRouter',
+            id: 'openrouter',
+            kind: 'gateway',
+            models: ['openai/gpt-5.2'],
+            secretRef: 'env:OPENROUTER_API_KEY',
+          },
+        ]),
+        turnExecutor: new FakeTurnExecutor(),
+        llmPiAiClient: {
+          createChatCompletion: async () => {
+            throw attachPiAiFailure(
+              new OpenAICompatibleProviderError({
+                status: 429,
+                code: 'rate_limit_exceeded',
+                message: 'Rate limit exceeded token=tok_private_rate_limit.',
+              })
+            );
+          },
+        } as unknown as PiAiGatewayClient,
+      },
+      true
+    );
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
         {
-          baseUrl: 'https://openrouter.ai/api/v1',
-          defaultModel: 'openai/gpt-5.2',
-          displayName: 'OpenRouter',
-          id: 'openrouter',
-          kind: 'gateway',
-          models: ['openai/gpt-5.2'],
-          secretRef: 'env:OPENROUTER_API_KEY',
-        },
-      ]),
-      turnExecutor: new FakeTurnExecutor(),
-      llmPiAiClient: {
-        createChatCompletion: async () => {
-          throw attachPiAiFailure(
-            new OpenAICompatibleProviderError({
-              status: 429,
-              code: 'rate_limit_exceeded',
-              message: 'Rate limit exceeded token=tok_private_rate_limit.',
-            })
-          );
-        },
-      } as unknown as PiAiGatewayClient,
-    });
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        input: 'hello',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+          method: 'POST',
+          body: JSON.stringify({
+            input: 'hello',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     const body = await res.json();
 
@@ -10411,16 +10685,22 @@ describe('nanocore server', () => {
   it('emits SSE events that conform to the shared protocol schema', async () => {
     const store = createDemoStore();
     const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
-    const res = await app.request('/api/turns', {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: 'ws_demo',
-        threadId: 'th_demo',
-        requestId: '0190f4c8-0000-7000-8000-000000000207',
-        input: 'Ship the update',
-      }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'turn.start',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            requestId: '0190f4c8-0000-7000-8000-000000000207',
+            input: 'Ship the update',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
     const turn = (await res.json()) as { id: string };
 
     for (const event of store.getTurnEvents(turn.id)) {

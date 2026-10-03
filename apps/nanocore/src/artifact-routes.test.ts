@@ -667,10 +667,14 @@ describe('Core artifact routes', () => {
           })
         );
         expect(historical.status).toBe(200);
-        const dashboard = await app.request('/api/app/workspaces/ws_demo/dashboard');
+        const dashboard = await app.request(
+          ...operationRequest('workspace.dashboard', { workspaceId: 'ws_demo' })
+        );
         expect(dashboard.status).toBe(200);
         expect(await dashboard.json()).toMatchObject({ counts: { artifactCount: 1 } });
-        const workspace = await app.request('/api/workspaces/ws_demo');
+        const workspace = await app.request(
+          ...operationRequest('workspace.read', { workspaceId: 'ws_demo' })
+        );
         expect(await workspace.json()).toMatchObject({ counts: { artifactCount: 1 } });
         const workspaces = await app.request('/api/app/operations/workspace.list', {
           method: 'POST',
@@ -683,14 +687,20 @@ describe('Core artifact routes', () => {
           )?.workspace
         ).toEqual(store.getWorkspace('ws_demo'));
         for (let attempt = 0; attempt < 2; attempt++) {
-          const renamed = await app.request('/api/workspaces/ws_demo', {
-            method: 'PATCH',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '09e42375-15b2-4fdd-8b7e-1b9e3c7f2401',
-              name: 'Outputs',
-            }),
-          });
+          const renamed = await app.request(
+            ...operationRequest(
+              'workspace.update',
+              { workspaceId: 'ws_demo' },
+              {
+                method: 'PATCH',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  requestId: '09e42375-15b2-4fdd-8b7e-1b9e3c7f2401',
+                  name: 'Outputs',
+                }),
+              }
+            )
+          );
           expect(renamed.status, await renamed.clone().text()).toBe(200);
           expect(await renamed.json()).toMatchObject({ counts: { artifactCount: 1 } });
         }

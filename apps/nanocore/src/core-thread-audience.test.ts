@@ -1,9 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
@@ -12,6 +10,7 @@ import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const STAMP = '2026-09-14T00:00:00.000Z';
@@ -407,18 +406,21 @@ describe('core Thread audience', () => {
             [denied.name as string]
           );
         const listRes = await fixture.app.request(
-          `/api/workspaces/${fixture.workspace.id}/threads`,
-          {
-            headers,
-          }
+          ...operationRequest(
+            'thread.list',
+            { workspaceId: fixture.workspace.id },
+            {
+              headers,
+            }
+          )
         );
         const listText = await listRes.text();
         expect(listRes.status, listText).toBe(200);
         const list = JSON.parse(listText) as { items: Array<{ id: string }> };
         expect(list.items.map((thread) => thread.id).sort()).toEqual(
-          [own.id, fixture.shared.id].sort()
+          [own.id, ...(actor.scope === 'server-admin' ? [denied.id] : []), fixture.shared.id].sort()
         );
-        expect(listText).not.toContain(denied.name);
+        if (actor.scope !== 'server-admin') expect(listText).not.toContain(denied.name);
       }
     } finally {
       fixture.close();
@@ -520,7 +522,7 @@ describe('core Thread audience', () => {
     }
   });
 
-  it('rejects submitTurnInput, feedback, and approval on another private Thread without effects', async () => {
+  it('denies ordinary-member turn.start, feedback and approval on private Threads and admits current administrators', async () => {
     const fixture = createCoreAudienceFixture();
     try {
       const member = bearer(
@@ -557,7 +559,7 @@ describe('core Thread audience', () => {
             }),
             method: 'POST' as const,
           },
-          path: '/api/turns',
+          path: '/api/app/operations/turn.start',
           secrets: ['start-turn-secret', 'local-private needle'],
         },
         {
@@ -575,7 +577,7 @@ describe('core Thread audience', () => {
             }),
             method: 'POST' as const,
           },
-          path: '/api/turns',
+          path: '/api/app/operations/turn.start',
           secrets: ['start-turn-secret', 'other-private needle'],
         },
         {
@@ -589,10 +591,14 @@ describe('core Thread audience', () => {
           },
           headers: member,
           init: {
-            body: JSON.stringify({ note: 'feedback-secret', rating: 'good' }),
+            body: JSON.stringify({
+              turnId: fixture.ownTurn.id,
+              note: 'feedback-secret',
+              rating: 'good',
+            }),
             method: 'POST' as const,
           },
-          path: `/api/turns/${fixture.ownTurn.id}/feedback`,
+          path: '/api/app/operations/turn.feedback',
           secrets: ['feedback-secret', 'local-private needle'],
         },
         {
@@ -606,10 +612,14 @@ describe('core Thread audience', () => {
           },
           headers: admin,
           init: {
-            body: JSON.stringify({ note: 'feedback-secret', rating: 'good' }),
+            body: JSON.stringify({
+              turnId: fixture.deniedTurn.id,
+              note: 'feedback-secret',
+              rating: 'good',
+            }),
             method: 'POST' as const,
           },
-          path: `/api/turns/${fixture.deniedTurn.id}/feedback`,
+          path: '/api/app/operations/turn.feedback',
           secrets: ['feedback-secret', 'other-private needle'],
         },
         {
@@ -634,20 +644,34 @@ describe('core Thread audience', () => {
         },
       ];
       for (const row of mutations) {
-        await expectNondisclosing404(
-          await fixture.app.request(row.path, {
-            ...row.init,
-            headers: {
-              ...(row.path.endsWith('approval.respond')
-                ? { 'x-openkit-request-id': '11111111-1111-4111-8111-111111111204' }
-                : {}),
-              ...row.headers,
-              'content-type': 'application/json',
-            },
-          }),
-          row.secrets
+        const response = await fixture.app.request(
+          ...operationRequest(
+            row.path.split('/').at(-1)!,
+            {},
+            { ...row.init, headers: row.headers }
+          )
         );
-        row.after();
+        if (row.headers === admin) {
+          if (row.path.endsWith('turn.start')) {
+            expect(response.status).toBe(409);
+            expect(await response.json()).toMatchObject({ code: 'thread_busy' });
+            row.after();
+          } else {
+            expect(response.status).toBe(200);
+            expect(await response.json()).toMatchObject({
+              turnId: fixture.deniedTurn.id,
+              rating: 'good',
+              note: 'feedback-secret',
+            });
+            expect(readTurnFeedback(fixture.store, fixture.deniedTurn.id)).toMatchObject({
+              rating: 'good',
+              note: 'feedback-secret',
+            });
+          }
+        } else {
+          await expectNondisclosing404(response, row.secrets);
+          row.after();
+        }
       }
     } finally {
       fixture.close();

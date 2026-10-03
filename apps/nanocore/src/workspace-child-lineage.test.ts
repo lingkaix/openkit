@@ -135,6 +135,18 @@ async function sendLineageRequest(
   app: ReturnType<typeof createApp>,
   request: LineageRequest
 ): Promise<Response> {
+  if (
+    request.path === '/api/app/operations/thread.update' ||
+    request.path === '/api/app/operations/thread.archive' ||
+    request.path === '/api/app/operations/turn.interrupt'
+  )
+    return app.request(
+      ...operationRequest(
+        request.path.split('/').at(-1)!,
+        {},
+        { body: JSON.stringify(request.body) }
+      )
+    );
   return app.request(request.path, {
     method: request.method ?? 'GET',
     ...(request.body === undefined
@@ -158,8 +170,6 @@ afterEach(() => {
 
 describe('Workspace child lineage', () => {
   it('denies foreign Thread reads and mutations through an authorized Workspace path', async () => {
-    const basePath = `/api/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.foreignThread.id}`;
-
     for (const request of [
       {
         path: '/api/app/operations/thread.read',
@@ -173,16 +183,22 @@ describe('Workspace child lineage', () => {
       },
       {
         method: 'PATCH',
-        path: basePath,
+        path: '/api/app/operations/thread.update',
         body: {
+          workspaceId: fixture.allowedWorkspace.id,
+          threadId: fixture.foreignThread.id,
           name: 'Do not rename this Thread',
           requestId: '00000000-0000-4000-8000-000000000401',
         },
       },
       {
         method: 'POST',
-        path: `${basePath}/archive`,
-        body: { requestId: '00000000-0000-4000-8000-000000000402' },
+        path: '/api/app/operations/thread.archive',
+        body: {
+          workspaceId: fixture.allowedWorkspace.id,
+          threadId: fixture.foreignThread.id,
+          requestId: '00000000-0000-4000-8000-000000000402',
+        },
       },
     ] satisfies LineageRequest[]) {
       await expectThreadNotFound(fixture.app, request);
@@ -260,8 +276,6 @@ describe('Workspace child lineage', () => {
   });
 
   it('denies foreign Turn reads and interrupts through an authorized Workspace path', async () => {
-    const path = `/api/workspaces/${fixture.allowedWorkspace.id}/threads/${fixture.allowedThread.id}/turns/${fixture.foreignTurn.id}`;
-
     for (const request of [
       {
         path: '/api/app/operations/turn.read',
@@ -274,7 +288,7 @@ describe('Workspace child lineage', () => {
       },
       {
         method: 'POST',
-        path: `${path}/interrupt`,
+        path: '/api/app/operations/turn.interrupt',
         body: {
           workspaceId: fixture.allowedWorkspace.id,
           threadId: fixture.allowedThread.id,

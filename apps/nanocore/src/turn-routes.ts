@@ -1,26 +1,21 @@
 import {
-  InterruptTurnRequestSchema,
   isSealedTurnTerminal,
   ProductTurnSchema,
-  SubmitTurnInputRequestSchema,
+  type SubmitTurnInputRequestSchema,
   TurnReadProjectionSchema,
   TurnSchema,
 } from '@openkit/protocol';
-import type { Context, Hono } from 'hono';
 import type { z } from 'zod';
 
-import { asApiError, asCommandError, asInvalidRequestError } from './api-errors.js';
-import type { AuthVariables } from './auth/middleware.js';
-import { assertAuthorizedWorkspaceLineage } from './auth/operation-authorizer.js';
+import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
+import { throwCoreCommandError } from './core-command-errors.js';
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
-import { registerFeedbackRoutes } from './runtime/feedback-routes.js';
 import {
   commandInputHash,
-  IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
@@ -43,157 +38,87 @@ function projectOrdinaryTurn(turn: TurnReadModel) {
   return ProductTurnSchema.parse(turn);
 }
 
-/**
- * Registers the retained Core Turn start and interrupt routes.
- *
- * @param dependencies Hono app and concrete turn persistence, scheduler, and runtime dependencies.
- */
-export function registerTurnRoutes({
-  app,
-  coreDb,
-  inflightCommands,
-  interruptInternalChatTurn,
-  providerCredentialResolver,
-  requestStore,
-  runtimeConfig,
-  schedulerEpoch,
-  turnExecutor,
-  workerPlacement,
-}: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
+/** Existing worker admission dependencies; invocation adds no Turn lifecycle. */
+export interface TurnStartDependencies {
   readonly coreDb: CoreDb | undefined;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly interruptInternalChatTurn: (store: FsStore, turnId: string) => Promise<boolean>;
   readonly providerCredentialResolver: ProviderCredentialResolver;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly schedulerEpoch: number;
   readonly turnExecutor: TurnExecutor;
   readonly workerPlacement: 'local' | 'remote';
-}): void {
-  app.post('/api/turns', async (c) => {
-    const parsed = SubmitTurnInputRequestSchema.safeParse(await c.req.json().catch(() => ({})));
+}
 
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
+/** Starts or replays the existing worker Turn after Workspace and Thread admission. */
+export async function startTurn(
+  input: z.infer<typeof SubmitTurnInputRequestSchema>,
+  store: FsStore,
+  actor: Actor,
+  dependencies: TurnStartDependencies
+) {
+  const {
+    coreDb,
+    inflightCommands,
+    providerCredentialResolver,
+    runtimeConfig,
+    schedulerEpoch,
+    turnExecutor,
+    workerPlacement,
+  } = dependencies;
+  try {
+    if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
+      throw new TurnStartValidationError(
+        'workspace_kind_not_supported',
+        'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
+      );
     }
+    store.getThread(input.workspaceId, input.threadId);
+    const turn = await runIdempotentCommand({
+      store,
+      inflightCommands,
+      command: 'turn.start',
+      requestId: input.requestId,
+      scope: { workspaceId: input.workspaceId, threadId: input.threadId },
+      input,
+      responseKind: 'turn',
+      execute: async () => {
+        const threadBusy = store
+          .listThreadTurns(input.workspaceId, input.threadId)
+          .some((turn) => !isSealedTurnTerminal(turn.status));
+        if (threadBusy) {
+          throw new TurnStartValidationError(
+            'thread_busy',
+            'Thread already has an active worker turn.',
+            409
+          );
+        }
 
-    try {
-      const input = parsed.data;
-      const store = requestStore(c);
-      if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
-        throw new TurnStartValidationError(
-          'workspace_kind_not_supported',
-          'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
-        );
-      }
-      store.getThread(input.workspaceId, input.threadId);
-      const turn = await runIdempotentCommand({
-        store,
-        inflightCommands,
-        command: 'turn.start',
-        requestId: input.requestId,
-        scope: { workspaceId: input.workspaceId, threadId: input.threadId },
-        input,
-        responseKind: 'turn',
-        execute: async () => {
-          const threadBusy = store
-            .listThreadTurns(input.workspaceId, input.threadId)
-            .some((turn) => !isSealedTurnTerminal(turn.status));
-          if (threadBusy) {
-            throw new TurnStartValidationError(
-              'thread_busy',
-              'Thread already has an active worker turn.',
-              409
-            );
-          }
+        const handle = await startProductTurn({
+          input,
+          requestActor: actor,
+          providerCredentialResolver,
+          schedulerEpoch,
+          snapshot: runtimeConfig(),
+          store,
+          triggerActor: { kind: 'user', id: actor.userId },
+          turnExecutor,
+          workerPlacement,
+          ...(coreDb ? { coreDb } : {}),
+        });
 
-          const handle = await startProductTurn({
-            input,
-            requestActor: c.get('actor'),
-            providerCredentialResolver,
-            schedulerEpoch,
-            snapshot: runtimeConfig(),
-            store,
-            triggerActor: { kind: 'user', id: c.get('actor').userId },
-            turnExecutor,
-            workerPlacement,
-            ...(coreDb ? { coreDb } : {}),
-          });
+        return TurnSchema.parse(handle.turn);
+      },
+      replay: (record) =>
+        TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, record.response.id)),
+      responseId: (result) => result.id,
+    });
 
-          return TurnSchema.parse(handle.turn);
-        },
-        replay: (record) =>
-          TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, record.response.id)),
-        responseId: (result) => result.id,
-      });
+    completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
-      completeSchedulerLeaseForTerminalTurn(coreDb, turn);
-
-      return c.json(projectOrdinaryTurn(turn), 202);
-    } catch (error) {
-      if (error instanceof IdempotencyKeyConflictError) {
-        return asCommandError(error, 'turn_start_failed');
-      }
-
-      if (error instanceof TurnStartValidationError) {
-        return asApiError(error.message, error.code, error.status);
-      }
-
-      return asCommandError(error, 'turn_start_failed');
-    }
-  });
-
-  registerFeedbackRoutes({ app, requestStore });
-
-  app.post('/api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt', async (c) => {
-    const parsed = InterruptTurnRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    const workspaceId = c.req.param('workspaceId');
-    const threadId = c.req.param('threadId');
-    const turnId = c.req.param('turnId');
-    const store = requestStore(c);
-    let ownerTurn: ReturnType<FsStore['getTurnById']>;
-
-    try {
-      ownerTurn = store.getTurnById(turnId);
-    } catch (error) {
-      return asCommandError(error, 'turn_interrupt_failed');
-    }
-
-    const workspaceAccess = c.get('workspaceAccess');
-    if (workspaceAccess) {
-      assertAuthorizedWorkspaceLineage(workspaceAccess, ownerTurn.workspaceId);
-    }
-
-    try {
-      store.getTurn(workspaceId, threadId, turnId);
-    } catch (error) {
-      return asCommandError(error, 'turn_interrupt_failed');
-    }
-
-    try {
-      const turn = await interruptProductTurn({
-        store,
-        inflightCommands,
-        interruptInternalChatTurn,
-        coreDb,
-        turnExecutor,
-        workspaceId,
-        threadId,
-        turnId,
-        requestId: parsed.data.requestId,
-      });
-
-      return c.json(projectOrdinaryTurn(turn));
-    } catch (error) {
-      return asCommandError(error, 'turn_interrupt_failed');
-    }
-  });
+    return projectOrdinaryTurn(turn);
+  } catch (error) {
+    throwCoreCommandError(error, 'turn_start_failed');
+  }
 }
 
 /** Interrupts one exact Turn through its existing command receipt and scheduler lease owner. */

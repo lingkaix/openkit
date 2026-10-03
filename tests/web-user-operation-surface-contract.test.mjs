@@ -66,10 +66,10 @@ const WEB_OPERATION_GROUPS = {
     submitAdministrationConversation: { disposition: 'live', surface: 'Administration' },
   },
   'App utilities': {
-    quickChat: { disposition: 'workflow', surface: 'Chat' },
+    'chat.quick': { disposition: 'workflow', surface: 'Chat' },
     refreshAgentHealth: { disposition: 'live', surface: 'Agents' },
     searchApp: { disposition: 'workflow', surface: 'Overview' },
-    submitTurnFeedback: { disposition: 'live', surface: 'Chat' },
+    'turn.feedback': { disposition: 'live', surface: 'Chat' },
   },
   Artifacts: {
     'artifact.import': { disposition: 'live', surface: 'Artifacts' },
@@ -130,7 +130,7 @@ const WEB_OPERATION_GROUPS = {
     'conversation.targets': { disposition: 'live', surface: 'Chat' },
     'conversation.navigation': { disposition: 'live', surface: 'Chat' },
     'thread.dashboard': { disposition: 'live', surface: 'Chat' },
-    getWorkspaceDashboard: { disposition: 'live', surface: 'Overview' },
+    'workspace.dashboard': { disposition: 'live', surface: 'Overview' },
     'attention.list': { disposition: 'live', surface: 'Overview' },
     'thread.items': { disposition: 'live', surface: 'Chat' },
   },
@@ -265,7 +265,7 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.create': { disposition: 'live', surface: 'Knowledge' },
   },
   'Core thread reads': {
-    'GET /api/workspaces/:workspaceId/threads': { disposition: 'live', surface: 'Chat' },
+    'thread.list': { disposition: 'live', surface: 'Chat' },
     'thread.read': { disposition: 'live', surface: 'Chat' },
     'GET /api/workspaces/:workspaceId/threads/:threadId/events': {
       disposition: 'live',
@@ -277,25 +277,25 @@ const WEB_OPERATION_GROUPS = {
     },
   },
   'Core turn commands': {
-    'POST /api/turns': { disposition: 'live', surface: 'Chat' },
-    'POST /api/workspaces/:workspaceId/threads/:threadId/turns/:turnId/interrupt': {
+    'turn.start': { disposition: 'live', surface: 'Chat' },
+    'turn.interrupt': {
       disposition: 'live',
       surface: 'Chat',
     },
   },
   'Core workspace lifecycle and reads': {
-    'GET /api/workspaces/:workspaceId': { disposition: 'live', surface: 'General' },
+    'workspace.read': { disposition: 'live', surface: 'General' },
     'workspace.resources': { disposition: 'workflow', surface: 'Overview' },
-    'PATCH /api/workspaces/:workspaceId': { disposition: 'live', surface: 'General' },
+    'workspace.update': { disposition: 'live', surface: 'General' },
   },
   'Core workspace and Thread writes': {
-    'PATCH /api/workspaces/:workspaceId/threads/:threadId': {
+    'thread.update': {
       disposition: 'live',
       surface: 'Chat',
     },
-    'POST /api/workspaces': { disposition: 'live', surface: 'New workspace' },
+    'workspace.create': { disposition: 'live', surface: 'New workspace' },
     'thread.create': { disposition: 'live', surface: 'Chat' },
-    'POST /api/workspaces/:workspaceId/threads/:threadId/archive': {
+    'thread.archive': {
       disposition: 'live',
       surface: 'Chat',
     },

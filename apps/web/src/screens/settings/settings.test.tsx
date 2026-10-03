@@ -742,9 +742,7 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue(META),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      getWorkspace: vi.fn().mockResolvedValue(WORKSPACE),
-      updateWorkspace: vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
+
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
@@ -753,16 +751,7 @@ function makeClient(
       setProviderApiKey: vi
         .fn()
         .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
-      getWorkspaceDashboard: vi.fn().mockResolvedValue({
-        workspace: WORKSPACE,
-        counts: WORKSPACE.counts,
-        defaultContext: { agentId: null },
-        agentHealth: [],
-        recentThreads: [],
-        activeWork: [],
-        recentCompletions: [],
-        attentionNeeded: [],
-      }),
+
       getVaultAdminStatus: vi.fn().mockResolvedValue(DEPLOYMENT_ADMIN_VAULT_STATUS),
       listWorkspaceVaultReferences: vi.fn().mockResolvedValue(VAULT_REFERENCES),
       listWorkspaceVaultGrants: vi.fn().mockResolvedValue(VAULT_GRANTS),
@@ -865,6 +854,19 @@ function makeClient(
     repositories: {},
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'workspace.read': vi.fn().mockResolvedValue(WORKSPACE),
+      'workspace.update': vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
+      'workspace.dashboard': vi.fn().mockResolvedValue({
+        workspace: WORKSPACE,
+        counts: WORKSPACE.counts,
+        defaultContext: { agentId: null },
+        agentHealth: [],
+        recentThreads: [],
+        activeWork: [],
+        recentCompletions: [],
+        attentionNeeded: [],
+      }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
 
       'workspace.resources': vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
@@ -1810,7 +1812,8 @@ describe('General settings (board 10)', () => {
 
   it('shows a skeleton while workspace settings load', async () => {
     const client = makeClient({
-      core: { getWorkspace: vi.fn().mockReturnValue(new Promise(() => {})) },
+      operations: { 'workspace.read': vi.fn().mockReturnValue(new Promise(() => {})) },
+      core: {},
     });
     renderApp('/workspace', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
@@ -1822,7 +1825,10 @@ describe('General settings (board 10)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(WORKSPACE);
-    const client = makeClient({ core: { getWorkspace } });
+    const client = makeClient({
+      operations: { 'workspace.read': getWorkspace },
+      core: {},
+    });
     renderApp('/workspace', client);
     expect(await screen.findByText(/Couldn't load settings/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -1832,7 +1838,10 @@ describe('General settings (board 10)', () => {
   it('saves the workspace display name', async () => {
     const user = userEvent.setup();
     const updateWorkspace = vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Team workspace' });
-    const client = makeClient({ core: { updateWorkspace } });
+    const client = makeClient({
+      operations: { 'workspace.update': updateWorkspace },
+      core: {},
+    });
     renderApp('/workspace', client);
 
     const nameField = await screen.findByLabelText(/Display name/i);
@@ -1841,17 +1850,16 @@ describe('General settings (board 10)', () => {
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() =>
       expect(updateWorkspace).toHaveBeenCalledWith(
-        'ws1',
-        expect.objectContaining({ name: 'Team workspace' })
+        expect.objectContaining({ workspaceId: 'ws1', name: 'Team workspace' })
       )
     );
   });
 
   it('disables Save when disconnected', async () => {
     const client = makeClient({
+      operations: { 'workspace.read': vi.fn().mockResolvedValue(WORKSPACE) },
       core: {
         meta: vi.fn().mockRejectedValue(new Error('down')),
-        getWorkspace: vi.fn().mockResolvedValue(WORKSPACE),
       },
     });
     renderApp('/workspace', client);

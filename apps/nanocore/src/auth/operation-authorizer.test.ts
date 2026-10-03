@@ -3,8 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import type { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
@@ -134,31 +139,38 @@ function createFixture() {
     workspaceMutationAdmission,
   });
 
-  app.post('/api/app/quick-chat', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.post('/api/app/administration/conversation-turns', (c) => {
-    administrationHandlerReads += 1;
-    return c.json(c.get('workspaceAccess') ?? null);
-  });
-
   registerOperationJsonRoutes({
     app,
     coreDb,
+    store,
     automationStore,
     dataRoot,
-    requestStore: () => store,
-    workspaceMutationAdmission,
-    inflightCommands: new WeakMap(),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
     closeWorkspaceMcpSessions: async () => {
       deleteWorkspaceHandlerReads += 1;
     },
+    requestStore: () => store,
+    workspaceMutationAdmission,
+    inflightCommands: new WeakMap(),
+    runtimeConfigManager: createRuntimeConfigManager({
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
+    }),
+    // This fixture tests native admission; the direct provider effect is covered by quick-chat.test.ts.
+    conversationService: {
+      quick: async (_input, _actor, workspaceId) => ({
+        id: 'reply',
+        status: 'completed',
+        workspaceId,
+        modelId: 'model',
+        content: 'Hello',
+      }),
+    } as ReturnType<typeof createConversationService>,
   });
-  app.post('/api/workspaces', (c) => c.json({ actor: c.get('actor') }));
+  app.post('/api/app/administration/conversation-turns', (c) => {
+    administrationHandlerReads += 1;
+    return c.json(c.get('workspaceAccess') ?? null);
+  });
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.post('/api/turns/:turnId/feedback', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.get('/api/app/workspaces/:workspaceId/dashboard', (c) =>
-    c.json(c.get('workspaceAccess') ?? null)
-  );
   app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
@@ -535,17 +547,20 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('derives the Quick Chat Workspace from the authenticated actor', async () => {
-    const response = await fixture.app.request('/api/app/quick-chat', {
-      body: JSON.stringify({ input: 'Hello' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await fixture.app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          body: JSON.stringify({ input: 'Hello' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      effectiveRole: 'owner',
-      kind: 'workspace',
-      policyOperation: 'turn.run',
+    await expect(response.json()).resolves.toMatchObject({
       workspaceId: fixture.quickChatWorkspace.id,
     });
   });
@@ -680,32 +695,34 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('resolves an opaque Turn to its Workspace before exposing handler access', async () => {
-    const response = await fixture.app.request(`/api/turns/${fixture.turn.id}/feedback`, {
-      body: JSON.stringify({ note: null, rating: 'good' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await fixture.app.request(
+      ...operationRequest(
+        'turn.feedback',
+        { turnId: fixture.turn.id },
+        {
+          body: JSON.stringify({ note: null, rating: 'good' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      effectiveRole: 'owner',
-      kind: 'workspace',
-      policyOperation: 'workspace.write',
-      workspaceId: fixture.workspace.id,
+    await expect(response.json()).resolves.toMatchObject({
+      turnId: fixture.turn.id,
+      rating: 'good',
+      note: null,
     });
   });
 
   it('authorizes a route-declared Workspace from Core facts', async () => {
     const response = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      effectiveRole: 'owner',
-      kind: 'workspace',
-      policyOperation: 'workspace.read',
-      workspaceId: fixture.workspace.id,
+    await expect(response.json()).resolves.toMatchObject({
+      workspace: { id: fixture.workspace.id },
     });
   });
 
@@ -737,11 +754,11 @@ describe('central Workspace operation authorizer', () => {
   it('returns one non-enumerating denial for missing and removed membership', async () => {
     fixture.actorState.current = { kind: 'session', userId: 'user_missing' };
     const missing = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
     fixture.actorState.current = { kind: 'session', userId: 'user_removed' };
     const removed = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
     const missingBody = await missing.json();
     const removedBody = await removed.json();
@@ -754,7 +771,7 @@ describe('central Workspace operation authorizer', () => {
 
   it('uses catalog mutation posture to cap readonly tokens', async () => {
     expect(PUBLIC_OPERATION_ACCESS['automation.create']).toMatchObject({ mutating: true });
-    expect(PUBLIC_OPERATION_ACCESS.getWorkspaceDashboard).toMatchObject({ mutating: false });
+    expect(PUBLIC_OPERATION_ACCESS['workspace.dashboard']).toMatchObject({ mutating: false });
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -770,7 +787,9 @@ describe('central Workspace operation authorizer', () => {
       userId: 'user_local',
     };
 
-    const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
+    const read = await fixture.app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
+    );
     const mutation = await fixture.app.request(
       ...operationRequest(
         'automation.create',
@@ -801,7 +820,9 @@ describe('central Workspace operation authorizer', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const read = await fixture.app.request(`/api/app/workspaces/${fixture.workspace.id}/dashboard`);
+    const read = await fixture.app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
+    );
     const mutation = await fixture.app.request(
       ...operationRequest(
         'automation.create',
@@ -845,15 +866,12 @@ describe('central Workspace operation authorizer', () => {
     };
 
     const response = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      effectiveRole: 'owner',
-      kind: 'workspace',
-      policyOperation: 'workspace.read',
-      workspaceId: fixture.workspace.id,
+      workspace: { id: fixture.workspace.id },
     });
   });
 
@@ -874,19 +892,30 @@ describe('central Workspace operation authorizer', () => {
     };
 
     const dashboard = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
     const collection = await fixture.app.request('/api/app/operations/workspace.list', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const create = await fixture.app.request('/api/workspaces', { method: 'POST' });
+    const create = await fixture.app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Created by administrator',
+            requestId: '00000000-0000-4000-8000-000000000001',
+          }),
+        }
+      )
+    );
 
     expect(dashboard.status).toBe(200);
     await expect(dashboard.json()).resolves.toMatchObject({
-      effectiveRole: 'owner',
-      workspaceId: fixture.workspace.id,
+      workspace: { id: fixture.workspace.id },
     });
     expect(collection.status).toBe(200);
     const collectionBody = (await collection.json()) as { items: { workspace: { id: string } }[] };
@@ -899,7 +928,7 @@ describe('central Workspace operation authorizer', () => {
       ])
     );
     expect(workspaceIds).not.toContain(fixture.filesystemOnlyWorkspace.id);
-    expect(create.status).toBe(200);
+    expect(create.status).toBe(201);
   });
 
   it('still denies revoked server-admin bearer tokens for Workspace product routes', async () => {
@@ -924,9 +953,21 @@ describe('central Workspace operation authorizer', () => {
     };
 
     const response = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
-    const create = await fixture.app.request('/api/workspaces', { method: 'POST' });
+    const create = await fixture.app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: 'Created by administrator',
+            requestId: '00000000-0000-4000-8000-000000000001',
+          }),
+        }
+      )
+    );
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
@@ -955,8 +996,9 @@ describe('central Workspace operation authorizer', () => {
     expect(withoutAdmin.status).toBe(403);
     expect(withAdmin.status).toBe(200);
     await expect(withAdmin.json()).resolves.toMatchObject({
-      effectiveRole: 'owner',
+      kind: 'workspace',
       workspaceId: fixture.workspace.id,
+      effectiveRole: 'owner',
     });
     expect(afterRevocation.status).toBe(403);
   });
@@ -1000,8 +1042,9 @@ describe('central Workspace operation authorizer', () => {
     expect(allowed.status).toBe(200);
     expect(withoutMembership.status).toBe(200);
     await expect(withoutMembership.json()).resolves.toMatchObject({
-      effectiveRole: 'owner',
+      kind: 'workspace',
       workspaceId: fixture.workspace.id,
+      effectiveRole: 'owner',
     });
   });
 
@@ -1021,7 +1064,7 @@ describe('central Workspace operation authorizer', () => {
       userId: 'user_local',
     };
     const unbound = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
 
     fixture.actorState.current = {
@@ -1029,15 +1072,14 @@ describe('central Workspace operation authorizer', () => {
       tokenWorkspaceIds: [fixture.workspace.id],
     };
     const bound = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
 
     expect(unbound.status).toBe(403);
     await expect(unbound.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     expect(bound.status).toBe(200);
     await expect(bound.json()).resolves.toMatchObject({
-      effectiveRole: 'owner',
-      workspaceId: fixture.workspace.id,
+      workspace: { id: fixture.workspace.id },
     });
   });
 
@@ -1176,7 +1218,7 @@ describe('central Workspace operation authorizer', () => {
 
     const retry = await requestWorkspaceDeletion(fixture.workspace.id);
     const content = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/dashboard`
+      ...operationRequest('workspace.dashboard', { workspaceId: fixture.workspace.id })
     );
 
     expect(retry.status, await retry.clone().text()).toBe(409);

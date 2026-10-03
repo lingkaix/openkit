@@ -101,8 +101,7 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
-      startTurn: vi.fn(),
+
       ...overrides.core,
     },
     app: {
@@ -131,6 +130,8 @@ function makeClient(
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'turn.start': vi.fn(),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
 
       'artifact.read': vi.fn().mockResolvedValue(ARTIFACT),
@@ -336,7 +337,7 @@ describe('Artifact Review S14', () => {
         ...(feedback ? { decision, feedback } : { decision }),
       })
     );
-    expect(client.core.startTurn).not.toHaveBeenCalled();
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
   });
 

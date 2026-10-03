@@ -9,7 +9,6 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { createApp } from './app.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
@@ -168,16 +167,22 @@ describe('quick chat app API', () => {
     const turn = store.listThreadTurns('ws_demo', 'th_demo')[0]!;
     expect(turn.status).toBe('running');
     const interrupt = (threadId = 'th_demo') =>
-      app.request(`/api/workspaces/ws_demo/threads/${threadId}/turns/${turn.id}/interrupt`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000901',
-          workspaceId: 'ws_demo',
-          threadId,
-          turnId: turn.id,
-        }),
-      });
+      app.request(
+        ...operationRequest(
+          'turn.interrupt',
+          { workspaceId: 'ws_demo', threadId: threadId, turnId: turn.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000901',
+              workspaceId: 'ws_demo',
+              threadId,
+              turnId: turn.id,
+            }),
+          }
+        )
+      );
     try {
       const wrongThread = await interrupt('th_wrong');
       expect(wrongThread.status).toBe(404);
@@ -198,17 +203,20 @@ describe('quick chat app API', () => {
       const replay = await interrupt();
       expect(replay.status).toBe(200);
       const freshStop = await app.request(
-        `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000903',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-          }),
-        }
+        ...operationRequest(
+          'turn.interrupt',
+          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000903',
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: turn.id,
+            }),
+          }
+        )
       );
       expect(freshStop.status).toBe(409);
       await expect(freshStop.json()).resolves.toMatchObject({ code: 'turn_not_interruptible' });
@@ -244,16 +252,22 @@ describe('quick chat app API', () => {
       const coldInterrupt = await createAppWithWorkspaceAuthority({
         ...appOptions,
         store: new FsStore({ dataRoot }),
-      }).request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: '00000000-0000-4000-8000-000000000901',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-          turnId: turn.id,
-        }),
-      });
+      }).request(
+        ...operationRequest(
+          'turn.interrupt',
+          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '00000000-0000-4000-8000-000000000901',
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              turnId: turn.id,
+            }),
+          }
+        )
+      );
       expect(coldInterrupt.status).toBe(200);
       await expect(coldInterrupt.json()).resolves.toMatchObject({
         id: turn.id,
@@ -401,16 +415,22 @@ describe('quick chat app API', () => {
     });
     try {
       const stop = () =>
-        app.request(`/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: '00000000-0000-4000-8000-000000000902',
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            turnId: turn.id,
-          }),
-        });
+        app.request(
+          ...operationRequest(
+            'turn.interrupt',
+            { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000902',
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                turnId: turn.id,
+              }),
+            }
+          )
+        );
       const requests = failure === 'interrupt receipt' ? [stop(), stop()] : [stop()];
       const [stopped, concurrent] = await Promise.all(requests);
       expect(stopped.status).toBe(409);
@@ -480,17 +500,20 @@ describe('quick chat app API', () => {
       }
       if (failure === 'interrupt receipt') {
         const stopReplay = await app.request(
-          `/api/workspaces/ws_demo/threads/th_demo/turns/${turn.id}/interrupt`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              requestId: '00000000-0000-4000-8000-000000000902',
-              workspaceId: 'ws_demo',
-              threadId: 'th_demo',
-              turnId: turn.id,
-            }),
-          }
+          ...operationRequest(
+            'turn.interrupt',
+            { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: '00000000-0000-4000-8000-000000000902',
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                turnId: turn.id,
+              }),
+            }
+          )
         );
         expect(stopReplay.status).toBe(409);
         await expect(stopReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
@@ -677,16 +700,17 @@ describe('quick chat app API', () => {
     await expect(response.json()).resolves.toMatchObject({ defaultTargetRef: 'new-task-worker' });
   });
 
-  it('keeps Quick Chat, Chat Mode, and Task Mode route ownership outside app composition', () => {
+  it('keeps chat.quick, conversation.submit and task.start domain ownership outside app composition', () => {
     const appSource = readFileSync('./src/app.ts', 'utf8');
     const modeEntrySource = readFileSync('./src/mode-entry-routes.ts', 'utf8');
 
-    expect(appSource).toContain('registerQuickAndChatModeRoutes({');
+    expect(appSource).toContain('createConversationService({');
     expect(appSource).toContain('createTaskStartOperation({');
     expect(appSource).not.toContain("registerAppApiRoute(app, 'quickChat'");
     expect(appSource).not.toContain("registerAppApiRoute(app, 'submitConversation'");
     expect(appSource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
-    expect(modeEntrySource).toContain("registerAppApiRoute(app, 'quickChat'");
+    expect(modeEntrySource).toContain('async function quick(');
+    expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'quickChat'");
     expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'submitConversation'");
     expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
     expect(appSource).not.toContain('InternalAgentRunner');
@@ -1956,7 +1980,8 @@ describe('quick chat app API', () => {
   });
   it('logs a redacted unexpected Quick Chat error at the existing console sink', async () => {
     const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -1966,11 +1991,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
     try {
-      const response = await app.request('/api/app/quick-chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ input: 'Hello' }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'chat.quick',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ input: 'Hello' }),
+          }
+        )
+      );
       expect(response.status).toBe(500);
       expect(await response.json()).toMatchObject({
         code: 'quick_chat_failed',
@@ -1990,7 +2021,8 @@ describe('quick chat app API', () => {
       request: Parameters<PiAiGatewayClient['createChatCompletion']>[1];
     }> = [];
 
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2013,11 +2045,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Route this.' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'Route this.' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
@@ -2050,17 +2088,24 @@ describe('quick chat app API', () => {
     ],
   ])('rejects %s before provider dispatch', async (_label, body) => {
     const createChatCompletion = vi.fn();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: { createChatCompletion } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body,
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({ code: 'invalid_request' });
@@ -2068,7 +2113,8 @@ describe('quick chat app API', () => {
   });
 
   it('rejects missing assistant content at the direct provider boundary', async () => {
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2082,11 +2128,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Return no choice.' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'Return no choice.' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(502);
     await expect(res.json()).resolves.toMatchObject({ code: 'provider_response_invalid' });
@@ -2095,7 +2147,8 @@ describe('quick chat app API', () => {
   it('maps the bounded role timeout without exposing the platform abort reason', async () => {
     const timeoutController = new AbortController();
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeoutController.signal);
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2109,11 +2162,17 @@ describe('quick chat app API', () => {
     });
 
     try {
-      const res = await app.request('/api/app/quick-chat', {
-        method: 'POST',
-        body: JSON.stringify({ input: 'Time out.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'chat.quick',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({ input: 'Time out.' }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(504);
       await expect(res.json()).resolves.toMatchObject({
@@ -2127,7 +2186,8 @@ describe('quick chat app API', () => {
 
   it('maps caller cancellation at the direct provider boundary', async () => {
     const abortController = new AbortController();
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2139,12 +2199,18 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Cancel this.' }),
-      headers: { 'content-type': 'application/json' },
-      signal: abortController.signal,
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'Cancel this.' }),
+          headers: { 'content-type': 'application/json' },
+          signal: abortController.signal,
+        }
+      )
+    );
 
     expect(res.status).toBe(499);
     await expect(res.json()).resolves.toMatchObject({
@@ -2154,7 +2220,8 @@ describe('quick chat app API', () => {
   });
 
   it('redacts unexpected direct provider failures', async () => {
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2164,11 +2231,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Fail safely.' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'Fail safely.' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
     const body = await res.json();
 
     expect(res.status).toBe(500);
@@ -2181,7 +2254,8 @@ describe('quick chat app API', () => {
 
   it('answers with the configured quick-chat provider without starting an AgentSession', async () => {
     const seenRequests: Array<{ metadata?: unknown; prompt_cache_key?: unknown }> = [];
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...createQuickChatProviderOptions(),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
@@ -2205,11 +2279,17 @@ describe('quick chat app API', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'How is the weather?' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'How is the weather?' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -2246,7 +2326,8 @@ describe('quick chat app API', () => {
         backendKind: 'encrypted-file',
       });
 
-      const app = createApp({
+      const app = createAppWithWorkspaceAuthority({
+        store: createDemoStore(),
         coreDb,
         dataRoot,
         gatewayConfig: {
@@ -2311,11 +2392,17 @@ describe('quick chat app API', () => {
         vaultUnlockState,
       });
 
-      const res = await app.request('/api/app/quick-chat', {
-        method: 'POST',
-        body: JSON.stringify({ input: 'Use the vault provider.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'chat.quick',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({ input: 'Use the vault provider.' }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({
@@ -2348,7 +2435,8 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
 
     try {
-      const app = createApp({
+      const app = createAppWithWorkspaceAuthority({
+        store: createDemoStore(),
         ...createQuickChatProviderOptions(),
         coreDb,
         turnExecutor: new ThrowingTurnExecutor(),
@@ -2374,11 +2462,17 @@ describe('quick chat app API', () => {
         } as unknown as PiAiGatewayClient,
       });
 
-      const res = await app.request('/api/app/quick-chat', {
-        method: 'POST',
-        body: JSON.stringify({ input: 'Track usage.' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const res = await app.request(
+        ...operationRequest(
+          'chat.quick',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({ input: 'Track usage.' }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       expect(res.status).toBe(200);
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_quick_chat');
@@ -2418,15 +2512,23 @@ describe('quick chat app API', () => {
   });
 
   it('returns a config error when no quick-chat provider is selected', async () => {
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
+      providerRegistry: new ProviderRegistry([]),
       turnExecutor: new ThrowingTurnExecutor(),
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'How many active threads?' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'How many active threads?' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({
@@ -2447,7 +2549,8 @@ describe('quick chat app API', () => {
     const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models: pairModels }));
     const piAiClient = new PiAiGatewayClient();
     const createResponses = vi.spyOn(piAiClient, 'createResponses');
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -2498,11 +2601,17 @@ describe('quick chat app API', () => {
       } as unknown as ProviderSubscriptionAccountManager,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'Ping' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'Ping' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status, await res.clone().text()).toBe(200);
     expect(getPairHandle).toHaveBeenCalledWith({
@@ -2549,7 +2658,8 @@ describe('slice 1d round 2 Quick Chat deadline', () => {
         ],
       };
     });
-    const app = createApp({
+    const app = createAppWithWorkspaceAuthority({
+      store: createDemoStore(),
       ...options,
       providerRegistry: new ProviderRegistry([
         { id: 'ollama', displayName: 'Primary', kind: 'local', models: ['openai/gpt-5.2'] },
@@ -2560,11 +2670,17 @@ describe('slice 1d round 2 Quick Chat deadline', () => {
     });
     try {
       const before = Date.now();
-      const pending = app.request('/api/app/quick-chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ input: 'Hello' }),
-      });
+      const pending = app.request(
+        ...operationRequest(
+          'chat.quick',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ input: 'Hello' }),
+          }
+        )
+      );
       await vi.runAllTimersAsync();
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(200);

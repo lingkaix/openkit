@@ -1,11 +1,15 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
-import { createApp } from '../test-support/app.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { feedbackFilePath, readTurnFeedback } from './feedback.js';
 
 /**
@@ -75,11 +79,17 @@ describe('turn feedback', () => {
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
-    const res = await app.request(`/api/turns/${turn.id}/feedback`, {
-      body: JSON.stringify({ note: 'Worked well.', rating: 'good' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'turn.feedback',
+        { turnId: turn.id },
+        {
+          body: JSON.stringify({ note: 'Worked well.', rating: 'good' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -103,11 +113,17 @@ describe('turn feedback', () => {
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const app = createApp({ store });
 
-    const res = await app.request(`/api/turns/${turn.id}/feedback`, {
-      body: JSON.stringify({ note: 'Invalid rating.', rating: 'ok' }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'turn.feedback',
+        { turnId: turn.id },
+        {
+          body: JSON.stringify({ note: 'Invalid rating.', rating: 'ok' }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toMatchObject({
@@ -137,17 +153,47 @@ describe('turn feedback', () => {
       id: 'user_local',
     });
     ownerStore.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => coreDb.sqlite.close());
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    for (const userId of ['user_1', 'user_2']) {
+      coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT ?, kind, display_name, ?, email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'user_local'"
+        )
+        .run(userId, `${userId}@local.openkit.invalid`);
+    }
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_1', workspaceId: workspace.id });
+    coreDb.sqlite
+      .prepare(
+        "INSERT INTO workspace_members (workspace_id, user_id, access_level, status, revision, joined_at, created_at, updated_at) VALUES (?, 'user_2', 'editor', 'active', 1, ?, ?, ?)"
+      )
+      .run(
+        workspace.id,
+        new Date().toISOString(),
+        new Date().toISOString(),
+        new Date().toISOString()
+      );
     const app = createApp({
+      coreDb,
+      store: ownerStore,
       auth: createHeaderAuthStub(),
       dataRoot,
       mode: 'server',
     });
 
-    const res = await app.request(`/api/turns/${turn.id}/feedback`, {
-      body: JSON.stringify({ note: 'Shared feedback.', rating: 'bad' }),
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user_2' },
-      method: 'POST',
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'turn.feedback',
+        { turnId: turn.id },
+        {
+          body: JSON.stringify({ note: 'Shared feedback.', rating: 'bad' }),
+          headers: { 'content-type': 'application/json', 'x-user-id': 'user_2' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     expect(readTurnFeedback(ownerStore, turn.id)).toMatchObject({

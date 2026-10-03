@@ -5,6 +5,7 @@ import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 describe('quick-chat workspace mode', () => {
   it('seeds a special lightweight workspace for simple provider-backed prompts', async () => {
@@ -27,6 +28,7 @@ describe('quick-chat workspace mode', () => {
 
   it('uses the quick-chat workspace when no workspace is selected', async () => {
     const app = createApp({
+      store: new FsStore(),
       gatewayConfig: createTestGatewayConfig(),
       internalRoleProfiles: {
         schemaVersion: 1,
@@ -59,11 +61,17 @@ describe('quick-chat workspace mode', () => {
       } as unknown as PiAiGatewayClient,
     });
 
-    const res = await app.request('/api/app/quick-chat', {
-      method: 'POST',
-      body: JSON.stringify({ input: 'What is nanocore?' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'chat.quick',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ input: 'What is nanocore?' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({

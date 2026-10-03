@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { applyEdits, modify, parse } from 'jsonc-parser';
 
 import {
   assertBuilt,
@@ -329,7 +330,7 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
     );
 
     const workspace = await awaitRelayDeadline(
-      clients.core.core.createWorkspace({
+      clients.core.operations['workspace.create']({
         name: 'Worker Responses relay acceptance',
       }),
       timeoutMs,
@@ -341,7 +342,7 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
       'Workspace id was not returned.'
     );
 
-    const codex = await runSelectedAgentRelay(clients.core, {
+    const codex = await runSelectedAgentRelay(clients.core, clients.admin.runtimeConfig, {
       agentId: CODEX_AGENT_ID,
       effectfulTimeout,
       expectedImageRef: prerequisites.config.codexImageRef,
@@ -349,7 +350,7 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
       timeoutMs,
       workspaceId,
     });
-    const opencode = await runSelectedAgentRelay(clients.core, {
+    const opencode = await runSelectedAgentRelay(clients.core, clients.admin.runtimeConfig, {
       agentId: OPENCODE_AGENT_ID,
       effectfulTimeout,
       expectedImageRef: prerequisites.config.opencodeImageRef,
@@ -418,24 +419,69 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
 }
 
 /**
- * Selects one Workspace default agent and asserts its product-safe Responses relay.
+ * Selects one Workspace default through revision-protected configuration and asserts its Task relay.
  *
  * @param {Record<string, any>} client Composed Core Client.
+ * @param {Record<string, any>} configuration Existing administrator configuration client.
  * @param {{ agentId: string, effectfulTimeout: { unknown: boolean }, expectedImageRef: string, reviewIds: Set<string>, timeoutMs: number, workspaceId: string }} input Agent selection.
  * @returns {Promise<{ model: string, providerId: string }>} Observed AEP gateway route identity.
  */
-async function runSelectedAgentRelay(client, input) {
-  const workspace = await awaitRelayDeadline(
-    client.core.updateWorkspace(input.workspaceId, {
-      defaults: { defaultAgentId: input.agentId },
+async function runSelectedAgentRelay(client, configuration, input) {
+  const fileId = `workspaces/${input.workspaceId}/workspace.jsonc`;
+  const files = await awaitRelayDeadline(configuration.listFiles(), input.timeoutMs);
+  if (!files.files.some((file) => file.id === fileId && file.exists)) {
+    await awaitRelayDeadline(
+      configuration.createFile({ id: fileId, kind: 'workspace', expectedRevision: null }),
+      input.timeoutMs,
+      input.effectfulTimeout
+    );
+  }
+  const source = await awaitRelayDeadline(configuration.getFile(fileId), input.timeoutMs);
+  assert(
+    typeof source.file.revision === 'string' && source.file.revision.length > 0,
+    'Workspace configuration revision is missing.'
+  );
+  const updated = await awaitRelayDeadline(
+    configuration.updateFile({
+      id: fileId,
+      kind: 'workspace',
+      expectedRevision: source.file.revision,
+      content: applyEdits(
+        source.content,
+        modify(source.content, ['workspace', 'defaultAgentId'], input.agentId, {})
+      ),
     }),
     input.timeoutMs,
     input.effectfulTimeout
   );
   assert(
-    workspace.defaults?.defaultAgentId === input.agentId,
-    'Workspace defaultAgentId was not updated to the selected relay agent.'
+    !updated.diagnostics.some((entry) => entry.severity === 'error'),
+    'Workspace configuration update was not valid.'
   );
+  const reload = await awaitRelayDeadline(
+    configuration.reload({ mode: 'safe' }),
+    input.timeoutMs,
+    input.effectfulTimeout
+  );
+  assert(
+    reload.status === 'applied' &&
+      reload.plan.rejected.length === 0 &&
+      reload.plan.requiresRestart.length === 0 &&
+      reload.runtimeConfig.pendingRestart.length === 0,
+    'Workspace agent configuration did not activate for subsequent Turns.'
+  );
+  const readback = await awaitRelayDeadline(configuration.getFile(fileId), input.timeoutMs);
+  assert(
+    readback.file.revision === updated.file.revision,
+    'Workspace configuration revision changed before readback.'
+  );
+  const errors = [];
+  const authored = parse(readback.content, errors);
+  assert(
+    errors.length === 0 && authored?.workspace?.defaultAgentId === input.agentId,
+    'Workspace configuration did not retain the selected relay agent.'
+  );
+  const defaultAgentId = authored.workspace.defaultAgentId;
 
   const thread = await awaitRelayDeadline(
     client.operations['thread.create']({
@@ -469,6 +515,10 @@ async function runSelectedAgentRelay(client, input) {
     typeof task.turn?.id === 'string' && task.turn.id.length > 0,
     'Task Mode response did not include a turn id.'
   );
+  assert(
+    task.turn.agentId === input.agentId,
+    'Task evidence did not select the configured relay agent.'
+  );
   assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
 
   const [threadResponse, aepRead, usage] = await awaitRelayDeadline(
@@ -484,7 +534,7 @@ async function runSelectedAgentRelay(client, input) {
     aep: aepRead,
     agentId: input.agentId,
     capabilityCalls: usage?.capabilityCalls ?? [],
-    defaultAgentId: workspace.defaults.defaultAgentId,
+    defaultAgentId,
     expectedImageRef: input.expectedImageRef,
     packageSnapshotId: aepRecord?.snapshotId,
     threadItems: threadResponse?.items ?? [],

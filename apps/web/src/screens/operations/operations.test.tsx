@@ -350,11 +350,10 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
+
       ...core,
     },
     app: {
-      getWorkspaceDashboard: vi.fn().mockResolvedValue({ activeWork: [] }),
       search: vi.fn().mockResolvedValue({ items: [SEARCH_THREAD] }),
       ...app,
     },
@@ -373,6 +372,8 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
       'scheduler.retry': vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION),
       'scheduler.cancel': vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION),
 
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
+      'workspace.dashboard': vi.fn().mockResolvedValue({ activeWork: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
 
@@ -3259,7 +3260,7 @@ describe('Recovery and search', () => {
       {
         search: vi.fn().mockResolvedValue({ items: scenario.items }),
         'thread.dashboard': getThreadDashboard,
-        getWorkspaceDashboard,
+        'workspace.dashboard': getWorkspaceDashboard,
         'conversation.navigation': listConversationNavigation,
       },
       {
@@ -3307,7 +3308,7 @@ describe('Recovery and search', () => {
       expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id })
     );
     const workspaceAReadsBeforeDestination = [
-      getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
+      getWorkspaceDashboard.mock.calls.filter(([input]) => input.workspaceId === WORKSPACE.id)
         .length,
       getThread.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id).length,
       getThreadDashboard.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)
@@ -3326,7 +3327,7 @@ describe('Recovery and search', () => {
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE_B.id);
     expect(events).toEqual(['workspace', 'navigate']);
     expect([
-      getWorkspaceDashboard.mock.calls.filter(([workspaceId]) => workspaceId === WORKSPACE.id)
+      getWorkspaceDashboard.mock.calls.filter(([input]) => input.workspaceId === WORKSPACE.id)
         .length,
       getThread.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id).length,
       getThreadDashboard.mock.calls.filter(([argument]) => argument.workspaceId === WORKSPACE.id)

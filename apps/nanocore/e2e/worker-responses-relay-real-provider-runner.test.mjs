@@ -185,7 +185,54 @@ function createRelayStandIn(options = {}) {
       turnId: 'turn_opencode',
     },
   ];
+  let configExists = false;
+  let revision = 1;
+  let configContent = JSON.stringify({
+    workspace: { name: 'Relay Workspace', roots: [] },
+    extensions: { sentinel: 'preserve' },
+  });
   let defaultAgentId = null;
+  const configCalls = [];
+  const configuration = {
+    listFiles: async () => ({
+      files: [{ id: `workspaces/${workspaceId}/workspace.jsonc`, exists: configExists }],
+    }),
+    createFile: async (input) => {
+      assert.equal(configExists, false);
+      assert.equal(input.id, `workspaces/${workspaceId}/workspace.jsonc`);
+      assert.equal(input.kind, 'workspace');
+      assert.equal(input.expectedRevision, null);
+      configCalls.push({ operation: 'createFile', ...input });
+      configExists = true;
+      return { file: { id: input.id, revision: String(revision) }, diagnostics: [] };
+    },
+    getFile: async (id) => {
+      assert.equal(configExists, true);
+      configCalls.push({ operation: 'getFile', id, revision });
+      return { file: { id, revision: String(revision) }, content: configContent };
+    },
+    updateFile: async (input) => {
+      assert.equal(input.id, `workspaces/${workspaceId}/workspace.jsonc`);
+      assert.equal(input.kind, 'workspace');
+      assert.equal(input.expectedRevision, String(revision));
+      assert.deepEqual(JSON.parse(input.content).extensions, { sentinel: 'preserve' });
+      assert.deepEqual(JSON.parse(input.content).workspace.roots, []);
+      configCalls.push({ operation: 'updateFile', ...input });
+      configContent = input.content;
+      revision += 1;
+      return { file: { id: input.id, revision: String(revision) }, diagnostics: [] };
+    },
+    reload: async () => {
+      configCalls.push({ operation: 'reload' });
+      defaultAgentId = JSON.parse(configContent).workspace.defaultAgentId;
+      selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
+      return {
+        status: options.failActivation ? 'rejected' : 'applied',
+        plan: { rejected: [], requiresRestart: [] },
+        runtimeConfig: { pendingRestart: [] },
+      };
+    },
+  };
   let selectedTurn = turns[0];
 
   const observationFor = (turn) => {
@@ -236,14 +283,6 @@ function createRelayStandIn(options = {}) {
         items: turns.map((turn) => observationFor(turn).aepItem),
       }),
     },
-    core: {
-      createWorkspace: async () => ({ id: workspaceId }),
-      updateWorkspace: async (_workspaceId, input) => {
-        defaultAgentId = input?.defaults?.defaultAgentId ?? defaultAgentId;
-        selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
-        return { defaults: { defaultAgentId }, id: workspaceId };
-      },
-    },
     operations: {
       'sync.review-decide': async ({
         workspaceId: receivedWorkspaceId,
@@ -266,10 +305,17 @@ function createRelayStandIn(options = {}) {
         }
         return { review: { id: receivedReviewId, status: 'rejected' } };
       },
+      'workspace.create': async () => ({ id: workspaceId }),
+      'workspace.update': async () => {
+        throw new Error('Workspace update cannot configure defaults.');
+      },
       'task.start': async () => ({
         evidence: { reviewIds: [reviewId] },
         state: 'completed',
-        turn: { id: selectedTurn.turnId },
+        turn: {
+          id: selectedTurn.turnId,
+          agentId: options.wrongTaskAgent ? 'wrong_agent' : selectedTurn.agentId,
+        },
       }),
 
       'thread.create': async () => ({ id: `thread_${selectedTurn.agentId}` }),
@@ -281,8 +327,10 @@ function createRelayStandIn(options = {}) {
 
   return {
     cleanupCalls,
+    configCalls,
     clients: {
       admin: {
+        runtimeConfig: configuration,
         app: {
           getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
         },
@@ -804,6 +852,27 @@ describe('worker Responses relay real-provider L3 test policy', () => {
       });
       const resultPath = join(evidenceDir, RESULT_FILE);
       assert.equal(result.status, 'passed');
+      assert.deepEqual(
+        standIn.configCalls.map((call) => call.operation),
+        [
+          'createFile',
+          'getFile',
+          'updateFile',
+          'reload',
+          'getFile',
+          'getFile',
+          'updateFile',
+          'reload',
+          'getFile',
+        ]
+      );
+      assert.deepEqual(
+        standIn.configCalls
+          .filter((call) => call.operation === 'updateFile')
+          .map((call) => call.expectedRevision),
+        ['1', '2']
+      );
+
       assert.equal(existsSync(resultPath), true);
       assert.equal(statSync(resultPath).mode & 0o777, 0o600);
       assert.equal(existsSync(join(evidenceDir, FAILURE_FILE)), false);
@@ -925,6 +994,27 @@ describe('worker Responses relay real-provider L3 test policy', () => {
         stdout: () => {},
       });
       assert.equal(result.status, 'passed');
+      assert.deepEqual(
+        standIn.configCalls.map((call) => call.operation),
+        [
+          'createFile',
+          'getFile',
+          'updateFile',
+          'reload',
+          'getFile',
+          'getFile',
+          'updateFile',
+          'reload',
+          'getFile',
+        ]
+      );
+      assert.deepEqual(
+        standIn.configCalls
+          .filter((call) => call.operation === 'updateFile')
+          .map((call) => call.expectedRevision),
+        ['1', '2']
+      );
+
       assert.equal(result.model, observedModel);
       assert.equal(result.providerId, observedProviderId);
       assert.notEqual(result.model, 'env-unvalidated-model');
@@ -1264,3 +1354,30 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     );
   });
 });
+
+for (const [name, options] of [
+  ['activation refusal', { failActivation: true }],
+  ['contradictory Task agent', { wrongTaskAgent: true }],
+]) {
+  it(`refuses relay acceptance after ${name}`, async () => {
+    const { runWorkerResponsesRelayRealProviderTest } = await loadRunner();
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-relay-configuration-refusal-'));
+    const evidenceDir = join(tempRoot, 'evidence');
+    const standIn = createRelayStandIn(options);
+    try {
+      await assert.rejects(
+        runWorkerResponsesRelayRealProviderTest({
+          clients: standIn.clients,
+          env: enabledEnv({ OPENKIT_L6_EVIDENCE_DIR: evidenceDir }),
+          fetchImpl: refuseNetwork(),
+          stdout: () => {},
+        })
+      );
+      assert.equal(existsSync(join(evidenceDir, RESULT_FILE)), false);
+      const failure = readRelayFailureEvidence(evidenceDir).failure;
+      assert.equal(failure.kind, 'assertion');
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+}

@@ -18,7 +18,7 @@ kind: boundary
 
 - Schema contents and their package boundaries. `packages/protocol` and `packages/app-api-schemas` own their schemas; `docs/core/protocol.md`, `docs/core/contract-evolution.md`, and `docs/specs/20260528-core_client_boundary.md` own the layering.
 - The `@openkit/core-client` SDK design and sub-client composition (`docs/specs/20260528-core_client_boundary.md`).
-- The Core HTTP/SSE projection under `/api/workspaces`, `/api/turns`, and related Core routes. `@openkit/protocol`, `@openkit/core-client`, `docs/core/protocol.md`, and `docs/core/communication.md` own that transport projection.
+- The Core metadata and Thread SSE projection, including `/api/meta` and `/api/workspaces/:workspaceId/threads/:threadId/events`. `@openkit/protocol`, `@openkit/core-client`, `docs/core/protocol.md`, and `docs/core/communication.md` own that transport projection.
 - Protocol event envelope, SSE semantics, stream cursors, and replay (`docs/core/protocol.md`, `docs/core/communication.md`).
 - Route behavior, auth semantics (`docs/specs/20260704-remote_auth_credential_bootstrap.md`), or any endpoint's business contract.
 - The gateway's OpenAI-compatible `/v1/*` surface, which follows external OpenAI compatibility (`docs/specs/20260526-llm_gateway_responses_api.md`), not this projection.
@@ -124,6 +124,9 @@ Until a resource family is cut over, the accepted implementation of that family 
 ## Current Implementation Projection
 
 The fifteen Workspace synchronization descriptors derive from `packages/app-api-schemas/src/sync-operations.ts` at `POST /api/app/operations/<sync.id>`, with complete selector inputs and request-identity headers on both decisions. The generated document contains their definition input and output components; the former synchronization paths and hand-written components are absent.
+
+The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.
+
 
 Automation, Scheduler and Recovery now derive all nine JSON operation bindings from their browser-safe family definition tables. The former hand-maintained descriptors and their unused component projections are absent. The generic success-status projection omits response content for a declared HTTP 204; automation deletion is covered by the exact operation/component and bodyless-success regression.
 

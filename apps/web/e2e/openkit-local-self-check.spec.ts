@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test';
+import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
@@ -308,9 +309,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
 
   await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
-  const answerResponse = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && response.url().endsWith('/api/turns')
-  );
+  const answerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const answer = await answerResponse;
   expect(answer.ok(), `Worker user-input response ${answer.status()}: ${await answer.text()}`).toBe(
@@ -323,9 +322,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await startTaskTurn(page, threadId, 'Use the exact queued second release revision.');
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible();
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');
-  const secondAnswerResponse = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && response.url().endsWith('/api/turns')
-  );
+  const secondAnswerResponse = page.waitForResponse(isQuestionAnswerResponse);
   await page.getByRole('button', { name: /^Submit answers$/ }).click();
   const secondAnswer = await secondAnswerResponse;
   expect(

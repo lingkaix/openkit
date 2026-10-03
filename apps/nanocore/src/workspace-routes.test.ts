@@ -9,6 +9,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
@@ -93,7 +94,9 @@ describe('workspace routes', () => {
       body: JSON.stringify({}),
     });
     const listBody = ListAuthorizedWorkspacesResponseSchema.parse(await listResponse.json());
-    const directResponse = await app.request(`/api/workspaces/${workspace.id}`);
+    const directResponse = await app.request(
+      ...operationRequest('workspace.read', { workspaceId: workspace.id })
+    );
     const directBody = WorkspaceRecordSchema.parse(await directResponse.json());
 
     expect(store.getWorkspace(workspace.id).counts.threadCount).toBe(3);

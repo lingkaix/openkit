@@ -28,7 +28,11 @@ export async function postJson(
       ...(typeof body.requestId === 'string' ? { 'x-openkit-request-id': body.requestId } : {}),
       ...(cookie ? { cookie } : {}),
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(
+      url.includes('/api/app/operations/')
+        ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== 'requestId'))
+        : body
+    ),
   });
 }
 

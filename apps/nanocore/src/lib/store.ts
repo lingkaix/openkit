@@ -2768,6 +2768,12 @@ export class FsStore {
     return turn;
   }
 
+  /** Returns only the opaque Turn's canonical Workspace and Thread selectors before content admission. */
+  public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } | null {
+    const turn = this.turns.get(turnId);
+    return turn ? { workspaceId: turn.workspaceId, threadId: turn.threadId } : null;
+  }
+
   public getTurnById(turnId: string): Turn {
     const turn = this.turns.get(turnId);
 
@@ -2776,13 +2782,6 @@ export class FsStore {
     }
 
     return turn;
-  }
-
-  /** Returns only canonical execution selectors for admission, without exposing Turn content. */
-  public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } {
-    const turn = this.turns.get(turnId);
-    if (!turn) throw new Error(`Turn not found: ${turnId}`);
-    return { workspaceId: turn.workspaceId, threadId: turn.threadId };
   }
 
   /**

@@ -426,7 +426,7 @@ function makeClient(
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
+
       ...overrides.core,
     },
     app: {
@@ -460,6 +460,7 @@ function makeClient(
       'workspace.import': vi
         .fn()
         .mockImplementation((input: unknown) => Promise.resolve(importResultFor(input))),
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
 

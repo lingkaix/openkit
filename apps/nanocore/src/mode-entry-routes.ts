@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   ConversationTargetCatalogSchema,
-  QuickChatRequestSchema,
+  type QuickChatRequestSchema,
   QuickChatResponseSchema,
   type StartTaskModeRequestSchema,
   type StartTaskModeResponse,
@@ -19,19 +19,12 @@ import {
   type StopReason,
   TurnSchema,
 } from '@openkit/protocol';
-import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { z } from 'zod';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
-import {
-  apiErrorPayload,
-  asApiError,
-  asInvalidRequestError,
-  publishedErrorMessage,
-} from './api-errors.js';
+import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import type { Actor } from './auth/identity.js';
-import type { AuthVariables } from './auth/middleware.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
@@ -76,7 +69,6 @@ import {
 } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { registerAppApiRoute } from './openapi.js';
 import { createOperationInvocation } from './operation-invocation.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
@@ -1411,21 +1403,6 @@ function directTaskKnowledgeRetrievalTraceId(
 }
 
 /**
- * Converts upstream provider failures into status-preserving protocol errors.
- *
- * @param error Provider failure to normalize.
- * @returns Status-preserving App API error response.
- */
-function asProviderApiError(
-  error: OpenAICompatibleProviderError | LogicalModelRoutesExhaustedError
-): Response {
-  const failure = providerCommandError(error);
-  return Response.json(apiErrorPayload({ code: failure.code, message: failure.message }), {
-    status: failure.status,
-  });
-}
-
-/**
  * Builds the first V1 Task Mode delegation decision from the rule-based Worker Coordinator.
  *
  * @param input Task Mode request context.
@@ -1708,13 +1685,12 @@ function taskModeEvidenceForTurn(
 }
 
 /**
- * Registers Quick Chat and supplies the existing conversation entry owner.
+ * Supplies the existing direct Quick Chat and conversation entry owners.
  *
- * @param dependencies Hono app and shared app composition callbacks.
+ * @param dependencies Existing domain and app composition callbacks.
  * @returns Conversation commands and explicit interrupt and pending-input controls.
  */
-export function registerQuickAndChatModeRoutes({
-  app,
+export function createConversationService({
   assertProjectWorkspace,
   coreDb,
   inflightCommands,
@@ -1729,7 +1705,6 @@ export function registerQuickAndChatModeRoutes({
   workerCoordinatorCandidates,
   goalServices,
 }: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
   readonly assertProjectWorkspace: (
     workspace: ReturnType<FsStore['getWorkspace']>,
     action: string
@@ -2206,76 +2181,55 @@ export function registerQuickAndChatModeRoutes({
     };
   }
 
-  registerAppApiRoute(app, 'quickChat', async (c) => {
-    const parsed = QuickChatRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
+  /** Runs direct Quick Chat after actor-derived Workspace admission, preserving provider and timeout refusals. */
+  async function quick(
+    input: z.infer<typeof QuickChatRequestSchema>,
+    actor: Actor,
+    workspaceId: string,
+    signal: AbortSignal
+  ) {
     try {
-      const input = parsed.data;
-      const userId = c.get('actor').userId;
-      const workspaceAccess = c.get('workspaceAccess');
-      const workspaceId =
-        workspaceAccess?.kind === 'workspace'
-          ? workspaceAccess.workspaceId
-          : coreDb
-            ? null
-            : 'ws_quick_chat';
-
-      if (!workspaceId) {
-        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
-      }
-      const sessionId = `quick-chat:${workspaceId}`;
-      const selection = quickChatSelection(userId, workspaceId);
-
-      if (!selection) {
-        return c.json(
-          apiErrorPayload({
-            code: 'quick_chat_not_configured',
-            message: 'Quick chat requires an admitted logical model.',
-          }),
+      const selection = quickChatSelection(actor.userId, workspaceId);
+      if (!selection)
+        throw new TurnStartValidationError(
+          'quick_chat_not_configured',
+          'Quick chat requires an admitted logical model.',
           400
         );
-      }
-
       const result = await callQuickChatProvider({
-        authorityActor: { kind: 'user', id: c.get('actor').userId },
+        authorityActor: { kind: 'user', id: actor.userId },
         logicalModel: selection.logicalModel,
         prompt: input.input,
-        sessionId,
+        sessionId: `quick-chat:${workspaceId}`,
         workspaceId,
-        signal: c.req.raw.signal,
+        signal,
       });
-
-      return c.json(
-        QuickChatResponseSchema.parse({
-          id: result.id,
-          status: 'completed',
-          workspaceId,
-          modelId: selection.logicalModel.id,
-          content: result.content,
-        })
-      );
+      return QuickChatResponseSchema.parse({
+        id: result.id,
+        status: 'completed',
+        workspaceId,
+        modelId: selection.logicalModel.id,
+        content: result.content,
+      });
     } catch (error) {
       if (
         error instanceof OpenAICompatibleProviderError ||
         error instanceof LogicalModelRoutesExhaustedError
-      ) {
-        return asProviderApiError(error);
-      }
-      if (error instanceof TurnStartValidationError) {
-        return asApiError(redactInternalAgentText(error.message), error.code, error.status);
-      }
-
+      )
+        throw providerCommandError(error);
+      if (error instanceof TurnStartValidationError)
+        throw new TurnStartValidationError(
+          error.code,
+          redactInternalAgentText(error.message),
+          error.status
+        );
       console.error(
         'quick_chat_failed',
         redactInternalAgentText(error instanceof Error ? error.message : String(error))
       );
-      return asApiError('Quick chat failed.', 'quick_chat_failed', 500);
+      throw new TurnStartValidationError('quick_chat_failed', 'Quick chat failed.', 500);
     }
-  });
+  }
 
   /** Executes the existing conversation command with its exact receipt-owned success status. */
   async function submit(
@@ -3500,6 +3454,7 @@ export function registerQuickAndChatModeRoutes({
   }
 
   return {
+    quick,
     targets,
     submit,
     async interrupt(store: FsStore, turnId: string) {

@@ -124,7 +124,7 @@ export function useComposerWorkerEnvironments(
     queryFn: async () => {
       const [environments, threads] = await Promise.all([
         client.app.listWorkerEnvironments(workspaceId as string, { limit: 100 }),
-        client.core.listThreads(workspaceId as string),
+        client.operations['thread.list']({ workspaceId: workspaceId as string }),
       ]);
       return projectWorkerEnvironmentOptions(environments.items, threads.items);
     },
@@ -394,7 +394,8 @@ export function useThreads(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.threads(workspaceId ?? ''),
-    queryFn: async () => (await client.core.listThreads(workspaceId as string)).items,
+    queryFn: async () =>
+      (await client.operations['thread.list']({ workspaceId: workspaceId as string })).items,
     enabled: Boolean(workspaceId),
   });
 }
@@ -713,7 +714,7 @@ export function useSendTurn() {
  * @returns A disabled query observer updated only by successful feedback submissions.
  */
 export function useTurnFeedback(workspaceId: string, threadId: string, turnId: string | null) {
-  return useQuery<Awaited<ReturnType<CoreClient['app']['submitTurnFeedback']>>>({
+  return useQuery<Awaited<ReturnType<CoreClient['operations']['turn.feedback']>>>({
     queryKey: chatKeys.feedback(workspaceId, threadId, turnId ?? ''),
     queryFn: skipToken,
   });
@@ -734,9 +735,10 @@ export function useSubmitTurnFeedback() {
       turnId: string;
       rating: 'good' | 'bad';
     }) => {
-      const response = await client.app.submitTurnFeedback(input.turnId, {
+      const response = await client.operations['turn.feedback']({
         rating: input.rating,
         note: null,
+        turnId: input.turnId,
       });
       if (response.turnId !== input.turnId) {
         throw new Error('Turn feedback response owner mismatch.');
@@ -763,7 +765,7 @@ export function useRenameThread() {
   return useMutation({
     mutationKey: chatKeys.renameMutation,
     mutationFn: (input: { workspaceId: string; threadId: string; name: string }) =>
-      client.core.updateThread(input),
+      client.operations['thread.update'](input),
     onSuccess: (thread) => {
       queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
@@ -785,7 +787,7 @@ export function useArchiveThread() {
   return useMutation({
     mutationKey: chatKeys.archiveMutation,
     mutationFn: (input: { workspaceId: string; threadId: string }) =>
-      client.core.archiveThread(input),
+      client.operations['thread.archive'](input),
     onSuccess: (thread) => {
       queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
@@ -806,7 +808,7 @@ export function useRestoreThread() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { workspaceId: string; threadId: string }) =>
-      client.core.updateThread({ ...input, status: 'active' }),
+      client.operations['thread.update']({ ...input, status: 'active' }),
     onSuccess: (thread) => {
       queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
       queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
@@ -828,7 +830,7 @@ export function useInterruptTurn() {
   return useMutation({
     mutationKey: chatKeys.interruptMutation,
     mutationFn: (input: { workspaceId: string; threadId: string; turnId: string }) =>
-      client.core.interruptTurn(input),
+      client.operations['turn.interrupt'](input),
     onSuccess: (turn) => {
       queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['thread.dashboard']>>>(
         chatKeys.dashboard(turn.workspaceId, turn.threadId),

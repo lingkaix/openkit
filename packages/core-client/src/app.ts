@@ -102,10 +102,6 @@ import {
   PurgeWorkerEnvironmentRequestSchema,
   type PurgeWorkerEnvironmentResponse,
   PurgeWorkerEnvironmentResponseSchema,
-  type QuickChatRequest,
-  QuickChatRequestSchema,
-  type QuickChatResponse,
-  QuickChatResponseSchema,
   type RecordKnowledgeClaimRequest,
   type RecordKnowledgeConflictRequest,
   type RecordKnowledgeObservationRequest,
@@ -150,10 +146,6 @@ import {
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
-  type SubmitTurnFeedbackRequest,
-  SubmitTurnFeedbackRequestSchema,
-  type TurnFeedbackResponse,
-  TurnFeedbackResponseSchema,
   type UnbindThreadMaterialRequest,
   UnbindThreadMaterialRequestSchema,
   type UnbindThreadMaterialResponse,
@@ -178,8 +170,6 @@ import {
   VaultAdminUnlockResponseSchema,
   type VaultAdminWorkspaceReference,
   VaultAdminWorkspaceReferenceSchema,
-  type WorkspaceDashboardResponse,
-  WorkspaceDashboardResponseSchema,
   type WorkspaceImportDryRunResponse,
   WorkspaceImportDryRunResponseSchema,
   type WorkspaceImportResponse,
@@ -374,8 +364,6 @@ export interface AppApiClient {
   ): Promise<RestoreThreadMaterialResponse>;
   /** Reads current Workers visible in the selected Workspace, preserving restricted details. */
   listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
-  /** Reads one workspace dashboard read model. */
-  getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
   /** Lists durable Agent Environment Package snapshots for one workspace. */
   listAgentEnvironmentPackageSnapshots(
     workspaceId: string
@@ -505,15 +493,8 @@ export interface AppApiClient {
     referenceId: string,
     input: VaultAdminRebindWorkspaceReferenceRequest
   ): Promise<VaultAdminRebindWorkspaceReferenceResponse>;
-  /** Runs one completed quick chat request. */
-  quickChat(input: QuickChatRequest): Promise<QuickChatResponse>;
   /** Searches App API read models. */
   search(query: string): Promise<AppSearchResponse>;
-  /** Submits per-turn feedback. */
-  submitTurnFeedback(
-    turnId: string,
-    input: SubmitTurnFeedbackRequest
-  ): Promise<TurnFeedbackResponse>;
 }
 
 /** Creates the NanoCore App API client. */
@@ -657,11 +638,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${encodeURIComponent(workspaceId)}/workers`,
         WorkspaceWorkersResponseSchema
-      ),
-    getWorkspaceDashboard: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/dashboard`,
-        WorkspaceDashboardResponseSchema
       ),
     listAgentEnvironmentPackageSnapshots: (workspaceId) =>
       transport.getJson(
@@ -866,19 +842,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         VaultAdminRebindWorkspaceReferenceRequestSchema.parse(input),
         VaultAdminRebindWorkspaceReferenceResponseSchema
       ),
-    quickChat: (input) =>
-      transport.postJson(
-        '/api/app/quick-chat',
-        QuickChatRequestSchema.parse(input),
-        QuickChatResponseSchema
-      ),
     search: (query) =>
       transport.getJson(`/api/app/search?q=${encodeURIComponent(query)}`, AppSearchResponseSchema),
-    submitTurnFeedback: (turnId, input) =>
-      transport.postJson(
-        `/api/turns/${turnId}/feedback`,
-        SubmitTurnFeedbackRequestSchema.parse(input),
-        TurnFeedbackResponseSchema
-      ),
   };
 }

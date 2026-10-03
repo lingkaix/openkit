@@ -17,6 +17,7 @@ import {
   createNanoCoreTunnel,
   epochEffectsAreAbsent,
   executeNanoHostUnitFCoordinator,
+  interruptFaultTask,
   readTurnRuntimeEvidence,
   readWorkspaceRuntimeEvidence,
   requestJson,
@@ -25,6 +26,7 @@ import {
   sequenceNanoHostBlockedCreate,
   sequenceNanoHostF1,
   sequenceNanoHostNormalLifecycle,
+  startRealTaskAttempt,
   waitForObservation,
 } from './support/host/nanohost-unit-f-runner.mjs';
 
@@ -2489,4 +2491,46 @@ test('rejects the retired high-level driver callback entry', async () => {
     }),
     /does not accept high-level driver callbacks/u
   );
+});
+
+test('Unit F workspace.create reaches its canonical binding with request identity', async () => {
+  const calls = [];
+  const config = {
+    request: async (_config, method, path, body, authority) => {
+      assert.ok(!path.startsWith('/api/workspaces'), `Retired binding: ${path}`);
+      calls.push({ method, path, body, authority });
+      if (path === '/api/app/operations/workspace.create') return { id: 'workspace_task' };
+      throw new Error('Thread creation boundary reached');
+    },
+  };
+  await assert.rejects(startRealTaskAttempt(config, 'F1'), /Thread creation boundary reached/);
+  assert.equal(calls[0].path, '/api/app/operations/workspace.create');
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].authority, 'product');
+  assert.match(calls[0].body.requestId, /^[0-9a-f-]{36}$/);
+  assert.equal(config.failureWorkspaceId, 'workspace_task');
+});
+
+test('Unit F turn.interrupt cleanup reaches its canonical binding with complete lineage', async () => {
+  const calls = [];
+  const lineage = { workspaceId: 'workspace_task', threadId: 'thread_task', turnId: 'turn_task' };
+  await interruptFaultTask(
+    {
+      request: async (_config, method, path, body, authority) => {
+        assert.ok(!path.startsWith('/api/workspaces'), `Retired binding: ${path}`);
+        calls.push({ method, path, body, authority });
+        return { status: path.endsWith('turn.read') ? 'running' : 'interrupted' };
+      },
+    },
+    lineage
+  );
+  const interrupt = calls.find((call) => call.path === '/api/app/operations/turn.interrupt');
+  assert.ok(interrupt);
+  assert.deepEqual(
+    { ...interrupt.body, requestId: undefined },
+    { ...lineage, requestId: undefined }
+  );
+  assert.match(interrupt.body.requestId, /^[0-9a-f-]{36}$/);
+  assert.equal(interrupt.method, 'POST');
+  assert.equal(interrupt.authority, 'product');
 });

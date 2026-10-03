@@ -129,15 +129,21 @@ if (retainedRoot) {
   const response =
     mode === 'delivery' || mode === 'throw'
       ? await respond(0)
-      : await app.request('/api/workspaces/ws_demo/threads/th_demo/archive', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            workspaceId: 'ws_demo',
-            threadId: 'th_demo',
-            requestId: randomUUID(),
-          }),
-        });
+      : await app.request(
+          ...operationRequest(
+            'thread.archive',
+            { workspaceId: 'ws_demo', threadId: 'th_demo' },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+                requestId: randomUUID(),
+              }),
+            }
+          )
+        );
   console.log(JSON.stringify({ responseStatus: response.status, dataRoot }));
 }
 const records = [0, 1]

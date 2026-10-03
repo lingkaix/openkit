@@ -73,7 +73,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
   const client = {
     core: {
       meta: vi.fn().mockResolvedValue({}),
-      listThreads: vi.fn().mockResolvedValue({ items: [] }),
+
       ...core,
     },
     app: {
@@ -81,6 +81,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
     },
 
     operations: {
+      'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.targets': vi
         .fn()
         .mockImplementation(
@@ -137,7 +138,7 @@ function makeClient(core: CoreOverrides = {}, app: AppOverrides = {}): CoreClien
         'conversation.navigation': CoreClient['operations']['conversation.navigation'];
       }
     )['conversation.navigation'] = vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
-      const listed = await client.core.listThreads(workspaceId);
+      const listed = await client.operations['thread.list']({ workspaceId: workspaceId });
       return {
         items: listed.items
           .filter((thread) => thread.status === 'active')

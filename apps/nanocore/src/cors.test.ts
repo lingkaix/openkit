@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 /**
  * Creates the smallest signed-out Better Auth surface needed by CORS tests.
@@ -93,17 +94,23 @@ describe('browser CORS', () => {
     });
     const workspacesBefore = await before.json();
 
-    const rejected = await app.request('/api/workspaces', {
-      method: 'POST',
-      headers: {
-        'content-type': 'text/plain',
-        origin: 'https://evil.example',
-      },
-      body: JSON.stringify({
-        name: 'CSRF probe',
-        requestId: '00000000-0000-4000-8000-00000000c001',
-      }),
-    });
+    const rejected = await app.request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'text/plain',
+            origin: 'https://evil.example',
+          },
+          body: JSON.stringify({
+            name: 'CSRF probe',
+            requestId: '00000000-0000-4000-8000-00000000c001',
+          }),
+        }
+      )
+    );
     const workspaces = await app.request('/api/app/operations/workspace.list', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
