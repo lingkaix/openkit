@@ -29,8 +29,11 @@ export function DisableUserScreen() {
   });
   const disable = useMutation({
     mutationFn: async (targetUserId: string) => {
-      const response = await client.app.disableUser(encodeURIComponent(targetUserId), {
-        requestId: crypto.randomUUID(),
+      const response = await client.operations['user.disable']({
+        targetUserId,
+        ...{
+          requestId: crypto.randomUUID(),
+        },
       });
       const { userId, status, disabledAt } = response.user;
       return { userId, status, disabledAt };

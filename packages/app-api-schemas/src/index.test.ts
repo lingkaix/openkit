@@ -3181,14 +3181,14 @@ describe('app api schemas', () => {
               {
                 kind: 'open_artifact',
                 label: 'Open evidence',
-                method: 'GET',
-                href: '/api/app/workspaces/ws_demo/workspace-sync/reconciliation-records',
+                method: 'POST',
+                href: '/api/app/operations/sync.reconciliation-list',
               },
               {
                 kind: 'retry_work',
                 label: 'Resume collection',
                 method: 'POST',
-                href: '/api/app/workspaces/ws_demo/workspace-sync/reconciliation-records/wrr_1/decision',
+                href: '/api/app/operations/sync.recovery-decide',
               },
               { kind: 'accept_review', label: 'Stage verified', disabled: true },
               { kind: 'mark_blocked', label: 'Quarantine', disabled: true },

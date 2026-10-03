@@ -553,7 +553,7 @@ async function executeTaskModeRealWorkerTest({
   );
 
   const task = await clients.core.operations['task.start']({
-    workspaceId: workspaceId,
+    workspaceId,
     threadId: threadId,
     ...{
       input: prerequisites.config.taskInput,
@@ -573,7 +573,7 @@ async function executeTaskModeRealWorkerTest({
     assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
     runtimeEvidencePromise = clients.core.app.listWorkspaceRuntimeEvidence(workspaceId);
     const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
-      clients.core.operations['thread.items']({ workspaceId: workspaceId, threadId: threadId }),
+      clients.core.operations['thread.items']({ workspaceId, threadId: threadId }),
       clients.core.app.listAgentEnvironmentPackageSnapshots(workspaceId),
       clients.core.app.getCapabilityUsage(workspaceId),
       runtimeEvidencePromise,
@@ -619,7 +619,9 @@ async function executeTaskModeRealWorkerTest({
   } finally {
     const cleanupResults = await Promise.allSettled(
       reviewIds.map((reviewId) =>
-        clients.core.app.submitWorkspaceSyncReviewDecision(workspaceId, reviewId, {
+        clients.core.operations['sync.review-decide']({
+          workspaceId,
+          reviewId,
           decision: 'rejected',
           requestId: randomUUID(),
         })

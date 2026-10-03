@@ -8010,23 +8010,33 @@ describe('nanocore server', () => {
       workspaceDb.sqlite.close();
     }
 
-    const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
-    const detail = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1');
+    const list = await app.request(
+      ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+    );
+    const detail = await app.request(
+      ...operationRequest(
+        'sync.review-read',
+        { workspaceId: 'ws_demo', reviewId: 'swr_1' },
+        undefined
+      )
+    );
     const inputSnapshots = await app.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/input-snapshots'
+      ...operationRequest('sync.input-snapshot-list', { workspaceId: 'ws_demo' }, undefined)
     );
     const materializations = await app.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/materialization-records'
+      ...operationRequest('sync.materialization-list', { workspaceId: 'ws_demo' }, undefined)
     );
     const backendHandles = await app.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/backend-handles'
+      ...operationRequest('sync.backend-handle-list', { workspaceId: 'ws_demo' }, undefined)
     );
     const outputManifests = await app.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/output-manifests'
+      ...operationRequest('sync.output-manifest-list', { workspaceId: 'ws_demo' }, undefined)
     );
-    const changeSets = await app.request('/api/app/workspaces/ws_demo/workspace-sync/change-sets');
+    const changeSets = await app.request(
+      ...operationRequest('sync.change-set-list', { workspaceId: 'ws_demo' }, undefined)
+    );
     const stagedReviews = await app.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/staged-reviews'
+      ...operationRequest('sync.staged-review-list', { workspaceId: 'ws_demo' }, undefined)
     );
     const restartedApp = createApp({
       coreDb,
@@ -8034,7 +8044,11 @@ describe('nanocore server', () => {
       turnExecutor: new FakeTurnExecutor(),
     });
     const persistedDetail = await restartedApp.request(
-      '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1'
+      ...operationRequest(
+        'sync.review-read',
+        { workspaceId: 'ws_demo', reviewId: 'swr_1' },
+        undefined
+      )
     );
 
     expect(list.status).toBe(200);
@@ -8127,9 +8141,15 @@ describe('nanocore server', () => {
     ).data_version;
 
     try {
-      const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
+      const list = await app.request(
+        ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const detail = await app.request(
-        '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_route_1'
+        ...operationRequest(
+          'sync.review-read',
+          { workspaceId: 'ws_demo', reviewId: 'swr_route_1' },
+          undefined
+        )
       );
       const afterDataVersion = (
         observerDb.sqlite.prepare('PRAGMA data_version').get() as { data_version: number }
@@ -8207,9 +8227,15 @@ describe('nanocore server', () => {
         workspaceDb.sqlite.close();
       }
 
-      const list = await app.request('/api/app/workspaces/ws_demo/workspace-sync/reviews');
+      const list = await app.request(
+        ...operationRequest('sync.review-list', { workspaceId: 'ws_demo' }, undefined)
+      );
       const detail = await app.request(
-        '/api/app/workspaces/ws_demo/workspace-sync/reviews/swr_route_1'
+        ...operationRequest(
+          'sync.review-read',
+          { workspaceId: 'ws_demo', reviewId: 'swr_route_1' },
+          undefined
+        )
       );
 
       expect(list.status).toBe(200);
@@ -8291,28 +8317,34 @@ describe('nanocore server', () => {
       }
 
       const firstRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review_decision/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-sync-review-request-1',
-            decision: 'needs_refinement',
-            message: 'Please narrow this patch.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: workspace.id, reviewId: 'swr_durable_review_decision' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-sync-review-request-1',
+              decision: 'needs_refinement',
+              message: 'Please narrow this patch.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const secondRes = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review_decision/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-sync-review-request-1',
-            decision: 'needs_refinement',
-            message: 'Please narrow this patch.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: workspace.id, reviewId: 'swr_durable_review_decision' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-sync-review-request-1',
+              decision: 'needs_refinement',
+              message: 'Please narrow this patch.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const actionCenterRes = await app.request(
         ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
@@ -8375,28 +8407,34 @@ describe('nanocore server', () => {
         authorityDb.sqlite.close();
       }
       const dualOwnerReplay = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review_decision/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-sync-review-request-1',
-            decision: 'needs_refinement',
-            message: 'Please narrow this patch.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: workspace.id, reviewId: 'swr_durable_review_decision' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-sync-review-request-1',
+              decision: 'needs_refinement',
+              message: 'Please narrow this patch.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
       const dualOwnerFreshRequest = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/${pendingDualOwnerItem.review.id}/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-sync-review-request-2',
-            decision: 'needs_refinement',
-            message: 'Please narrow this patch.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: workspace.id, reviewId: pendingDualOwnerItem.review.id },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-sync-review-request-2',
+              decision: 'needs_refinement',
+              message: 'Please narrow this patch.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(firstRes.status).toBe(200);
@@ -8464,25 +8502,36 @@ describe('nanocore server', () => {
         workspaceDb.sqlite.close();
       }
 
-      const href = `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_recovery_decision/decision`;
-      const firstRes = await app.request(href, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'workspace-recovery-request-1',
-          decision: 'quarantine',
-          message: 'Keep unsafe recovery material isolated.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
-      const secondRes = await app.request(href, {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'workspace-recovery-request-1',
-          decision: 'quarantine',
-          message: 'Keep unsafe recovery material isolated.',
-        }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const firstRes = await app.request(
+        ...operationRequest(
+          'sync.recovery-decide',
+          { workspaceId: workspace.id, reconciliationRecordId: 'wrr_recovery_decision' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-recovery-request-1',
+              decision: 'quarantine',
+              message: 'Keep unsafe recovery material isolated.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
+      const secondRes = await app.request(
+        ...operationRequest(
+          'sync.recovery-decide',
+          { workspaceId: workspace.id, reconciliationRecordId: 'wrr_recovery_decision' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-recovery-request-1',
+              decision: 'quarantine',
+              message: 'Keep unsafe recovery material isolated.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
       const actionCenterRes = await app.request(
         ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
@@ -8576,16 +8625,19 @@ describe('nanocore server', () => {
       }
 
       const res = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_resume_route/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'workspace-recovery-resume-request-1',
-            decision: 'resume_collection',
-            message: 'Resume durable collection.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.recovery-decide',
+          { workspaceId: workspace.id, reconciliationRecordId: 'wrr_resume_route' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'workspace-recovery-resume-request-1',
+              decision: 'resume_collection',
+              message: 'Resume durable collection.',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(res.status, await res.clone().text()).toBe(200);
@@ -8732,32 +8784,46 @@ describe('nanocore server', () => {
       }
 
       const foreignRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/${reviewId}`
+        ...operationRequest(
+          'sync.review-read',
+          { workspaceId: authorizedWorkspace.id, reviewId: reviewId },
+          undefined
+        )
       );
       const missingRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/swr_missing_child_lineage`
+        ...operationRequest(
+          'sync.review-read',
+          { workspaceId: authorizedWorkspace.id, reviewId: 'swr_missing_child_lineage' },
+          undefined
+        )
       );
       const foreignDecision = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/${reviewId}/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            decision: 'needs_refinement',
-            requestId: 'foreign-review-child-lineage',
-          }),
-          headers: jsonHeaders(),
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: authorizedWorkspace.id, reviewId: reviewId },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              decision: 'needs_refinement',
+              requestId: 'foreign-review-child-lineage',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
       );
       const missingDecision = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reviews/swr_missing_child_lineage/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            decision: 'needs_refinement',
-            requestId: 'missing-review-child-lineage',
-          }),
-          headers: jsonHeaders(),
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: authorizedWorkspace.id, reviewId: 'swr_missing_child_lineage' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              decision: 'needs_refinement',
+              requestId: 'missing-review-child-lineage',
+            }),
+            headers: jsonHeaders(),
+          }
+        )
       );
       const foreignReadBody = await foreignRead.json();
       const missingReadBody = await missingRead.json();
@@ -8832,12 +8898,15 @@ describe('nanocore server', () => {
 
       const decide = (recordId: string, requestId: string) =>
         app.request(
-          `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/reconciliation-records/${recordId}/decision`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ decision: 'quarantine', requestId }),
-            headers: jsonHeaders(),
-          }
+          ...operationRequest(
+            'sync.recovery-decide',
+            { workspaceId: authorizedWorkspace.id, reconciliationRecordId: recordId },
+            {
+              method: 'POST',
+              body: JSON.stringify({ decision: 'quarantine', requestId }),
+              headers: jsonHeaders(),
+            }
+          )
         );
       const foreignDecision = await decide(
         reconciliationRecordId,
@@ -8908,10 +8977,18 @@ describe('nanocore server', () => {
       }
 
       const foreignRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/apply-results/${applyResultId}`
+        ...operationRequest(
+          'sync.apply-result-read',
+          { workspaceId: authorizedWorkspace.id, applyResultId: applyResultId },
+          undefined
+        )
       );
       const missingRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/workspace-sync/apply-results/war_missing_child_lineage`
+        ...operationRequest(
+          'sync.apply-result-read',
+          { workspaceId: authorizedWorkspace.id, applyResultId: 'war_missing_child_lineage' },
+          undefined
+        )
       );
       const foreignBody = await foreignRead.json();
       const missingBody = await missingRead.json();
@@ -9566,15 +9643,18 @@ describe('nanocore server', () => {
 
     const restartedApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const acceptRes = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_filesystem_apply_1/decision`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          requestId: 'filesystem-workspace-apply-request-1',
-          decision: 'accepted',
-        }),
-        headers: { 'content-type': 'application/json' },
-      }
+      ...operationRequest(
+        'sync.review-decide',
+        { workspaceId: workspace.id, reviewId: 'swr_filesystem_apply_1' },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            requestId: 'filesystem-workspace-apply-request-1',
+            decision: 'accepted',
+          }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
     );
 
     expect(acceptRes.status, await acceptRes.clone().text()).toBe(200);
@@ -9593,14 +9673,18 @@ describe('nanocore server', () => {
     expect((statSync(join(targetRoot, 'script.sh')).mode & 0o777).toString(8)).toBe('755');
 
     const readApplyResult = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results/war_swr_filesystem_apply_1`
+      ...operationRequest(
+        'sync.apply-result-read',
+        { workspaceId: workspace.id, applyResultId: 'war_swr_filesystem_apply_1' },
+        undefined
+      )
     );
     const listApplyPlans = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-plans`
+      ...operationRequest('sync.apply-plan-list', { workspaceId: workspace.id }, undefined)
     );
 
     const listApplyResults = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results`
+      ...operationRequest('sync.apply-result-list', { workspaceId: workspace.id }, undefined)
     );
 
     expect(readApplyResult.status).toBe(200);
@@ -9665,17 +9749,21 @@ describe('nanocore server', () => {
       reconciliationDb.sqlite.close();
     }
     const listReconciliations = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records`
+      ...operationRequest('sync.reconciliation-list', { workspaceId: workspace.id }, undefined)
     );
     const listQuarantines = await restartedApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/quarantine-records`
+      ...operationRequest('sync.quarantine-list', { workspaceId: workspace.id }, undefined)
     );
     const listSyncEvidenceBundles = await restartedApp.request(
       `/api/app/workspaces/${workspace.id}/workspace-sync/evidence-bundles`
     );
     const postApplicationApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const persistedApplyResult = await postApplicationApp.request(
-      `/api/app/workspaces/${workspace.id}/workspace-sync/apply-results/war_swr_filesystem_apply_1`
+      ...operationRequest(
+        'sync.apply-result-read',
+        { workspaceId: workspace.id, applyResultId: 'war_swr_filesystem_apply_1' },
+        undefined
+      )
     );
 
     expect(listApplyResults.status).toBe(200);
@@ -9836,15 +9924,18 @@ describe('nanocore server', () => {
 
       const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
       const response = await app.request(
-        `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_filesystem_persist_rollback/decision`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: 'filesystem-persist-rollback-request-1',
-            decision: 'accepted',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
+        ...operationRequest(
+          'sync.review-decide',
+          { workspaceId: workspace.id, reviewId: 'swr_filesystem_persist_rollback' },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              requestId: 'filesystem-persist-rollback-request-1',
+              decision: 'accepted',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
       );
 
       expect(response.status).not.toBe(200);

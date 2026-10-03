@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { GOAL_OPERATION_DEFINITIONS, KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  GOAL_OPERATION_DEFINITIONS,
+  KERNEL_OPERATION_DEFINITIONS,
+  SYNC_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
@@ -13,13 +17,13 @@ const EXPECTED_INCLUDED_SIZE = 179;
 const NON_RELEASE_READY_ROADMAP = new Map([
   ['automation.create', 'R092'],
   ['automation.delete', 'R092'],
-  ['deleteWorkspace', 'R049'],
+  ['workspace.delete', 'R049'],
   ['downloadWorkspaceExportArchive', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
   ['dryRunWorkspaceArchiveImport', 'R008'],
   ['importWorkspaceArchive', 'R008'],
   ['automation.list', 'R092'],
-  ['recoverDeletedWorkspace', 'R049'],
+  ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
   ['automation.update', 'R092'],
 ]);
@@ -39,6 +43,12 @@ const WEB_SURFACES = new Set(
  * @type {Readonly<Record<string, Readonly<Record<string, WebOperationDisposition>>>>}
  */
 const WEB_OPERATION_GROUPS = {
+  Synchronization: Object.fromEntries(
+    Object.keys(SYNC_OPERATION_DEFINITIONS).map((id) => [
+      id,
+      { disposition: 'live', surface: 'Workspace changes' },
+    ])
+  ),
   'Agent environment': {
     getAgentEnvironmentPackageSnapshot: { disposition: 'live', surface: 'Debug' },
     listAgentEnvironmentPackageSnapshots: { disposition: 'live', surface: 'Debug' },
@@ -96,25 +106,25 @@ const WEB_OPERATION_GROUPS = {
     updateMcpBinding: { disposition: 'live', surface: 'Catalog' },
   },
   'Generative apps': {
-    batchLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
-    createLightApp: { disposition: 'workflow', surface: 'Chat' },
-    getGenerativePresentation: { disposition: 'live', surface: 'Chat' },
-    getGenerativePresentationResource: { disposition: 'live', surface: 'Chat' },
-    getLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
+    'kernel.records.batch': { disposition: 'workflow', surface: 'Chat' },
+    'kernel.apps.create': { disposition: 'workflow', surface: 'Chat' },
+    'generative-ui.get': { disposition: 'live', surface: 'Chat' },
+    'generative-ui.resource': { disposition: 'live', surface: 'Chat' },
+    'kernel.records.get': { disposition: 'workflow', surface: 'Chat' },
     ...Object.fromEntries(
       Object.keys(KERNEL_OPERATION_DEFINITIONS).map((id) => [
         id,
         { disposition: 'workflow', surface: 'Chat' },
       ])
     ),
-    listLightAppRecords: { disposition: 'workflow', surface: 'Chat' },
-    listLightApps: { disposition: 'workflow', surface: 'Chat' },
-    publishGenerativePresentation: { disposition: 'workflow', surface: 'Chat' },
-    refreshGenerativePresentation: { disposition: 'live', surface: 'Chat' },
-    retireLightApp: { disposition: 'workflow', surface: 'Chat' },
-    submitGenerativePresentationAction: { disposition: 'live', surface: 'Chat' },
-    updateLightAppRecord: { disposition: 'workflow', surface: 'Chat' },
-    updateLightAppSchema: { disposition: 'workflow', surface: 'Chat' },
+    'kernel.records.list': { disposition: 'workflow', surface: 'Chat' },
+    'kernel.apps.list': { disposition: 'workflow', surface: 'Chat' },
+    'generative-ui.publish': { disposition: 'workflow', surface: 'Chat' },
+    'generative-ui.refresh': { disposition: 'live', surface: 'Chat' },
+    'kernel.apps.retire': { disposition: 'workflow', surface: 'Chat' },
+    'generative-ui.action': { disposition: 'live', surface: 'Chat' },
+    'kernel.records.update': { disposition: 'workflow', surface: 'Chat' },
+    'kernel.schema.update': { disposition: 'workflow', surface: 'Chat' },
   },
   Dashboards: {
     'conversation.targets': { disposition: 'live', surface: 'Chat' },
@@ -202,41 +212,24 @@ const WEB_OPERATION_GROUPS = {
     rotateWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
   },
   'Workspace sharing': {
-    acceptWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
-    changeWorkspaceMemberAccess: { disposition: 'live', surface: 'Account' },
-    createWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
-    declineWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
-    deleteWorkspace: { disposition: 'roadmap', roadmap: 'R049' },
-    leaveWorkspace: { disposition: 'live', surface: 'Account' },
+    'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },
+    'workspace.member-access-change': { disposition: 'live', surface: 'Account' },
+    'workspace.invitation-create': { disposition: 'live', surface: 'Account' },
+    'workspace.my-invitation-decline': { disposition: 'live', surface: 'Account' },
+    'workspace.delete': { disposition: 'roadmap', roadmap: 'R049' },
+    'workspace.leave': { disposition: 'live', surface: 'Account' },
     'workspace.list': { disposition: 'live', surface: 'Account' },
-    listMyWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
-    listWorkspaceInvitations: { disposition: 'live', surface: 'Account' },
-    listWorkspaceMembers: { disposition: 'live', surface: 'Account' },
-    removeWorkspaceMember: { disposition: 'live', surface: 'Account' },
-    recoverDeletedWorkspace: { disposition: 'roadmap', roadmap: 'R049' },
-    revokeWorkspaceInvitation: { disposition: 'live', surface: 'Account' },
-    transferWorkspaceOwnership: { disposition: 'live', surface: 'Account' },
+    'workspace.my-invitation-list': { disposition: 'live', surface: 'Account' },
+    'workspace.invitation-list': { disposition: 'live', surface: 'Account' },
+    'workspace.member-list': { disposition: 'live', surface: 'Account' },
+    'workspace.member-remove': { disposition: 'live', surface: 'Account' },
+    'workspace.deleted-recover': { disposition: 'roadmap', roadmap: 'R049' },
+    'workspace.invitation-revoke': { disposition: 'live', surface: 'Account' },
+    'workspace.ownership-transfer': { disposition: 'live', surface: 'Account' },
   },
   'My admin access': {
     listMyAdminAccessTokens: { disposition: 'live', surface: 'My admin access' },
     setMyAdminAccessTokenDefault: { disposition: 'live', surface: 'My admin access' },
-  },
-  'Workspace Sync and recovery': {
-    getWorkspaceApplyResult: { disposition: 'live', surface: 'Workspace changes' },
-    getWorkspaceSyncReview: { disposition: 'live', surface: 'Workspace changes' },
-    listBackendWorkspaceHandles: { disposition: 'live', surface: 'Workspace changes' },
-    listStagedWorkspaceReviews: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkerOutputManifests: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceApplyPlans: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceApplyResults: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceChangeSets: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceInputSnapshots: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceMaterializationRecords: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceQuarantineRecords: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceReconciliationRecords: { disposition: 'live', surface: 'Workspace changes' },
-    listWorkspaceSyncReviews: { disposition: 'live', surface: 'Workspace changes' },
-    submitWorkspaceRecoveryDecision: { disposition: 'live', surface: 'Workspace changes' },
-    submitWorkspaceSyncReviewDecision: { disposition: 'live', surface: 'Workspace changes' },
   },
   'Core approval': {
     'approval.respond': { disposition: 'live', surface: 'Overview' },

@@ -1571,8 +1571,8 @@ describe('action center app API', () => {
       });
       expect(row).not.toHaveProperty('threadId');
       expect(row).not.toHaveProperty('turnId');
-      const reviewHref = `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/swr_durable_review`;
-      const decisionHref = `${reviewHref}/decision`;
+      const reviewHref = '/api/app/operations/sync.review-read';
+      const decisionHref = '/api/app/operations/sync.review-decide';
       expect(row?.actions).toEqual([
         expect.objectContaining({ kind: 'open_artifact', href: reviewHref }),
         { kind: 'accepted', label: 'Accept', method: 'POST', href: decisionHref },
@@ -1656,8 +1656,8 @@ describe('action center app API', () => {
       const row = ListHumanAttentionResponseSchema.parse(await res.json()).items.find(
         (item) => item.id === `workspace-review:${reviewId}`
       );
-      const reviewHref = `/api/app/workspaces/${workspace.id}/workspace-sync/reviews/${reviewId}`;
-      const decisionHref = `${reviewHref}/decision`;
+      const reviewHref = '/api/app/operations/sync.review-read';
+      const decisionHref = '/api/app/operations/sync.review-decide';
 
       expect(row).toMatchObject({
         kind: 'workspace_review',
@@ -1836,7 +1836,7 @@ describe('action center app API', () => {
         source: { type: 'workspace_review', status: 'rejected' },
       });
       expect(resolvedWorkspaceReview?.actions).toEqual([
-        expect.objectContaining({ kind: 'open_artifact', method: 'GET' }),
+        expect.objectContaining({ kind: 'open_artifact', method: 'POST' }),
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -1939,28 +1939,28 @@ describe('action center app API', () => {
         expect.arrayContaining([
           expect.objectContaining({
             kind: 'open_artifact',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records`,
+            href: '/api/app/operations/sync.reconciliation-list',
           }),
           expect.objectContaining({
             kind: 'retry_work',
             label: 'Resume collection',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_requires_human/decision`,
+            href: '/api/app/operations/sync.recovery-decide',
             method: 'POST',
           }),
           expect.objectContaining({
             kind: 'accept_review',
             label: 'Stage verified',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_requires_human/decision`,
+            href: '/api/app/operations/sync.recovery-decide',
           }),
           expect.objectContaining({
             kind: 'mark_blocked',
             label: 'Quarantine',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_requires_human/decision`,
+            href: '/api/app/operations/sync.recovery-decide',
           }),
           expect.objectContaining({
             kind: 'abort',
             label: 'Abandon',
-            href: `/api/app/workspaces/${workspace.id}/workspace-sync/reconciliation-records/wrr_requires_human/decision`,
+            href: '/api/app/operations/sync.recovery-decide',
           }),
         ])
       );

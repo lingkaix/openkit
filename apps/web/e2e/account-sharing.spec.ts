@@ -281,7 +281,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     await staleInvitations.getByRole('textbox', { name: 'Invitee email' }).fill(deniedEmail);
     const deniedResponsePromise = staleOwnerPage.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === `/api/app/workspaces/${workspaceId}/invitations` &&
+        new URL(response.url()).pathname === '/api/app/operations/workspace.invitation-create' &&
         response.request().method() === 'POST'
     );
     await staleInvitations.getByRole('button', { name: 'Create invitation' }).click();

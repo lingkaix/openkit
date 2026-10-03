@@ -53,14 +53,18 @@ async function main() {
     if (fencedRead.status !== 403) {
       throw new Error(`Recovered deletion fence allowed a read with ${fencedRead.status}.`);
     }
-    const continuedDeletion = await fetch(
-      `${baseUrl}/api/app/workspaces/${deletion.workspaceId}/delete`,
-      {
-        body: JSON.stringify(deletion.request),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
-    );
+    const continuedDeletion = await fetch(`${baseUrl}/api/app/operations/workspace.delete`, {
+      body: JSON.stringify({
+        workspaceId: deletion.workspaceId,
+        confirmation: deletion.request.confirmation,
+        expectedRegistryRevision: deletion.request.expectedRegistryRevision,
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'x-openkit-request-id': deletion.request.requestId,
+      },
+      method: 'POST',
+    });
     const continuedDeletionBody = await continuedDeletion.json();
     if (
       continuedDeletion.status !== 200 ||

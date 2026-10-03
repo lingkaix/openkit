@@ -106,12 +106,13 @@ function renderAccountSelection(options: {
     })),
   }));
   const client = {
-    app: {
-      leaveWorkspace: options.leaveWorkspace ?? vi.fn(),
-    },
+    app: {},
     core: {},
 
-    operations: { 'workspace.list': listWorkspaces },
+    operations: {
+      'workspace.leave': options.leaveWorkspace ?? vi.fn(),
+      'workspace.list': listWorkspaces,
+    },
   } as unknown as CoreClient;
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -164,14 +165,15 @@ describe('account selected Workspace', () => {
     const listWorkspaceMembers = vi.fn().mockResolvedValue({ items: [] });
     const listWorkspaceInvitations = vi.fn().mockResolvedValue({ items: [] });
     const client = {
-      app: {
-        leaveWorkspace: vi.fn(),
-        listWorkspaceInvitations,
-        listWorkspaceMembers,
-      },
+      app: {},
       core: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.leave': vi.fn(),
+        'workspace.invitation-list': listWorkspaceInvitations,
+        'workspace.member-list': listWorkspaceMembers,
+        'workspace.list': listWorkspaces,
+      },
     } as unknown as CoreClient;
     const queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -198,14 +200,8 @@ describe('account selected Workspace', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Account workspace')).toHaveTextContent(USER_B_QUICK_CHAT.id);
     });
-    expect(
-      listWorkspaceMembers.mock.calls.every(([workspaceId]) => workspaceId !== PROJECT_WORKSPACE.id)
-    ).toBe(true);
-    expect(
-      listWorkspaceInvitations.mock.calls.every(
-        ([workspaceId]) => workspaceId !== PROJECT_WORKSPACE.id
-      )
-    ).toBe(true);
+    expect(listWorkspaceMembers).not.toHaveBeenCalled();
+    expect(listWorkspaceInvitations).not.toHaveBeenCalled();
   });
 
   it('clears the departed selection and Core discovery row after confirmed leave', async () => {

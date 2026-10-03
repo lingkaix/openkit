@@ -140,15 +140,21 @@ it.each(
       owner === 'evidence-bundle'
         ? '00000000-0000-4000-8000-000000000013'
         : '00000000-0000-4000-8000-000000000014';
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
       code: 'workspace_deletion_blocked',
@@ -210,11 +216,17 @@ it('durably fences an active owner deletion request before later lifecycle effec
 
     const requestId = '00000000-0000-4000-8000-000000000010';
     const confirmation = `permanently-delete-workspace:${workspace.id}:1`;
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status).toBe(202);
     expect(closeWorkspaceMcpSessions).toHaveBeenCalledWith(workspace.id);
@@ -262,27 +274,39 @@ it('durably fences an active owner deletion request before later lifecycle effec
         .get(workspace.id)
     ).toEqual({ revision: 1, status: 'active' });
 
-    const changedInput = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:2`,
-        expectedRegistryRevision: 2,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const changedInput = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:2`,
+            expectedRegistryRevision: 2,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(changedInput.status).toBe(409);
     expect(await changedInput.json()).toMatchObject({ code: 'idempotency_key_conflict' });
 
-    const competingRequest = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation,
-        expectedRegistryRevision: 1,
-        requestId: '00000000-0000-4000-8000-000000000015',
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const competingRequest = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation,
+            expectedRegistryRevision: 1,
+            requestId: '00000000-0000-4000-8000-000000000015',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(competingRequest.status).toBe(409);
     expect(await competingRequest.json()).toMatchObject({
       code: 'workspace_deletion_in_progress',
@@ -293,11 +317,17 @@ it('durably fences an active owner deletion request before later lifecycle effec
       updatedAt: new Date().toISOString(),
     });
     closeWorkspaceMcpSessions.mockRejectedValueOnce(new Error('injected MCP cleanup failure'));
-    const cleanupFailure = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const cleanupFailure = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(cleanupFailure.status).toBe(409);
     expect(await cleanupFailure.json()).toMatchObject({ code: 'recovery_required' });
     expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
@@ -306,11 +336,17 @@ it('durably fences an active owner deletion request before later lifecycle effec
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
         .get(workspace.id)
     ).toEqual({ revision: 1, status: 'active' });
-    const retry = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const retry = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(retry.status, await retry.clone().text()).toBe(200);
     expect(await retry.json()).toMatchObject({
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
@@ -405,15 +441,21 @@ it.each([
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(202);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
@@ -577,15 +619,21 @@ it('lets deletion proceed for five failed needs-evidence leases with matching cl
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -659,15 +707,21 @@ it('keeps deletion fenced when one of five failed needs-evidence leases lacks ma
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(202);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
@@ -777,15 +831,21 @@ it.each([
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId: fixture.requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId: fixture.requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(202);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, fixture.requestId).phase).toBe(
@@ -929,14 +989,20 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       workspaceId: workspace.id,
     });
 
-    const responsePromise = app.request('https://openkit.test/api/app/users/user_local/disable', {
-      body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000024' }),
-      headers: {
-        authorization: `Bearer ${admin.secret}`,
-        'content-type': 'application/json',
-      },
-      method: 'POST',
-    });
+    const responsePromise = app.request(
+      ...operationRequest(
+        'user.disable',
+        { targetUserId: 'user_local' },
+        {
+          body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000024' }),
+          headers: {
+            authorization: `Bearer ${admin.secret}`,
+            'content-type': 'application/json',
+          },
+          method: 'POST',
+        }
+      )
+    );
     try {
       await vi.waitFor(() => expect(mutationAdmission.isClosed(workspace.id)).toBe(true));
       expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe(
@@ -1183,15 +1249,21 @@ it.each([
       turnExecutor: new SimulatedTurnExecutor(),
     });
 
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: request.confirmation,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: request.confirmation,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     if (crashPoint === 'staged-contradiction') {
       expect(response.status).toBe(409);
@@ -1286,15 +1358,21 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     cpSync(canonicalWorkspaceRoot, workspaceBackupRoot, { recursive: true });
 
     const requestId = '00000000-0000-4000-8000-000000000011';
-    const response = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status, await response.clone().text()).toBe(200);
     expect(await response.json()).toEqual({
@@ -1382,15 +1460,21 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
         stagingRelativePath: 'server',
       })}\n`
     );
-    const unsafeCleanupReplay = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const unsafeCleanupReplay = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(unsafeCleanupReplay.status).toBe(409);
     expect(existsSync(cleanupSentinel)).toBe(true);
     writeFileSync(deletionRequestPath, `${JSON.stringify(completedRequest)}\n`);
@@ -1400,15 +1484,21 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       phase: 'deleted',
     });
 
-    const deletionReplay = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const deletionReplay = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(deletionReplay.status, await deletionReplay.clone().text()).toBe(200);
     expect(await deletionReplay.json()).toMatchObject({
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
@@ -1422,42 +1512,57 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       cleanedAt: null,
       phase: 'deleted',
     });
-    const contradictoryCleanup = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const contradictoryCleanup = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(contradictoryCleanup.status).toBe(409);
     expect(existsSync(stagingRoot)).toBe(true);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('deleted');
 
     rmSync(stagingRoot, { recursive: true });
     writeWorkspaceDeletionRequest(dataRoot, completedRequest);
-    const contradictoryReplay = await app.request(`/api/app/workspaces/${workspace.id}/delete`, {
-      body: JSON.stringify({
-        confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-        expectedRegistryRevision: 1,
-        requestId,
-      }),
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const contradictoryReplay = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+            expectedRegistryRevision: 1,
+            requestId,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
     expect(contradictoryReplay.status).toBe(409);
     const activeWorkspaceIds = listActiveWorkspaceIdsForActor(coreDb, 'user_local');
     const contradictoryRecovery = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({
-          deletionRequestId: requestId,
-          requestId: '00000000-0000-4000-8000-000000000031',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: requestId,
+            requestId: '00000000-0000-4000-8000-000000000031',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(contradictoryRecovery.status).toBe(409);
     expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).toEqual(activeWorkspaceIds);
@@ -1469,15 +1574,18 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       originalOwnerUserId: 'user_other',
     });
     const unboundRecovery = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({
-          deletionRequestId: requestId,
-          requestId: '00000000-0000-4000-8000-000000000017',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: requestId,
+            requestId: '00000000-0000-4000-8000-000000000017',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(unboundRecovery.status).toBe(409);
     writeWorkspaceDeletionRequest(dataRoot, reboundRequest);
@@ -1503,15 +1611,18 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       `${JSON.stringify({ ...exportManifest, sourceDeploymentId: 'tampered' }, null, 2)}\n`
     );
     const tamperedExportRecovery = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({
-          deletionRequestId: requestId,
-          requestId: '00000000-0000-4000-8000-000000000032',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: requestId,
+            requestId: '00000000-0000-4000-8000-000000000032',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(tamperedExportRecovery.status).toBe(409);
     writeFileSync(exportManifestPath, exportManifestText);
@@ -1524,15 +1635,18 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       `${JSON.stringify({ ...closureManifest, sourceDeploymentId: 'tampered' }, null, 2)}\n`
     );
     const tamperedClosureRecovery = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({
-          deletionRequestId: requestId,
-          requestId: '00000000-0000-4000-8000-000000000033',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: requestId,
+            requestId: '00000000-0000-4000-8000-000000000033',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(tamperedClosureRecovery.status).toBe(409);
     expect(listActiveWorkspaceIdsForActor(coreDb, 'user_local')).toEqual(
@@ -1544,27 +1658,33 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     const unexpectedClosureFile = join(closureRoot, 'unexpected.txt');
     writeFileSync(unexpectedClosureFile, 'not inventoried');
     const extendedClosureRecovery = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({
-          deletionRequestId: requestId,
-          requestId: '00000000-0000-4000-8000-000000000018',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: requestId,
+            requestId: '00000000-0000-4000-8000-000000000018',
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(extendedClosureRecovery.status).toBe(409);
     rmSync(unexpectedClosureFile);
 
     const recoveryRequestId = '00000000-0000-4000-8000-000000000012';
     const recoveryResponse = await app.request(
-      `/api/app/workspace-deletions/${workspace.id}/recover`,
-      {
-        body: JSON.stringify({ deletionRequestId: requestId, requestId: recoveryRequestId }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({ deletionRequestId: requestId, requestId: recoveryRequestId }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
     expect(recoveryResponse.status, await recoveryResponse.clone().text()).toBe(200);
     const recovered = (await recoveryResponse.json()) as {

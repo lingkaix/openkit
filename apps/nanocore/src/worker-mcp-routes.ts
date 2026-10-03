@@ -10,14 +10,12 @@ import {
   Server,
   WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
-import { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware.js';
-import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import { currentWorkerLineageWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
@@ -359,9 +357,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               if (selected.approvalRequiredTools.includes(request.params.name)) {
                 throw mcpDeniedError();
               }
-              if (!workBuiltin) {
-                requireGenerativeToolPolicy(input.coreDb!, environmentPackage, request.params.name);
-              }
               if (
                 workBuiltin &&
                 request.params.name === 'work_request_input' &&
@@ -454,7 +449,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 if (
                   serverId === OPENKIT_GENERATIVE_MCP_ID &&
                   operationId &&
-                  Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operationId) &&
                   (error instanceof OperationInvocationError || error instanceof KernelCommandError)
                 ) {
                   // Preserve the migrated owner's typed failure through the existing MCP publisher.
@@ -2016,38 +2010,6 @@ function requireCurrentMcpWorkspaceAuthority(
 ): void {
   if (!hasCurrentMcpWorkspaceAuthority(coreDb, environmentPackage)) {
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-  }
-}
-
-/** Applies the same App API operation policy used by HTTP Kernel and Generative UI routes. */
-function requireGenerativeToolPolicy(
-  coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage,
-  toolName: string
-): void {
-  const operation =
-    OPENKIT_GENERATIVE_TOOL_OPERATIONS[toolName as keyof typeof OPENKIT_GENERATIVE_TOOL_OPERATIONS];
-  if (operation && Object.hasOwn(KERNEL_OPERATION_DEFINITIONS, operation)) return;
-  const access = operation ? PUBLIC_OPERATION_ACCESS[operation] : undefined;
-  if (!access) {
-    throw mcpDeniedError();
-  }
-  if (
-    !currentWorkerLineageWorkspaceAuthority(
-      coreDb,
-      {
-        workspaceId: environmentPackage.scope.workspaceId,
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        agentSessionId: environmentPackage.scope.agentSessionId,
-        packageSnapshotId: environmentPackage.snapshotId,
-        triggerActor: environmentPackage.scope.triggerActor,
-      },
-      access.policyOperation,
-      true
-    )
-  ) {
-    throw mcpDeniedError();
   }
 }
 

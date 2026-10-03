@@ -33,10 +33,13 @@ export function WorkspaceAccessRecoveryScreen() {
       workspaceId: string;
       request?: RecoverWorkspaceAccessRequest;
     }) => {
-      const target = encodeURIComponent(operation.workspaceId);
+      const target = operation.workspaceId;
       const response = operation.request
-        ? await client.app.recoverWorkspaceAccess(target, operation.request)
-        : await client.app.getWorkspaceAccessRecoveryState(target);
+        ? await client.operations['workspace.access-recover']({
+            workspaceId: target,
+            ...operation.request,
+          })
+        : await client.operations['workspace.access-recovery-read']({ workspaceId: target });
       const { workspaceId, ownerUserId, administratorRole, registryRevision } = response.recovery;
       return { workspaceId, ownerUserId, administratorRole, registryRevision };
     },

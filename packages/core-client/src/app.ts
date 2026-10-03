@@ -1,6 +1,4 @@
 import {
-  type AcceptWorkspaceInvitationRequest,
-  AcceptWorkspaceInvitationRequestSchema,
   type ActivateWorkerEnvironmentRequest,
   ActivateWorkerEnvironmentRequestSchema,
   type ActivateWorkerEnvironmentResponse,
@@ -21,22 +19,14 @@ import {
   BindThreadMaterialResponseSchema,
   type CapabilityUsageResponse,
   CapabilityUsageResponseSchema,
-  type ChangeWorkspaceMemberAccessRequest,
-  ChangeWorkspaceMemberAccessRequestSchema,
   type ConsumeOpenKitBootstrapTokenRequest,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  type CreateLightAppRequest,
-  CreateLightAppRequestSchema,
-  type CreateLightAppResponse,
-  CreateLightAppResponseSchema,
   type CreateOpenKitAccessTokenRequest,
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
   CreateOpenKitAccessTokenResponseSchema,
-  type CreateWorkspaceInvitationRequest,
-  CreateWorkspaceInvitationRequestSchema,
   type CreateWorkspaceMaterialRequest,
   CreateWorkspaceMaterialRequestSchema,
   type CreateWorkspaceMaterialResponse,
@@ -45,59 +35,27 @@ import {
   CreateWorkspaceVaultGrantRequestSchema,
   type CreateWorkspaceVaultSecretRequest,
   CreateWorkspaceVaultSecretRequestSchema,
-  type DeclineWorkspaceInvitationRequest,
-  DeclineWorkspaceInvitationRequestSchema,
-  type DeleteWorkspaceRequest,
-  DeleteWorkspaceRequestSchema,
-  type DisableUserRequest,
-  DisableUserRequestSchema,
-  type DisableUserResponse,
-  DisableUserResponseSchema,
   type ExcludeThreadMaterialRequest,
   ExcludeThreadMaterialRequestSchema,
   type ExcludeThreadMaterialResponse,
   ExcludeThreadMaterialResponseSchema,
-  type GenerativePresentationDataModelResponse,
-  GenerativePresentationDataModelResponseSchema,
-  type GenerativePresentationResourceResponse,
-  GenerativePresentationResourceResponseSchema,
   type GetAgentEnvironmentPackageSnapshotResponse,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
-  type GetGenerativePresentationResponse,
-  GetGenerativePresentationResponseSchema,
-  type GetLightAppRecordResponse,
-  GetLightAppRecordResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
   type GetWorkerEnvironmentStatusResponse,
   GetWorkerEnvironmentStatusResponseSchema,
-  type GetWorkspaceApplyResultResponse,
-  GetWorkspaceApplyResultResponseSchema,
   type GetWorkspaceMaterialResponse,
   GetWorkspaceMaterialResponseSchema,
   type GetWorkspaceMaterialRevisionResponse,
   GetWorkspaceMaterialRevisionResponseSchema,
-  type GetWorkspaceSyncReviewResponse,
-  GetWorkspaceSyncReviewResponseSchema,
   type KnowledgeManagerAnswerRequest,
   type KnowledgeManagerDraftProposalRequest,
   type KnowledgeManagerHealthCheckRequest,
   type KnowledgeManagerPrepareContextRequest,
   type KnowledgeManagerSuggestRepairRequest,
-  type LeaveWorkspaceRequest,
-  LeaveWorkspaceRequestSchema,
-  type LightAppBatchRequest,
-  LightAppBatchRequestSchema,
-  type LightAppBatchResponse,
-  LightAppBatchResponseSchema,
   type ListAgentEnvironmentPackageSnapshotsResponse,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  type ListBackendWorkspaceHandlesResponse,
-  ListBackendWorkspaceHandlesResponseSchema,
-  type ListLightAppRecordsResponse,
-  ListLightAppRecordsResponseSchema,
-  type ListLightAppsResponse,
-  ListLightAppsResponseSchema,
   type ListMyAdminAccessTokensResponse,
   ListMyAdminAccessTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
@@ -108,46 +66,22 @@ import {
   ListServerPermissionDecisionsResponseSchema,
   type ListServerVaultUseRecordsResponse,
   ListServerVaultUseRecordsResponseSchema,
-  type ListStagedWorkspaceReviewsResponse,
-  ListStagedWorkspaceReviewsResponseSchema,
   type ListWorkerEnvironmentsQuery,
   ListWorkerEnvironmentsQuerySchema,
   type ListWorkerEnvironmentsResponse,
   ListWorkerEnvironmentsResponseSchema,
-  type ListWorkerOutputManifestsResponse,
-  ListWorkerOutputManifestsResponseSchema,
-  type ListWorkspaceApplyPlansResponse,
-  ListWorkspaceApplyPlansResponseSchema,
-  type ListWorkspaceApplyResultsResponse,
-  ListWorkspaceApplyResultsResponseSchema,
   type ListWorkspaceAuditEventsResponse,
   ListWorkspaceAuditEventsResponseSchema,
-  type ListWorkspaceChangeSetsResponse,
-  ListWorkspaceChangeSetsResponseSchema,
   type ListWorkspaceEvidenceBundlesResponse,
   ListWorkspaceEvidenceBundlesResponseSchema,
-  type ListWorkspaceInputSnapshotsResponse,
-  ListWorkspaceInputSnapshotsResponseSchema,
-  type ListWorkspaceInvitationsResponse,
-  ListWorkspaceInvitationsResponseSchema,
-  type ListWorkspaceMaterializationRecordsResponse,
-  ListWorkspaceMaterializationRecordsResponseSchema,
   type ListWorkspaceMaterialRevisionsResponse,
   ListWorkspaceMaterialRevisionsResponseSchema,
   type ListWorkspaceMaterialsResponse,
   ListWorkspaceMaterialsResponseSchema,
-  type ListWorkspaceMembersResponse,
-  ListWorkspaceMembersResponseSchema,
   type ListWorkspacePermissionDecisionsResponse,
   ListWorkspacePermissionDecisionsResponseSchema,
-  type ListWorkspaceQuarantineRecordsResponse,
-  ListWorkspaceQuarantineRecordsResponseSchema,
-  type ListWorkspaceReconciliationRecordsResponse,
-  ListWorkspaceReconciliationRecordsResponseSchema,
   type ListWorkspaceRuntimeEvidenceResponse,
   ListWorkspaceRuntimeEvidenceResponseSchema,
-  type ListWorkspaceSyncReviewsResponse,
-  ListWorkspaceSyncReviewsResponseSchema,
   type ListWorkspaceVaultGrantsResponse,
   ListWorkspaceVaultGrantsResponseSchema,
   type ListWorkspaceVaultInjectionPlansResponse,
@@ -164,10 +98,6 @@ import {
   PrepareWorkerEnvironmentRequestSchema,
   type PrepareWorkerEnvironmentResponse,
   PrepareWorkerEnvironmentResponseSchema,
-  type PublishGenerativePresentationRequest,
-  PublishGenerativePresentationRequestSchema,
-  type PublishGenerativePresentationResponse,
-  PublishGenerativePresentationResponseSchema,
   type PurgeWorkerEnvironmentRequest,
   PurgeWorkerEnvironmentRequestSchema,
   type PurgeWorkerEnvironmentResponse,
@@ -179,32 +109,16 @@ import {
   type RecordKnowledgeClaimRequest,
   type RecordKnowledgeConflictRequest,
   type RecordKnowledgeObservationRequest,
-  type RecoverDeletedWorkspaceRequest,
-  RecoverDeletedWorkspaceRequestSchema,
-  type RecoverDeletedWorkspaceResponse,
-  RecoverDeletedWorkspaceResponseSchema,
-  type RecoverWorkspaceAccessRequest,
-  RecoverWorkspaceAccessRequestSchema,
-  type RefreshGenerativePresentationRequest,
-  RefreshGenerativePresentationRequestSchema,
   type RegisterKnowledgeSourceRequest,
-  type RemoveWorkspaceMemberRequest,
-  RemoveWorkspaceMemberRequestSchema,
   type ResolveKnowledgeConflictRequest,
   type RestoreThreadMaterialRequest,
   RestoreThreadMaterialRequestSchema,
   type RestoreThreadMaterialResponse,
   RestoreThreadMaterialResponseSchema,
-  type RetireLightAppRequest,
-  RetireLightAppRequestSchema,
-  type RetireLightAppResponse,
-  RetireLightAppResponseSchema,
   type RetrieveKnowledgeRequest,
   type ReverseKnowledgeProposalRequest,
   type RevokeOpenKitAccessTokenResponse,
   RevokeOpenKitAccessTokenResponseSchema,
-  type RevokeWorkspaceInvitationRequest,
-  RevokeWorkspaceInvitationRequestSchema,
   type RotateOpenKitAccessTokenRequest,
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
@@ -235,35 +149,15 @@ import {
   SubmitAdministrationConversationRequestSchema,
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
-  type SubmitGenerativePresentationActionRequest,
-  SubmitGenerativePresentationActionRequestSchema,
   type SubmitKnowledgeProposalDecisionRequest,
   type SubmitTurnFeedbackRequest,
   SubmitTurnFeedbackRequestSchema,
-  type SubmitWorkspaceRecoveryDecisionRequest,
-  SubmitWorkspaceRecoveryDecisionRequestSchema,
-  type SubmitWorkspaceRecoveryDecisionResponse,
-  SubmitWorkspaceRecoveryDecisionResponseSchema,
-  type SubmitWorkspaceSyncReviewDecisionRequest,
-  SubmitWorkspaceSyncReviewDecisionRequestSchema,
-  type SubmitWorkspaceSyncReviewDecisionResponse,
-  SubmitWorkspaceSyncReviewDecisionResponseSchema,
-  type TransferWorkspaceOwnershipRequest,
-  TransferWorkspaceOwnershipRequestSchema,
   type TurnFeedbackResponse,
   TurnFeedbackResponseSchema,
   type UnbindThreadMaterialRequest,
   UnbindThreadMaterialRequestSchema,
   type UnbindThreadMaterialResponse,
   UnbindThreadMaterialResponseSchema,
-  type UpdateLightAppRecordRequest,
-  UpdateLightAppRecordRequestSchema,
-  type UpdateLightAppRecordResponse,
-  UpdateLightAppRecordResponseSchema,
-  type UpdateLightAppSchemaRequest,
-  UpdateLightAppSchemaRequestSchema,
-  type UpdateLightAppSchemaResponse,
-  UpdateLightAppSchemaResponseSchema,
   type VaultAdminBootstrapCodexAuthJsonRequest,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   type VaultAdminBootstrapCodexAuthJsonResponse,
@@ -284,22 +178,12 @@ import {
   VaultAdminUnlockResponseSchema,
   type VaultAdminWorkspaceReference,
   VaultAdminWorkspaceReferenceSchema,
-  type WorkspaceAccessRecoveryResponse,
-  WorkspaceAccessRecoveryResponseSchema,
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
-  type WorkspaceDeletionResponse,
-  WorkspaceDeletionResponseSchema,
   type WorkspaceImportDryRunResponse,
   WorkspaceImportDryRunResponseSchema,
   type WorkspaceImportResponse,
   WorkspaceImportResponseSchema,
-  type WorkspaceInvitationMutationResponse,
-  WorkspaceInvitationMutationResponseSchema,
-  type WorkspaceMemberMutationResponse,
-  WorkspaceMemberMutationResponseSchema,
-  type WorkspaceOwnershipMutationResponse,
-  WorkspaceOwnershipMutationResponseSchema,
   type WorkspaceSharingError,
   WorkspaceSharingErrorSchema,
   type WorkspaceVaultGrant,
@@ -312,31 +196,6 @@ import { ApiCallError } from './errors.js';
 import { createRequestId, type OptionalRequestId, withRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
-/** Workspace invitation creation input with an optional caller-provided request id. */
-export type CreateWorkspaceInvitationInput = OptionalRequestId<CreateWorkspaceInvitationRequest>;
-/** Workspace invitation acceptance input with an optional caller-provided request id. */
-export type AcceptWorkspaceInvitationInput = OptionalRequestId<AcceptWorkspaceInvitationRequest>;
-/** Workspace invitation decline input with an optional caller-provided request id. */
-export type DeclineWorkspaceInvitationInput = OptionalRequestId<DeclineWorkspaceInvitationRequest>;
-/** Workspace invitation revocation input with an optional caller-provided request id. */
-export type RevokeWorkspaceInvitationInput = OptionalRequestId<RevokeWorkspaceInvitationRequest>;
-/** Workspace membership access-change input with an optional caller-provided request id. */
-export type ChangeWorkspaceMemberAccessInput =
-  OptionalRequestId<ChangeWorkspaceMemberAccessRequest>;
-/** Workspace membership removal input with an optional caller-provided request id. */
-export type RemoveWorkspaceMemberInput = OptionalRequestId<RemoveWorkspaceMemberRequest>;
-/** Workspace leave input with an optional caller-provided request id. */
-export type LeaveWorkspaceInput = OptionalRequestId<LeaveWorkspaceRequest>;
-/** Workspace ownership-transfer input with an optional caller-provided request id. */
-export type TransferWorkspaceOwnershipInput = OptionalRequestId<TransferWorkspaceOwnershipRequest>;
-/** Workspace access-recovery input with an optional caller-provided request id. */
-export type RecoverWorkspaceAccessInput = OptionalRequestId<RecoverWorkspaceAccessRequest>;
-/** Canonical user-disable input with an optional caller-provided request id. */
-export type DisableUserInput = OptionalRequestId<DisableUserRequest>;
-/** Workspace deletion input with an optional caller-provided request id. */
-export type DeleteWorkspaceInput = OptionalRequestId<DeleteWorkspaceRequest>;
-/** Deleted-Workspace recovery input with an optional caller-provided request id. */
-export type RecoverDeletedWorkspaceInput = OptionalRequestId<RecoverDeletedWorkspaceRequest>;
 /** Workspace Material create input with optional caller-provided request id. */
 export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
 /** Workspace Material revision save input with optional caller-provided request id. */
@@ -376,10 +235,6 @@ export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
 export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisionRequest;
 /** Bounded Knowledge proposal reversal input. */
 export type ReverseKnowledgeProposalInput = ReverseKnowledgeProposalRequest;
-/** Durable workspace synchronization review decision input with optional caller-provided request id. */
-export type SubmitWorkspaceSyncReviewDecisionInput = SubmitWorkspaceSyncReviewDecisionRequest;
-/** Workspace recovery decision input with optional caller-provided request id. */
-export type SubmitWorkspaceRecoveryDecisionInput = SubmitWorkspaceRecoveryDecisionRequest;
 /** OpenKit server bootstrap token consumption input. */
 export type ConsumeOpenKitBootstrapTokenInput = ConsumeOpenKitBootstrapTokenRequest;
 /** OpenKit access-token issue input. */
@@ -458,164 +313,6 @@ export interface AppApiClient {
   submitAdministrationConversation(
     input: SubmitAdministrationConversationRequest
   ): Promise<SubmitAdministrationConversationResponse>;
-  /** Lists memberships for one workspace. */
-  listWorkspaceMembers(workspaceId: string): Promise<ListWorkspaceMembersResponse>;
-  /** Lists invitations issued for one workspace. */
-  listWorkspaceInvitations(workspaceId: string): Promise<ListWorkspaceInvitationsResponse>;
-  /** Creates one invitation for a workspace. */
-  createWorkspaceInvitation(
-    workspaceId: string,
-    input: CreateWorkspaceInvitationInput
-  ): Promise<WorkspaceInvitationMutationResponse>;
-  /** Lists invitations addressed to the current principal. */
-  listMyWorkspaceInvitations(): Promise<ListWorkspaceInvitationsResponse>;
-  /** Accepts one invitation addressed to the current principal. */
-  acceptWorkspaceInvitation(
-    invitationId: string,
-    input: AcceptWorkspaceInvitationInput
-  ): Promise<WorkspaceInvitationMutationResponse>;
-  /** Declines one invitation addressed to the current principal. */
-  declineWorkspaceInvitation(
-    invitationId: string,
-    input: DeclineWorkspaceInvitationInput
-  ): Promise<WorkspaceInvitationMutationResponse>;
-  /** Revokes one invitation issued for a workspace. */
-  revokeWorkspaceInvitation(
-    workspaceId: string,
-    invitationId: string,
-    input: RevokeWorkspaceInvitationInput
-  ): Promise<WorkspaceInvitationMutationResponse>;
-  /** Changes one workspace member's access level. */
-  changeWorkspaceMemberAccess(
-    workspaceId: string,
-    userId: string,
-    input: ChangeWorkspaceMemberAccessInput
-  ): Promise<WorkspaceMemberMutationResponse>;
-  /** Removes one member from a workspace. */
-  removeWorkspaceMember(
-    workspaceId: string,
-    userId: string,
-    input: RemoveWorkspaceMemberInput
-  ): Promise<WorkspaceMemberMutationResponse>;
-  /** Removes the current principal from one workspace. */
-  leaveWorkspace(
-    workspaceId: string,
-    input: LeaveWorkspaceInput
-  ): Promise<WorkspaceMemberMutationResponse>;
-  /** Transfers ownership of one workspace. */
-  transferWorkspaceOwnership(
-    workspaceId: string,
-    input: TransferWorkspaceOwnershipInput
-  ): Promise<WorkspaceOwnershipMutationResponse>;
-  /** Reads the bounded access-recovery state for one workspace. */
-  getWorkspaceAccessRecoveryState(workspaceId: string): Promise<WorkspaceAccessRecoveryResponse>;
-  /** Applies one bounded access-recovery action for a workspace. */
-  recoverWorkspaceAccess(
-    workspaceId: string,
-    input: RecoverWorkspaceAccessInput
-  ): Promise<WorkspaceAccessRecoveryResponse>;
-  /** Disables one canonical user. */
-  disableUser(userId: string, input: DisableUserInput): Promise<DisableUserResponse>;
-  /** Permanently deletes one owner-confirmed Workspace. */
-  deleteWorkspace(
-    workspaceId: string,
-    input: DeleteWorkspaceInput
-  ): Promise<WorkspaceDeletionResponse>;
-  /** Recovers one deleted Workspace into a reminted identity. */
-  recoverDeletedWorkspace(
-    workspaceId: string,
-    input: RecoverDeletedWorkspaceInput
-  ): Promise<RecoverDeletedWorkspaceResponse>;
-  /** Lists Light Apps. */
-  listLightApps(workspaceId: string): Promise<ListLightAppsResponse>;
-  /** Creates one Light App. */
-  createLightApp(
-    workspaceId: string,
-    input: CreateLightAppRequest,
-    requestId?: string
-  ): Promise<CreateLightAppResponse>;
-  /** Updates one Light App schema. */
-  updateLightAppSchema(
-    workspaceId: string,
-    appId: string,
-    input: UpdateLightAppSchemaRequest,
-    requestId?: string
-  ): Promise<UpdateLightAppSchemaResponse>;
-  /** Retires one Light App. */
-  retireLightApp(
-    workspaceId: string,
-    appId: string,
-    input: RetireLightAppRequest,
-    requestId?: string
-  ): Promise<RetireLightAppResponse>;
-  /** Lists Light App records. */
-  listLightAppRecords(
-    workspaceId: string,
-    appId: string,
-    collection: string,
-    query: {
-      schemaRevision: number;
-      page?: number;
-      perPage?: number;
-      filter?: string;
-      sort?: string;
-      fields?: string;
-    }
-  ): Promise<ListLightAppRecordsResponse>;
-  /** Reads one Light App record. */
-  getLightAppRecord(
-    workspaceId: string,
-    appId: string,
-    collection: string,
-    recordId: string,
-    schemaRevision: number,
-    fields?: string
-  ): Promise<GetLightAppRecordResponse>;
-  /** Updates one Light App record. */
-  updateLightAppRecord(
-    workspaceId: string,
-    appId: string,
-    collection: string,
-    recordId: string,
-    input: UpdateLightAppRecordRequest,
-    requestId?: string
-  ): Promise<UpdateLightAppRecordResponse>;
-  /** Applies one atomic Light App record batch. */
-  batchLightAppRecords(
-    workspaceId: string,
-    appId: string,
-    input: LightAppBatchRequest,
-    requestId?: string
-  ): Promise<LightAppBatchResponse>;
-  /** Publishes one native Generative UI presentation. */
-  publishGenerativePresentation(
-    workspaceId: string,
-    input: PublishGenerativePresentationRequest,
-    requestId?: string
-  ): Promise<PublishGenerativePresentationResponse>;
-  /** Reads one Generative UI presentation. */
-  getGenerativePresentation(
-    workspaceId: string,
-    presentationId: string
-  ): Promise<GetGenerativePresentationResponse>;
-  /** Reads one Generative UI A2UI resource. */
-  getGenerativePresentationResource(
-    workspaceId: string,
-    presentationId: string
-  ): Promise<GenerativePresentationResourceResponse>;
-  /** Refreshes one Generative UI presentation. */
-  refreshGenerativePresentation(
-    workspaceId: string,
-    presentationId: string,
-    input: RefreshGenerativePresentationRequest
-  ): Promise<GenerativePresentationDataModelResponse>;
-  /** Submits one Generative UI record-update action. */
-  submitGenerativePresentationAction(
-    workspaceId: string,
-    presentationId: string,
-    input: SubmitGenerativePresentationActionRequest,
-    requestId?: string
-  ): Promise<GenerativePresentationDataModelResponse>;
   /** Lists Workspace Materials. */
   listWorkspaceMaterials(workspaceId: string): Promise<ListWorkspaceMaterialsResponse>;
   /** Creates one Workspace Material. */
@@ -679,56 +376,6 @@ export interface AppApiClient {
   listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
   /** Reads one workspace dashboard read model. */
   getWorkspaceDashboard(workspaceId: string): Promise<WorkspaceDashboardResponse>;
-  /** Lists workspace synchronization reviews for one workspace. */
-  listWorkspaceSyncReviews(workspaceId: string): Promise<ListWorkspaceSyncReviewsResponse>;
-  /** Reads one workspace synchronization review by id. */
-  getWorkspaceSyncReview(
-    workspaceId: string,
-    reviewId: string
-  ): Promise<GetWorkspaceSyncReviewResponse>;
-  /** Records one durable workspace synchronization review decision. */
-  submitWorkspaceSyncReviewDecision(
-    workspaceId: string,
-    reviewId: string,
-    input: SubmitWorkspaceSyncReviewDecisionInput
-  ): Promise<SubmitWorkspaceSyncReviewDecisionResponse>;
-  /** Records one workspace recovery decision. */
-  submitWorkspaceRecoveryDecision(
-    workspaceId: string,
-    reconciliationRecordId: string,
-    input: SubmitWorkspaceRecoveryDecisionInput
-  ): Promise<SubmitWorkspaceRecoveryDecisionResponse>;
-  /** Lists durable workspace input snapshots for one workspace. */
-  listWorkspaceInputSnapshots(workspaceId: string): Promise<ListWorkspaceInputSnapshotsResponse>;
-  /** Lists durable workspace materialization records for one workspace. */
-  listWorkspaceMaterializationRecords(
-    workspaceId: string
-  ): Promise<ListWorkspaceMaterializationRecordsResponse>;
-  /** Lists durable backend workspace handles for one workspace. */
-  listBackendWorkspaceHandles(workspaceId: string): Promise<ListBackendWorkspaceHandlesResponse>;
-  /** Lists durable worker output manifests for one workspace. */
-  listWorkerOutputManifests(workspaceId: string): Promise<ListWorkerOutputManifestsResponse>;
-  /** Lists durable workspace change sets for one workspace. */
-  listWorkspaceChangeSets(workspaceId: string): Promise<ListWorkspaceChangeSetsResponse>;
-  /** Lists durable staged workspace reviews for one workspace. */
-  listStagedWorkspaceReviews(workspaceId: string): Promise<ListStagedWorkspaceReviewsResponse>;
-  /** Lists durable workspace apply plans for one workspace. */
-  listWorkspaceApplyPlans(workspaceId: string): Promise<ListWorkspaceApplyPlansResponse>;
-  /** Lists durable workspace reconciliation records for one workspace. */
-  listWorkspaceReconciliationRecords(
-    workspaceId: string
-  ): Promise<ListWorkspaceReconciliationRecordsResponse>;
-  /** Lists durable workspace quarantine records for one workspace. */
-  listWorkspaceQuarantineRecords(
-    workspaceId: string
-  ): Promise<ListWorkspaceQuarantineRecordsResponse>;
-  /** Lists durable workspace apply results for one workspace. */
-  listWorkspaceApplyResults(workspaceId: string): Promise<ListWorkspaceApplyResultsResponse>;
-  /** Reads one durable workspace apply result by id. */
-  getWorkspaceApplyResult(
-    workspaceId: string,
-    applyResultId: string
-  ): Promise<GetWorkspaceApplyResultResponse>;
   /** Lists durable Agent Environment Package snapshots for one workspace. */
   listAgentEnvironmentPackageSnapshots(
     workspaceId: string
@@ -927,221 +574,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SubmitAdministrationConversationRequestSchema.parse(input),
         SubmitAdministrationConversationResponseSchema
       ),
-    listWorkspaceMembers: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/members`,
-        ListWorkspaceMembersResponseSchema
-      ),
-    listWorkspaceInvitations: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/invitations`,
-        ListWorkspaceInvitationsResponseSchema
-      ),
-    createWorkspaceInvitation: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/invitations`,
-        CreateWorkspaceInvitationRequestSchema.parse(request),
-        WorkspaceInvitationMutationResponseSchema
-      );
-    },
-    listMyWorkspaceInvitations: () =>
-      transport.getJson('/api/app/workspace-invitations', ListWorkspaceInvitationsResponseSchema),
-    acceptWorkspaceInvitation: (invitationId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspace-invitations/${invitationId}/accept`,
-        AcceptWorkspaceInvitationRequestSchema.parse(request),
-        WorkspaceInvitationMutationResponseSchema
-      );
-    },
-    declineWorkspaceInvitation: (invitationId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspace-invitations/${invitationId}/decline`,
-        DeclineWorkspaceInvitationRequestSchema.parse(request),
-        WorkspaceInvitationMutationResponseSchema
-      );
-    },
-    revokeWorkspaceInvitation: (workspaceId, invitationId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/invitations/${invitationId}/revoke`,
-        RevokeWorkspaceInvitationRequestSchema.parse(request),
-        WorkspaceInvitationMutationResponseSchema
-      );
-    },
-    changeWorkspaceMemberAccess: (workspaceId, userId, input) => {
-      const request = withRequestId(input);
-
-      return transport.patchJson(
-        `/api/app/workspaces/${workspaceId}/members/${userId}`,
-        ChangeWorkspaceMemberAccessRequestSchema.parse(request),
-        WorkspaceMemberMutationResponseSchema
-      );
-    },
-    removeWorkspaceMember: (workspaceId, userId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/members/${userId}/remove`,
-        RemoveWorkspaceMemberRequestSchema.parse(request),
-        WorkspaceMemberMutationResponseSchema
-      );
-    },
-    leaveWorkspace: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/leave`,
-        LeaveWorkspaceRequestSchema.parse(request),
-        WorkspaceMemberMutationResponseSchema
-      );
-    },
-    transferWorkspaceOwnership: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/ownership/transfer`,
-        TransferWorkspaceOwnershipRequestSchema.parse(request),
-        WorkspaceOwnershipMutationResponseSchema
-      );
-    },
-    getWorkspaceAccessRecoveryState: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/access-recovery`,
-        WorkspaceAccessRecoveryResponseSchema
-      ),
-    recoverWorkspaceAccess: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/access-recovery`,
-        RecoverWorkspaceAccessRequestSchema.parse(request),
-        WorkspaceAccessRecoveryResponseSchema
-      );
-    },
-    disableUser: (userId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/users/${userId}/disable`,
-        DisableUserRequestSchema.parse(request),
-        DisableUserResponseSchema
-      );
-    },
-    deleteWorkspace: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/delete`,
-        DeleteWorkspaceRequestSchema.parse(request),
-        WorkspaceDeletionResponseSchema
-      );
-    },
-    recoverDeletedWorkspace: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspace-deletions/${workspaceId}/recover`,
-        RecoverDeletedWorkspaceRequestSchema.parse(request),
-        RecoverDeletedWorkspaceResponseSchema
-      );
-    },
-    listLightApps: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/light-apps`,
-        ListLightAppsResponseSchema
-      ),
-    createLightApp: (workspaceId, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/light-apps`,
-        CreateLightAppRequestSchema.parse(input),
-        CreateLightAppResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    updateLightAppSchema: (workspaceId, appId, input, requestId) =>
-      transport.putJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/schema`,
-        UpdateLightAppSchemaRequestSchema.parse(input),
-        UpdateLightAppSchemaResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    retireLightApp: (workspaceId, appId, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/retire`,
-        RetireLightAppRequestSchema.parse(input),
-        RetireLightAppResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    listLightAppRecords: (workspaceId, appId, collection, query) => {
-      const params = new URLSearchParams({ schemaRevision: String(query.schemaRevision) });
-      if (query.page !== undefined) params.set('page', String(query.page));
-      if (query.perPage !== undefined) params.set('perPage', String(query.perPage));
-      if (query.filter !== undefined) params.set('filter', query.filter);
-      if (query.sort !== undefined) params.set('sort', query.sort);
-      if (query.fields !== undefined) params.set('fields', query.fields);
-      return transport.getJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records?${params}`,
-        ListLightAppRecordsResponseSchema
-      );
-    },
-    getLightAppRecord: (workspaceId, appId, collection, recordId, schemaRevision, fields) => {
-      const params = new URLSearchParams({ schemaRevision: String(schemaRevision) });
-      if (fields !== undefined) params.set('fields', fields);
-      return transport.getJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}?${params}`,
-        GetLightAppRecordResponseSchema
-      );
-    },
-    updateLightAppRecord: (workspaceId, appId, collection, recordId, input, requestId) =>
-      transport.patchJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/collections/${collection}/records/${recordId}`,
-        UpdateLightAppRecordRequestSchema.parse(input),
-        UpdateLightAppRecordResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    batchLightAppRecords: (workspaceId, appId, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/light-apps/${appId}/batch`,
-        LightAppBatchRequestSchema.parse(input),
-        LightAppBatchResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    publishGenerativePresentation: (workspaceId, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/generative-presentations`,
-        PublishGenerativePresentationRequestSchema.parse(input),
-        PublishGenerativePresentationResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
-    getGenerativePresentation: (workspaceId, presentationId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}`,
-        GetGenerativePresentationResponseSchema
-      ),
-    getGenerativePresentationResource: (workspaceId, presentationId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/resource`,
-        GenerativePresentationResourceResponseSchema
-      ),
-    refreshGenerativePresentation: (workspaceId, presentationId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/refresh`,
-        RefreshGenerativePresentationRequestSchema.parse(input),
-        GenerativePresentationDataModelResponseSchema
-      ),
-    submitGenerativePresentationAction: (workspaceId, presentationId, input, requestId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/generative-presentations/${presentationId}/actions`,
-        SubmitGenerativePresentationActionRequestSchema.parse(input),
-        GenerativePresentationDataModelResponseSchema,
-        { 'x-openkit-request-id': requestId ?? createRequestId() }
-      ),
     listWorkspaceMaterials: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/materials`,
@@ -1230,89 +662,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/dashboard`,
         WorkspaceDashboardResponseSchema
-      ),
-    listWorkspaceSyncReviews: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/reviews`,
-        ListWorkspaceSyncReviewsResponseSchema
-      ),
-    getWorkspaceSyncReview: (workspaceId, reviewId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/reviews/${reviewId}`,
-        GetWorkspaceSyncReviewResponseSchema
-      ),
-    submitWorkspaceSyncReviewDecision: (workspaceId, reviewId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/reviews/${reviewId}/decision`,
-        SubmitWorkspaceSyncReviewDecisionRequestSchema.parse(request),
-        SubmitWorkspaceSyncReviewDecisionResponseSchema
-      );
-    },
-    submitWorkspaceRecoveryDecision: (workspaceId, reconciliationRecordId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/reconciliation-records/${reconciliationRecordId}/decision`,
-        SubmitWorkspaceRecoveryDecisionRequestSchema.parse(request),
-        SubmitWorkspaceRecoveryDecisionResponseSchema
-      );
-    },
-    listWorkspaceInputSnapshots: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/input-snapshots`,
-        ListWorkspaceInputSnapshotsResponseSchema
-      ),
-    listWorkspaceMaterializationRecords: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/materialization-records`,
-        ListWorkspaceMaterializationRecordsResponseSchema
-      ),
-    listBackendWorkspaceHandles: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/backend-handles`,
-        ListBackendWorkspaceHandlesResponseSchema
-      ),
-    listWorkerOutputManifests: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/output-manifests`,
-        ListWorkerOutputManifestsResponseSchema
-      ),
-    listWorkspaceChangeSets: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/change-sets`,
-        ListWorkspaceChangeSetsResponseSchema
-      ),
-    listStagedWorkspaceReviews: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/staged-reviews`,
-        ListStagedWorkspaceReviewsResponseSchema
-      ),
-    listWorkspaceApplyPlans: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/apply-plans`,
-        ListWorkspaceApplyPlansResponseSchema
-      ),
-    listWorkspaceReconciliationRecords: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/reconciliation-records`,
-        ListWorkspaceReconciliationRecordsResponseSchema
-      ),
-    listWorkspaceQuarantineRecords: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/quarantine-records`,
-        ListWorkspaceQuarantineRecordsResponseSchema
-      ),
-    listWorkspaceApplyResults: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/apply-results`,
-        ListWorkspaceApplyResultsResponseSchema
-      ),
-    getWorkspaceApplyResult: (workspaceId, applyResultId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/workspace-sync/apply-results/${applyResultId}`,
-        GetWorkspaceApplyResultResponseSchema
       ),
     listAgentEnvironmentPackageSnapshots: (workspaceId) =>
       transport.getJson(

@@ -11,3 +11,5 @@ pnpm -w test:smoke
 ```
 
 Individual scripts may be run directly after building their owning artifact. Smoke scripts do not receive sibling unit tests; non-trivial behavior must move to the lowest existing L1-L4 owner instead.
+
+The NanoCore health smoke continues its exact retained deletion request through `POST /api/app/operations/workspace.delete` with the logical Workspace selector and `x-openkit-request-id`, then checks the existing closed-Workspace fence and cleaned lifecycle outcome.

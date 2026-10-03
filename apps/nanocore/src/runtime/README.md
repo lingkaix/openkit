@@ -77,7 +77,7 @@ Worker observation ingress retains structural facts and restricted chunks throug
 
 An unavailable Worker observation may cite an earlier expected observation from the same authenticated package and Turn; ingress validates that anchor before persisting the parent reference.
 
-`openkit-generative-mcp.ts` derives the migrated Kernel descriptors and canonical Tool spelling from the shared operation table. Its dispatch passes authenticated package actor, Workspace, Thread, Turn, AgentSession, package snapshot and owner-derived request identity to native invocation. Model input omits bound fields; conflicts fail before effects. Selected supply, capability-call evidence and generic Tool admission remain in `worker-mcp-routes.ts` and their existing owners.
+`openkit-generative-mcp.ts` derives all ten Kernel and five Generative UI descriptors and canonical Tool spelling from the shared operation table. Its dispatch passes authenticated package actor, Workspace, Thread, Turn, AgentSession, package snapshot and owner-derived request identity to native invocation. Model input omits bound fields; conflicts fail before effects. Selected supply, capability-call evidence and generic Tool admission remain in `worker-mcp-routes.ts` and their existing owners.
 
 ## Verification
 
@@ -149,3 +149,7 @@ MCP bearer bindings retain unchanged resolved material in Gateway-private creden
 Definition-derived Pending Request decisions call `pending-request-flow.ts`; administrator withdrawal carries the authenticated actor to its existing responsible-user authority check. Minimal Pending Request lineage reads do not replace canonical-load validation or captured-call admission.
 
 `scheduler-admission-operations.ts` joins the three scheduler definitions to queue and audit owners; it selects only Workspace and Thread lineage before loading a queue record. `worker-recovery-operations.ts` joins the two recovery definitions to existing checkpoint, cleanup and exact receipt owners. Current administrator eligibility is passed to the existing Thread audience predicate. The retired route registrars are absent; queue and worker lifecycle owners remain unchanged.
+
+Publication binds Thread and Turn from authenticated Worker lineage; its model schema omits them. The render result retains fallback text, the exact embedded A2UI resource and `_meta.ui.resourceUri`; resource retrieval also uses native operation invocation.
+
+`workspace-sync-operations.ts` owns the transport-free synchronization joins; review and recovery decisions keep their existing command receipts, replay inputs, typed refusals and effect checks. Public contracts live in the browser-safe schema family table. `workspace-sync-operations.test.ts` covers unexpected admission failures, real HTTP administrator bearer and Web session authority over foreign filesystem reviews, current-authority revocation at the effect boundary, and changed-input HTTP/MCP replay refusals against specific owner rows and receipts.

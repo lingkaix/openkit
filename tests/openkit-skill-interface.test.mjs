@@ -843,15 +843,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   );
   assert.deepEqual(
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
-    [
-      'token.my-admin-default',
-      'token.my-admin-list',
-      'workspace.deleted-recover',
-      'workspace.leave',
-      'workspace.my-invitation-accept',
-      'workspace.my-invitation-decline',
-      'workspace.my-invitation-list',
-    ]
+    ['token.my-admin-default', 'token.my-admin-list']
   );
   assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
     'connection.meta',
@@ -866,27 +858,39 @@ test('one catalog covers the checked App API and public Core projection', async 
 test('the catalog projects the bearer-reachable Workspace sharing subset', async () => {
   const { operationCatalog, operationExclusions } = await operations();
   const sharingMappings = {
-    'user.disable': ['disableUser', 'app.disableUser'],
-    'workspace.access-recover': ['recoverWorkspaceAccess', 'app.recoverWorkspaceAccess'],
+    'user.disable': ['user.disable', 'operations.user.disable'],
+    'workspace.access-recover': ['workspace.access-recover', 'operations.workspace.access-recover'],
     'workspace.access-recovery-read': [
-      'getWorkspaceAccessRecoveryState',
-      'app.getWorkspaceAccessRecoveryState',
+      'workspace.access-recovery-read',
+      'operations.workspace.access-recovery-read',
     ],
-    'workspace.delete': ['deleteWorkspace', 'app.deleteWorkspace'],
-    'workspace.deleted-recover': ['recoverDeletedWorkspace', 'app.recoverDeletedWorkspace'],
-    'workspace.invitation-create': ['createWorkspaceInvitation', 'app.createWorkspaceInvitation'],
-    'workspace.invitation-list': ['listWorkspaceInvitations', 'app.listWorkspaceInvitations'],
-    'workspace.invitation-revoke': ['revokeWorkspaceInvitation', 'app.revokeWorkspaceInvitation'],
+    'workspace.delete': ['workspace.delete', 'operations.workspace.delete'],
+    'workspace.deleted-recover': [
+      'workspace.deleted-recover',
+      'operations.workspace.deleted-recover',
+    ],
+    'workspace.invitation-create': [
+      'workspace.invitation-create',
+      'operations.workspace.invitation-create',
+    ],
+    'workspace.invitation-list': [
+      'workspace.invitation-list',
+      'operations.workspace.invitation-list',
+    ],
+    'workspace.invitation-revoke': [
+      'workspace.invitation-revoke',
+      'operations.workspace.invitation-revoke',
+    ],
     'workspace.list': ['workspace.list', 'operations.workspace.list'],
     'workspace.member-access-change': [
-      'changeWorkspaceMemberAccess',
-      'app.changeWorkspaceMemberAccess',
+      'workspace.member-access-change',
+      'operations.workspace.member-access-change',
     ],
-    'workspace.member-list': ['listWorkspaceMembers', 'app.listWorkspaceMembers'],
-    'workspace.member-remove': ['removeWorkspaceMember', 'app.removeWorkspaceMember'],
+    'workspace.member-list': ['workspace.member-list', 'operations.workspace.member-list'],
+    'workspace.member-remove': ['workspace.member-remove', 'operations.workspace.member-remove'],
     'workspace.ownership-transfer': [
-      'transferWorkspaceOwnership',
-      'app.transferWorkspaceOwnership',
+      'workspace.ownership-transfer',
+      'operations.workspace.ownership-transfer',
     ],
   };
   assert.deepEqual(
@@ -1052,14 +1056,14 @@ test('workspace leave uses the canonical-user schema and client method', async (
   const { operationCatalog } = await operations();
   const operation = operationCatalog.find((entry) => entry.id === 'workspace.leave');
   assert.ok(operation);
-  assert.equal(operation.appOperationId, 'leaveWorkspace');
-  assert.equal(operation.clientMethod, 'app.leaveWorkspace');
+  assert.equal(operation.appOperationId, 'workspace.leave');
+  assert.equal(operation.clientMethod, 'operations.workspace.leave');
   assert.equal(operation.group, 'workspace');
   assert.equal(operation.source, 'app-api');
   assert.equal(operation.mutating, true);
   assert.equal(
     operation.requiredAccess,
-    'implicit local actor; bundled CLI operation is local-mode only'
+    'canonical user: implicit local actor or server-admin bearer token'
   );
   const requestId = '11111111-1111-4111-8111-111111111111';
   const input = { workspaceId: 'ws_demo', expectedRevision: 1, requestId };
@@ -1083,8 +1087,8 @@ test('workspace leave uses the canonical-user schema and client method', async (
     await operation.handler(
       {
         client: {
-          app: {
-            leaveWorkspace: async (...args) => {
+          operations: {
+            'workspace.leave': async (...args) => {
               observed = args;
               return response;
             },
@@ -1095,7 +1099,7 @@ test('workspace leave uses the canonical-user schema and client method', async (
     ),
     response
   );
-  assert.deepEqual(observed, ['ws_demo', { expectedRevision: 1, requestId }]);
+  assert.deepEqual(observed, [input]);
 });
 
 test('bundled workspace leave preserves typed transport, request IDs, and auth denials', async () => {
@@ -1128,13 +1132,13 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
-        if (url !== 'http://127.0.0.1:3456/api/app/workspaces/ws_demo/leave') throw new Error('unexpected URL');
+        if (url !== 'http://127.0.0.1:3456/api/app/operations/workspace.leave') throw new Error('unexpected URL');
         if (options.method !== 'POST') throw new Error('unexpected method');
         const body = JSON.parse(options.body);
-        if (JSON.stringify(Object.keys(body).sort()) !== '["expectedRevision","requestId"]') throw new Error('unexpected body');
-        if (body.expectedRevision !== 1 || !/^[0-9a-f-]{36}$/.test(body.requestId)) throw new Error('invalid mutation');
-        if (${JSON.stringify(supplied ?? null)} !== null && body.requestId !== '${requestId}') throw new Error('request ID changed');
-        return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json', 'x-request-id': body.requestId } });
+        if (JSON.stringify(Object.keys(body).sort()) !== '["expectedRevision","workspaceId"]') throw new Error('unexpected body');
+        if (body.expectedRevision !== 1 || !/^[0-9a-f-]{36}$/.test(headers.get('x-openkit-request-id'))) throw new Error('invalid mutation');
+        if (${JSON.stringify(supplied ?? null)} !== null && headers.get('x-openkit-request-id') !== '${requestId}') throw new Error('request ID changed');
+        return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json', 'x-request-id': headers.get('x-openkit-request-id') } });
       };
     `),
     ]);
@@ -1157,7 +1161,7 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
         dataModule(`
         globalThis.fetch = async (url, options) => {
           const headers = new Headers(options.headers);
-          if (url !== 'http://127.0.0.1:3456/api/app/workspaces/ws_demo/leave' || options.method !== 'POST') throw new Error('unexpected transport');
+          if (url !== 'http://127.0.0.1:3456/api/app/operations/workspace.leave' || options.method !== 'POST') throw new Error('unexpected transport');
           if (headers.has('cookie')) throw new Error('unexpected session');
           if (headers.get('authorization') !== ${JSON.stringify(token ? `Bearer ${token}` : null)}) throw new Error('credential changed');
           return new Response(JSON.stringify({ code: '${code}', message: 'Canonical user required.', protocolVersion: '0.4.0' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
@@ -1175,17 +1179,20 @@ test('own invitation operations use canonical-user schemas and client methods', 
   const { operationCatalog } = await operations();
   const requestId = '11111111-1111-4111-8111-111111111111';
   for (const [action, method] of [
-    ['list', 'listMyWorkspaceInvitations'],
-    ['accept', 'acceptWorkspaceInvitation'],
-    ['decline', 'declineWorkspaceInvitation'],
+    ['list', 'workspace.my-invitation-list'],
+    ['accept', 'workspace.my-invitation-accept'],
+    ['decline', 'workspace.my-invitation-decline'],
   ]) {
     const operation = operationCatalog.find(
       (entry) => entry.id === `workspace.my-invitation-${action}`
     );
     assert.ok(operation);
     assert.equal(operation.appOperationId, method);
-    assert.equal(operation.clientMethod, `app.${method}`);
-    assert.match(operation.requiredAccess, /implicit local actor.*local-mode only/);
+    assert.equal(operation.clientMethod, `operations.${method}`);
+    assert.match(
+      operation.requiredAccess,
+      /canonical user.*implicit local actor.*server-admin bearer/
+    );
     assert.equal(operation.mutating, action !== 'list');
     const input =
       action === 'list' ? {} : { invitationId: 'inv_demo', requestId, expectedRevision: 1 };
@@ -1208,7 +1215,7 @@ test('own invitation operations use canonical-user schemas and client methods', 
       await operation.handler(
         {
           client: {
-            app: {
+            operations: {
               [method]: async (...args) => {
                 observed = args;
                 return response;
@@ -1220,10 +1227,7 @@ test('own invitation operations use canonical-user schemas and client methods', 
       ),
       response
     );
-    assert.deepEqual(
-      observed,
-      action === 'list' ? [] : ['inv_demo', { requestId, expectedRevision: 1 }]
-    );
+    assert.deepEqual(observed, [input]);
   }
 });
 
@@ -1253,12 +1257,12 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
-        if (url !== 'http://127.0.0.1:3456/api/app/workspace-invitations${action === 'list' ? '' : `/inv_demo/${action}`}') throw new Error('unexpected URL');
-        if (options.method !== '${action === 'list' ? 'GET' : 'POST'}') throw new Error('unexpected method');
+        if (url !== 'http://127.0.0.1:3456/api/app/operations/workspace.my-invitation-${action}') throw new Error('unexpected URL');
+        if (options.method !== 'POST') throw new Error('unexpected method');
         if ('${action}' !== 'list') {
           const body = JSON.parse(options.body);
-          if (JSON.stringify(Object.keys(body).sort()) !== '["expectedRevision","requestId"]') throw new Error('unexpected body');
-          if (body.expectedRevision !== 1 || !/^[0-9a-f-]{36}$/.test(body.requestId)) throw new Error('invalid mutation');
+          if (JSON.stringify(Object.keys(body).sort()) !== '["expectedRevision","invitationId"]') throw new Error('unexpected body');
+          if (body.expectedRevision !== 1 || !/^[0-9a-f-]{36}$/.test(headers.get('x-openkit-request-id'))) throw new Error('invalid mutation');
         }
         return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
       };

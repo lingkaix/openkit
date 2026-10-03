@@ -267,6 +267,8 @@ Credential acceptance uses synthetic check values and observes rejection before 
 
 ## Current Implementation Projection
 
+The fifteen Workspace synchronization operations are declared in `packages/app-api-schemas/src/sync-operations.ts` and joined to the existing review, apply, recovery and receipt owners in `apps/nanocore/src/runtime/workspace-sync-operations.ts`. HTTP uses `POST /api/app/operations/<sync.id>`; Core Client, Web, remote MCP and the CLI derive from those definitions. Review and recovery decisions retain `workspace_sync.review.decide` and `workspace_sync.recovery.decide` receipt identities and their original body inputs, exact replay and captured approval bindings. The former synchronization routes, client methods, access rows, OpenAPI descriptors and CLI rows are absent. Public filesystem apply re-evaluates the trusted credential through the existing Workspace authorizer at the owner effect check, including current administrator eligibility without membership; internal callers retain their current actor-authority check.
+
 The current implementation realizes the accepted base V1 synchronization behavior below. The accepted design replaces in-Sandbox capture and the worker-written change-set publisher with the snapshot chain above. The source paths below include the retained V1 behavior and do not establish completion of the accepted snapshot-chain contract. The active restart slice adds bounded awaiting-reconnect preservation, read-only existing-handle restoration, and direct terminal handoff through these owners. The current Turn input-snapshot checks reported as `input_base_mismatch` or `materialization_base_mismatch`, and the conflicting generic Artifact Review result, are not the chain `recovery_required` result. Worker-reported Git heads remain evidence; Core no longer stages a host review branch or rewrites the head. The production first-Turn path compares the Sandbox-reported Git HEAD to the pinned commit, then atomically records the accepted base and cursor without a host repository read. Git-source captures remain retained work evidence and do not create a host apply prerequisite. The non-Git expected-tree check remains in place; this baseline slice does not establish complete non-Git collection-to-apply behavior.
 
 - `packages/app-api-schemas/src/workspace-sync.ts` defines schemas for input snapshots, materialization records, backend workspace handles, worker output manifests, change sets, staged reviews, review patch payloads, and apply results.
@@ -543,7 +545,7 @@ A worker step that produces changes should normally end in a review phase. Each 
 
 A Workspace Sync Review decision is exactly one of `accepted`, `needs_refinement`, `rejected`, or `blocked`. The workspace-sync decision command accepts those values verbatim; `accept`, `reject`, `defer`, `deferred`, and `redo` are invalid rather than aliases. Presentation labels may be human-readable, but clients and Action Center actions MUST submit the canonical value without translation.
 
-The durable Workspace Sync Review is the only decision and apply owner for its change set. Its command is addressed by `reviewId` through the workspace-sync review decision route. The backing `artifactId` is inspection and evidence linkage only: the generic Artifact Review route MUST NOT decide or apply it, no Artifact id prefix may select the Workspace Sync Review path, and no generic Artifact Review verdict may be translated into this vocabulary.
+The durable Workspace Sync Review is the only decision and apply owner for its change set. Its command is addressed by `reviewId` through the `sync.review-decide` operation. The backing `artifactId` is inspection and evidence linkage only: the generic Artifact Review route MUST NOT decide or apply it, no Artifact id prefix may select the Workspace Sync Review path, and no generic Artifact Review verdict may be translated into this vocabulary.
 
 Only a command decision of `accepted` authorizes creation or continuation of the exact `WorkspaceApplyPlan`, strategy-specific mutation, and `WorkspaceApplyResult`. Before handoff the durable Review remains `pending`; the existing apply owner persists the terminal `accepted` Review and successful apply result together. `needs_refinement`, `rejected`, and `blocked` are terminal review decisions with no workspace mutation and no implicit retry, follow-up Turn, or generic Artifact Review effect; any later work must use its separately documented owner and produce a new review when appropriate.
 
@@ -635,7 +637,7 @@ Recovery triggering binds to the scheduler: `awaiting-reconnect` MUST preserve n
 Action Center should project pending staged workspace reviews even when the
 original artifact row is not available in the current store projection.
 
-The row source is the durable Workspace Sync Review and exact `reviewId`; its required `artifactId` provides an inspection target when that Artifact is available, never a second decision source. The row exposes only actions that submit `accepted`, `needs_refinement`, `rejected`, or `blocked` directly to the workspace-sync review decision route.
+The row source is the durable Workspace Sync Review and exact `reviewId`; its required `artifactId` provides an inspection target when that Artifact is available, never a second decision source. The row exposes only actions that submit `accepted`, `needs_refinement`, `rejected`, or `blocked` directly to the `sync.review-decide` operation.
 
 When recovery evidence is partial or ambiguous, Action Center should project
 `requires-human` with links to the materialization record, collection state,
@@ -698,7 +700,7 @@ changes back to a target root after conflict preflight.
 The Action Center can project pending durable staged workspace reviews even when
 the original artifact row is not available in the current store projection, and
 those rows can now resolve `accepted`, `needs_refinement`, `rejected`, and `blocked` outcomes
-through the durable workspace synchronization review decision route.
+through the durable `sync.review-decide` operation.
 
 The active restart slice adds bounded awaiting-reconnect gating, same-handle continuation after exact adoption, and direct terminal handoff through the existing reconciliation and review owners.
 

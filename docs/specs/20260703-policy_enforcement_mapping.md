@@ -307,6 +307,8 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 
 The V1 policy enforcement bridge is implemented as product workflow infrastructure. The boot policy kernel is a startup trust check plus the first kernel-backed durable decision producer; the LLM gateway, the current Goal Mode worker-launch path that leaves with the Goal implementation, real bounded worker-turn loop, governed worker session and AEP policy snapshot binding, durable approval/escalation result storage, and the first policy-originated approval gate helper are the first non-boot product enforcement producers. Broader product fact mapping into standard-aligned `@openkit/policy-kernel` facts, a real fail-closed `require_escalation` workflow, every future product action, every future worker-session family, and complete backend enforcement material compilation remain future extensions over the same bridge.
 
+The complete Kernel and Generative UI families derive access declarations from the shared definitions and receive one primary admission through native invocation. Generative UI retains its source and action effect checks, with trusted current administrator eligibility passed to audience checks and private Item-source publication refused unless the destination is private with the same private owner.
+
 ## Backend Policy Derivation
 
 NanoCore compiles derived backend policy from:

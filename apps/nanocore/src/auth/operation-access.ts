@@ -177,24 +177,6 @@ registerOperations(catalog, ['consumeOpenKitBootstrapToken'], {
   policyOperation: 'api.call',
   scope: 'server',
 });
-registerOperations(catalog, ['getWorkspaceAccessRecoveryState'], {
-  authentication: 'deployment-admin',
-  mutating: false,
-  policyOperation: 'deployment.recover',
-  scope: 'server',
-});
-registerOperations(catalog, ['recoverWorkspaceAccess'], {
-  authentication: 'deployment-admin',
-  mutating: true,
-  policyOperation: 'deployment.recover',
-  scope: 'server',
-});
-registerOperations(catalog, ['disableUser'], {
-  authentication: 'deployment-admin',
-  mutating: true,
-  policyOperation: 'api.call',
-  scope: 'server',
-});
 
 registerOperations(catalog, ['dryRunWorkspaceArchiveImport'], {
   authentication: 'canonical-user',
@@ -202,12 +184,7 @@ registerOperations(catalog, ['dryRunWorkspaceArchiveImport'], {
   policyOperation: 'workspace.write',
   scope: 'user',
 });
-registerOperations(catalog, ['listMyWorkspaceInvitations'], {
-  authentication: 'canonical-user',
-  mutating: false,
-  policyOperation: 'invitation.respond',
-  scope: 'user',
-});
+
 registerOperations(catalog, ['listMyAdminAccessTokens'], {
   authentication: 'canonical-user',
   mutating: false,
@@ -218,24 +195,6 @@ registerOperations(catalog, ['setMyAdminAccessTokenDefault'], {
   authentication: 'canonical-user',
   mutating: true,
   policyOperation: 'api.call',
-  scope: 'user',
-});
-registerOperations(catalog, ['acceptWorkspaceInvitation', 'declineWorkspaceInvitation'], {
-  authentication: 'canonical-user',
-  mutating: true,
-  policyOperation: 'invitation.respond',
-  scope: 'user',
-});
-registerOperations(catalog, ['leaveWorkspace'], {
-  authentication: 'canonical-user',
-  mutating: true,
-  policyOperation: 'workspace.leave',
-  scope: 'user',
-});
-registerOperations(catalog, ['recoverDeletedWorkspace'], {
-  authentication: 'canonical-user',
-  mutating: true,
-  policyOperation: 'workspace.write',
   scope: 'user',
 });
 registerOperations(catalog, ['importWorkspaceArchive', 'POST /api/workspaces'], {
@@ -275,34 +234,6 @@ registerOperations(catalog, ['listAgentCatalog', 'getAgentCatalogEntry', 'search
   resolver: 'authorized-workspace-set',
   scope: 'workspace',
 });
-registerOperations(catalog, ['listWorkspaceMembers', 'listWorkspaceInvitations'], {
-  mutating: false,
-  policyOperation: 'membership.manage',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['createWorkspaceInvitation'], {
-  mutating: true,
-  policyOperation: 'membership.manage',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  ['revokeWorkspaceInvitation', 'changeWorkspaceMemberAccess', 'removeWorkspaceMember'],
-  {
-    mutating: true,
-    policyOperation: 'membership.manage',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['transferWorkspaceOwnership', 'deleteWorkspace'], {
-  mutating: true,
-  policyOperation: 'workspace.lifecycle',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['POST /api/turns'], {
   mutating: true,
   policyOperation: 'turn.run',
@@ -328,20 +259,7 @@ registerOperations(
     'getWorkspaceDashboard',
     'listWorkspaceWorkers',
     'listWorkspaceMaterials',
-    'listWorkspaceSyncReviews',
-    'listWorkspaceInputSnapshots',
-    'listWorkspaceMaterializationRecords',
-    'listWorkerOutputManifests',
-    'listWorkspaceChangeSets',
-    'listStagedWorkspaceReviews',
-    'listWorkspaceApplyResults',
-    'listWorkspaceApplyPlans',
-    'listWorkspaceReconciliationRecords',
-    'listWorkspaceQuarantineRecords',
     'GET /api/workspaces/:workspaceId',
-    'listLightApps',
-    'listLightAppRecords',
-    'getLightAppRecord',
   ],
   {
     mutating: false,
@@ -351,26 +269,9 @@ registerOperations(
   }
 );
 
-registerOperations(
-  catalog,
-  [
-    'createWorkspaceMaterial',
-    'retireLightApp',
-    'updateLightAppRecord',
-    'batchLightAppRecords',
-    'publishGenerativePresentation',
-    'submitGenerativePresentationAction',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'workspace.write',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['createLightApp', 'updateLightAppSchema'], {
+registerOperations(catalog, ['createWorkspaceMaterial'], {
   mutating: true,
-  policyOperation: 'workspace.configure',
+  policyOperation: 'workspace.write',
   resolver: 'path-workspace',
   scope: 'workspace',
 });
@@ -382,7 +283,6 @@ registerOperations(
     'listWorkspaceEvidenceBundles',
     'listWorkspaceRuntimeEvidence',
     'listWorkspacePermissionDecisions',
-    'listBackendWorkspaceHandles',
     'listAgentEnvironmentPackageSnapshots',
     'listWorkspaceVaultUseRecords',
   ],
@@ -455,20 +355,6 @@ registerOperations(catalog, ['PATCH /api/workspaces/:workspaceId'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(
-  catalog,
-  [
-    'getGenerativePresentation',
-    'getGenerativePresentationResource',
-    'refreshGenerativePresentation',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'thread.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
 registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads'], {
   mutating: false,
   policyOperation: 'thread.read',
@@ -514,26 +400,10 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(
-  catalog,
-  ['submitWorkspaceSyncReviewDecision', 'submitWorkspaceRecoveryDecision'],
-  {
-    mutating: true,
-    policyOperation: 'review.apply',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
 
 registerOperations(
   catalog,
-  [
-    'getWorkspaceMaterial',
-    'listWorkspaceMaterialRevisions',
-    'getWorkspaceMaterialRevision',
-    'getWorkspaceSyncReview',
-    'getWorkspaceApplyResult',
-  ],
+  ['getWorkspaceMaterial', 'listWorkspaceMaterialRevisions', 'getWorkspaceMaterialRevision'],
   {
     mutating: false,
     policyOperation: 'workspace.read',

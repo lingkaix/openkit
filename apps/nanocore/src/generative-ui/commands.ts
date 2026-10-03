@@ -48,6 +48,8 @@ const ACTION_MESSAGE_BYTE_LIMIT = 64 * 1024;
 export interface GenerativeUiCommandContext extends KernelCommandContext {
   /** Open Workspace database that owns presentations. */
   readonly workspaceDb: WorkspaceDb;
+  /** Trusted current administrator eligibility; never copied from caller input. */
+  readonly administratorEligible?: boolean;
 }
 
 /** SQLite row for one retained presentation. */
@@ -99,7 +101,8 @@ export async function publishGenerativePresentation(
         context.actor,
         context.workspaceId,
         input.threadId,
-        input.turnId
+        input.turnId,
+        context.administratorEligible
       );
       assertItemSourcePublishable(context, input.source, input.threadId);
       const interrupted = findPresentationByRequest(
@@ -194,7 +197,13 @@ export async function publishGenerativePresentation(
         context.workspaceId,
         record.response.id
       );
-      assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+      assertThreadReadable(
+        context.store,
+        context.actor,
+        context.workspaceId,
+        row.thread_id,
+        context.administratorEligible
+      );
       assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
       if (derivePublication(context.store, row) !== 'published') {
         throw new KernelCommandError(
@@ -207,7 +216,13 @@ export async function publishGenerativePresentation(
     responseId: (id) => id,
   });
   const row = requirePresentationRow(context.workspaceDb, context.workspaceId, retained);
-  assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+  assertThreadReadable(
+    context.store,
+    context.actor,
+    context.workspaceId,
+    row.thread_id,
+    context.administratorEligible
+  );
   assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
   return projectPresentation(context.store, row);
 }
@@ -224,7 +239,13 @@ export function getGenerativePresentation(
   presentationId: string
 ): GenerativePresentation {
   const row = requirePresentationRow(context.workspaceDb, context.workspaceId, presentationId);
-  assertThreadReadable(context.store, context.actor, context.workspaceId, row.thread_id);
+  assertThreadReadable(
+    context.store,
+    context.actor,
+    context.workspaceId,
+    row.thread_id,
+    context.administratorEligible
+  );
   assertSourceReadable(context, parsePresentationSource(row), row.thread_id);
   return projectPresentation(context.store, row);
 }
@@ -785,7 +806,8 @@ function assertWritableTurn(
   actor: ActorRef,
   workspaceId: string,
   threadId: string,
-  turnId: string
+  turnId: string,
+  administratorEligible = false
 ): void {
   let thread: ReturnType<FsStore['getThread']>;
   try {
@@ -793,7 +815,14 @@ function assertWritableTurn(
   } catch {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
-  if (!isThreadVisible(store, thread, responsibleUserIdForActor(actor) ?? undefined)) {
+  if (
+    !isThreadVisible(
+      store,
+      thread,
+      responsibleUserIdForActor(actor) ?? undefined,
+      administratorEligible
+    )
+  ) {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
   if (thread.status === 'archived') {
@@ -822,7 +851,8 @@ function assertThreadReadable(
   store: FsStore,
   actor: ActorRef,
   workspaceId: string,
-  threadId: string
+  threadId: string,
+  administratorEligible = false
 ): void {
   let thread: ReturnType<FsStore['getThread']>;
   try {
@@ -830,7 +860,14 @@ function assertThreadReadable(
   } catch {
     throw new KernelCommandError('not_found', 'Presentation was not found.');
   }
-  if (!isThreadVisible(store, thread, responsibleUserIdForActor(actor) ?? undefined)) {
+  if (
+    !isThreadVisible(
+      store,
+      thread,
+      responsibleUserIdForActor(actor) ?? undefined,
+      administratorEligible
+    )
+  ) {
     throw new KernelCommandError('not_found', 'Presentation was not found.');
   }
 }
@@ -868,7 +905,8 @@ function requireVisibleItemSource(
       context.store,
       item.workspaceId,
       item.threadId,
-      responsibleUserIdForActor(context.actor) ?? undefined
+      responsibleUserIdForActor(context.actor) ?? undefined,
+      context.administratorEligible
     )
   ) {
     throw hidden;
@@ -877,7 +915,7 @@ function requireVisibleItemSource(
 }
 
 /**
- * Requires Item-source Thread audience and refuses private source onto a shared dest.
+ * Requires Item-source read admission and keeps private publication within its private owner.
  *
  * Kernel-record sources keep their existing resource authority.
  *
@@ -905,7 +943,12 @@ function assertItemSourcePublishable(
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
   const sourceThread = context.store.getThread(item.workspaceId, item.threadId);
-  if (sourceThread.visibility === 'private' && destThread.visibility === 'workspace') {
+  // Administrator read eligibility does not authorize disclosure into a different audience.
+  if (
+    sourceThread.visibility === 'private' &&
+    (destThread.visibility !== 'private' ||
+      destThread.privateOwnerUserId !== sourceThread.privateOwnerUserId)
+  ) {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
 }

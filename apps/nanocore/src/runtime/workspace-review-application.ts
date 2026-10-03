@@ -9,7 +9,8 @@ import {
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import { listArtifactReviews } from '../artifact-reviews.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import type { Actor } from '../auth/identity.js';
+import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
@@ -118,6 +119,8 @@ export function listWorkspaceSyncReviewsForRead(
  */
 export async function decideWorkspaceSyncReview(input: {
   readonly authorityActor: ActorRef;
+  /** Authenticated public context for current credential re-evaluation; internal callers retain their actor authority path. */
+  readonly requestActor?: Actor;
   readonly coreDb: CoreDb;
   readonly decidedAt: string;
   readonly decision: WorkspaceSyncReviewDecision;
@@ -238,15 +241,22 @@ async function executeWorkspaceSyncReviewDecision(
       'Git review application is unavailable; publish through the selected vendor MCP.'
     );
   const staging = requireFilesystemWorkspaceStaging(workspaceDb, review);
-  if (
-    !currentWorkspaceAuthority(
-      input.coreDb,
-      workspaceId,
-      input.authorityActor,
-      'review.apply',
-      true
-    )
-  ) {
+  // The existing authorizer supplies administrator eligibility and current credential limits at this effect check too.
+  const effectAuthority = input.requestActor
+    ? input.authorityActor.kind === 'user' &&
+      input.authorityActor.id === input.requestActor.userId &&
+      authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
+        mutating: true,
+        policyOperation: 'review.apply',
+      })
+    : currentWorkspaceAuthority(
+        input.coreDb,
+        workspaceId,
+        input.authorityActor,
+        'review.apply',
+        true
+      );
+  if (!effectAuthority) {
     throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
   const plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);

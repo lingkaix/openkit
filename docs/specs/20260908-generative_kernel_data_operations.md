@@ -150,7 +150,7 @@ The first probes are independent: a headless cross-system ID mapping with create
 
 ## Current Implementation Projection
 
-As of 2026-09-09, NanoCore implements the initial Kernel contract in `apps/nanocore/src/generative-kernel/`: per-app SQLite under `workspaces/<workspaceId>/light-apps/<appId>/`, file-authored admitted definitions, native DDL, bounded list/create/update/batch commands, app-local receipts, and Workspace catalog projection. Built-in Worker tools live on `openkit-generative`; App API and Skill/CLI expose the ten `kernel.*` operations. Those hand-maintained App API paths and that hand-built `openkit-generative` descriptor are the current implementation. They remain until this resource family is cut over under Public And Agent Projections. No definition-table cutover of this family is implemented. Live selected-Worker journey, crash/restart, and browser proofs remain deferred under the MVP exception recorded in [The Generative Apps MVP Defers Live, Browser, And Restart Proofs](../decisions/20260909-generative_mvp_deferred_proofs.md). Equal active-member eligibility is unmet for editor/viewer role ceilings and is recorded rather than claimed. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) remains Markdown/plain text only and is not a general module store.
+As of 2026-09-09, NanoCore implements the initial Kernel contract in `apps/nanocore/src/generative-kernel/`: per-app SQLite under `workspaces/<workspaceId>/light-apps/<appId>/`, file-authored admitted definitions, native DDL, bounded list/create/update/batch commands, app-local receipts, and Workspace catalog projection. Built-in Worker tools live on `openkit-generative`; App API and Skill/CLI expose the ten `kernel.*` operations. All ten Kernel operations now use shared definitions: the remaining eight live in `packages/app-api-schemas/src/generative-operations.ts` and join native commands through `apps/nanocore/src/generative-operations.ts`. HTTP, OpenAPI, Core Client, CLI and built-in Worker descriptors derive from the tables; former routes and literal projection entries are deleted. Live selected-Worker journey, crash/restart, and browser proofs remain deferred under the MVP exception recorded in [The Generative Apps MVP Defers Live, Browser, And Restart Proofs](../decisions/20260909-generative_mvp_deferred_proofs.md). Equal active-member eligibility is unmet for editor/viewer role ceilings and is recorded rather than claimed. The existing Material slice in [Work Resource Interaction](20260713-work_resource_interaction_model.md) remains Markdown/plain text only and is not a general module store.
 
 ## Acceptance Predicates
 
@@ -223,24 +223,22 @@ Replay authority expires at the existing seven-day boundary. For these app-local
 
 ### Public And Agent Projections
 
-Until this resource family is cut over, the App API paths below are relative to `/api/app/workspaces/:workspaceId`, and the table is this family's HTTP contract. GET inputs are query parameters, including `schemaRevision`; POST/PATCH/PUT inputs are strict JSON bodies.
+[Operation Definition](20261002-operation_definition.md) owns HTTP placement, client typing and definition-derived projections for all ten Kernel operations. Each operation uses `POST /api/app/operations/<id>` with a complete strict logical input containing `workspaceId` and its resource selectors. Mutations carry the existing `x-openkit-request-id` UUID header; the CLI and Worker adapter generate or carry the same caller request identity. Shared schemas define one contract across Web, CLI and Worker.
 
-Mutations require the existing `x-openkit-request-id` UUID header; the CLI/Worker adapter generates or carries the same caller request identity. The shared schemas define one contract across Web, CLI and Worker, not transport-specific business behavior.
-
-| Operation ID | Method/path | Result owner |
+| Operation ID | Logical input beyond Workspace | Result owner |
 | --- | --- | --- |
-| `kernel.apps.list` | `GET /light-apps` | Derived catalog over app authority. |
-| `kernel.apps.create` | `POST /light-apps` with schema input | Created app and admitted schema. |
-| `kernel.apps.get` | `GET /light-apps/:appId` | App metadata/schema/capabilities. |
-| `kernel.schema.update` | `PUT /light-apps/:appId/schema` with `{expectedAppRevision,expectedSchemaRevision,schema}` | Current app/schema. |
-| `kernel.apps.retire` | `POST /light-apps/:appId/retire` with `{expectedAppRevision}` | Current app lifecycle. |
-| `kernel.records.list` | `GET /light-apps/:appId/collections/:collection/records` | Current paged records. |
-| `kernel.records.get` | `GET /light-apps/:appId/collections/:collection/records/:recordId` | Current record. |
-| `kernel.records.create` | `POST /light-apps/:appId/collections/:collection/records` | Current created record. |
-| `kernel.records.update` | `PATCH /light-apps/:appId/collections/:collection/records/:recordId` | Current updated record. |
-| `kernel.records.batch` | `POST /light-apps/:appId/batch` | Current app and ordered current record results. |
+| `kernel.apps.list` | Optional page/perPage. | Derived catalog over app authority. |
+| `kernel.apps.create` | Schema input and request identity. | Created app and admitted schema. |
+| `kernel.apps.get` | App id. | App metadata/schema/capabilities. |
+| `kernel.schema.update` | App id, expected app/schema revisions, schema and request identity. | Current app/schema. |
+| `kernel.apps.retire` | App id, expected app revision and request identity. | Current app lifecycle. |
+| `kernel.records.list` | App/collection selectors, schema revision and bounded query. | Current paged records. |
+| `kernel.records.get` | App/collection/record selectors, schema revision and optional fields. | Current record. |
+| `kernel.records.create` | App/collection selectors, schema revision, data and request identity. | Current created record. |
+| `kernel.records.update` | App/collection/record selectors, schema and expected record revisions, data and request identity. | Current updated record. |
+| `kernel.records.batch` | App selector, schema revision, request list and request identity. | Current app and ordered current record results. |
 
-Until this resource family is cut over, use the existing operation catalog and one end-user `openkit` Skill/CLI. Selected Workers see one built-in `openkit-generative` MCP descriptor; tool names replace operation-ID dots with underscores and their strict argument schemas carry the same inputs plus scope selectors and request ID. The gateway derives the actual Workspace, actor, Thread/Turn/AgentSession and allowed target from its authenticated selected session; arguments must agree and cannot override them. Dispatch goes directly to the owning command handler through the existing capability owner. The internal Assistant consumes the same commands through exact Core Tools under `20260909-internal_agent_resource_integration.md`.
+Selected Workers see the definition-derived `openkit-generative` MCP descriptor. Tool spelling and model input views derive from the definitions; authenticated package lineage supplies bound Workspace, actor and request identity. Native invocation supplies the primary operation admission, while the Worker capability owner retains selected supply, Tool admission and capability evidence. The internal Assistant integration remains separately owned by `20260909-internal_agent_resource_integration.md` and is not implemented by this cutover.
 
 That dispatch never forwards the built-in target to the gateway itself and never exposes raw SQLite. No plugin install or per-app MCP server is needed. Only implemented selected tools are advertised. The internal caller uses no synthetic Worker session and no recursive MCP call. That internal caller is accepted design and Not Started; the landed selected-Worker surface does not implement it.
 

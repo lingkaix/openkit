@@ -592,6 +592,7 @@ function collectWorkspaceExportRows(
  */
 function importWorkspaceDatabaseRows({
   authorityUserId,
+  ownerUserId,
   coreDb,
   workspaceRoot,
   importedWorkspaceId,
@@ -602,6 +603,8 @@ function importWorkspaceDatabaseRows({
 }: {
   /** Exact authenticated user that authorized the workspace import. */
   readonly authorityUserId: string;
+  /** Restored tombstone owner for deleted recovery, or the importing user for ordinary imports. */
+  readonly ownerUserId: string;
   readonly coreDb: CoreDb;
   readonly workspaceRoot: string;
   readonly importedWorkspaceId: string;
@@ -678,8 +681,8 @@ function importWorkspaceDatabaseRows({
           goal.threadId,
           JSON.stringify({
             ...goal,
-            responsibleUserId: authorityUserId,
-            responsibleActorContext: { kind: 'session', userId: authorityUserId },
+            responsibleUserId: ownerUserId,
+            responsibleActorContext: { kind: 'session', userId: ownerUserId },
           })
         );
       for (const card of snapshot.goalState.cards)
@@ -776,7 +779,7 @@ function importWorkspaceDatabaseRows({
  *
  * @param coreDb Optional Core database for Vault and injection records.
  * @param store Current user Store.
- * @param ownerUserId Authenticated user that owns the imported Workspace.
+ * @param ownerUserId Importing user or verified deleted-resource tombstone owner.
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
  * @returns Imported workspace record.
@@ -832,6 +835,7 @@ function publishImportedWorkspace(
  */
 export function importVerifiedWorkspace({
   authorityUserId,
+  recoveryOwnerUserId,
   coreDb,
   dataRoot,
   requestId,
@@ -839,6 +843,8 @@ export function importVerifiedWorkspace({
   verified,
 }: {
   readonly authorityUserId: string;
+  /** Trusted tombstone owner for deleted-resource recovery; ordinary imports use the invoking actor. */
+  readonly recoveryOwnerUserId?: string;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string;
   readonly requestId: string | null;
@@ -915,6 +921,7 @@ export function importVerifiedWorkspace({
     if (coreDb) {
       importWorkspaceDatabaseRows({
         authorityUserId,
+        ownerUserId: recoveryOwnerUserId ?? authorityUserId,
         coreDb,
         workspaceRoot,
         importedWorkspaceId,
@@ -928,7 +935,7 @@ export function importVerifiedWorkspace({
   const workspace = publishImportedWorkspace(
     coreDb,
     store,
-    authorityUserId,
+    recoveryOwnerUserId ?? authorityUserId,
     snapshot,
     stageWorkspace
   );

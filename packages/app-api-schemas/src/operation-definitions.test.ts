@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GENERATIVE_UI_OPERATION_DEFINITIONS,
+  KERNEL_REMAINING_OPERATION_DEFINITIONS,
+} from './generative-operations.js';
+import {
   ARTIFACT_OPERATION_DEFINITIONS,
   KERNEL_OPERATION_DEFINITIONS,
   operationHttpPath,
@@ -7,6 +11,7 @@ import {
   operationToolName,
   PRODUCT_OPERATION_DEFINITIONS,
 } from './operation-definitions.js';
+import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 
 describe('operation definitions', () => {
   it('derives model views from complete schemas without bound identities', () => {
@@ -105,4 +110,77 @@ describe('automation, scheduler and recovery definitions', () => {
     expect(PRODUCT_OPERATION_DEFINITIONS['automation.delete'].outputSchema.parse(null)).toBeNull();
     expect(PRODUCT_OPERATION_DEFINITIONS['automation.delete'].successStatus).toBe(204);
   });
+});
+
+it('derives complete strict Generative model views and preserves the schema collection refinement', () => {
+  const definitions = {
+    ...KERNEL_REMAINING_OPERATION_DEFINITIONS,
+    ...GENERATIVE_UI_OPERATION_DEFINITIONS,
+  };
+  expect(Object.keys(definitions)).toHaveLength(13);
+  for (const definition of Object.values(definitions)) {
+    const model = operationModelInput(definition.inputSchema, [
+      'workspaceId',
+      'requestId',
+      'threadId',
+      'turnId',
+    ]);
+    for (const key of ['workspaceId', 'requestId', 'threadId', 'turnId'])
+      expect(model.shape).not.toHaveProperty(key);
+    expect(model.safeParse({ unowned: true }).success).toBe(false);
+  }
+  const model = operationModelInput(definitions['kernel.apps.create'].inputSchema, [
+    'workspaceId',
+    'requestId',
+  ]);
+  const collection = {
+    name: 'entries',
+    type: 'base',
+    description: 'Entries',
+    fields: [{ name: 'note', type: 'text', required: true, description: 'Note' }],
+    indexes: [],
+  };
+  const proposal = {
+    format: 'openkit.light-app',
+    schemaVersion: 1,
+    title: 'Proof',
+    purpose: 'Proof',
+    collections: [collection],
+  };
+  expect(model.safeParse(proposal).success).toBe(true);
+  expect(model.safeParse({ ...proposal, collections: [collection, collection] }).success).toBe(
+    false
+  );
+  expect(model.safeParse({ ...proposal, unowned: true }).success).toBe(false);
+});
+
+it('retains deletion confirmation refinements in complete and model inputs and refuses caller authority selectors', () => {
+  const schema = WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['workspace.delete'].inputSchema;
+  const input = {
+    workspaceId: 'ws_demo',
+    requestId: '00000000-0000-4000-8000-000000000023',
+    expectedRegistryRevision: 3,
+    confirmation: 'permanently-delete-workspace:ws_demo:3',
+  };
+  expect(schema.safeParse(input).success).toBe(true);
+  expect(
+    schema.safeParse({ ...input, confirmation: 'permanently-delete-workspace:ws_demo:2' }).success
+  ).toBe(false);
+  expect(schema.safeParse({ ...input, expectedRegistryRevision: 0 }).success).toBe(false);
+  expect(schema.safeParse({ ...input, administratorEligible: true }).success).toBe(false);
+  const model = operationModelInput(schema, ['workspaceId', 'requestId']);
+  expect(
+    model.safeParse({ expectedRegistryRevision: 3, confirmation: input.confirmation }).success
+  ).toBe(true);
+  expect(
+    model.safeParse({
+      expectedRegistryRevision: 3,
+      confirmation: 'permanently-delete-workspace:ws_demo:2',
+    }).success
+  ).toBe(false);
+  const disable = WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS['user.disable'].inputSchema;
+  expect(disable.safeParse({ targetUserId: 'target', requestId: input.requestId }).success).toBe(
+    true
+  );
+  expect(disable.safeParse({ userId: 'target', requestId: input.requestId }).success).toBe(false);
 });

@@ -28,7 +28,11 @@ export function GenerativePresentationView({ item }: { item: GenerativeUiReferen
   const client = useCoreClient();
   const query = useQuery({
     queryKey: ['generative-presentation', item.workspaceId, item.presentationId],
-    queryFn: () => client.app.getGenerativePresentation(item.workspaceId, item.presentationId),
+    queryFn: () =>
+      client.operations['generative-ui.get']({
+        workspaceId: item.workspaceId,
+        presentationId: item.presentationId,
+      }),
   });
   const [observation, setObservation] = useState<LiveObservation | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
@@ -40,7 +44,9 @@ export function GenerativePresentationView({ item }: { item: GenerativeUiReferen
 
   const refresh = useMutation({
     mutationFn: async (event: { name: string; surfaceId: string; sourceComponentId: string }) =>
-      client.app.refreshGenerativePresentation(item.workspaceId, item.presentationId, {
+      client.operations['generative-ui.refresh']({
+        workspaceId: item.workspaceId,
+        presentationId: item.presentationId,
         version: 'v0.9',
         action: { ...event, timestamp: new Date().toISOString() },
       }),
@@ -65,21 +71,19 @@ export function GenerativePresentationView({ item }: { item: GenerativeUiReferen
       context: Record<string, unknown>;
     }) => {
       submitRequestId.current ??= createRequestId();
-      return client.app.submitGenerativePresentationAction(
-        item.workspaceId,
-        item.presentationId,
-        {
-          version: 'v0.9',
-          action: {
-            name: event.name,
-            surfaceId: event.surfaceId,
-            sourceComponentId: event.sourceComponentId,
-            timestamp: new Date().toISOString(),
-            context: event.context,
-          },
+      return client.operations['generative-ui.action']({
+        workspaceId: item.workspaceId,
+        presentationId: item.presentationId,
+        version: 'v0.9',
+        action: {
+          name: event.name,
+          surfaceId: event.surfaceId,
+          sourceComponentId: event.sourceComponentId,
+          timestamp: new Date().toISOString(),
+          context: event.context,
         },
-        submitRequestId.current
-      );
+        requestId: submitRequestId.current,
+      });
     },
     onSuccess: (result) => {
       setConflict(null);

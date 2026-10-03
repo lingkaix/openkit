@@ -40,6 +40,7 @@ import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
+  hasWorkspaceDeletionRetryAuthority,
   isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
@@ -53,6 +54,11 @@ import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
+import {
+  createGenerativeUiOperationImplementations,
+  createRemainingKernelOperationImplementations,
+  GenerativeOperationError,
+} from './generative-operations.js';
 import type { PreparedTaskKnowledgeContext } from './knowledge-manager.js';
 import {
   createKnowledgeOperationImplementations,
@@ -85,6 +91,10 @@ import {
   createRecoveryOperationImplementations,
   RecoveryOperationError,
 } from './runtime/worker-recovery-operations.js';
+import {
+  createWorkspaceSyncOperationImplementations,
+  WorkspaceSyncOperationError,
+} from './runtime/workspace-sync-operations.js';
 import type { SchedulerLeaseTokenBindingLineage } from './scheduler-records.js';
 import {
   createDataRootAdminOperationImplementations,
@@ -97,8 +107,12 @@ import {
 } from './storage/workspace-transfer-operations.js';
 import { createThread } from './thread-routes.js';
 import { readTurn } from './turn-routes.js';
+import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import { readAuthorizedWorkspaces } from './workspace-sharing-routes.js';
+import {
+  createWorkspaceSharingOperationImplementations,
+  readAuthorizedWorkspaces,
+} from './workspace-sharing-operations.js';
 
 /** Trusted entry context, constructed by authentication or Worker supply assembly. */
 export type OperationInvocationContext =
@@ -133,6 +147,10 @@ export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
   /** Existing process-local automation owner, shared across public projections. */
   readonly automationStore?: AutomationStore;
+  /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
+  readonly closeWorkspaceMcpSessions?: (workspaceId: string) => Promise<void>;
+  /** Reconciles existing deletion fences after canonical user disable commits. */
+  readonly afterUserDisabled?: (userId: string) => Promise<void> | void;
   /** Existing conversation owner, including process-local interruption handles. */
   readonly conversationService?: ReturnType<typeof registerQuickAndChatModeRoutes>;
   /** Existing bounded Task admission command. */
@@ -401,9 +419,19 @@ function createOperationImplementations(
     ...createAutomationOperationImplementations(dependencies),
     ...createSchedulerAdmissionOperationImplementations(dependencies),
     ...createRecoveryOperationImplementations(dependencies),
+    ...createWorkspaceSyncOperationImplementations({
+      coreDb: dependencies.coreDb,
+      store: dependencies.store!,
+      inflightCommands: dependencies.inflightCommands!,
+      repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+    }),
     ...createKernelOperationImplementations(dependencies),
+    ...createRemainingKernelOperationImplementations(dependencies),
+    ...createGenerativeUiOperationImplementations(dependencies),
     ...createWorkspaceOperationImplementations(dependencies),
     ...createWorkspaceTransferOperationImplementations(dependencies),
+    ...createWorkspaceSharingOperationImplementations(dependencies),
+    ...createWorkspaceDeletionOperationImplementations(dependencies),
     ...createThreadOperationImplementations(dependencies),
     ...createTurnOperationImplementations(dependencies),
     ...createKnowledgeOperationImplementations(dependencies),
@@ -452,7 +480,12 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         400
       );
     const definition = OPERATION_DEFINITIONS[id];
-    const assembled = bindOperationInput(value, context, definition.mutating);
+    const assembled = bindOperationInput(
+      value,
+      context,
+      definition.mutating,
+      definition.inputSchema.shape
+    );
     const parsed = definition.inputSchema.safeParse(assembled);
     if (!parsed.success)
       throw new OperationInvocationError('invalid_request', 'Invalid operation input.', 400);
@@ -553,7 +586,13 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
               true
             )
           : authorizeWorkspace(coreDb, context.actor, workspaceId, definition);
-      if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
+      if (definition.target.kind === 'workspace-deletion') {
+        if (
+          context.kind !== 'public' ||
+          (!authorized && !hasWorkspaceDeletionRetryAuthority(coreDb, context.actor, workspaceId))
+        )
+          throw denied();
+      } else if (!authorized || dependencies.workspaceMutationAdmission.isClosed(workspaceId))
         throw denied();
       if (
         definition.scope.kind === 'opaque-child-workspace' &&
@@ -650,10 +689,42 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         }
       }
       // Domain handlers resolve the child inside this authorized Workspace and preserve their own availability outcomes.
-      release = definition.mutating
-        ? (dependencies.workspaceMutationAdmission.enter(workspaceId) ?? undefined)
-        : undefined;
-      if (definition.mutating && !release) throw denied();
+      release =
+        definition.mutating && definition.target.kind !== 'workspace-deletion'
+          ? (dependencies.workspaceMutationAdmission.enter(workspaceId) ?? undefined)
+          : undefined;
+      if (definition.mutating && definition.target.kind !== 'workspace-deletion' && !release)
+        throw denied();
+    }
+    if ('mutationTarget' in definition) {
+      if (!coreDb || !dependencies.workspaceMutationAdmission) throw denied();
+      const args = parsed.data as Record<string, unknown>;
+      let targetWorkspaceId: string | undefined;
+      if (definition.mutationTarget.kind === 'body-workspace') {
+        targetWorkspaceId = args[definition.mutationTarget.field] as string;
+      } else {
+        const row = coreDb.sqlite
+          .prepare(
+            'SELECT workspace_id AS workspaceId, invitee_user_id AS inviteeUserId FROM workspace_invitations WHERE invitation_id = ?'
+          )
+          .get(args[definition.mutationTarget.field]) as
+          | { workspaceId: string; inviteeUserId: string }
+          | undefined;
+        if (
+          context.kind !== 'public' ||
+          !row ||
+          (row.inviteeUserId !== context.actor.userId &&
+            !isCurrentDeploymentAdministrator(coreDb, context.actor))
+        )
+          throw denied();
+        targetWorkspaceId = row.workspaceId;
+      }
+      if (!targetWorkspaceId || dependencies.workspaceMutationAdmission.isClosed(targetWorkspaceId))
+        throw denied();
+      if (definition.mutating) {
+        release = dependencies.workspaceMutationAdmission.enter(targetWorkspaceId) ?? undefined;
+        if (!release) throw denied();
+      }
     }
     try {
       const handlers: OperationImplementations = createOperationImplementations(dependencies);
@@ -688,6 +759,9 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         error instanceof SchedulerAdmissionOperationError ||
         error instanceof RecoveryOperationError ||
         error instanceof WorkspaceTransferOperationError ||
+        error instanceof KernelCommandError ||
+        error instanceof GenerativeOperationError ||
+        error instanceof WorkspaceSyncOperationError ||
         error instanceof KnowledgeOperationError ||
         error instanceof ArtifactOperationError ||
         error instanceof HumanAttentionReadError ||
@@ -718,7 +792,8 @@ function kernelDataRoot(dependencies: OperationInvocationDependencies): string {
 function bindOperationInput(
   value: unknown,
   context: OperationInvocationContext,
-  mutating: boolean
+  mutating: boolean,
+  shape: Record<string, unknown>
 ): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
   const input = value as Record<string, unknown>;
@@ -760,8 +835,8 @@ function bindOperationInput(
     };
   }
   if (context.kind !== 'worker') return input;
-  for (const key of ['threadId', 'turnId']) {
-    if (Object.hasOwn(input, key))
+  for (const key of ['threadId', 'turnId'] as const) {
+    if (Object.hasOwn(input, key) && input[key] !== context.lineage[key])
       throw new OperationInvocationError(
         'bound_input_conflict',
         'Caller cannot supply trusted invocation identity.',
@@ -781,6 +856,8 @@ function bindOperationInput(
   return {
     ...args,
     workspaceId: bound.workspaceId,
+    ...(Object.hasOwn(shape, 'threadId') ? { threadId: context.lineage.threadId } : {}),
+    ...(Object.hasOwn(shape, 'turnId') ? { turnId: context.lineage.turnId } : {}),
     ...(mutating ? { requestId: bound.requestId } : {}),
   };
 }

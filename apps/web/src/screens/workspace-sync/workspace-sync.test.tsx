@@ -457,7 +457,7 @@ const MISSING_PATCH_REVIEW = WorkspaceSyncReviewItemSchema.parse({
   },
 });
 
-type AppOverrides = Partial<CoreClient['app'] & CoreClient['operations']>;
+type OperationOverrides = Partial<CoreClient['operations']>;
 type CoreOverrides = Partial<CoreClient['core'] & CoreClient['operations']>;
 
 /** Creates a caller-controlled promise for proving pre-settlement UI state. */
@@ -472,39 +472,33 @@ function createDeferred<T>() {
 }
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
-function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClient {
+function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {}): CoreClient {
   return {
     core: {
       meta: vi.fn().mockResolvedValue({}),
       listThreads: vi.fn().mockResolvedValue({ items: [] }),
       ...core,
     },
-    app: {
-      listWorkspaceSyncReviews: vi
-        .fn()
-        .mockResolvedValue({ items: [PENDING_REVIEW, REJECTED_REVIEW] }),
-      getWorkspaceSyncReview: vi.fn().mockResolvedValue(PENDING_REVIEW),
-      submitWorkspaceSyncReviewDecision: vi.fn(),
-      listWorkspaceInputSnapshots: vi.fn().mockResolvedValue({ items: [INPUT_SNAPSHOT] }),
-      listWorkspaceMaterializationRecords: vi.fn().mockResolvedValue({ items: [MATERIALIZATION] }),
-      listBackendWorkspaceHandles: vi.fn().mockResolvedValue({ items: [BACKEND_HANDLE] }),
-      listWorkerOutputManifests: vi.fn().mockResolvedValue({ items: [OUTPUT_MANIFEST] }),
-      listWorkspaceChangeSets: vi.fn().mockResolvedValue({ items: [CHANGE_SET] }),
-      listStagedWorkspaceReviews: vi
+    operations: {
+      'sync.review-list': vi.fn().mockResolvedValue({ items: [PENDING_REVIEW, REJECTED_REVIEW] }),
+      'sync.review-read': vi.fn().mockResolvedValue(PENDING_REVIEW),
+      'sync.review-decide': vi.fn(),
+      'sync.input-snapshot-list': vi.fn().mockResolvedValue({ items: [INPUT_SNAPSHOT] }),
+      'sync.materialization-list': vi.fn().mockResolvedValue({ items: [MATERIALIZATION] }),
+      'sync.backend-handle-list': vi.fn().mockResolvedValue({ items: [BACKEND_HANDLE] }),
+      'sync.output-manifest-list': vi.fn().mockResolvedValue({ items: [OUTPUT_MANIFEST] }),
+      'sync.change-set-list': vi.fn().mockResolvedValue({ items: [CHANGE_SET] }),
+      'sync.staged-review-list': vi
         .fn()
         .mockResolvedValue({ items: [PENDING_STAGED_REVIEW, REJECTED_STAGED_REVIEW] }),
-      listWorkspaceApplyPlans: vi.fn().mockResolvedValue({ items: [APPLY_PLAN] }),
-      listWorkspaceApplyResults: vi.fn().mockResolvedValue({ items: [APPLY_RESULT] }),
-      getWorkspaceApplyResult: vi.fn().mockResolvedValue(APPLY_RESULT),
-      listWorkspaceReconciliationRecords: vi.fn().mockResolvedValue({ items: [RECOVERY_RECORD] }),
-      listWorkspaceQuarantineRecords: vi.fn().mockResolvedValue({ items: [QUARANTINE_RECORD] }),
-      submitWorkspaceRecoveryDecision: vi.fn(),
-      ...app,
-    },
-
-    operations: {
+      'sync.apply-plan-list': vi.fn().mockResolvedValue({ items: [APPLY_PLAN] }),
+      'sync.apply-result-list': vi.fn().mockResolvedValue({ items: [APPLY_RESULT] }),
+      'sync.apply-result-read': vi.fn().mockResolvedValue(APPLY_RESULT),
+      'sync.reconciliation-list': vi.fn().mockResolvedValue({ items: [RECOVERY_RECORD] }),
+      'sync.quarantine-list': vi.fn().mockResolvedValue({ items: [QUARANTINE_RECORD] }),
+      'sync.recovery-decide': vi.fn(),
       ...core,
-      ...app,
+      ...operations,
       'workspace.list': vi
         .fn()
         .mockResolvedValueOnce({
@@ -518,7 +512,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
         })
         .mockImplementation(
           core['workspace.list'] ??
-            app['workspace.list'] ??
+            operations['workspace.list'] ??
             vi.fn().mockResolvedValue({
               items: [WORKSPACE].map((workspace) => ({
                 workspace,
@@ -557,21 +551,21 @@ function renderApp(path: string, client: CoreClient, onLocation?: (pathname: str
 
 function syncCalls(client: CoreClient) {
   return {
-    listReviews: vi.mocked(client.app.listWorkspaceSyncReviews).mock.calls,
-    getReview: vi.mocked(client.app.getWorkspaceSyncReview).mock.calls,
-    submitDecision: vi.mocked(client.app.submitWorkspaceSyncReviewDecision).mock.calls,
-    listSnapshots: vi.mocked(client.app.listWorkspaceInputSnapshots).mock.calls,
-    listMaterializations: vi.mocked(client.app.listWorkspaceMaterializationRecords).mock.calls,
-    listHandles: vi.mocked(client.app.listBackendWorkspaceHandles).mock.calls,
-    listManifests: vi.mocked(client.app.listWorkerOutputManifests).mock.calls,
-    listChangeSets: vi.mocked(client.app.listWorkspaceChangeSets).mock.calls,
-    listStaged: vi.mocked(client.app.listStagedWorkspaceReviews).mock.calls,
-    listPlans: vi.mocked(client.app.listWorkspaceApplyPlans).mock.calls,
-    listResults: vi.mocked(client.app.listWorkspaceApplyResults).mock.calls,
-    getResult: vi.mocked(client.app.getWorkspaceApplyResult).mock.calls,
-    listRecovery: vi.mocked(client.app.listWorkspaceReconciliationRecords).mock.calls,
-    listQuarantine: vi.mocked(client.app.listWorkspaceQuarantineRecords).mock.calls,
-    submitRecovery: vi.mocked(client.app.submitWorkspaceRecoveryDecision).mock.calls,
+    listReviews: vi.mocked(client.operations['sync.review-list']).mock.calls,
+    getReview: vi.mocked(client.operations['sync.review-read']).mock.calls,
+    submitDecision: vi.mocked(client.operations['sync.review-decide']).mock.calls,
+    listSnapshots: vi.mocked(client.operations['sync.input-snapshot-list']).mock.calls,
+    listMaterializations: vi.mocked(client.operations['sync.materialization-list']).mock.calls,
+    listHandles: vi.mocked(client.operations['sync.backend-handle-list']).mock.calls,
+    listManifests: vi.mocked(client.operations['sync.output-manifest-list']).mock.calls,
+    listChangeSets: vi.mocked(client.operations['sync.change-set-list']).mock.calls,
+    listStaged: vi.mocked(client.operations['sync.staged-review-list']).mock.calls,
+    listPlans: vi.mocked(client.operations['sync.apply-plan-list']).mock.calls,
+    listResults: vi.mocked(client.operations['sync.apply-result-list']).mock.calls,
+    getResult: vi.mocked(client.operations['sync.apply-result-read']).mock.calls,
+    listRecovery: vi.mocked(client.operations['sync.reconciliation-list']).mock.calls,
+    listQuarantine: vi.mocked(client.operations['sync.quarantine-list']).mock.calls,
+    submitRecovery: vi.mocked(client.operations['sync.recovery-decide']).mock.calls,
   };
 }
 
@@ -805,20 +799,20 @@ describe('Workspace changes', () => {
 
     await waitFor(() => {
       expect(syncCalls(client)).toEqual({
-        listReviews: [[WORKSPACE.id]],
-        getReview: [[WORKSPACE.id, PENDING_STAGED_REVIEW.id]],
+        listReviews: [[{ workspaceId: WORKSPACE.id }]],
+        getReview: [[{ workspaceId: WORKSPACE.id, reviewId: PENDING_STAGED_REVIEW.id }]],
         submitDecision: [],
-        listSnapshots: [[WORKSPACE.id]],
-        listMaterializations: [[WORKSPACE.id]],
-        listHandles: [[WORKSPACE.id]],
-        listManifests: [[WORKSPACE.id]],
-        listChangeSets: [[WORKSPACE.id]],
-        listStaged: [[WORKSPACE.id]],
-        listPlans: [[WORKSPACE.id]],
-        listResults: [[WORKSPACE.id]],
-        getResult: [[WORKSPACE.id, APPLY_RESULT.id]],
-        listRecovery: [[WORKSPACE.id]],
-        listQuarantine: [[WORKSPACE.id]],
+        listSnapshots: [[{ workspaceId: WORKSPACE.id }]],
+        listMaterializations: [[{ workspaceId: WORKSPACE.id }]],
+        listHandles: [[{ workspaceId: WORKSPACE.id }]],
+        listManifests: [[{ workspaceId: WORKSPACE.id }]],
+        listChangeSets: [[{ workspaceId: WORKSPACE.id }]],
+        listStaged: [[{ workspaceId: WORKSPACE.id }]],
+        listPlans: [[{ workspaceId: WORKSPACE.id }]],
+        listResults: [[{ workspaceId: WORKSPACE.id }]],
+        getResult: [[{ workspaceId: WORKSPACE.id, applyResultId: APPLY_RESULT.id }]],
+        listRecovery: [[{ workspaceId: WORKSPACE.id }]],
+        listQuarantine: [[{ workspaceId: WORKSPACE.id }]],
         submitRecovery: [],
       });
     });
@@ -834,7 +828,10 @@ describe('Workspace changes', () => {
       review: ACCEPTED_REVIEW.review,
       workspaceApplyResult: APPLY_RESULT,
     });
-    const client = makeClient({ listWorkspaceSyncReviews, submitWorkspaceSyncReviewDecision });
+    const client = makeClient({
+      'sync.review-list': listWorkspaceSyncReviews,
+      'sync.review-decide': submitWorkspaceSyncReviewDecision,
+    });
     renderApp('/workspace-changes', client);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
@@ -843,17 +840,24 @@ describe('Workspace changes', () => {
     );
 
     await waitFor(() => expect(submitWorkspaceSyncReviewDecision).toHaveBeenCalledTimes(1));
-    const requestId = submitWorkspaceSyncReviewDecision.mock.calls[0]?.[2].requestId;
+    const requestId = submitWorkspaceSyncReviewDecision.mock.calls[0]?.[0].requestId;
     expect(requestId).toEqual(expect.any(String));
     expect(submitWorkspaceSyncReviewDecision.mock.calls).toEqual([
-      [WORKSPACE.id, PENDING_STAGED_REVIEW.id, { decision: 'accepted', requestId }],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          reviewId: PENDING_STAGED_REVIEW.id,
+          decision: 'accepted',
+          requestId,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceSyncReviews).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Accepted', { exact: true })).toBeInTheDocument();
     expect(
       within(reviews).queryByRole('button', { name: `Accept ${PENDING_STAGED_REVIEW.id}` })
     ).toBeNull();
-    expect(client.app.submitWorkspaceRecoveryDecision).not.toHaveBeenCalled();
+    expect(client.operations['sync.recovery-decide']).not.toHaveBeenCalled();
   });
 
   it('submits one recovery decision and refetches authoritative rows', async () => {
@@ -866,8 +870,8 @@ describe('Workspace changes', () => {
       reconciliationRecord: RECOVERED_RECORD,
     });
     const client = makeClient({
-      listWorkspaceReconciliationRecords,
-      submitWorkspaceRecoveryDecision,
+      'sync.reconciliation-list': listWorkspaceReconciliationRecords,
+      'sync.recovery-decide': submitWorkspaceRecoveryDecision,
     });
     renderApp('/workspace-changes', client);
 
@@ -884,15 +888,22 @@ describe('Workspace changes', () => {
     );
 
     await waitFor(() => expect(submitWorkspaceRecoveryDecision).toHaveBeenCalledTimes(1));
-    const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[2].requestId;
+    const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[0].requestId;
     expect(requestId).toEqual(expect.any(String));
     expect(submitWorkspaceRecoveryDecision.mock.calls).toEqual([
-      [WORKSPACE.id, RECOVERY_RECORD.id, { decision: 'resume_collection', requestId }],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          reconciliationRecordId: RECOVERY_RECORD.id,
+          decision: 'resume_collection',
+          requestId,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceReconciliationRecords).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Recovered', { exact: true })).toBeInTheDocument();
     expectNoRecoveryDecisionActions(recovery);
-    expect(client.app.submitWorkspaceSyncReviewDecision).not.toHaveBeenCalled();
+    expect(client.operations['sync.review-decide']).not.toHaveBeenCalled();
   });
 
   it('preserves authoritative rows and offers safe retry after a typed review failure', async () => {
@@ -902,7 +913,7 @@ describe('Workspace changes', () => {
       .mockRejectedValue(
         new ApiCallError(409, 'workspace-sync-private failure', { code: 'recovery_required' })
       );
-    const client = makeClient({ submitWorkspaceSyncReviewDecision });
+    const client = makeClient({ 'sync.review-decide': submitWorkspaceSyncReviewDecision });
     renderApp('/workspace-changes', client);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
@@ -920,10 +931,10 @@ describe('Workspace changes', () => {
     ).toBeInTheDocument();
     expect(submitWorkspaceSyncReviewDecision).toHaveBeenCalledTimes(1);
 
-    const readsBeforeRetry = vi.mocked(client.app.listWorkspaceSyncReviews).mock.calls.length;
+    const readsBeforeRetry = vi.mocked(client.operations['sync.review-list']).mock.calls.length;
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
-      expect(vi.mocked(client.app.listWorkspaceSyncReviews)).toHaveBeenCalledTimes(
+      expect(vi.mocked(client.operations['sync.review-list'])).toHaveBeenCalledTimes(
         readsBeforeRetry + 1
       )
     );
@@ -988,17 +999,24 @@ describe('Workspace changes', () => {
       review: typeof ACCEPTED_REVIEW.review;
       workspaceApplyResult: typeof APPLY_RESULT;
     }>();
-    const submitWorkspaceSyncReviewDecision = vi.fn().mockImplementation((workspaceId: string) => {
-      if (workspaceId === WORKSPACE.id) return workspaceADecision.promise;
-      return Promise.resolve({ review: ACCEPTED_REVIEW.review, workspaceApplyResult: null });
-    });
-    const listWorkspaceSyncReviews = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items: workspaceId === WORKSPACE.id ? [PENDING_REVIEW, REJECTED_REVIEW] : [],
-      })
-    );
+    const submitWorkspaceSyncReviewDecision = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === WORKSPACE.id) return workspaceADecision.promise;
+        return Promise.resolve({ review: ACCEPTED_REVIEW.review, workspaceApplyResult: null });
+      });
+    const listWorkspaceSyncReviews = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          items: workspaceId === WORKSPACE.id ? [PENDING_REVIEW, REJECTED_REVIEW] : [],
+        })
+      );
     const client = makeClient(
-      { listWorkspaceSyncReviews, submitWorkspaceSyncReviewDecision },
+      {
+        'sync.review-list': listWorkspaceSyncReviews,
+        'sync.review-decide': submitWorkspaceSyncReviewDecision,
+      },
       {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
@@ -1026,9 +1044,9 @@ describe('Workspace changes', () => {
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await waitFor(() =>
-      expect(listWorkspaceSyncReviews.mock.calls.some((call) => call[0] === WORKSPACE_B.id)).toBe(
-        true
-      )
+      expect(
+        listWorkspaceSyncReviews.mock.calls.some((call) => call[0].workspaceId === WORKSPACE_B.id)
+      ).toBe(true)
     );
     expect(screen.queryByText(PENDING_STAGED_REVIEW.riskSummary)).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -1051,9 +1069,9 @@ describe('Workspace changes', () => {
     expect(await screen.findByRole('region', { name: 'Reviews' })).toHaveTextContent(
       PENDING_STAGED_REVIEW.riskSummary
     );
-    expect(submitWorkspaceSyncReviewDecision.mock.calls.map((call) => call[0])).toEqual([
-      WORKSPACE.id,
-    ]);
+    expect(submitWorkspaceSyncReviewDecision.mock.calls.map((call) => call[0].workspaceId)).toEqual(
+      [WORKSPACE.id]
+    );
   });
 
   it('keeps the last authoritative rows visible when a post-command refetch fails', async () => {
@@ -1066,7 +1084,10 @@ describe('Workspace changes', () => {
       review: ACCEPTED_REVIEW.review,
       workspaceApplyResult: APPLY_RESULT,
     });
-    const client = makeClient({ listWorkspaceSyncReviews, submitWorkspaceSyncReviewDecision });
+    const client = makeClient({
+      'sync.review-list': listWorkspaceSyncReviews,
+      'sync.review-decide': submitWorkspaceSyncReviewDecision,
+    });
     renderApp('/workspace-changes', client);
 
     const reviews = await screen.findByRole('region', { name: 'Reviews' });
@@ -1091,13 +1112,11 @@ describe('Workspace changes', () => {
 
   it('gives repeated review and recovery actions exact target-specific accessible names', async () => {
     const client = makeClient({
-      listWorkspaceSyncReviews: vi
-        .fn()
-        .mockResolvedValue({ items: [PENDING_REVIEW, PENDING_REVIEW_B] }),
-      listStagedWorkspaceReviews: vi
+      'sync.review-list': vi.fn().mockResolvedValue({ items: [PENDING_REVIEW, PENDING_REVIEW_B] }),
+      'sync.staged-review-list': vi
         .fn()
         .mockResolvedValue({ items: [PENDING_STAGED_REVIEW, PENDING_STAGED_REVIEW_B] }),
-      listWorkspaceReconciliationRecords: vi
+      'sync.reconciliation-list': vi
         .fn()
         .mockResolvedValue({ items: [RECOVERY_RECORD, RECOVERY_RECORD_B] }),
     });
@@ -1142,10 +1161,10 @@ describe('Workspace changes', () => {
     const getArtifact = vi.fn().mockResolvedValue(PREVIEW_ARTIFACT);
     const client = makeClient(
       {
-        listWorkspaceSyncReviews: vi.fn().mockResolvedValue({ items: [PREVIEW_REVIEW] }),
-        getWorkspaceSyncReview: vi.fn().mockResolvedValue(PREVIEW_REVIEW),
-        listWorkspaceChangeSets: vi.fn().mockResolvedValue({ items: [PREVIEW_CHANGE_SET] }),
-        listStagedWorkspaceReviews: vi.fn().mockResolvedValue({ items: [PREVIEW_STAGED_REVIEW] }),
+        'sync.review-list': vi.fn().mockResolvedValue({ items: [PREVIEW_REVIEW] }),
+        'sync.review-read': vi.fn().mockResolvedValue(PREVIEW_REVIEW),
+        'sync.change-set-list': vi.fn().mockResolvedValue({ items: [PREVIEW_CHANGE_SET] }),
+        'sync.staged-review-list': vi.fn().mockResolvedValue({ items: [PREVIEW_STAGED_REVIEW] }),
       },
       {
         'artifact.read': getArtifact,
@@ -1241,18 +1260,18 @@ describe('Workspace changes', () => {
       workspaceApplyResult: APPLY_RESULT,
     });
     const client = makeClient({
-      listWorkspaceSyncReviews: vi
+      'sync.review-list': vi
         .fn()
         .mockResolvedValue({ items: [PRESENTATION_REVIEW, MISSING_PATCH_REVIEW] }),
-      getWorkspaceSyncReview: vi.fn(async (_workspaceId: string, reviewId: string) => {
+      'sync.review-read': vi.fn(async ({ reviewId }: { workspaceId: string; reviewId: string }) => {
         const item = reviewsById.get(reviewId);
         if (!item) throw new Error(`unexpected review ${reviewId}`);
         return item;
       }),
-      listStagedWorkspaceReviews: vi.fn().mockResolvedValue({
+      'sync.staged-review-list': vi.fn().mockResolvedValue({
         items: [PRESENTATION_REVIEW.review, MISSING_PATCH_REVIEW.review],
       }),
-      submitWorkspaceSyncReviewDecision,
+      'sync.review-decide': submitWorkspaceSyncReviewDecision,
     });
     renderApp('/workspace-changes', client);
 
@@ -1308,9 +1327,16 @@ describe('Workspace changes', () => {
 
     await user.click(accept);
     await waitFor(() => expect(submitWorkspaceSyncReviewDecision).toHaveBeenCalledTimes(1));
-    const requestId = submitWorkspaceSyncReviewDecision.mock.calls[0]?.[2].requestId;
+    const requestId = submitWorkspaceSyncReviewDecision.mock.calls[0]?.[0].requestId;
     expect(submitWorkspaceSyncReviewDecision.mock.calls).toEqual([
-      [WORKSPACE.id, PRESENTATION_REVIEW.review.id, { decision: 'accepted', requestId }],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          reviewId: PRESENTATION_REVIEW.review.id,
+          decision: 'accepted',
+          requestId,
+        },
+      ],
     ]);
   });
 
@@ -1352,8 +1378,8 @@ describe('Workspace changes', () => {
       reconciliationRecord: result,
     });
     const client = makeClient({
-      listWorkspaceReconciliationRecords,
-      submitWorkspaceRecoveryDecision,
+      'sync.reconciliation-list': listWorkspaceReconciliationRecords,
+      'sync.recovery-decide': submitWorkspaceRecoveryDecision,
     });
     renderApp('/workspace-changes', client);
 
@@ -1378,10 +1404,17 @@ describe('Workspace changes', () => {
     }
 
     await waitFor(() => expect(submitWorkspaceRecoveryDecision).toHaveBeenCalledTimes(1));
-    const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[2].requestId;
+    const requestId = submitWorkspaceRecoveryDecision.mock.calls[0]?.[0].requestId;
     expect(requestId).toEqual(expect.any(String));
     expect(submitWorkspaceRecoveryDecision.mock.calls).toEqual([
-      [WORKSPACE.id, RECOVERY_RECORD.id, { decision, requestId }],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          reconciliationRecordId: RECOVERY_RECORD.id,
+          decision,
+          requestId,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceReconciliationRecords).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(stateLabel, { exact: true })).toBeInTheDocument();

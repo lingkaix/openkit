@@ -67,6 +67,7 @@ import {
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
 } from './scheduler-records.js';
+import { lightAppDbPath } from './storage/app-db.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -192,8 +193,15 @@ describe('worker MCP routes', () => {
       workerMcpGateway,
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
-    const fetchMcp = (input: RequestInfo | URL, init?: RequestInit) =>
-      app.fetch(new Request(input, init));
+    const rpcErrors: unknown[] = [];
+    const fetchMcp = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await app.fetch(new Request(input, init));
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        const payload = (await response.clone().json()) as { error?: unknown };
+        if (payload.error) rpcErrors.push(payload.error);
+      }
+      return response;
+    };
     const sessionClient = new Client(
       { name: 'session-era', version: '1.0.0' },
       { versionNegotiation: { mode: 'legacy' } }
@@ -234,6 +242,88 @@ describe('worker MCP routes', () => {
         'work_list_peers',
         'work_read_peer',
       ]);
+      // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
+      const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      try {
+        applyScopedMigrations(refusalDb);
+        const errorsBefore = rpcErrors.length;
+        const itemsBefore = store.listThreadItems(turn.workspaceId, turn.threadId);
+        const turnBefore = store.getTurnById(turn.id);
+        const presentationsBefore = refusalDb.sqlite
+          .prepare('SELECT * FROM generative_presentations')
+          .all();
+        const receiptsBefore = refusalDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+        const missingAppId = '00000000-0000-4000-8000-000000000701';
+        const missingPresentationId = '00000000-0000-4000-8000-000000000702';
+        expect(existsSync(lightAppDbPath(dataRoot, turn.workspaceId, missingAppId))).toBe(false);
+        await expect(
+          sessionClient.callTool({
+            name: 'kernel_apps_retire',
+            arguments: { appId: missingAppId, expectedAppRevision: 1 },
+          })
+        ).rejects.toMatchObject({
+          code: -32600,
+          message: expect.stringContaining('App authority is missing.'),
+          data: { code: 'unavailable' },
+        });
+        await expect(
+          statelessClient.callTool({
+            name: 'generative_ui_action',
+            arguments: {
+              presentationId: missingPresentationId,
+              version: 'v0.9',
+              action: {
+                name: 'update',
+                surfaceId: 'missing-surface',
+                sourceComponentId: 'missing-button',
+                timestamp: '2026-09-03T00:00:00.000Z',
+              },
+            },
+          })
+        ).rejects.toMatchObject({
+          code: -32600,
+          message: expect.stringContaining('Presentation was not found.'),
+          data: { code: 'not_found' },
+        });
+        expect(rpcErrors.slice(errorsBefore)).toEqual([
+          { code: -32600, message: 'App authority is missing.', data: { code: 'unavailable' } },
+          { code: -32600, message: 'Presentation was not found.', data: { code: 'not_found' } },
+        ]);
+        expect(
+          refusalDb.sqlite
+            .prepare(`
+          SELECT capability_id, status, error_code, turn_id, package_snapshot_id
+          FROM capability_calls WHERE capability_id IN (?, ?) ORDER BY capability_id
+        `)
+            .all('mcp.call_tool.generative_ui_action', 'mcp.call_tool.kernel_apps_retire')
+        ).toEqual([
+          {
+            capability_id: 'mcp.call_tool.generative_ui_action',
+            status: 'failed',
+            error_code: 'not_found',
+            turn_id: turn.id,
+            package_snapshot_id: environmentPackage.snapshotId,
+          },
+          {
+            capability_id: 'mcp.call_tool.kernel_apps_retire',
+            status: 'failed',
+            error_code: 'unavailable',
+            turn_id: turn.id,
+            package_snapshot_id: environmentPackage.snapshotId,
+          },
+        ]);
+        expect(refusalDb.sqlite.prepare('SELECT * FROM generative_presentations').all()).toEqual(
+          presentationsBefore
+        );
+        expect(refusalDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(
+          receiptsBefore
+        );
+        expect(store.listThreadItems(turn.workspaceId, turn.threadId)).toEqual(itemsBefore);
+        expect(store.getTurnById(turn.id)).toEqual(turnBefore);
+        expect(existsSync(lightAppDbPath(dataRoot, turn.workspaceId, missingAppId))).toBe(false);
+      } finally {
+        refusalDb.sqlite.close();
+      }
       const pending = await workClient.callTool({
         name: 'work_request_input',
         arguments: {

@@ -279,8 +279,6 @@ function durableWorkspaceReviewRows(
           status: item.review.status,
         },
         actions: durableWorkspaceReviewActions(
-          input.workspaceId,
-          item.review.id,
           item.artifactId,
           inspectOnlyRecovery,
           item.review.status === 'pending'
@@ -800,7 +798,7 @@ function workspaceRecoveryRows(workspaceDb: WorkspaceDb, workspaceId: string): H
           evidenceBundleIds: record.evidenceBundleIds,
           requiredHumanDecision: record.requiredHumanDecision,
         },
-        actions: workspaceRecoveryActions(workspaceId, record.id),
+        actions: workspaceRecoveryActions(),
       })
     );
 }
@@ -923,28 +921,24 @@ function openThreadAction(threadId: string): HumanAttentionAction {
 /**
  * Builds actions owned by one durable Workspace Review.
  *
- * @param workspaceId Workspace id.
- * @param reviewId Durable Workspace Review id.
  * @param artifactId Optional presentation Artifact id.
  * @param inspectOnlyRecovery Whether contradictory generic Review authority disables decisions.
  * @param pending Whether the durable Review remains open for a decision.
  * @returns Workspace Review actions.
  */
 function durableWorkspaceReviewActions(
-  workspaceId: string,
-  reviewId: string,
   artifactId?: string,
   inspectOnlyRecovery = false,
   pending = true
 ): HumanAttentionAction[] {
-  const reviewHref = `/api/app/workspaces/${workspaceId}/workspace-sync/reviews/${reviewId}`;
-  const decisionHref = `${reviewHref}/decision`;
+  const reviewHref = operationHttpPath('sync.review-read');
+  const decisionHref = operationHttpPath('sync.review-decide');
 
   const actions: HumanAttentionAction[] = [
     {
       kind: 'open_artifact',
       label: 'Open review',
-      method: 'GET',
+      method: 'POST',
       href: reviewHref,
       disabled: !artifactId,
       reason: artifactId
@@ -988,22 +982,17 @@ function durableWorkspaceReviewActions(
 /**
  * Builds visible recovery choices for a workspace synchronization recovery row.
  *
- * @param workspaceId Workspace id.
- * @param reconciliationRecordId Reconciliation record id.
  * @returns Recovery actions exposed by the Action Center read model.
  */
-function workspaceRecoveryActions(
-  workspaceId: string,
-  reconciliationRecordId: string
-): HumanAttentionAction[] {
-  const href = `/api/app/workspaces/${workspaceId}/workspace-sync/reconciliation-records/${reconciliationRecordId}/decision`;
+function workspaceRecoveryActions(): HumanAttentionAction[] {
+  const href = operationHttpPath('sync.recovery-decide');
 
   return [
     {
       kind: 'open_artifact',
       label: 'Open evidence',
-      method: 'GET',
-      href: `/api/app/workspaces/${workspaceId}/workspace-sync/reconciliation-records`,
+      method: 'POST',
+      href: operationHttpPath('sync.reconciliation-list'),
     },
     { kind: 'retry_work', label: 'Resume collection', method: 'POST', href },
     { kind: 'accept_review', label: 'Stage verified', method: 'POST', href },

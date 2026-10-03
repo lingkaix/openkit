@@ -102,3 +102,9 @@ Conversation, Task, Attention and Pending Request operations are composed from t
 `automation-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare nine browser-safe operations and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
 
 `src/workspace-transfer.ts` defines `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, reusing complete storage response and import request schemas. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements.
+
+`generative-operations.ts` declares the remaining eight Kernel operations and all five Generative UI operations using their existing schemas; `operation-definitions.ts` composes them statically with the Kernel pair. Model views omit trusted identity fields while retaining object refinements.
+
+`src/sync-operations.ts` declares the fifteen existing Workspace synchronization operations with complete logical selectors and existing output schemas; `operation-definitions.ts` composes it statically.
+
+`src/workspace-lifecycle-operations.ts` defines the sixteen sharing, invitation, leave, ownership, recovery, user-disable and deletion operations, reusing complete Workspace-sharing schemas with `safeExtend` so deletion confirmation refinements survive model projections. Canonical-user and server authorization scopes stay distinct from their mutation targets; invitation targets carry only minimal Core lineage selectors. The statically composed definitions also declare invitation creation’s secret-input sensitivity for the CLI.

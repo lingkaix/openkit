@@ -447,6 +447,7 @@ function expectMetaAfterProtectedRead(
 
 interface ClientOverrides {
   app?: Record<string, unknown>;
+  operations?: Record<string, unknown>;
   coreWorkspaces?: unknown[];
   listAuthorizedWorkspaces?: ReturnType<typeof vi.fn>;
   signIn?: ReturnType<typeof vi.fn>;
@@ -470,14 +471,11 @@ function makeClient(overrides: ClientOverrides = {}) {
     overrides.listAuthorizedWorkspaces ?? vi.fn().mockResolvedValue(PRODUCT_WORKSPACES);
   const client = {
     app: {
-      disableUser: forbidden.admin,
       getDiagnostics: forbidden.diagnostics,
       getSetupDiagnostics: forbidden.setup,
-      getWorkspaceAccessRecoveryState: forbidden.admin,
       listServerAuditEvents: forbidden.admin,
       listServerPermissionDecisions: forbidden.admin,
       listServerVaultUseRecords: forbidden.admin,
-      recoverWorkspaceAccess: forbidden.admin,
       ...overrides.app,
     },
     auth: {
@@ -499,7 +497,13 @@ function makeClient(overrides: ClientOverrides = {}) {
       listFiles: forbidden.runtimeConfig,
     },
 
-    operations: { 'workspace.list': listAuthorizedWorkspaces },
+    operations: {
+      'user.disable': forbidden.admin,
+      'workspace.access-recovery-read': forbidden.admin,
+      'workspace.access-recover': forbidden.admin,
+      'workspace.list': listAuthorizedWorkspaces,
+      ...overrides.operations,
+    },
   } as unknown as CoreClient;
   return { client, forbidden, listAuthorizedWorkspaces };
 }
@@ -507,7 +511,22 @@ function makeClient(overrides: ClientOverrides = {}) {
 interface SharingOverrides {
   authorizedWorkspaces?: { readonly items: readonly unknown[] };
   coreWorkspaces?: unknown[];
-  methods?: Partial<Record<keyof CoreClient['app'], ReturnType<typeof vi.fn>>>;
+  methods?: Partial<
+    Record<
+      | 'listWorkspaceMembers'
+      | 'listWorkspaceInvitations'
+      | 'createWorkspaceInvitation'
+      | 'listMyWorkspaceInvitations'
+      | 'acceptWorkspaceInvitation'
+      | 'declineWorkspaceInvitation'
+      | 'revokeWorkspaceInvitation'
+      | 'changeWorkspaceMemberAccess'
+      | 'removeWorkspaceMember'
+      | 'leaveWorkspace'
+      | 'transferWorkspaceOwnership',
+      ReturnType<typeof vi.fn>
+    >
+  >;
 }
 
 /** Builds the owner-management fake without inventing a second client boundary. */
@@ -528,7 +547,19 @@ function makeSharingClient(overrides: SharingOverrides = {}) {
   };
   return {
     ...makeClient({
-      app: methods,
+      operations: {
+        'workspace.member-list': methods.listWorkspaceMembers,
+        'workspace.invitation-list': methods.listWorkspaceInvitations,
+        'workspace.invitation-create': methods.createWorkspaceInvitation,
+        'workspace.my-invitation-list': methods.listMyWorkspaceInvitations,
+        'workspace.my-invitation-accept': methods.acceptWorkspaceInvitation,
+        'workspace.my-invitation-decline': methods.declineWorkspaceInvitation,
+        'workspace.invitation-revoke': methods.revokeWorkspaceInvitation,
+        'workspace.member-access-change': methods.changeWorkspaceMemberAccess,
+        'workspace.member-remove': methods.removeWorkspaceMember,
+        'workspace.leave': methods.leaveWorkspace,
+        'workspace.ownership-transfer': methods.transferWorkspaceOwnership,
+      },
       coreWorkspaces: overrides.coreWorkspaces,
       listAuthorizedWorkspaces: vi
         .fn()
@@ -1869,8 +1900,8 @@ describe('selected-Workspace owner management', () => {
     await screen.findByText(/Current Workspace role:/i);
     expect(screen.getByRole('status', { name: /workspace members/i })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: /workspace invitations/i })).toBeInTheDocument();
-    expect(listWorkspaceMembers.mock.calls).toEqual([['ws1']]);
-    expect(listWorkspaceInvitations.mock.calls).toEqual([['ws1']]);
+    expect(listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
     memberRead.resolve(WORKSPACE_MEMBERS);
     invitationRead.resolve(WORKSPACE_INVITATIONS);
 
@@ -1950,8 +1981,8 @@ describe('selected-Workspace owner management', () => {
         /revoke invitation/i
       );
     }
-    expect(listWorkspaceMembers.mock.calls).toEqual([['ws1']]);
-    expect(listWorkspaceInvitations.mock.calls).toEqual([['ws1']]);
+    expect(listWorkspaceMembers.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
+    expect(listWorkspaceInvitations.mock.calls).toEqual([[{ workspaceId: 'ws1' }]]);
     expect(document.body.textContent).not.toMatch(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
     expect(methods.leaveWorkspace).not.toHaveBeenCalled();
@@ -2127,9 +2158,12 @@ describe('selected-Workspace owner management', () => {
     await tabTo(user, submit);
     await user.keyboard('{Enter}');
 
-    expect(createWorkspaceInvitation).toHaveBeenCalledWith('ws1', {
-      inviteeEmail: EMAIL,
-      proposedAccessLevel: accessLevel,
+    expect(createWorkspaceInvitation).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...{
+        inviteeEmail: EMAIL,
+        proposedAccessLevel: accessLevel,
+      },
     });
     expect(submit).toBeDisabled();
     expect(within(invitations).getByRole('status')).toHaveTextContent(/creating|inviting/i);
@@ -2174,9 +2208,13 @@ describe('selected-Workspace owner management', () => {
     const save = await chooseMemberAccess(user, editor, 'viewer');
     await user.click(save);
 
-    expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith('ws1', 'user-editor', {
-      accessLevel: 'viewer',
-      expectedRevision: 11,
+    expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      targetUserId: 'user-editor',
+      ...{
+        accessLevel: 'viewer',
+        expectedRevision: 11,
+      },
     });
     await waitFor(() =>
       expect(!save.isConnected || (save as HTMLButtonElement).disabled).toBe(true)
@@ -2199,7 +2237,7 @@ describe('selected-Workspace owner management', () => {
     {
       action: /revoke invitation/i,
       applicableCollection: 'invitations',
-      expected: ['ws1', 'inv-pending', { expectedRevision: 21 }],
+      expected: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
       method: 'revokeWorkspaceInvitation',
       response: {
         invitation: {
@@ -2218,7 +2256,7 @@ describe('selected-Workspace owner management', () => {
     {
       action: /remove member/i,
       applicableCollection: 'members',
-      expected: ['ws1', 'user-editor', { expectedRevision: 11 }],
+      expected: [{ workspaceId: 'ws1', targetUserId: 'user-editor', expectedRevision: 11 }],
       method: 'removeWorkspaceMember',
       response: {
         member: {
@@ -2237,7 +2275,7 @@ describe('selected-Workspace owner management', () => {
     {
       action: /transfer ownership/i,
       applicableCollection: 'members',
-      expected: ['ws1', { expectedRegistryRevision: 9, targetUserId: 'user-editor' }],
+      expected: [{ workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-editor' }],
       method: 'transferWorkspaceOwnership',
       response: {
         workspace: {
@@ -2256,7 +2294,7 @@ describe('selected-Workspace owner management', () => {
     {
       action: /transfer ownership/i,
       applicableCollection: 'members',
-      expected: ['ws1', { expectedRegistryRevision: 9, targetUserId: 'user-viewer' }],
+      expected: [{ workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-viewer' }],
       method: 'transferWorkspaceOwnership',
       response: {
         workspace: {
@@ -2273,7 +2311,7 @@ describe('selected-Workspace owner management', () => {
       statusState:
         /ownership transferred.*user-viewer.*editor|user-viewer.*owner.*editor|user-viewer.*editor.*owner/i,
     },
-  ] as const)('requires confirmation and sends the exact $method revision command once', async ({
+  ] as const)('requires confirmation and sends the exact revision command once', async ({
     action,
     applicableCollection,
     expected,
@@ -2287,7 +2325,7 @@ describe('selected-Workspace owner management', () => {
   }) => {
     const pending = deferred<unknown>();
     const operation = vi.fn().mockReturnValue(pending.promise);
-    const targetUserId = method === 'transferWorkspaceOwnership' ? expected[1].targetUserId : null;
+    const targetUserId = method === 'transferWorkspaceOwnership' ? expected[0].targetUserId : null;
     const settledMembers =
       method === 'removeWorkspaceMember'
         ? [OWNER_MEMBER, response.member, VIEWER_MEMBER, REMOVED_MEMBER]
@@ -2412,9 +2450,12 @@ describe('selected-Workspace owner management', () => {
     const dialog = screen.getByRole('dialog', { name: /confirm/i });
     await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
 
-    expect(transferWorkspaceOwnership).toHaveBeenCalledWith('ws1', {
-      expectedRegistryRevision: 9,
-      targetUserId: 'user-editor',
+    expect(transferWorkspaceOwnership).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...{
+        expectedRegistryRevision: 9,
+        targetUserId: 'user-editor',
+      },
     });
     expect(
       await screen.findByText(/current.*role.*editor|editor.*current.*role/i)
@@ -2482,9 +2523,12 @@ describe('selected-Workspace owner management', () => {
       within(invitations).getByRole('button', { name: /create invitation|invite/i })
     );
 
-    expect(createWorkspaceInvitation).toHaveBeenCalledWith('ws1', {
-      inviteeEmail: EMAIL,
-      proposedAccessLevel: 'editor',
+    expect(createWorkspaceInvitation).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...{
+        inviteeEmail: EMAIL,
+        proposedAccessLevel: 'editor',
+      },
     });
     expect(await within(invitations).findByText('user-created')).toBeInTheDocument();
     expect(listWorkspaceInvitations.mock.calls.length).toBeLessThanOrEqual(invitationReads + 1);
@@ -2515,9 +2559,13 @@ describe('selected-Workspace owner management', () => {
 
     expect(await within(members).findByRole('alert')).toHaveTextContent(/access denied/i);
     expect(changeWorkspaceMemberAccess).toHaveBeenCalledTimes(1);
-    expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith('ws1', 'user-editor', {
-      accessLevel: 'viewer',
-      expectedRevision: 11,
+    expect(changeWorkspaceMemberAccess).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      targetUserId: 'user-editor',
+      ...{
+        accessLevel: 'viewer',
+        expectedRevision: 11,
+      },
     });
     expect(within(editor).getByRole('status', { name: /editor/i })).toBeInTheDocument();
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
@@ -2539,7 +2587,7 @@ describe('selected-Workspace owner management', () => {
       },
       currentIdentity: /user-invitee-pending/i,
       currentState: /revoked/i,
-      expectedCall: ['ws1', 'inv-pending', { expectedRevision: 21 }],
+      expectedCall: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
       method: 'revokeWorkspaceInvitation',
       outcome: /not pending|revoked/i,
       precludedState: /revoked/i,
@@ -2557,7 +2605,7 @@ describe('selected-Workspace owner management', () => {
       currentEvidence: 'revision:99',
       currentIdentity: /user-invitee-pending/i,
       currentState: /pending/i,
-      expectedCall: ['ws1', 'inv-pending', { expectedRevision: 21 }],
+      expectedCall: [{ workspaceId: 'ws1', invitationId: 'inv-pending', expectedRevision: 21 }],
       method: 'revokeWorkspaceInvitation',
       outcome: /conflict|changed/i,
       precludedState: null,
@@ -2572,7 +2620,7 @@ describe('selected-Workspace owner management', () => {
       currentIdentity: /user-editor/i,
       currentState: /editor/i,
       details: { resource: 'membership', current: { ...EDITOR_MEMBER, revision: 98 } },
-      expectedCall: ['ws1', 'user-editor', { expectedRevision: 11 }],
+      expectedCall: [{ workspaceId: 'ws1', targetUserId: 'user-editor', expectedRevision: 11 }],
       method: 'removeWorkspaceMember',
       outcome: /conflict|changed/i,
       precludedState: null,
@@ -2595,7 +2643,9 @@ describe('selected-Workspace owner management', () => {
           registryRevision: 97,
         },
       },
-      expectedCall: ['ws1', { expectedRegistryRevision: 9, targetUserId: 'user-editor' }],
+      expectedCall: [
+        { workspaceId: 'ws1', expectedRegistryRevision: 9, targetUserId: 'user-editor' },
+      ],
       method: 'transferWorkspaceOwnership',
       outcome: /conflict|changed/i,
       precludedState: /owner/i,
@@ -2696,9 +2746,12 @@ describe('selected-Workspace owner management', () => {
     const alert = await within(invitations).findByRole('alert');
     expect(alert).toHaveTextContent(label);
     expect(createWorkspaceInvitation).toHaveBeenCalledTimes(1);
-    expect(createWorkspaceInvitation).toHaveBeenCalledWith('ws1', {
-      inviteeEmail: EMAIL,
-      proposedAccessLevel: 'editor',
+    expect(createWorkspaceInvitation).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...{
+        inviteeEmail: EMAIL,
+        proposedAccessLevel: 'editor',
+      },
     });
     await waitFor(() => expect(email).toHaveValue(''));
     expect(methods.listMyWorkspaceInvitations).toHaveBeenCalledTimes(myInvitationReads);
@@ -2721,7 +2774,7 @@ describe('account-level My invitations', () => {
     await screen.findByRole('heading', { name: 'Account' });
     const invitations = screen.getByRole('region', { name: 'My invitations' });
     expect(within(invitations).getByRole('status')).toHaveTextContent(/loading/i);
-    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[]]);
+    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[{}]]);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
     myInvitationRead.resolve(MY_INVITATIONS);
@@ -2746,7 +2799,7 @@ describe('account-level My invitations', () => {
       await expectNoRowAction(user, terminal, /accept|decline/i);
     }
     expect(within(invitations).queryByText('Authorized Workspace')).not.toBeInTheDocument();
-    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[]]);
+    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[{}]]);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
     expectNoRetainedInviteEmail(queryClient, guards);
@@ -2784,7 +2837,7 @@ describe('account-level My invitations', () => {
     expect(await revealRowAction(user, named, /^accept/i)).toBeEnabled();
     await user.keyboard('{Escape}');
     expect(await revealRowAction(user, unknown, /^decline/i)).toBeEnabled();
-    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[]]);
+    expect(listMyWorkspaceInvitations.mock.calls).toEqual([[{}]]);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
     expectNoRetainedInviteEmail(queryClient, guards);
@@ -2883,7 +2936,7 @@ describe('account-level My invitations', () => {
       await user.click(within(dialog).getByRole('button', { name: /confirm/i }));
     }
 
-    expect(decision.mock.calls).toEqual([['inv-pending', { expectedRevision: 21 }]]);
+    expect(decision.mock.calls).toEqual([[{ invitationId: 'inv-pending', expectedRevision: 21 }]]);
     const invitationReads = listMyWorkspaceInvitations.mock.calls.length;
     operation.resolve({ invitation: settledInvitation });
     expect(
@@ -2966,7 +3019,7 @@ describe('account-level My invitations', () => {
     );
     expect(currentRows[1]).toHaveTextContent(/ws2.*pending|pending.*ws2/i);
     expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      ['inv-pending', { expectedRevision: 21 }],
+      [{ invitationId: 'inv-pending', ...{ expectedRevision: 21 } }],
     ]);
     expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(1);
     expect(
@@ -3036,7 +3089,7 @@ describe('account-level My invitations', () => {
     expect(await within(invitations).findByRole('alert')).toHaveTextContent(outcome);
     await waitFor(() => expect(listMyWorkspaceInvitations).toHaveBeenCalledTimes(2));
     expect(acceptWorkspaceInvitation.mock.calls).toEqual([
-      ['inv-pending', { expectedRevision: 21 }],
+      [{ invitationId: 'inv-pending', ...{ expectedRevision: 21 } }],
     ]);
     const prematureRetry = within(invitations).queryByRole('button', {
       name: /try again|retry/i,
@@ -3086,8 +3139,7 @@ describe('account-level My invitations', () => {
 
     await waitFor(() => expect(acceptWorkspaceInvitation).toHaveBeenCalledTimes(2));
     expect(acceptWorkspaceInvitation.mock.calls[1]).toEqual([
-      'inv-pending',
-      { expectedRevision: 29 },
+      { invitationId: 'inv-pending', ...{ expectedRevision: 29 } },
     ]);
     expect(
       await within(invitations).findByRole('row', {
@@ -3132,7 +3184,9 @@ describe('selected-membership self-leave', () => {
     const confirm = within(dialog).getByRole('button', { name: /confirm|leave/i });
     await user.click(confirm);
 
-    expect(leaveWorkspace.mock.calls).toEqual([['ws1', { expectedRevision: 17 }]]);
+    expect(leaveWorkspace.mock.calls).toEqual([
+      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+    ]);
     expect(confirm).toBeDisabled();
     const authorizedReads = listAuthorizedWorkspaces.mock.calls.length;
     leave.resolve({ member: SELF_REMOVED_MEMBER });
@@ -3172,7 +3226,9 @@ describe('selected-membership self-leave', () => {
     await user.click(within(dialog).getByRole('button', { name: /confirm|leave/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/conflict|changed/i);
-    expect(leaveWorkspace.mock.calls).toEqual([['ws1', { expectedRevision: 17 }]]);
+    expect(leaveWorkspace.mock.calls).toEqual([
+      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+    ]);
     await waitFor(() => expectAuthorizedWorkspaceIds(queryClient, ['ws2']));
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();
     expect(methods.listWorkspaceInvitations).not.toHaveBeenCalled();
@@ -3205,7 +3261,9 @@ describe('selected-membership self-leave', () => {
     await user.click(within(dialog).getByRole('button', { name: /confirm|leave/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(outcome);
-    expect(leaveWorkspace.mock.calls).toEqual([['ws1', { expectedRevision: 17 }]]);
+    expect(leaveWorkspace.mock.calls).toEqual([
+      [{ workspaceId: 'ws1', ...{ expectedRevision: 17 } }],
+    ]);
     await Promise.resolve();
     expect(leaveWorkspace).toHaveBeenCalledTimes(1);
     expect(methods.listWorkspaceMembers).not.toHaveBeenCalled();

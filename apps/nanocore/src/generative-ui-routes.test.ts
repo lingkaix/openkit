@@ -13,6 +13,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -70,68 +71,77 @@ describe('Generative UI App API', () => {
 
     try {
       const publishResponse = await app.request(
-        '/api/app/workspaces/ws_demo/generative-presentations',
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-openkit-request-id': randomUUID(),
-          },
-          body: JSON.stringify({
-            threadId: 'th_demo',
-            turnId: turn.id,
-            title: 'Mapping view',
-            fallbackText: 'Membership 1 maps to CRM 1.',
-            messages: nativeMessages('surface-item', [
-              {
-                id: 'root',
-                component: 'Column',
-                children: ['body', 'refresh'],
-              },
-              { id: 'body', component: 'Text', text: { path: '/text' } },
-              {
-                id: 'refresh',
-                component: 'Button',
-                child: 'refreshLabel',
-                action: { event: { name: 'refreshNow' } },
-              },
-              {
-                id: 'refreshLabel',
-                component: 'Text',
-                text: 'Refresh',
-              },
-            ]),
-            source: {
-              kind: 'item',
-              itemId: sourceItem.id,
-              contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
+        ...operationRequest(
+          'generative-ui.publish',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-openkit-request-id': randomUUID(),
             },
-            actions: [{ name: 'refreshNow', componentId: 'refresh', kind: 'refresh' }],
-          }),
-        }
+            body: JSON.stringify({
+              threadId: 'th_demo',
+              turnId: turn.id,
+              title: 'Mapping view',
+              fallbackText: 'Membership 1 maps to CRM 1.',
+              messages: nativeMessages('surface-item', [
+                {
+                  id: 'root',
+                  component: 'Column',
+                  children: ['body', 'refresh'],
+                },
+                { id: 'body', component: 'Text', text: { path: '/text' } },
+                {
+                  id: 'refresh',
+                  component: 'Button',
+                  child: 'refreshLabel',
+                  action: { event: { name: 'refreshNow' } },
+                },
+                {
+                  id: 'refreshLabel',
+                  component: 'Text',
+                  text: 'Refresh',
+                },
+              ]),
+              source: {
+                kind: 'item',
+                itemId: sourceItem.id,
+                contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
+              },
+              actions: [{ name: 'refreshNow', componentId: 'refresh', kind: 'refresh' }],
+            }),
+          }
+        )
       );
       expect(publishResponse.status).toBe(201);
       const published = (await publishResponse.json()) as { id: string; publication: string };
       expect(published.publication).toBe('published');
       const getResponse = await app.request(
-        `/api/app/workspaces/ws_demo/generative-presentations/${published.id}`
+        ...operationRequest('generative-ui.get', {
+          workspaceId: 'ws_demo',
+          presentationId: published.id,
+        })
       );
       expect(getResponse.status).toBe(200);
       const refreshResponse = await app.request(
-        `/api/app/workspaces/ws_demo/generative-presentations/${published.id}/refresh`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            version: GENERATIVE_UI_PROTOCOL_VERSION,
-            action: {
-              name: 'refreshNow',
-              surfaceId: 'surface-item',
-              sourceComponentId: 'refresh',
-              timestamp: new Date().toISOString(),
-            },
-          }),
-        }
+        ...operationRequest(
+          'generative-ui.refresh',
+          { workspaceId: 'ws_demo', presentationId: published.id },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              version: GENERATIVE_UI_PROTOCOL_VERSION,
+              action: {
+                name: 'refreshNow',
+                surfaceId: 'surface-item',
+                sourceComponentId: 'refresh',
+                timestamp: new Date().toISOString(),
+              },
+            }),
+          }
+        )
       );
       expect(refreshResponse.status).toBe(200);
     } finally {
@@ -154,7 +164,10 @@ describe('Generative UI App API', () => {
 
     try {
       const response = await app.request(
-        `/api/app/workspaces/ws_other/generative-presentations/${randomUUID()}`
+        ...operationRequest('generative-ui.get', {
+          workspaceId: 'ws_other',
+          presentationId: randomUUID(),
+        })
       );
       expect(response.status).toBeGreaterThanOrEqual(400);
     } finally {

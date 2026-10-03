@@ -63,3 +63,9 @@ The NanoHost, backup and storage-report rows derive from the same composed table
 The four Automation, three Scheduler and two Recovery CLI entries derive from the composed product definitions and call `client.operations[id]`; their literal catalog rows are removed. Automation deletion returns logical JSON `null` after its bodyless HTTP 204 success. Recovery retry retains full Workspace, Thread, Turn and request lineage. Rebuild the bundled executable with `pnpm build:openkit`.
 
 The three server-managed JSON transfer CLI operations derive from the Workspace transfer definition family and use `strictShared` input validation. The local-file archive download, dry-run and import paths retain their existing stream and file ownership rules.
+
+All Kernel and Generative UI CLI entries derive from the shared operation tables through `strictShared`. Canonical dotted ids replace the former literal CLI spellings without aliases; rebuild the bundle with `pnpm build:openkit`.
+
+All fifteen `sync.*` CLI entries derive their contracts and execution from the shared synchronization definitions, including strict inputs and header request identities. The hand-written synchronization catalog rows are removed.
+
+The sixteen Workspace sharing and lifecycle operations derive their canonical IDs, complete strict inputs and `client.operations` handlers from the composed definitions. Invitation creation preserves secret stdin handling. Canonical-user invitation, leave and deleted-recovery operations accept the implicit local actor or a currently usable administrator bearer; ordinary Workspace bearers do not become session credentials. The old literal catalog rows and client method mappings are removed.

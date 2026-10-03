@@ -17,6 +17,8 @@ import {
   type OperationInvocationDependencies,
   OperationInvocationError,
 } from './operation-invocation.js';
+import { WorkspaceDeletionOperationError } from './workspace-deletion-operations.js';
+import { WorkspaceSharingOperationError } from './workspace-sharing-operations.js';
 
 const SEARCH_LIMIT = 20;
 const querySchema = z.object({ query: z.string().max(500) }).strict();
@@ -201,16 +203,24 @@ export function registerRemoteMcpRoutes({
       } catch (error) {
         refused = true;
         const result =
-          error instanceof OperationInvocationError ||
-          error instanceof KernelCommandError ||
-          error instanceof RemoteMcpSecretRefusal
-            ? { code: error.code, message: error.message }
-            : error instanceof z.ZodError
-              ? { code: 'invalid_request', message: 'Invalid tool input.' }
-              : {
-                  code: 'operation_failed',
-                  message: 'Operation failed. Inspect the owner outcome before retrying.',
-                };
+          error instanceof WorkspaceSharingOperationError ||
+          error instanceof WorkspaceDeletionOperationError
+            ? {
+                code: error.code,
+                message: error.message,
+                status: error.status,
+                ...(error.details === undefined ? {} : { details: error.details }),
+              }
+            : error instanceof OperationInvocationError ||
+                error instanceof KernelCommandError ||
+                error instanceof RemoteMcpSecretRefusal
+              ? { code: error.code, message: error.message }
+              : error instanceof z.ZodError
+                ? { code: 'invalid_request', message: 'Invalid tool input.' }
+                : {
+                    code: 'operation_failed',
+                    message: 'Operation failed. Inspect the owner outcome before retrying.',
+                  };
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
     });

@@ -657,7 +657,9 @@ async function settleRelayReviewCleanup(client, workspaceId, reviewIds) {
   }
   const outcomes = await Promise.allSettled(
     [...reviewIds].map((reviewId) =>
-      client.app.submitWorkspaceSyncReviewDecision(workspaceId, reviewId, {
+      client.operations['sync.review-decide']({
+        workspaceId,
+        reviewId,
         decision: 'rejected',
         requestId: randomUUID(),
       })

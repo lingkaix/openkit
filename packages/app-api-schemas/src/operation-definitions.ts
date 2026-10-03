@@ -41,6 +41,10 @@ import {
   ThreadDashboardResponseSchema,
 } from './dashboard.js';
 import { DATA_ROOT_ADMIN_OPERATION_DEFINITIONS } from './data-root-admin-operations.js';
+import {
+  GENERATIVE_UI_OPERATION_DEFINITIONS,
+  KERNEL_REMAINING_OPERATION_DEFINITIONS,
+} from './generative-operations.js';
 import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
 import {
   KnowledgeDerivedIndexesResponseSchema,
@@ -89,7 +93,9 @@ import {
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
 import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
+import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
+import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
 import { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from './workspace-transfer.js';
 
@@ -711,14 +717,18 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...SCHEDULER_OPERATION_DEFINITIONS,
   ...RECOVERY_OPERATION_DEFINITIONS,
   ...KERNEL_OPERATION_DEFINITIONS,
+  ...KERNEL_REMAINING_OPERATION_DEFINITIONS,
+  ...GENERATIVE_UI_OPERATION_DEFINITIONS,
   ...WORKSPACE_OPERATION_DEFINITIONS,
   ...WORKSPACE_TRANSFER_OPERATION_DEFINITIONS,
+  ...WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
   ...THREAD_OPERATION_DEFINITIONS,
   ...TURN_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   ...ARTIFACT_OPERATION_DEFINITIONS,
   ...GOAL_OPERATION_DEFINITIONS,
+  ...SYNC_OPERATION_DEFINITIONS,
   ...CONVERSATION_OPERATION_DEFINITIONS,
   ...TASK_OPERATION_DEFINITIONS,
   ...ATTENTION_OPERATION_DEFINITIONS,

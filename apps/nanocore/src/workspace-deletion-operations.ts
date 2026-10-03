@@ -13,20 +13,18 @@ import {
 import { dirname, join } from 'node:path';
 
 import {
-  DeleteWorkspaceRequestSchema,
-  RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   WorkspaceDeletionResponseSchema,
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
-import type { Context, Hono } from 'hono';
-
-import { apiErrorPayload, asApiError, asInvalidRequestError } from './api-errors.js';
 import { listServerAuditEvents, recordServerAuditEvent } from './audit-events.js';
-import type { AuthVariables } from './auth/middleware.js';
+import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { FsStore } from './lib/store.js';
-import { registerAppApiRoute } from './openapi.js';
+import type {
+  OperationImplementations,
+  OperationInvocationDependencies,
+} from './operation-invocation.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -65,136 +63,124 @@ import {
 
 const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 
-/** Registers owner deletion and tombstone-authorized recovery routes. */
-export function registerWorkspaceDeletionRoutes(input: {
-  app: Hono<{ Variables: AuthVariables }>;
-  closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
-  coreDb: CoreDb | undefined;
-  dataRoot: string | null;
-  mutationAdmission: WorkspaceMutationAdmission;
-  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-}): void {
-  registerAppApiRoute(input.app, 'deleteWorkspace', async (context) => {
-    const parsed = DeleteWorkspaceRequestSchema.safeParse(
-      await context.req.json().catch(() => ({}))
-    );
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-    const coreDb = input.coreDb;
-    const dataRoot = input.dataRoot;
-    if (!coreDb || !dataRoot) {
-      return asApiError(
-        'Workspace deletion is unavailable.',
-        'workspace_deletion_unavailable',
-        503
-      );
-    }
-    const workspaceId = context.req.param('workspaceId');
-    if (
-      parsed.data.confirmation !==
-      `permanently-delete-workspace:${workspaceId}:${parsed.data.expectedRegistryRevision}`
-    ) {
-      return asApiError(
-        'Workspace deletion confirmation does not match the request path.',
-        'invalid_request',
-        400
-      );
-    }
-    const actor = context.get('actor');
-    if (!actor || (actor.kind !== 'local' && actor.kind !== 'session' && actor.kind !== 'token')) {
-      return workspaceDeletionError('workspace_access_denied', 'Workspace access denied.', 403);
-    }
-
-    try {
-      return await input.mutationAdmission.runDeletionExclusive(workspaceId, async () => {
-        const result = await advanceWorkspaceDeletion({
-          actorId: actor.userId,
-          closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions,
+/** Joins exact deletion requests and tombstone recovery to their existing lifecycle owners. */
+export function createWorkspaceDeletionOperationImplementations(
+  input: OperationInvocationDependencies
+): Pick<OperationImplementations, 'workspace.delete' | 'workspace.deleted-recover'> {
+  return {
+    'workspace.delete': async (value, _actor, context) => {
+      const coreDb = input.coreDb;
+      const dataRoot = input.dataRoot;
+      if (!coreDb || !dataRoot)
+        throw new WorkspaceDeletionOperationError(
+          'workspace_deletion_unavailable',
+          'Workspace deletion is unavailable.',
+          503
+        );
+      if (
+        value.confirmation !==
+        `permanently-delete-workspace:${value.workspaceId}:${value.expectedRegistryRevision}`
+      )
+        throw new WorkspaceDeletionOperationError(
+          'invalid_request',
+          'Workspace deletion confirmation does not match the request path.',
+          400
+        );
+      if (context.kind !== 'public')
+        throw new WorkspaceDeletionOperationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      try {
+        return await input.workspaceMutationAdmission!.runDeletionExclusive(
+          value.workspaceId,
+          async () => {
+            const result = await advanceWorkspaceDeletion({
+              actorId: context.actor.userId,
+              administratorEligible: isCurrentDeploymentAdministrator(coreDb, context.actor),
+              closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
+              coreDb,
+              dataRoot,
+              mutationAdmission: input.workspaceMutationAdmission!,
+              repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
+              request: {
+                confirmation: value.confirmation,
+                expectedRegistryRevision: value.expectedRegistryRevision,
+                requestId: value.requestId,
+              },
+              store: input.store!,
+              workspaceId: value.workspaceId,
+            });
+            input.observeSuccessStatus?.(result.status);
+            return result.body;
+          }
+        );
+      } catch (error) {
+        if (error instanceof WorkspaceDeletionOperationError) throw error;
+        throw recoveryRequired();
+      }
+    },
+    'workspace.deleted-recover': (value, _actor, context) => {
+      const coreDb = input.coreDb;
+      const dataRoot = input.dataRoot;
+      if (!coreDb || !dataRoot)
+        throw new WorkspaceDeletionOperationError(
+          'workspace_recovery_unavailable',
+          'Deleted Workspace recovery is unavailable.',
+          503
+        );
+      if (context.kind !== 'public')
+        throw new WorkspaceDeletionOperationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      const actor = context.actor;
+      const workspaceId = value.workspaceId;
+      const administratorEligible = isCurrentDeploymentAdministrator(coreDb, actor);
+      try {
+        const registry = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId);
+        if (
+          !registry ||
+          registry.status !== 'deleted' ||
+          (!administratorEligible && registry.ownerUserId !== actor.userId) ||
+          !isCanonicalUserActive(coreDb, actor.userId) ||
+          !isCanonicalUserActive(coreDb, registry.ownerUserId)
+        ) {
+          throw new WorkspaceDeletionOperationError(
+            'workspace_access_denied',
+            'Workspace access denied.',
+            403
+          );
+        }
+        const request = readWorkspaceDeletionRequest(
+          dataRoot,
+          workspaceId,
+          value.deletionRequestId
+        );
+        if (
+          !['deleted', 'cleaned'].includes(request.phase) ||
+          !request.recoveryExportId ||
+          !request.recoveryExportManifestDigest ||
+          !request.closureId ||
+          !request.closureDigest
+        ) {
+          throw new Error('Workspace deletion request is not recoverable.');
+        }
+        requireTerminalWorkspaceStorage(dataRoot, request);
+        requireTerminalDeletionTruth({ coreDb, store: input.store!, workspaceId }, request);
+        const verified = verifyDeletionArtifacts(dataRoot, request);
+        const imported = importVerifiedWorkspace({
+          authorityUserId: actor.userId,
+          recoveryOwnerUserId: registry.ownerUserId,
           coreDb,
           dataRoot,
-          mutationAdmission: input.mutationAdmission,
-          repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-          request: parsed.data,
-          store: input.requestStore(context),
-          workspaceId,
+          requestId: value.requestId,
+          store: input.store!,
+          verified,
         });
-        return context.json(result.body, result.status);
-      });
-    } catch (error) {
-      if (error instanceof WorkspaceDeletionRouteError) {
-        return workspaceDeletionError(error.code, error.message, error.status, error.details);
-      }
-      return workspaceDeletionError(
-        'recovery_required',
-        'Workspace deletion state requires operator recovery.',
-        409
-      );
-    }
-  });
-
-  registerAppApiRoute(input.app, 'recoverDeletedWorkspace', async (context) => {
-    const parsed = RecoverDeletedWorkspaceRequestSchema.safeParse(
-      await context.req.json().catch(() => ({}))
-    );
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-    const coreDb = input.coreDb;
-    const dataRoot = input.dataRoot;
-    if (!coreDb || !dataRoot) {
-      return asApiError(
-        'Deleted Workspace recovery is unavailable.',
-        'workspace_recovery_unavailable',
-        503
-      );
-    }
-    const actor = context.get('actor');
-    const workspaceId = context.req.param('workspaceId');
-    if (!actor || (actor.kind !== 'local' && actor.kind !== 'session')) {
-      return workspaceDeletionError('workspace_access_denied', 'Workspace access denied.', 403);
-    }
-    try {
-      const registry = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId);
-      if (
-        !registry ||
-        registry.status !== 'deleted' ||
-        registry.ownerUserId !== actor.userId ||
-        !isCanonicalUserActive(coreDb, actor.userId)
-      ) {
-        return workspaceDeletionError('workspace_access_denied', 'Workspace access denied.', 403);
-      }
-      const request = readWorkspaceDeletionRequest(
-        dataRoot,
-        workspaceId,
-        parsed.data.deletionRequestId
-      );
-      if (
-        !['deleted', 'cleaned'].includes(request.phase) ||
-        !request.recoveryExportId ||
-        !request.recoveryExportManifestDigest ||
-        !request.closureId ||
-        !request.closureDigest
-      ) {
-        throw new Error('Workspace deletion request is not recoverable.');
-      }
-      requireTerminalWorkspaceStorage(dataRoot, request);
-      requireTerminalDeletionTruth(
-        { coreDb, store: input.requestStore(context), workspaceId },
-        request
-      );
-      const verified = verifyDeletionArtifacts(dataRoot, request);
-      const imported = importVerifiedWorkspace({
-        authorityUserId: actor.userId,
-        coreDb,
-        dataRoot,
-        requestId: parsed.data.requestId,
-        store: input.requestStore(context),
-        verified,
-      });
-      return context.json(
-        RecoverDeletedWorkspaceResponseSchema.parse({
+        return RecoverDeletedWorkspaceResponseSchema.parse({
           recovery: {
             sourceWorkspaceId: workspaceId,
             deletionRequestId: request.requestId,
@@ -202,20 +188,23 @@ export function registerWorkspaceDeletionRoutes(input: {
             closureId: request.closureId,
             import: imported,
           },
-        })
-      );
-    } catch {
-      return workspaceDeletionError(
-        'recovery_required',
-        'Deleted Workspace recovery requires operator inspection.',
-        409
-      );
-    }
-  });
+        });
+      } catch (error) {
+        if (error instanceof WorkspaceDeletionOperationError) throw error;
+        throw new WorkspaceDeletionOperationError(
+          'recovery_required',
+          'Deleted Workspace recovery requires operator inspection.',
+          409
+        );
+      }
+    },
+  };
 }
 
+/** Advances only the exact request-owned deletion phases; no ordinary Workspace content authority survives fencing. */
 async function advanceWorkspaceDeletion(input: {
   actorId: string;
+  administratorEligible: boolean;
   closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb;
   dataRoot: string;
@@ -280,7 +269,7 @@ async function advanceWorkspaceDeletion(input: {
     if (holdRecordIds.length > 0) {
       persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
       input.mutationAdmission.reopen(input.workspaceId);
-      throw new WorkspaceDeletionRouteError(
+      throw new WorkspaceDeletionOperationError(
         'workspace_deletion_blocked',
         'Workspace deletion is blocked by legal hold.',
         409,
@@ -433,7 +422,7 @@ async function advanceWorkspaceDeletion(input: {
       });
       const audit = recordServerAuditEvent({
         action: 'workspace.delete',
-        actor: { id: request.originalOwnerUserId, kind: 'user' },
+        actor: { id: input.actorId, kind: 'user' },
         category: 'command',
         coreDb: input.coreDb,
         outcome: 'succeeded',
@@ -449,7 +438,7 @@ async function advanceWorkspaceDeletion(input: {
           requestId: request.requestId,
           scope: {
             ...CORE_RECEIPT_OWNER,
-            actorId: request.originalOwnerUserId,
+            actorId: input.actorId,
             targetWorkspaceId: input.workspaceId,
           },
           inputHash: commandInputHash(input.request),
@@ -489,6 +478,7 @@ async function advanceWorkspaceDeletion(input: {
 
 function selectDeletionRequest(input: {
   actorId: string;
+  administratorEligible: boolean;
   coreDb: CoreDb;
   dataRoot: string;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
@@ -508,11 +498,11 @@ function selectDeletionRequest(input: {
   const existing = records.find((record) => record.requestId === input.request.requestId);
   if (existing) {
     if (
-      existing.originalOwnerUserId !== input.actorId ||
+      (!input.administratorEligible && existing.originalOwnerUserId !== input.actorId) ||
       existing.expectedRegistryRevision !== input.request.expectedRegistryRevision ||
       existing.confirmation !== input.request.confirmation
     ) {
-      throw new WorkspaceDeletionRouteError(
+      throw new WorkspaceDeletionOperationError(
         'idempotency_key_conflict',
         'The requestId was already used for different command input.',
         409
@@ -521,7 +511,7 @@ function selectDeletionRequest(input: {
     return existing;
   }
   if (nonterminal[0]) {
-    throw new WorkspaceDeletionRouteError(
+    throw new WorkspaceDeletionOperationError(
       'workspace_deletion_in_progress',
       'Another deletion request already owns this Workspace.',
       409,
@@ -532,10 +522,10 @@ function selectDeletionRequest(input: {
   if (
     !registry ||
     registry.status !== 'active' ||
-    registry.ownerUserId !== input.actorId ||
+    (!input.administratorEligible && registry.ownerUserId !== input.actorId) ||
     registry.registryRevision !== input.request.expectedRegistryRevision
   ) {
-    throw new WorkspaceDeletionRouteError(
+    throw new WorkspaceDeletionOperationError(
       'workspace_access_denied',
       'Workspace access denied.',
       403
@@ -543,7 +533,7 @@ function selectDeletionRequest(input: {
   }
   const holdRecordIds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
   if (holdRecordIds.length > 0) {
-    throw new WorkspaceDeletionRouteError(
+    throw new WorkspaceDeletionOperationError(
       'workspace_deletion_blocked',
       'Workspace deletion is blocked by legal hold.',
       409,
@@ -554,7 +544,7 @@ function selectDeletionRequest(input: {
     confirmation: input.request.confirmation,
     createdAt: new Date().toISOString(),
     expectedRegistryRevision: input.request.expectedRegistryRevision,
-    originalOwnerUserId: input.actorId,
+    originalOwnerUserId: registry.ownerUserId,
     requestId: input.request.requestId,
     workspaceId: input.workspaceId,
   });
@@ -636,9 +626,18 @@ function requireTerminalDeletionTruth(
   request: WorkspaceDeletionRequestRecord
 ): { auditEventId: string; commandReceiptKey: string } {
   const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+  const auditEvents = listServerAuditEvents(input.coreDb).filter(
+    (event) =>
+      event.action === 'workspace.delete' &&
+      event.requestId === request.requestId &&
+      event.workspaceId === input.workspaceId &&
+      event.outcome === 'succeeded'
+  );
+  const terminalAudit = auditEvents[0];
+  if (auditEvents.length !== 1 || terminalAudit?.actor?.kind !== 'user') throw recoveryRequired();
   const scope = {
     ...CORE_RECEIPT_OWNER,
-    actorId: request.originalOwnerUserId,
+    actorId: terminalAudit.actor.id,
     targetWorkspaceId: input.workspaceId,
   };
   const receipt = input.store.getCommandRequest(
@@ -646,13 +645,6 @@ function requireTerminalDeletionTruth(
     request.requestId,
     scope,
     input.coreDb
-  );
-  const auditEvents = listServerAuditEvents(input.coreDb).filter(
-    (event) =>
-      event.action === 'workspace.delete' &&
-      event.requestId === request.requestId &&
-      event.workspaceId === input.workspaceId &&
-      event.outcome === 'succeeded'
   );
   if (
     !registry ||
@@ -903,27 +895,15 @@ function fsyncDirectory(path: string): void {
   }
 }
 
-function workspaceDeletionError(
-  code: string,
-  message: string,
-  status: number,
-  details?: unknown
-): Response {
-  return Response.json(
-    apiErrorPayload({ code, message, ...(details === undefined ? {} : { details }) }),
-    { status }
-  );
-}
-
-function recoveryRequired(): WorkspaceDeletionRouteError {
-  return new WorkspaceDeletionRouteError(
+function recoveryRequired(): WorkspaceDeletionOperationError {
+  return new WorkspaceDeletionOperationError(
     'recovery_required',
     'Workspace deletion state requires operator recovery.',
     409
   );
 }
 
-class WorkspaceDeletionRouteError extends Error {
+export class WorkspaceDeletionOperationError extends Error {
   public constructor(
     public readonly code: string,
     message: string,

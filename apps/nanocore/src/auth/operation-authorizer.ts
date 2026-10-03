@@ -208,8 +208,9 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
       if (denied) {
         return denied;
       }
-      const workspaceId = operationWorkspaceId(context, route, input);
-      if (route.operationKey === 'deleteWorkspace' || !workspaceId) {
+      const access = context.get('workspaceAccess');
+      const workspaceId = access?.kind === 'workspace' ? access.workspaceId : null;
+      if (!workspaceId) {
         await next();
         return;
       }
@@ -231,28 +232,6 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
       }
     });
   }
-}
-
-/** Resolves the existing Workspace mutated by routes whose authorization scope is not Workspace. */
-function operationWorkspaceId(
-  context: Context<{ Variables: AuthVariables }>,
-  route: OperationRoute,
-  input: RegisterOperationAccessGuardsInput
-): string | null {
-  const access = context.get('workspaceAccess');
-  if (access?.kind === 'workspace') {
-    return access.workspaceId;
-  }
-  if (['leaveWorkspace', 'recoverWorkspaceAccess'].includes(route.operationKey)) {
-    return context.req.param('workspaceId') || null;
-  }
-  if (['acceptWorkspaceInvitation', 'declineWorkspaceInvitation'].includes(route.operationKey)) {
-    const row = input.coreDb.sqlite
-      .prepare('SELECT workspace_id FROM workspace_invitations WHERE invitation_id = ?')
-      .get(context.req.param('invitationId')) as { workspace_id: string } | undefined;
-    return row?.workspace_id ?? null;
-  }
-  return null;
 }
 
 /**
@@ -572,13 +551,6 @@ async function authorizeWorkspaceOperation(
   }
   const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
-    !authorized &&
-    route.operationKey === 'deleteWorkspace' &&
-    hasWorkspaceDeletionRetryAuthority(input.coreDb, actor, workspaceId)
-  ) {
-    return null;
-  }
-  if (
     !authorized ||
     (route.access.resolver === 'actor-quick-chat-workspace' && authorized.effectiveRole !== 'owner')
   ) {
@@ -592,12 +564,14 @@ async function authorizeWorkspaceOperation(
   return denyIfThreadInaccessible(context, actor, route, input, authorized.workspaceId);
 }
 
-/** Checks the narrow original-owner authority that may only resume one deletion route. */
-function hasWorkspaceDeletionRetryAuthority(
+/** Checks current original-owner or administrator authority; the deletion owner still requires the exact recorded request. */
+export function hasWorkspaceDeletionRetryAuthority(
   coreDb: CoreDb,
   actor: Actor,
   workspaceId: string
 ): boolean {
+  if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedAccessToken(coreDb, actor))
+    return false;
   if (actor.kind === 'token' && !isUsablePresentedServerAdminToken(coreDb, actor)) {
     if (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId)) {
       return false;
@@ -614,8 +588,8 @@ function hasWorkspaceDeletionRetryAuthority(
     | { ownerUserId: string; status: 'active' | 'deleting' | 'deleted'; userStatus: string }
     | undefined;
   return (
-    row?.ownerUserId === actor.userId &&
-    row.userStatus === 'active' &&
+    (row?.ownerUserId === actor.userId || isCurrentDeploymentAdministrator(coreDb, actor)) &&
+    row?.userStatus === 'active' &&
     (row.status === 'deleting' || row.status === 'deleted')
   );
 }

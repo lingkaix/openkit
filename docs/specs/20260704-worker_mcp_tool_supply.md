@@ -197,6 +197,8 @@ NanoCore loads the Workspace catalog from `catalog/catalog.json` through the run
 
 Immutable MCP configuration history, current-version and binding resolution, ordinary package environment, working-directory and header fields, and redirect rejection at the actual HTTP fetch boundary are implemented. Raw/bearer presentation, SDK token-only bearer delivery, case-insensitive Vault header replacement, and live raw/formatted/query-serialized redaction are implemented. Management and schema ownership stay with `docs/specs/20260907-mcp_catalog_management.md`. Raw restricted package inspection and original-package export remain deferred there. This projection does not claim package-root materialization. Existing Gateway execution remains implemented and is not demoted to Draft.
 
+All fifteen built-in `openkit-generative` descriptors and dispatch keys derive from the shared Kernel and Generative UI definitions. Worker publication binds Workspace, Thread, Turn and request identity from trusted invocation lineage; presentation publication still returns its fallback text and embedded JSON resource. Native invocation owns primary operation admission while the gateway retains Tool supply, package, capability and effect checks.
+
 ## Alternatives Considered
 
 - Direct worker connections to catalog or Gateway-managed external MCP servers with Gateway credentials injected into the Sandbox. Rejected: it bypasses their policy and audit, puts Gateway credentials within Sandbox reach, and makes every backend responsible for their MCP transport. Independently configured local MCP and admission-classified public endpoints are outside this rejected managed-integration alternative.

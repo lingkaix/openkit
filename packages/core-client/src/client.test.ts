@@ -1671,19 +1671,19 @@ describe('createCoreClient', () => {
         body: turn(),
       },
       'POST /api/app/operations/artifact.list': { body: { items: [artifact()] } },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reviews': {
+      'POST /api/app/operations/sync.review-list': {
         body: { items: [workspaceSyncReview()] },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1': {
+      'POST /api/app/operations/sync.review-read': {
         body: workspaceSyncReview(),
       },
-      'POST /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1/decision': {
+      'POST /api/app/operations/sync.review-decide': {
         body: {
           review: { ...workspaceSyncReview().review, status: 'needs_refinement' },
           workspaceApplyResult: null,
         },
       },
-      'POST /api/app/workspaces/ws_demo/workspace-sync/reconciliation-records/wrr_1/decision': {
+      'POST /api/app/operations/sync.recovery-decide': {
         body: {
           reconciliationRecord: {
             id: 'wrr_1',
@@ -1708,7 +1708,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/input-snapshots': {
+      'POST /api/app/operations/sync.input-snapshot-list': {
         body: {
           items: [
             {
@@ -1732,7 +1732,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/materialization-records': {
+      'POST /api/app/operations/sync.materialization-list': {
         body: {
           items: [
             {
@@ -1752,7 +1752,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/backend-handles': {
+      'POST /api/app/operations/sync.backend-handle-list': {
         body: {
           items: [
             {
@@ -1771,7 +1771,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/output-manifests': {
+      'POST /api/app/operations/sync.output-manifest-list': {
         body: {
           items: [
             {
@@ -1793,13 +1793,13 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/change-sets': {
+      'POST /api/app/operations/sync.change-set-list': {
         body: { items: [workspaceSyncReview().changeSet] },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/staged-reviews': {
+      'POST /api/app/operations/sync.staged-review-list': {
         body: { items: [workspaceSyncReview().review] },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-plans': {
+      'POST /api/app/operations/sync.apply-plan-list': {
         body: {
           items: [
             {
@@ -1820,7 +1820,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reconciliation-records': {
+      'POST /api/app/operations/sync.reconciliation-list': {
         body: {
           items: [
             {
@@ -1848,7 +1848,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/quarantine-records': {
+      'POST /api/app/operations/sync.quarantine-list': {
         body: {
           items: [
             {
@@ -1867,10 +1867,10 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results': {
+      'POST /api/app/operations/sync.apply-result-list': {
         body: { items: [workspaceApplyResult()] },
       },
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results/war_swr_1': {
+      'POST /api/app/operations/sync.apply-result-read': {
         body: workspaceApplyResult(),
       },
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots': {
@@ -1970,60 +1970,93 @@ describe('createCoreClient', () => {
     await expect(client.operations['artifact.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
       items: [artifact()],
     });
-    await expect(client.app.listWorkspaceSyncReviews('ws_demo')).resolves.toEqual({
+    await expect(
+      client.operations['sync.review-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual({
       items: [workspaceSyncReview()],
     });
-    await expect(client.app.getWorkspaceSyncReview('ws_demo', 'swr_1')).resolves.toEqual(
-      workspaceSyncReview()
-    );
     await expect(
-      client.app.submitWorkspaceSyncReviewDecision('ws_demo', 'swr_1', {
-        decision: 'needs_refinement',
+      client.operations['sync.review-read']({ workspaceId: 'ws_demo', reviewId: 'swr_1' })
+    ).resolves.toEqual(workspaceSyncReview());
+    await expect(
+      client.operations['sync.review-decide']({
+        workspaceId: 'ws_demo',
+        reviewId: 'swr_1',
+        ...{
+          decision: 'needs_refinement',
+        },
       })
     ).resolves.toMatchObject({
       review: { id: 'swr_1', status: 'needs_refinement' },
       workspaceApplyResult: null,
     });
     await expect(
-      client.app.submitWorkspaceRecoveryDecision('ws_demo', 'wrr_1', {
-        decision: 'quarantine',
+      client.operations['sync.recovery-decide']({
+        workspaceId: 'ws_demo',
+        reconciliationRecordId: 'wrr_1',
+        ...{
+          decision: 'quarantine',
+        },
       })
     ).resolves.toMatchObject({
       reconciliationRecord: { id: 'wrr_1', stateAfter: 'quarantined' },
     });
-    await expect(client.app.listWorkspaceInputSnapshots('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.input-snapshot-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wis_1', strategy: 'git' }],
     });
-    await expect(client.app.listWorkspaceMaterializationRecords('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.materialization-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wmr_1', inputSnapshotId: 'wis_1' }],
     });
-    await expect(client.app.listBackendWorkspaceHandles('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.backend-handle-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'bwh_wmr_1', materializationRecordId: 'wmr_1' }],
     });
-    await expect(client.app.listWorkerOutputManifests('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.output-manifest-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wom_1', materializationRecordId: 'wmr_1' }],
     });
-    await expect(client.app.listWorkspaceChangeSets('ws_demo')).resolves.toEqual({
+    await expect(
+      client.operations['sync.change-set-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual({
       items: [workspaceSyncReview().changeSet],
     });
-    await expect(client.app.listStagedWorkspaceReviews('ws_demo')).resolves.toEqual({
+    await expect(
+      client.operations['sync.staged-review-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual({
       items: [workspaceSyncReview().review],
     });
-    await expect(client.app.listWorkspaceApplyPlans('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.apply-plan-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wap_swr_1', reviewId: 'swr_1' }],
     });
-    await expect(client.app.listWorkspaceReconciliationRecords('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.reconciliation-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wrr_1', triggerReason: 'restart', stateAfter: 'requires-human' }],
     });
-    await expect(client.app.listWorkspaceQuarantineRecords('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['sync.quarantine-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ id: 'wqr_1', failureKind: 'digest_mismatch', resolution: 'pending' }],
     });
-    await expect(client.app.listWorkspaceApplyResults('ws_demo')).resolves.toEqual({
+    await expect(
+      client.operations['sync.apply-result-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual({
       items: [workspaceApplyResult()],
     });
-    await expect(client.app.getWorkspaceApplyResult('ws_demo', 'war_swr_1')).resolves.toEqual(
-      workspaceApplyResult()
-    );
+    await expect(
+      client.operations['sync.apply-result-read']({
+        workspaceId: 'ws_demo',
+        applyResultId: 'war_swr_1',
+      })
+    ).resolves.toEqual(workspaceApplyResult());
     await expect(client.app.listAgentEnvironmentPackageSnapshots('ws_demo')).resolves.toMatchObject(
       {
         items: [{ snapshotId: 'aepsnap_1' }],
@@ -2058,21 +2091,21 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/turn.read',
       'POST /api/workspaces/ws_demo/threads/th_demo/turns/turn_demo/interrupt',
       'POST /api/app/operations/artifact.list',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reviews',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1',
-      'POST /api/app/workspaces/ws_demo/workspace-sync/reviews/swr_1/decision',
-      'POST /api/app/workspaces/ws_demo/workspace-sync/reconciliation-records/wrr_1/decision',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/input-snapshots',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/materialization-records',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/backend-handles',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/output-manifests',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/change-sets',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/staged-reviews',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-plans',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/reconciliation-records',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/quarantine-records',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results',
-      'GET /api/app/workspaces/ws_demo/workspace-sync/apply-results/war_swr_1',
+      'POST /api/app/operations/sync.review-list',
+      'POST /api/app/operations/sync.review-read',
+      'POST /api/app/operations/sync.review-decide',
+      'POST /api/app/operations/sync.recovery-decide',
+      'POST /api/app/operations/sync.input-snapshot-list',
+      'POST /api/app/operations/sync.materialization-list',
+      'POST /api/app/operations/sync.backend-handle-list',
+      'POST /api/app/operations/sync.output-manifest-list',
+      'POST /api/app/operations/sync.change-set-list',
+      'POST /api/app/operations/sync.staged-review-list',
+      'POST /api/app/operations/sync.apply-plan-list',
+      'POST /api/app/operations/sync.reconciliation-list',
+      'POST /api/app/operations/sync.quarantine-list',
+      'POST /api/app/operations/sync.apply-result-list',
+      'POST /api/app/operations/sync.apply-result-read',
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots',
       'GET /api/app/workspaces/ws_demo/agent-environment/snapshots/aepsnap_1',
       'POST /api/app/operations/thread.items',
@@ -2385,7 +2418,7 @@ describe('createCoreClient', () => {
     });
   });
 
-  it('routes the exact closed Workspace sharing surface through client.app', async () => {
+  it('routes the exact closed Workspace lifecycle surface through client.operations', async () => {
     const invitation = workspaceInvitation();
     const member = workspaceMember();
     const removedMember = workspaceMember('removed');
@@ -2406,162 +2439,199 @@ describe('createCoreClient', () => {
         response: { items: [summary] },
       },
       {
-        body: null,
-        invoke: (client) => client.app.listWorkspaceMembers('ws_demo'),
-        methodPath: 'GET /api/app/workspaces/ws_demo/members',
+        body: { workspaceId: 'ws_demo' },
+        invoke: (client) => client.operations['workspace.member-list']({ workspaceId: 'ws_demo' }),
+        methodPath: 'POST /api/app/operations/workspace.member-list',
         response: { items: [member] },
       },
       {
-        body: null,
-        invoke: (client) => client.app.listWorkspaceInvitations('ws_demo'),
-        methodPath: 'GET /api/app/workspaces/ws_demo/invitations',
+        body: { workspaceId: 'ws_demo' },
+        invoke: (client) =>
+          client.operations['workspace.invitation-list']({ workspaceId: 'ws_demo' }),
+        methodPath: 'POST /api/app/operations/workspace.invitation-list',
         response: { items: [invitation] },
       },
       {
         body: {
+          workspaceId: 'ws_demo',
           inviteeEmail: 'invitee@example.com',
           proposedAccessLevel: 'editor',
-          requestId,
         },
         invoke: (client) =>
-          client.app.createWorkspaceInvitation('ws_demo', {
-            inviteeEmail: 'invitee@example.com',
-            proposedAccessLevel: 'editor',
-            requestId,
+          client.operations['workspace.invitation-create']({
+            workspaceId: 'ws_demo',
+            ...{
+              inviteeEmail: 'invitee@example.com',
+              proposedAccessLevel: 'editor',
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/invitations',
+        methodPath: 'POST /api/app/operations/workspace.invitation-create',
         response: { invitation },
         status: 201,
       },
       {
-        body: null,
-        invoke: (client) => client.app.listMyWorkspaceInvitations(),
-        methodPath: 'GET /api/app/workspace-invitations',
+        body: {},
+        invoke: (client) => client.operations['workspace.my-invitation-list']({}),
+        methodPath: 'POST /api/app/operations/workspace.my-invitation-list',
         response: { items: [invitation] },
       },
       {
-        body: { expectedRevision: 1, requestId },
+        body: { invitationId: 'invitation_1', expectedRevision: 1 },
         invoke: (client) =>
-          client.app.acceptWorkspaceInvitation('invitation_1', {
-            expectedRevision: 1,
-            requestId,
+          client.operations['workspace.my-invitation-accept']({
+            invitationId: 'invitation_1',
+            ...{
+              expectedRevision: 1,
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspace-invitations/invitation_1/accept',
+        methodPath: 'POST /api/app/operations/workspace.my-invitation-accept',
         response: { invitation },
       },
       {
-        body: { expectedRevision: 1, requestId },
+        body: { invitationId: 'invitation_1', expectedRevision: 1 },
         invoke: (client) =>
-          client.app.declineWorkspaceInvitation('invitation_1', {
-            expectedRevision: 1,
-            requestId,
+          client.operations['workspace.my-invitation-decline']({
+            invitationId: 'invitation_1',
+            ...{
+              expectedRevision: 1,
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspace-invitations/invitation_1/decline',
+        methodPath: 'POST /api/app/operations/workspace.my-invitation-decline',
         response: { invitation },
       },
       {
-        body: { expectedRevision: 1, requestId },
+        body: { workspaceId: 'ws_demo', invitationId: 'invitation_1', expectedRevision: 1 },
         invoke: (client) =>
-          client.app.revokeWorkspaceInvitation('ws_demo', 'invitation_1', {
-            expectedRevision: 1,
-            requestId,
+          client.operations['workspace.invitation-revoke']({
+            workspaceId: 'ws_demo',
+            invitationId: 'invitation_1',
+            ...{
+              expectedRevision: 1,
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/invitations/invitation_1/revoke',
+        methodPath: 'POST /api/app/operations/workspace.invitation-revoke',
         response: { invitation },
-      },
-      {
-        body: { accessLevel: 'viewer', expectedRevision: 1, requestId },
-        invoke: (client) =>
-          client.app.changeWorkspaceMemberAccess('ws_demo', 'user_2', {
-            accessLevel: 'viewer',
-            expectedRevision: 1,
-            requestId,
-          }),
-        methodPath: 'PATCH /api/app/workspaces/ws_demo/members/user_2',
-        response: { member },
-      },
-      {
-        body: { expectedRevision: 1, requestId },
-        invoke: (client) =>
-          client.app.removeWorkspaceMember('ws_demo', 'user_2', {
-            expectedRevision: 1,
-            requestId,
-          }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/members/user_2/remove',
-        response: { member: removedMember },
-      },
-      {
-        body: { expectedRevision: 1, requestId },
-        invoke: (client) =>
-          client.app.leaveWorkspace('ws_demo', { expectedRevision: 1, requestId }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/leave',
-        response: { member: removedMember },
-      },
-      {
-        body: { expectedRegistryRevision: 1, requestId, targetUserId: 'user_2' },
-        invoke: (client) =>
-          client.app.transferWorkspaceOwnership('ws_demo', {
-            expectedRegistryRevision: 1,
-            requestId,
-            targetUserId: 'user_2',
-          }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/ownership/transfer',
-        response: { workspace: summary },
-      },
-      {
-        body: null,
-        invoke: (client) => client.app.getWorkspaceAccessRecoveryState('ws_demo'),
-        methodPath: 'GET /api/app/workspaces/ws_demo/access-recovery',
-        response: { recovery },
       },
       {
         body: {
-          action: 'add-self-as-editor',
-          expectedRegistryRevision: 1,
-          requestId,
+          workspaceId: 'ws_demo',
+          targetUserId: 'user_2',
+          accessLevel: 'viewer',
+          expectedRevision: 1,
         },
         invoke: (client) =>
-          client.app.recoverWorkspaceAccess('ws_demo', {
-            action: 'add-self-as-editor',
-            expectedRegistryRevision: 1,
-            requestId,
+          client.operations['workspace.member-access-change']({
+            workspaceId: 'ws_demo',
+            targetUserId: 'user_2',
+            ...{
+              accessLevel: 'viewer',
+              expectedRevision: 1,
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/access-recovery',
+        methodPath: 'POST /api/app/operations/workspace.member-access-change',
+        response: { member },
+      },
+      {
+        body: { workspaceId: 'ws_demo', targetUserId: 'user_2', expectedRevision: 1 },
+        invoke: (client) =>
+          client.operations['workspace.member-remove']({
+            workspaceId: 'ws_demo',
+            targetUserId: 'user_2',
+            ...{
+              expectedRevision: 1,
+              requestId,
+            },
+          }),
+        methodPath: 'POST /api/app/operations/workspace.member-remove',
+        response: { member: removedMember },
+      },
+      {
+        body: { workspaceId: 'ws_demo', expectedRevision: 1 },
+        invoke: (client) =>
+          client.operations['workspace.leave']({
+            workspaceId: 'ws_demo',
+            ...{ expectedRevision: 1, requestId },
+          }),
+        methodPath: 'POST /api/app/operations/workspace.leave',
+        response: { member: removedMember },
+      },
+      {
+        body: { workspaceId: 'ws_demo', expectedRegistryRevision: 1, targetUserId: 'user_2' },
+        invoke: (client) =>
+          client.operations['workspace.ownership-transfer']({
+            workspaceId: 'ws_demo',
+            ...{
+              expectedRegistryRevision: 1,
+              requestId,
+              targetUserId: 'user_2',
+            },
+          }),
+        methodPath: 'POST /api/app/operations/workspace.ownership-transfer',
+        response: { workspace: summary },
+      },
+      {
+        body: { workspaceId: 'ws_demo' },
+        invoke: (client) =>
+          client.operations['workspace.access-recovery-read']({ workspaceId: 'ws_demo' }),
+        methodPath: 'POST /api/app/operations/workspace.access-recovery-read',
         response: { recovery },
       },
       {
-        body: { requestId },
-        invoke: (client) => client.app.disableUser('user_2', { requestId }),
-        methodPath: 'POST /api/app/users/user_2/disable',
+        body: { workspaceId: 'ws_demo', action: 'add-self-as-editor', expectedRegistryRevision: 1 },
+        invoke: (client) =>
+          client.operations['workspace.access-recover']({
+            workspaceId: 'ws_demo',
+            ...{
+              action: 'add-self-as-editor',
+              expectedRegistryRevision: 1,
+              requestId,
+            },
+          }),
+        methodPath: 'POST /api/app/operations/workspace.access-recover',
+        response: { recovery },
+      },
+      {
+        body: { targetUserId: 'user_2' },
+        invoke: (client) =>
+          client.operations['user.disable']({ targetUserId: 'user_2', ...{ requestId } }),
+        methodPath: 'POST /api/app/operations/user.disable',
         response: { user },
       },
       {
         body: {
+          workspaceId: 'ws_demo',
           confirmation: 'permanently-delete-workspace:ws_demo:1',
           expectedRegistryRevision: 1,
-          requestId,
         },
         invoke: (client) =>
-          client.app.deleteWorkspace('ws_demo', {
-            confirmation: 'permanently-delete-workspace:ws_demo:1',
-            expectedRegistryRevision: 1,
-            requestId,
+          client.operations['workspace.delete']({
+            workspaceId: 'ws_demo',
+            ...{
+              confirmation: 'permanently-delete-workspace:ws_demo:1',
+              expectedRegistryRevision: 1,
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspaces/ws_demo/delete',
+        methodPath: 'POST /api/app/operations/workspace.delete',
         response: workspaceDeletionResponse(),
         status: 202,
       },
       {
-        body: {
-          deletionRequestId: '00000000-0000-4000-8000-000000000002',
-          requestId,
-        },
+        body: { workspaceId: 'ws_demo', deletionRequestId: '00000000-0000-4000-8000-000000000002' },
         invoke: (client) =>
-          client.app.recoverDeletedWorkspace('ws_demo', {
-            deletionRequestId: '00000000-0000-4000-8000-000000000002',
-            requestId,
+          client.operations['workspace.deleted-recover']({
+            workspaceId: 'ws_demo',
+            ...{
+              deletionRequestId: '00000000-0000-4000-8000-000000000002',
+              requestId,
+            },
           }),
-        methodPath: 'POST /api/app/workspace-deletions/ws_demo/recover',
+        methodPath: 'POST /api/app/operations/workspace.deleted-recover',
         response: deletedWorkspaceRecoveryResponse(),
       },
     ];

@@ -78,7 +78,7 @@ This specification keeps route and client projection detail. That detail is tran
 The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal reads and the Goal operations, workspace synchronization read models, search, quick chat, diagnostics, setup diagnostics, and feedback.
+- `client.app`: dashboards, Goal reads and the Goal operations, search, quick chat, diagnostics, setup diagnostics, and feedback.
 - `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
 - `client.providerSubscriptions`: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
@@ -180,9 +180,9 @@ The client exposes `client.repositories.list(workspaceId)`, `client.repositories
 
 Workspace synchronization read models and Goal operation projections are App API projections over stable Core workspace, thread, turn, item, artifact, and human-attention semantics.
 
-The client exposes these routes through `client.app` because they are workflow/product projections, not standalone Core protocol objects.
+Workspace synchronization derives its public methods through `client.operations`; remaining hand-maintained workflow/product projections use `client.app`. Both are App API projections rather than standalone Core protocol objects.
 
-Workspace synchronization client methods include review listing, review retrieval, input snapshots, materialization records, change sets, staged reviews, apply-result listing, and apply-result retrieval.
+Workspace synchronization uses the fifteen definition-derived `client.operations['sync.*']` methods with one complete selector object, including review and recovery decisions. The former hand-maintained synchronization members of `client.app` are absent.
 
 Goal client operations are create Goal, revise intent, card create, card edit, card cancel, Plan propose, Plan approval through a Pending Request, Goal cancel, completion acceptance through a Pending Request, and reads. This specification does not define their transport, catalog shape, or wire names. The current implementation may still expose the legacy summary, start, plan, approval, step, steering, and Goal Review methods until the Goal implementation; that exposure is current implementation, not this contract.
 
@@ -222,6 +222,8 @@ The four Automation, three Scheduler and two Recovery operations use the definit
 
 The three server-managed JSON transfer operations `workspace.export`, `workspace.import-dry-run`, and `workspace.import` derive their schemas, HTTP bindings, Core Client methods and CLI entries from `packages/app-api-schemas/src/workspace-transfer.ts`. `apps/nanocore/src/storage/workspace-transfer-operations.ts` joins the existing verifier, collision preview and staged publication owners. Import retains canonical-user admission and source-export effect checks; the three archive operations retain their streaming bindings.
 
+The fifteen Workspace synchronization methods derive from `packages/app-api-schemas/src/sync-operations.ts` as `client.operations[<sync.id>](input)`, with complete Workspace and child selectors and the original decision request identity. Their former `client.app` members and transport mappings are absent; the [Workspace Synchronization implementation projection](20260703-workspace_synchronization.md#current-implementation-projection) describes their native owners.
+
 Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 
 The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
@@ -229,6 +231,8 @@ The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas
 NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Those hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention and Pending Request operations now use the definition-derived `client.operations` map; their former `client.app` and `client.core` mappings are absent.
 
 Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
+
+Kernel and Generative UI now use the typed `client.operations` map with complete logical inputs; their former thirteen App methods and mappings are deleted. Generative UI resource results remain JSON, and mutations retain the definition-derived request-id header binding.
 
 ## Future Slices
 

@@ -253,7 +253,7 @@ Settings **Deployment backup** at `/settings/data-root-backup` creates and verif
 
 ### Workspace access recovery and disable user
 
-Settings Administration **Workspace access recovery** at `/settings/workspace-access-recovery` explicitly loads `client.app.getWorkspaceAccessRecoveryState(workspaceId)` and submits `recoverWorkspaceAccess(workspaceId, input)` with a new request ID and the loaded registry revision. It shows only workspace ID, owner user ID, administrator role, and registry revision; transfer-to-self requires typing the workspace ID. **Disable user** at `/settings/disable-user` starts with no target and requires matching typed user ID confirmation before `client.app.disableUser(userId, input)`. Its summary contains only user ID, disabled status, and disabled timestamp. Both surfaces use the signed-in session’s derived deployment-admin authority with no Token plaintext; denial hides results and Retry probes access again. Mutation errors never automatically replay actions, and recovery failures require a fresh state load.
+Settings Administration **Workspace access recovery** at `/settings/workspace-access-recovery` explicitly loads `client.operations['workspace.access-recovery-read']({ workspaceId })` and submits `client.operations['workspace.access-recover']({ workspaceId, ...input })` with a new request ID and the loaded registry revision. It shows only workspace ID, owner user ID, administrator role, and registry revision; transfer-to-self requires typing the workspace ID. **Disable user** at `/settings/disable-user` starts with no target and requires matching typed user ID confirmation before `client.operations['user.disable']({ targetUserId: userId, ...input })`. Its summary contains only user ID, disabled status, and disabled timestamp. Both surfaces use the signed-in session’s derived deployment-admin authority with no Token plaintext; denial hides results and Retry probes access again. Mutation errors never automatically replay actions, and recovery failures require a fresh state load.
 
 ### App update
 
@@ -370,3 +370,9 @@ Conversation targets/navigation/submission, Task entry, attention reads, approva
 The Operations screen invokes `automation.*`, `scheduler.*` and `recovery.*` through `client.operations` with complete logical selector objects. Recovery retry preserves Workspace, Thread, Turn and request identities; its UI checkpoint id is excluded from the strict request. Optimistic state, rollback and frozen retry identities remain covered by `screens/operations/operations.test.tsx`.
 
 Portability submits complete logical inputs through `client.operations` for `workspace.export`, `workspace.import-dry-run`, and `workspace.import`. The import retains its caller-owned request id and existing Workspace discovery and UI outcomes; archive download and upload retain their streaming client methods.
+
+Generative presentation reads, refreshes and actions use `client.operations` with complete selectors and preserve deliberate action request identities.
+
+Workspace Changes uses definition-derived `client.operations` for all fifteen synchronization reads and decisions with explicit Workspace and child selectors. Existing request generation, mutation state, refetch ownership and UI outcomes remain with the hooks.
+
+Account invitation decisions, selected-Workspace member management, leave and ownership transfer use canonical `client.operations` inputs with logical selectors and retained request IDs. Their UI confirmation, conflict refresh, exact retry and selected-Workspace reconciliation remain in the account owner.

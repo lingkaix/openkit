@@ -12,37 +12,43 @@ export type AccountWorkspaceSummary = Awaited<
 
 /** One owner-visible Workspace member. */
 export type AccountWorkspaceMember = Awaited<
-  ReturnType<CoreClient['app']['listWorkspaceMembers']>
+  ReturnType<CoreClient['operations']['workspace.member-list']>
 >['items'][number];
 
 /** One owner-visible Workspace invitation. */
 export type AccountWorkspaceInvitation = Awaited<
-  ReturnType<CoreClient['app']['listWorkspaceInvitations']>
+  ReturnType<CoreClient['operations']['workspace.invitation-list']>
 >['items'][number];
 
 /** Authoritative invitation mutation response. */
 type InvitationMutationResponse = Awaited<
-  ReturnType<CoreClient['app']['createWorkspaceInvitation']>
+  ReturnType<CoreClient['operations']['workspace.invitation-create']>
 >;
 
 /** Authoritative member mutation response. */
-type MemberMutationResponse = Awaited<ReturnType<CoreClient['app']['changeWorkspaceMemberAccess']>>;
+type MemberMutationResponse = Awaited<
+  ReturnType<CoreClient['operations']['workspace.member-access-change']>
+>;
 
 /** Authoritative ownership-transfer response. */
 type OwnershipMutationResponse = Awaited<
-  ReturnType<CoreClient['app']['transferWorkspaceOwnership']>
+  ReturnType<CoreClient['operations']['workspace.ownership-transfer']>
 >;
 
 /** Authoritative current-user invitation collection. */
-type MyInvitationCollection = Awaited<ReturnType<CoreClient['app']['listMyWorkspaceInvitations']>>;
+type MyInvitationCollection = Awaited<
+  ReturnType<CoreClient['operations']['workspace.my-invitation-list']>
+>;
 
 /** Authoritative current-user invitation decision response. */
 type MyInvitationMutationResponse = Awaited<
-  ReturnType<CoreClient['app']['acceptWorkspaceInvitation']>
+  ReturnType<CoreClient['operations']['workspace.my-invitation-accept']>
 >;
 
 /** Authoritative current-user membership leave response. */
-type LeaveWorkspaceMutationResponse = Awaited<ReturnType<CoreClient['app']['leaveWorkspace']>>;
+type LeaveWorkspaceMutationResponse = Awaited<
+  ReturnType<CoreClient['operations']['workspace.leave']>
+>;
 
 /** Safe client projection of one failed sharing operation. */
 export interface WorkspaceSharingFailure {
@@ -204,7 +210,8 @@ export function useWorkspaceOwnerManagement() {
     retry: false,
     mutationFn: async (variables: CreateInvitationVariables) => {
       try {
-        return await client.app.createWorkspaceInvitation(variables.workspaceId, {
+        return await client.operations['workspace.invitation-create']({
+          workspaceId: variables.workspaceId,
           inviteeEmail: variables.inviteeEmail,
           proposedAccessLevel: variables.proposedAccessLevel,
         });
@@ -215,18 +222,17 @@ export function useWorkspaceOwnerManagement() {
       }
     },
     onSuccess: ({ invitation }, variables) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceInvitations']>>>(
-        ownerManagementKeys.invitations(variables.workspaceId),
-        (current) => ({
-          items: current
-            ? current.items.some((item) => item.invitationId === invitation.invitationId)
-              ? current.items.map((item) =>
-                  item.invitationId === invitation.invitationId ? invitation : item
-                )
-              : [invitation, ...current.items]
-            : [invitation],
-        })
-      );
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
+      >(ownerManagementKeys.invitations(variables.workspaceId), (current) => ({
+        items: current
+          ? current.items.some((item) => item.invitationId === invitation.invitationId)
+            ? current.items.map((item) =>
+                item.invitationId === invitation.invitationId ? invitation : item
+              )
+            : [invitation, ...current.items]
+          : [invitation],
+      }));
     },
   });
 
@@ -238,41 +244,41 @@ export function useWorkspaceOwnerManagement() {
     retry: false,
     mutationFn: async (variables: RevokeInvitationVariables) => {
       try {
-        return await client.app.revokeWorkspaceInvitation(
-          variables.workspaceId,
-          variables.invitationId,
-          { expectedRevision: variables.expectedRevision }
-        );
+        return await client.operations['workspace.invitation-revoke']({
+          workspaceId: variables.workspaceId,
+          invitationId: variables.invitationId,
+          expectedRevision: variables.expectedRevision,
+        });
       } catch (error) {
         throw safeSharingFailure(error);
       }
     },
     onSuccess: ({ invitation }, variables) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceInvitations']>>>(
-        ownerManagementKeys.invitations(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) =>
-                  item.invitationId === invitation.invitationId ? invitation : item
-                ),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
+      >(ownerManagementKeys.invitations(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) =>
+                item.invitationId === invitation.invitationId ? invitation : item
+              ),
+            }
+          : current
       );
     },
     onError: (error, variables) => {
       if (error.resource !== 'invitation' || !error.current) return;
       const invitation = error.current as AccountWorkspaceInvitation;
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceInvitations']>>>(
-        ownerManagementKeys.invitations(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) =>
-                  item.invitationId === invitation.invitationId ? invitation : item
-                ),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.invitation-list']>>
+      >(ownerManagementKeys.invitations(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) =>
+                item.invitationId === invitation.invitationId ? invitation : item
+              ),
+            }
+          : current
       );
     },
   });
@@ -285,40 +291,38 @@ export function useWorkspaceOwnerManagement() {
     retry: false,
     mutationFn: async (variables: ChangeMemberAccessVariables) => {
       try {
-        return await client.app.changeWorkspaceMemberAccess(
-          variables.workspaceId,
-          variables.userId,
-          {
-            accessLevel: variables.accessLevel,
-            expectedRevision: variables.expectedRevision,
-          }
-        );
+        return await client.operations['workspace.member-access-change']({
+          workspaceId: variables.workspaceId,
+          targetUserId: variables.userId,
+          accessLevel: variables.accessLevel,
+          expectedRevision: variables.expectedRevision,
+        });
       } catch (error) {
         throw safeSharingFailure(error);
       }
     },
     onSuccess: ({ member }, variables) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceMembers']>>>(
-        ownerManagementKeys.members(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) => (item.userId === member.userId ? member : item)),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
+      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
+            }
+          : current
       );
     },
     onError: (error, variables) => {
       if (error.resource !== 'membership' || !error.current) return;
       const member = error.current as AccountWorkspaceMember;
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceMembers']>>>(
-        ownerManagementKeys.members(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) => (item.userId === member.userId ? member : item)),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
+      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
+            }
+          : current
       );
     },
   });
@@ -331,7 +335,9 @@ export function useWorkspaceOwnerManagement() {
     retry: false,
     mutationFn: async (variables: RemoveMemberVariables) => {
       try {
-        return await client.app.removeWorkspaceMember(variables.workspaceId, variables.userId, {
+        return await client.operations['workspace.member-remove']({
+          workspaceId: variables.workspaceId,
+          targetUserId: variables.userId,
           expectedRevision: variables.expectedRevision,
         });
       } catch (error) {
@@ -339,27 +345,27 @@ export function useWorkspaceOwnerManagement() {
       }
     },
     onSuccess: ({ member }, variables) => {
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceMembers']>>>(
-        ownerManagementKeys.members(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) => (item.userId === member.userId ? member : item)),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
+      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
+            }
+          : current
       );
     },
     onError: (error, variables) => {
       if (error.resource !== 'membership' || !error.current) return;
       const member = error.current as AccountWorkspaceMember;
-      queryClient.setQueryData<Awaited<ReturnType<CoreClient['app']['listWorkspaceMembers']>>>(
-        ownerManagementKeys.members(variables.workspaceId),
-        (current) =>
-          current
-            ? {
-                items: current.items.map((item) => (item.userId === member.userId ? member : item)),
-              }
-            : current
+      queryClient.setQueryData<
+        Awaited<ReturnType<CoreClient['operations']['workspace.member-list']>>
+      >(ownerManagementKeys.members(variables.workspaceId), (current) =>
+        current
+          ? {
+              items: current.items.map((item) => (item.userId === member.userId ? member : item)),
+            }
+          : current
       );
     },
   });
@@ -372,7 +378,8 @@ export function useWorkspaceOwnerManagement() {
     retry: false,
     mutationFn: async (variables: TransferOwnershipVariables) => {
       try {
-        return await client.app.transferWorkspaceOwnership(variables.workspaceId, {
+        return await client.operations['workspace.ownership-transfer']({
+          workspaceId: variables.workspaceId,
           expectedRegistryRevision: variables.expectedRegistryRevision,
           targetUserId: variables.targetUserId,
         });
@@ -422,14 +429,18 @@ export function useWorkspaceOwnerManagement() {
     effectiveWorkspace.workspace.kind !== 'quick-chat';
   const members = useQuery({
     queryKey: ownerManagementKeys.members(selectedWorkspaceId ?? ''),
-    queryFn: () => client.app.listWorkspaceMembers(selectedWorkspaceId as string),
+    queryFn: () =>
+      client.operations['workspace.member-list']({ workspaceId: selectedWorkspaceId as string }),
     enabled: Boolean(selectedWorkspaceId) && canManage,
     retry: false,
     structuralSharing: false,
   });
   const invitations = useQuery({
     queryKey: ownerManagementKeys.invitations(selectedWorkspaceId ?? ''),
-    queryFn: () => client.app.listWorkspaceInvitations(selectedWorkspaceId as string),
+    queryFn: () =>
+      client.operations['workspace.invitation-list']({
+        workspaceId: selectedWorkspaceId as string,
+      }),
     enabled: Boolean(selectedWorkspaceId) && canManage,
     retry: false,
     structuralSharing: false,
@@ -458,7 +469,7 @@ export function useMyWorkspaceInvitations() {
     queryKey: myInvitationsKey,
     queryFn: async () => {
       try {
-        return await client.app.listMyWorkspaceInvitations();
+        return await client.operations['workspace.my-invitation-list']({});
       } catch (error) {
         throw safeSharingFailure(error);
       }
@@ -479,8 +490,14 @@ export function useMyWorkspaceInvitations() {
       try {
         const input = { expectedRevision: variables.expectedRevision };
         return variables.operation === 'accept'
-          ? await client.app.acceptWorkspaceInvitation(variables.invitationId, input)
-          : await client.app.declineWorkspaceInvitation(variables.invitationId, input);
+          ? await client.operations['workspace.my-invitation-accept']({
+              invitationId: variables.invitationId,
+              ...input,
+            })
+          : await client.operations['workspace.my-invitation-decline']({
+              invitationId: variables.invitationId,
+              ...input,
+            });
       } catch (error) {
         throw safeSharingFailure(error);
       }
@@ -556,7 +573,8 @@ export function useSelfLeave() {
     retry: false,
     mutationFn: async (variables) => {
       try {
-        return await client.app.leaveWorkspace(variables.workspaceId, {
+        return await client.operations['workspace.leave']({
+          workspaceId: variables.workspaceId,
           expectedRevision: variables.expectedRevision,
         });
       } catch (error) {

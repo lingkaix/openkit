@@ -91,8 +91,9 @@ describe('nanocore e2e server auth', () => {
     expect(created.status).toBe(201);
 
     const invited = await postJson(
-      `${harness.baseUrl}/api/app/workspaces/${workspace.id}/invitations`,
+      `${harness.baseUrl}/api/app/operations/workspace.invitation-create`,
       {
+        workspaceId: workspace.id,
         inviteeEmail: 'sharing-editor@example.com',
         proposedAccessLevel: 'editor',
         requestId: '10000000-0000-4000-8000-000000000002',
@@ -104,9 +105,11 @@ describe('nanocore e2e server auth', () => {
     };
     expect(invited.status).toBe(201);
 
-    const discovered = await fetch(`${harness.baseUrl}/api/app/workspace-invitations`, {
-      headers: { cookie: editorCookie },
-    });
+    const discovered = await postJson(
+      `${harness.baseUrl}/api/app/operations/workspace.my-invitation-list`,
+      {},
+      editorCookie
+    );
     const discoveredBody = (await discovered.json()) as {
       items: Array<{ invitationId: string; revision: number }>;
     };
@@ -116,8 +119,9 @@ describe('nanocore e2e server auth', () => {
     );
 
     const accepted = await postJson(
-      `${harness.baseUrl}/api/app/workspace-invitations/${invitation.invitation.invitationId}/accept`,
+      `${harness.baseUrl}/api/app/operations/workspace.my-invitation-accept`,
       {
+        invitationId: invitation.invitation.invitationId,
         expectedRevision: invitation.invitation.revision,
         requestId: '10000000-0000-4000-8000-000000000003',
       },
@@ -144,8 +148,10 @@ describe('nanocore e2e server auth', () => {
     expect(editorWorkspaceBody.items.map((item) => item.workspace.id)).toContain(workspace.id);
 
     const removed = await postJson(
-      `${harness.baseUrl}/api/app/workspaces/${workspace.id}/members/${invitation.invitation.inviteeUserId}/remove`,
+      `${harness.baseUrl}/api/app/operations/workspace.member-remove`,
       {
+        workspaceId: workspace.id,
+        targetUserId: invitation.invitation.inviteeUserId,
         expectedRevision: 1,
         requestId: '10000000-0000-4000-8000-000000000004',
       },

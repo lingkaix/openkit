@@ -9,6 +9,7 @@ import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const SCHEMA = {
@@ -67,14 +68,20 @@ describe('Kernel App API', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const createResponse = await app.request('/api/app/workspaces/ws_demo/light-apps', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-openkit-request-id': randomUUID(),
-        },
-        body: JSON.stringify(SCHEMA),
-      });
+      const createResponse = await app.request(
+        ...operationRequest(
+          'kernel.apps.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-openkit-request-id': randomUUID(),
+            },
+            body: JSON.stringify(SCHEMA),
+          }
+        )
+      );
       expect(createResponse.status).toBe(201);
       const created = (await createResponse.json()) as {
         appId: string;
@@ -101,7 +108,12 @@ describe('Kernel App API', () => {
       });
       expect(recordResponse.status).toBe(200);
       const listed = await app.request(
-        `/api/app/workspaces/ws_demo/light-apps/${created.appId}/collections/mappings/records?schemaRevision=${created.schemaRevision}`
+        ...operationRequest('kernel.records.list', {
+          workspaceId: 'ws_demo',
+          appId: created.appId,
+          collection: 'mappings',
+          schemaRevision: created.schemaRevision,
+        })
       );
       expect(listed.status).toBe(200);
       await expect(listed.json()).resolves.toMatchObject({
@@ -127,7 +139,9 @@ describe('Kernel App API', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const response = await app.request('/api/app/workspaces/ws_other/light-apps');
+      const response = await app.request(
+        ...operationRequest('kernel.apps.list', { workspaceId: 'ws_other' })
+      );
       expect(response.status).toBeGreaterThanOrEqual(400);
     } finally {
       coreDb.sqlite.close();

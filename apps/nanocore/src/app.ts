@@ -83,10 +83,8 @@ import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
 import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
-import { registerGenerativeUiRoutes } from './generative-ui-routes.js';
 import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
-import { registerKernelRoutes } from './kernel-routes.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
@@ -171,7 +169,6 @@ import {
 } from './runtime/worker-mcp-gateway.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
-import { registerWorkspaceSyncRoutes } from './runtime/workspace-sync-routes.js';
 import {
   acceptSchedulerLeaseHeartbeatByBinding,
   adoptSchedulerLeaseReconnect,
@@ -207,12 +204,10 @@ import {
   listAllWorkspaceDeletionRequests,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
-import { registerWorkspaceDeletionRoutes } from './workspace-deletion-routes.js';
 import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { registerWorkspaceRoutes } from './workspace-routes.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
-import { registerWorkspaceSharingRoutes } from './workspace-sharing-routes.js';
 
 type WorkspaceRecord = z.infer<typeof WorkspaceRecordSchema>;
 
@@ -1553,15 +1548,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     dataRoot,
     requestStore,
   });
-  registerWorkspaceDeletionRoutes({
-    app,
-    closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
-    coreDb: options.coreDb,
-    dataRoot,
-    mutationAdmission: workspaceMutationAdmission,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
+
   app.get('/api/openapi.json', (c) => c.json(APP_OPENAPI_DOCUMENT));
 
   const onRuntimeConfigReloadApplied = () =>
@@ -1734,21 +1721,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
-  registerKernelRoutes({
-    app,
-    inflightCommands,
-    openWorkspaceDb: repositoryWorkspaceDb,
-    requestStore,
-  });
-
-  registerGenerativeUiRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    openWorkspaceDb: repositoryWorkspaceDb,
-    requestStore,
-  });
-
   registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
 
   registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
@@ -1808,25 +1780,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     inflightCommands,
     requestStore,
-  });
-
-  registerWorkspaceSharingRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    requestStore,
-    workspaceMutationAdmission,
-    ...(dataRoot
-      ? {
-          afterUserDisabled: (userId) =>
-            reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
-              dataRoot,
-              workspaceMutationAdmission,
-              ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-              userId,
-            }),
-        }
-      : {}),
   });
 
   registerTurnRoutes({
@@ -1999,6 +1952,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerOperationJsonRoutes({
+    closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
+    ...(dataRoot
+      ? {
+          afterUserDisabled: (userId: string) =>
+            reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
+              dataRoot,
+              workspaceMutationAdmission,
+              ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+              userId,
+            }),
+        }
+      : {}),
     app,
     automationStore,
     conversationService: chatService,
@@ -2019,6 +1984,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
+    ...(dataRoot
+      ? {
+          afterUserDisabled: (userId: string) =>
+            reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
+              dataRoot,
+              workspaceMutationAdmission,
+              ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+              userId,
+            }),
+        }
+      : {}),
     app,
     automationStore,
     conversationService: chatService,
@@ -2037,14 +2014,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
-  });
-
-  registerWorkspaceSyncRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    repositoryWorkspaceDb,
-    requestStore,
   });
 
   registerAgentEnvironmentRoutes({ app, repositoryWorkspaceDb });

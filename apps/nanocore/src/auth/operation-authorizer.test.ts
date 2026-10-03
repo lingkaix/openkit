@@ -11,10 +11,14 @@ import {
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
 } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import {
+  createWorkspaceDeletionRequest,
+  writeWorkspaceDeletionRequest,
+} from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -140,9 +144,14 @@ function createFixture() {
     app,
     coreDb,
     automationStore,
+    dataRoot,
     requestStore: () => store,
     workspaceMutationAdmission,
     inflightCommands: new WeakMap(),
+    repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
+    closeWorkspaceMcpSessions: async () => {
+      deleteWorkspaceHandlerReads += 1;
+    },
   });
   app.post('/api/workspaces', (c) => c.json({ actor: c.get('actor') }));
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
@@ -150,10 +159,6 @@ function createFixture() {
   app.get('/api/app/workspaces/:workspaceId/dashboard', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
-  app.post('/api/app/workspaces/:workspaceId/delete', (c) => {
-    deleteWorkspaceHandlerReads += 1;
-    return c.json(c.get('workspaceAccess') ?? { resumed: true });
-  });
   app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
     c.json(c.get('workspaceAccess') ?? null)
   );
@@ -170,6 +175,7 @@ function createFixture() {
     app,
     administrationHandlerReads: () => administrationHandlerReads,
     coreDb,
+    dataRoot,
     deleteWorkspaceHandlerReads: () => deleteWorkspaceHandlerReads,
     filesystemOnlyWorkspace,
     foreignThread,
@@ -1155,7 +1161,16 @@ describe('central Workspace operation authorizer', () => {
     expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
   });
 
-  it('lets a usable original-owner server-admin resume deletion without content access', async () => {
+  it('requires exact workspace.delete truth even for a usable original-owner administrator and denies content', async () => {
+    const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
+      workspaceId: fixture.workspace.id,
+      originalOwnerUserId: 'user_local',
+      expectedRegistryRevision: 2,
+      confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
+      requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
+      createdAt: new Date().toISOString(),
+    });
+    writeWorkspaceDeletionRequest(fixture.dataRoot, { ...record, phase: 'blocked' });
     markWorkspaceDeleting(fixture.workspace.id);
     presentServerAdmin('user_local', 'token_admin_delete_retry');
 
@@ -1164,14 +1179,28 @@ describe('central Workspace operation authorizer', () => {
       `/api/app/workspaces/${fixture.workspace.id}/dashboard`
     );
 
-    expect(retry.status, await retry.clone().text()).toBe(200);
-    expect(fixture.deleteWorkspaceHandlerReads()).toBe(1);
+    expect(retry.status, await retry.clone().text()).toBe(409);
+    await expect(retry.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    expect(fixture.deleteWorkspaceHandlerReads()).toBe(0);
     expect(content.status).toBe(403);
     await expect(content.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
 
-  it('denies foreign, revoked, and disabled server-admin deletion retries', async () => {
+  it('admits a current foreign administrator to workspace.delete truth checks while denying revoked and disabled authority', async () => {
+    const record = createWorkspaceDeletionRequest(fixture.dataRoot, {
+      workspaceId: fixture.workspace.id,
+      originalOwnerUserId: 'user_local',
+      expectedRegistryRevision: 2,
+      confirmation: `permanently-delete-workspace:${fixture.workspace.id}:2`,
+      requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
+      createdAt: new Date().toISOString(),
+    });
+    writeWorkspaceDeletionRequest(fixture.dataRoot, { ...record, phase: 'blocked' });
     markWorkspaceDeleting(fixture.workspace.id);
+    fixture.actorState.current = { kind: 'session', userId: 'user_missing' };
+    const ordinary = await requestWorkspaceDeletion(fixture.workspace.id);
+    expect(ordinary.status).toBe(403);
+    await expect(ordinary.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     presentServerAdmin('user_missing', 'token_admin_delete_foreign');
     const foreign = await requestWorkspaceDeletion(fixture.workspace.id);
     presentServerAdmin('user_local', 'token_admin_delete_revoked');
@@ -1183,11 +1212,11 @@ describe('central Workspace operation authorizer', () => {
       .run();
     const disabled = await requestWorkspaceDeletion(fixture.workspace.id);
 
-    expect(foreign.status).toBe(403);
+    expect(foreign.status).toBe(409);
     expect(revoked.status).toBe(403);
     expect(disabled.status).toBe(403);
     expect(fixture.deleteWorkspaceHandlerReads()).toBe(0);
-    await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(foreign.json()).resolves.toMatchObject({ code: 'recovery_required' });
     await expect(revoked.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
     await expect(disabled.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
   });
@@ -1231,17 +1260,23 @@ function markWorkspaceDeleting(workspaceId: string): void {
     .run(new Date().toISOString(), workspaceId);
 }
 
-/** Posts one guarded Workspace deletion stub. */
+/** Posts an explicit canonical workspace.delete request without inventing missing deletion truth. */
 function requestWorkspaceDeletion(workspaceId: string): Promise<Response> {
-  return fixture.app.request(`/api/app/workspaces/${workspaceId}/delete`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      confirmation: `permanently-delete-workspace:${workspaceId}:2`,
-      expectedRegistryRevision: 2,
-      requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
-    }),
-  });
+  return fixture.app.request(
+    ...operationRequest(
+      'workspace.delete',
+      { workspaceId: workspaceId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          confirmation: `permanently-delete-workspace:${workspaceId}:2`,
+          expectedRegistryRevision: 2,
+          requestId: 'cae8ee19-e909-42b4-8612-52f37638d568',
+        }),
+      }
+    )
+  );
 }
 
 /** Reads the current registry owner for one Workspace id. */

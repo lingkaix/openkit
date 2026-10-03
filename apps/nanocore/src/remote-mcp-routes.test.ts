@@ -760,3 +760,162 @@ describe('remote MCP App endpoint', () => {
     ).toHaveLength(0);
   });
 });
+
+it('preserves Workspace sharing HTTP/MCP conflict status and safe details without changing the target row or receipt', async () => {
+  const f = await fixture('server', () => computeBootReadinessSnapshot({ bootId: 'boot_b23_mcp' }));
+  try {
+    const timestamp = new Date().toISOString();
+    f.coreDb.sqlite
+      .prepare(
+        "INSERT INTO workspace_members (workspace_id,user_id,status,access_level,joined_at,revision,created_at,updated_at) VALUES ('ws_demo','user_local','active','editor',?,1,?,?)"
+      )
+      .run(timestamp, timestamp, timestamp);
+    const token = f.token();
+    const before = f.coreDb.sqlite
+      .prepare(
+        "SELECT * FROM workspace_members WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'"
+      )
+      .get();
+    for (const transport of ['http', 'mcp']) {
+      const requestId = randomUUID();
+      const input = {
+        workspaceId: 'ws_demo',
+        targetUserId: 'user_local',
+        accessLevel: 'viewer',
+        expectedRevision: 2,
+        requestId,
+      };
+      let error: { code: string; status?: number; details?: unknown };
+      if (transport === 'mcp') {
+        const result = await f.call(
+          'call',
+          { operation: 'workspace.member-access-change', input },
+          token.secret
+        );
+        expect(result.isError).toBe(true);
+        error = JSON.parse(result.content[0].text);
+        expect(error.status).toBe(409);
+      } else {
+        const { requestId: identity, ...body } = input;
+        const response = await f.app.request('/api/app/operations/workspace.member-access-change', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token.secret}`,
+            'content-type': 'application/json',
+            'x-openkit-request-id': identity,
+          },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(409);
+        error = await response.json();
+      }
+      expect(error).toMatchObject({
+        code: 'revision_conflict',
+        details: {
+          resource: 'membership',
+          current: { userId: 'user_local', revision: 1, accessLevel: 'editor' },
+        },
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare(
+            "SELECT * FROM workspace_members WHERE workspace_id = 'ws_demo' AND user_id = 'user_local'"
+          )
+          .get()
+      ).toEqual(before);
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+          .all(requestId)
+      ).toEqual([]);
+    }
+    const requestId = randomUUID();
+    const input = {
+      workspaceId: 'ws_demo',
+      targetUserId: 'user_local',
+      accessLevel: 'viewer',
+      expectedRevision: 1,
+      requestId,
+    };
+    const accepted = await f.call(
+      'call',
+      { operation: 'workspace.member-access-change', input },
+      token.secret
+    );
+    expect(accepted.isError).not.toBe(true);
+    const committedMember = f.coreDb.sqlite
+      .prepare(
+        "SELECT * FROM workspace_members WHERE workspace_id='ws_demo' AND user_id='user_local'"
+      )
+      .get();
+    const committedReceipt = f.coreDb.sqlite
+      .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+      .all(requestId);
+    expect(committedReceipt).toHaveLength(1);
+    const conflict = await f.call(
+      'call',
+      { operation: 'workspace.member-access-change', input: { ...input, accessLevel: 'editor' } },
+      token.secret
+    );
+    expect(conflict.isError).toBe(true);
+    expect(JSON.parse(conflict.content[0].text)).toMatchObject({
+      code: 'idempotency_key_conflict',
+      status: 409,
+    });
+    expect(
+      f.coreDb.sqlite
+        .prepare(
+          "SELECT * FROM workspace_members WHERE workspace_id='ws_demo' AND user_id='user_local'"
+        )
+        .get()
+    ).toEqual(committedMember);
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+        .all(requestId)
+    ).toEqual(committedReceipt);
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});
+
+it('refuses user.disable through MCP closed product admission without changing the target or a receipt', async () => {
+  let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b23_disable_mcp' });
+  const f = await fixture('server', () => readiness);
+  try {
+    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_remote_mcp',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    readiness = computeBootReadinessSnapshot({
+      bootId: readiness.bootId,
+      subsystems: {
+        storage: {
+          state: 'failed',
+          reasons: [{ code: 'storage.failed', message: 'Unavailable', blocks: ['product_work'] }],
+        },
+      },
+    });
+    const before = f.coreDb.sqlite.prepare("SELECT * FROM users WHERE id = 'user_local'").get();
+    const requestId = randomUUID();
+    const result = await f.call(
+      'call',
+      { operation: 'user.disable', input: { targetUserId: 'user_local', requestId } },
+      admin.secret
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
+    expect(f.coreDb.sqlite.prepare("SELECT * FROM users WHERE id = 'user_local'").get()).toEqual(
+      before
+    );
+    expect(
+      f.coreDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+        .all(requestId)
+    ).toEqual([]);
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});

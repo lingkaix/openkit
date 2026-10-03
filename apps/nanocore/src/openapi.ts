@@ -19,8 +19,6 @@ import {
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  CreateLightAppRequestSchema,
-  CreateLightAppResponseSchema,
   CreateMcpConfigRequestSchema,
   CreateMcpConfigResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
@@ -38,31 +36,20 @@ import {
   DisableUserResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
-  GenerativePresentationDataModelResponseSchema,
-  GenerativePresentationResourceResponseSchema,
   GetAgentCatalogEntryResponseSchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
-  GetGenerativePresentationResponseSchema,
-  GetLightAppRecordResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkerEnvironmentStatusResponseSchema,
-  GetWorkspaceApplyResultResponseSchema,
   GetWorkspaceCatalogResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
-  GetWorkspaceSyncReviewResponseSchema,
   ImportPluginRequestSchema,
   ImportPluginResponseSchema,
   ImportSkillRequestSchema,
   ImportSkillResponseSchema,
   LeaveWorkspaceRequestSchema,
-  LightAppBatchRequestSchema,
-  LightAppBatchResponseSchema,
   ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  ListBackendWorkspaceHandlesResponseSchema,
-  ListLightAppRecordsResponseSchema,
-  ListLightAppsResponseSchema,
   ListMcpCatalogResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
@@ -71,25 +58,15 @@ import {
   ListServerPermissionDecisionsResponseSchema,
   ListServerVaultUseRecordsResponseSchema,
   ListSkillCatalogResponseSchema,
-  ListStagedWorkspaceReviewsResponseSchema,
   ListWorkerEnvironmentsResponseSchema,
-  ListWorkerOutputManifestsResponseSchema,
-  ListWorkspaceApplyPlansResponseSchema,
-  ListWorkspaceApplyResultsResponseSchema,
   ListWorkspaceAuditEventsResponseSchema,
-  ListWorkspaceChangeSetsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
-  ListWorkspaceInputSnapshotsResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
-  ListWorkspaceMaterializationRecordsResponseSchema,
   ListWorkspaceMaterialRevisionsResponseSchema,
   ListWorkspaceMaterialsResponseSchema,
   ListWorkspaceMembersResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
-  ListWorkspaceQuarantineRecordsResponseSchema,
-  ListWorkspaceReconciliationRecordsResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
-  ListWorkspaceSyncReviewsResponseSchema,
   ListWorkspaceVaultGrantsResponseSchema,
   ListWorkspaceVaultInjectionPlansResponseSchema,
   ListWorkspaceVaultInjectionReceiptsResponseSchema,
@@ -107,8 +84,6 @@ import {
   ProviderSubscriptionAutoTopupSchema,
   ProviderSubscriptionQuotaSchema,
   ProviderSubscriptionsResponseSchema,
-  PublishGenerativePresentationRequestSchema,
-  PublishGenerativePresentationResponseSchema,
   PurgeWorkerEnvironmentRequestSchema,
   PurgeWorkerEnvironmentResponseSchema,
   QuickChatRequestSchema,
@@ -116,12 +91,9 @@ import {
   RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
-  RefreshGenerativePresentationRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
-  RetireLightAppRequestSchema,
-  RetireLightAppResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
   RotateOpenKitAccessTokenRequestSchema,
@@ -153,23 +125,14 @@ import {
   StartProviderSubscriptionAccountLoginRequestSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
-  SubmitGenerativePresentationActionRequestSchema,
   SubmitSkillCandidateRequestSchema,
   SubmitTurnFeedbackRequestSchema,
-  SubmitWorkspaceRecoveryDecisionRequestSchema,
-  SubmitWorkspaceRecoveryDecisionResponseSchema,
-  SubmitWorkspaceSyncReviewDecisionRequestSchema,
-  SubmitWorkspaceSyncReviewDecisionResponseSchema,
   SubscriptionProviderIdSchema,
   TransferWorkspaceOwnershipRequestSchema,
   TurnFeedbackResponseSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   UpdateAgentNativeEnvironmentRequestSchema,
-  UpdateLightAppRecordRequestSchema,
-  UpdateLightAppRecordResponseSchema,
-  UpdateLightAppSchemaRequestSchema,
-  UpdateLightAppSchemaResponseSchema,
   UpdateMcpBindingRequestSchema,
   UpdateProviderSubscriptionAccountRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -266,13 +229,13 @@ const WORKSPACE_EXPORT_ID_PARAMETER = {
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
-const INVITATION_ID_PARAMETER = {
+const _INVITATION_ID_PARAMETER = {
   name: 'invitationId',
   in: 'path',
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
-const USER_ID_PARAMETER = {
+const _USER_ID_PARAMETER = {
   name: 'userId',
   in: 'path',
   required: true,
@@ -283,30 +246,6 @@ const MATERIAL_ID_PARAMETER = {
   in: 'path',
   required: true,
   schema: { type: 'string', minLength: 1 },
-} as const;
-const APP_ID_PARAMETER = {
-  name: 'appId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', format: 'uuid' },
-} as const;
-const COLLECTION_PARAMETER = {
-  name: 'collection',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
-const RECORD_ID_PARAMETER = {
-  name: 'recordId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', format: 'uuid' },
-} as const;
-const PRESENTATION_ID_PARAMETER = {
-  name: 'presentationId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', format: 'uuid' },
 } as const;
 const REQUEST_ID_HEADER = {
   name: 'x-openkit-request-id',
@@ -611,214 +550,6 @@ export function createAppOpenApiDocument() {
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
       ...operationPaths(),
-
-      '/api/app/workspaces/{workspaceId}/members': {
-        get: appJsonOperation({
-          operationId: 'listWorkspaceMembers',
-          tag: 'workspace-sharing',
-          summary: 'List Workspace members.',
-          responseStatus: '200',
-          responseSchema: 'ListWorkspaceMembersResponse',
-          parameters: [WORKSPACE_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/invitations': {
-        get: appJsonOperation({
-          operationId: 'listWorkspaceInvitations',
-          tag: 'workspace-sharing',
-          summary: 'List Workspace invitations.',
-          responseStatus: '200',
-          responseSchema: 'ListWorkspaceInvitationsResponse',
-          parameters: [WORKSPACE_ID_PARAMETER],
-        }),
-        post: appJsonOperation({
-          operationId: 'createWorkspaceInvitation',
-          tag: 'workspace-sharing',
-          summary: 'Create a Workspace invitation.',
-          responseStatus: '201',
-          responseSchema: 'WorkspaceInvitationMutationResponse',
-          requestSchema: 'CreateWorkspaceInvitationRequest',
-          parameters: [WORKSPACE_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspace-invitations': {
-        get: appJsonOperation({
-          operationId: 'listMyWorkspaceInvitations',
-          tag: 'workspace-sharing',
-          summary: 'List invitations for the current user.',
-          responseStatus: '200',
-          responseSchema: 'ListWorkspaceInvitationsResponse',
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/workspace-invitations/{invitationId}/accept': {
-        post: appJsonOperation({
-          operationId: 'acceptWorkspaceInvitation',
-          tag: 'workspace-sharing',
-          summary: 'Accept a Workspace invitation.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceInvitationMutationResponse',
-          requestSchema: 'AcceptWorkspaceInvitationRequest',
-          parameters: [INVITATION_ID_PARAMETER],
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/workspace-invitations/{invitationId}/decline': {
-        post: appJsonOperation({
-          operationId: 'declineWorkspaceInvitation',
-          tag: 'workspace-sharing',
-          summary: 'Decline a Workspace invitation.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceInvitationMutationResponse',
-          requestSchema: 'DeclineWorkspaceInvitationRequest',
-          parameters: [INVITATION_ID_PARAMETER],
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/invitations/{invitationId}/revoke': {
-        post: appJsonOperation({
-          operationId: 'revokeWorkspaceInvitation',
-          tag: 'workspace-sharing',
-          summary: 'Revoke a Workspace invitation.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceInvitationMutationResponse',
-          requestSchema: 'RevokeWorkspaceInvitationRequest',
-          parameters: [WORKSPACE_ID_PARAMETER, INVITATION_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/members/{userId}': {
-        patch: appJsonOperation({
-          operationId: 'changeWorkspaceMemberAccess',
-          tag: 'workspace-sharing',
-          summary: 'Change a Workspace member access level.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceMemberMutationResponse',
-          requestSchema: 'ChangeWorkspaceMemberAccessRequest',
-          parameters: [WORKSPACE_ID_PARAMETER, USER_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/members/{userId}/remove': {
-        post: appJsonOperation({
-          operationId: 'removeWorkspaceMember',
-          tag: 'workspace-sharing',
-          summary: 'Remove a Workspace member.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceMemberMutationResponse',
-          requestSchema: 'RemoveWorkspaceMemberRequest',
-          parameters: [WORKSPACE_ID_PARAMETER, USER_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/leave': {
-        post: appJsonOperation({
-          operationId: 'leaveWorkspace',
-          tag: 'workspace-sharing',
-          summary: 'Leave a Workspace.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceMemberMutationResponse',
-          requestSchema: 'LeaveWorkspaceRequest',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/ownership/transfer': {
-        post: appJsonOperation({
-          operationId: 'transferWorkspaceOwnership',
-          tag: 'workspace-sharing',
-          summary: 'Transfer Workspace ownership.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceOwnershipMutationResponse',
-          requestSchema: 'TransferWorkspaceOwnershipRequest',
-          parameters: [WORKSPACE_ID_PARAMETER],
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/delete': {
-        post: {
-          operationId: 'deleteWorkspace',
-          tags: ['workspace-sharing'],
-          summary: 'Permanently delete one owner-authorized Workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/DeleteWorkspaceRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Workspace deletion reached a truthful product result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
-                },
-              },
-            },
-            '202': {
-              description: 'Workspace deletion is durably fenced and waiting for quiescence.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceDeletionResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspace-deletions/{workspaceId}/recover': {
-        post: appJsonOperation({
-          operationId: 'recoverDeletedWorkspace',
-          tag: 'workspace-sharing',
-          summary: 'Recover one deleted Workspace through its original-owner tombstone.',
-          responseStatus: '200',
-          responseSchema: 'RecoverDeletedWorkspaceResponse',
-          requestSchema: 'RecoverDeletedWorkspaceRequest',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/access-recovery': {
-        get: appJsonOperation({
-          operationId: 'getWorkspaceAccessRecoveryState',
-          tag: 'workspace-sharing',
-          summary: 'Read administrator-safe Workspace access recovery state.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceAccessRecoveryResponse',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          security: DEPLOYMENT_ADMIN_SECURITY,
-        }),
-        post: appJsonOperation({
-          operationId: 'recoverWorkspaceAccess',
-          tag: 'workspace-sharing',
-          summary: 'Recover administrator Workspace access.',
-          responseStatus: '200',
-          responseSchema: 'WorkspaceAccessRecoveryResponse',
-          requestSchema: 'RecoverWorkspaceAccessRequest',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          security: DEPLOYMENT_ADMIN_SECURITY,
-        }),
-      },
-      '/api/app/users/{userId}/disable': {
-        post: appJsonOperation({
-          operationId: 'disableUser',
-          tag: 'user-lifecycle',
-          summary: 'Disable a canonical user.',
-          responseStatus: '200',
-          responseSchema: 'DisableUserResponse',
-          requestSchema: 'DisableUserRequest',
-          parameters: [USER_ID_PARAMETER],
-          security: DEPLOYMENT_ADMIN_SECURITY,
-        }),
-      },
       '/api/app/diagnostics': {
         get: {
           operationId: 'getAppDiagnostics',
@@ -2016,198 +1747,6 @@ export function createAppOpenApiDocument() {
         },
       },
 
-      '/api/app/workspaces/{workspaceId}/light-apps': {
-        get: appJsonOperation({
-          operationId: 'listLightApps',
-          tag: 'light-apps',
-          summary: 'List Light Apps in one Workspace.',
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'page',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1 },
-            },
-            {
-              name: 'perPage',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1, maximum: 100 },
-            },
-          ],
-          responseStatus: '200',
-          responseSchema: 'ListLightAppsResponse',
-        }),
-        post: appJsonOperation({
-          operationId: 'createLightApp',
-          tag: 'light-apps',
-          summary: 'Create one Light App from a file-authored schema.',
-          parameters: [WORKSPACE_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'CreateLightAppRequest',
-          responseStatus: '201',
-          responseSchema: 'CreateLightAppResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}/schema': {
-        put: appJsonOperation({
-          operationId: 'updateLightAppSchema',
-          tag: 'light-apps',
-          summary: 'Update one Light App schema within the initial evolution ceiling.',
-          parameters: [WORKSPACE_ID_PARAMETER, APP_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'UpdateLightAppSchemaRequest',
-          responseStatus: '200',
-          responseSchema: 'UpdateLightAppSchemaResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}/retire': {
-        post: appJsonOperation({
-          operationId: 'retireLightApp',
-          tag: 'light-apps',
-          summary: 'Retire one Light App and disable writes.',
-          parameters: [WORKSPACE_ID_PARAMETER, APP_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'RetireLightAppRequest',
-          responseStatus: '200',
-          responseSchema: 'RetireLightAppResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}/collections/{collection}/records': {
-        get: appJsonOperation({
-          operationId: 'listLightAppRecords',
-          tag: 'light-apps',
-          summary: 'List records in one Light App collection.',
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            APP_ID_PARAMETER,
-            COLLECTION_PARAMETER,
-            {
-              name: 'schemaRevision',
-              in: 'query',
-              required: true,
-              schema: { type: 'integer', minimum: 1 },
-            },
-            {
-              name: 'page',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1 },
-            },
-            {
-              name: 'perPage',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1, maximum: 100 },
-            },
-            { name: 'filter', in: 'query', required: false, schema: { type: 'string' } },
-            { name: 'sort', in: 'query', required: false, schema: { type: 'string' } },
-            { name: 'fields', in: 'query', required: false, schema: { type: 'string' } },
-          ],
-          responseStatus: '200',
-          responseSchema: 'ListLightAppRecordsResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}/collections/{collection}/records/{recordId}':
-        {
-          get: appJsonOperation({
-            operationId: 'getLightAppRecord',
-            tag: 'light-apps',
-            summary: 'Read one Light App record.',
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              APP_ID_PARAMETER,
-              COLLECTION_PARAMETER,
-              RECORD_ID_PARAMETER,
-              {
-                name: 'schemaRevision',
-                in: 'query',
-                required: true,
-                schema: { type: 'integer', minimum: 1 },
-              },
-              { name: 'fields', in: 'query', required: false, schema: { type: 'string' } },
-            ],
-            responseStatus: '200',
-            responseSchema: 'GetLightAppRecordResponse',
-          }),
-          patch: appJsonOperation({
-            operationId: 'updateLightAppRecord',
-            tag: 'light-apps',
-            summary: 'Update one Light App record.',
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              APP_ID_PARAMETER,
-              COLLECTION_PARAMETER,
-              RECORD_ID_PARAMETER,
-              REQUEST_ID_HEADER,
-            ],
-            requestSchema: 'UpdateLightAppRecordRequest',
-            responseStatus: '200',
-            responseSchema: 'UpdateLightAppRecordResponse',
-          }),
-        },
-      '/api/app/workspaces/{workspaceId}/light-apps/{appId}/batch': {
-        post: appJsonOperation({
-          operationId: 'batchLightAppRecords',
-          tag: 'light-apps',
-          summary: 'Apply one atomic Light App record batch.',
-          parameters: [WORKSPACE_ID_PARAMETER, APP_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'LightAppBatchRequest',
-          responseStatus: '200',
-          responseSchema: 'LightAppBatchResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/generative-presentations': {
-        post: appJsonOperation({
-          operationId: 'publishGenerativePresentation',
-          tag: 'generative-ui',
-          summary: 'Publish one admitted native Generative UI presentation.',
-          parameters: [WORKSPACE_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'PublishGenerativePresentationRequest',
-          responseStatus: '201',
-          responseSchema: 'PublishGenerativePresentationResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/generative-presentations/{presentationId}': {
-        get: appJsonOperation({
-          operationId: 'getGenerativePresentation',
-          tag: 'generative-ui',
-          summary: 'Read one retained Generative UI presentation.',
-          parameters: [WORKSPACE_ID_PARAMETER, PRESENTATION_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GetGenerativePresentationResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/generative-presentations/{presentationId}/resource': {
-        get: appJsonOperation({
-          operationId: 'getGenerativePresentationResource',
-          tag: 'generative-ui',
-          summary: 'Read the retained native A2UI resource for one presentation.',
-          parameters: [WORKSPACE_ID_PARAMETER, PRESENTATION_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GenerativePresentationResourceResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/generative-presentations/{presentationId}/refresh': {
-        post: appJsonOperation({
-          operationId: 'refreshGenerativePresentation',
-          tag: 'generative-ui',
-          summary: 'Refresh one presentation from its current authorized source.',
-          parameters: [WORKSPACE_ID_PARAMETER, PRESENTATION_ID_PARAMETER],
-          requestSchema: 'RefreshGenerativePresentationRequest',
-          responseStatus: '200',
-          responseSchema: 'GenerativePresentationDataModelResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/generative-presentations/{presentationId}/actions': {
-        post: appJsonOperation({
-          operationId: 'submitGenerativePresentationAction',
-          tag: 'generative-ui',
-          summary: 'Submit one admitted Kernel record-update action.',
-          parameters: [WORKSPACE_ID_PARAMETER, PRESENTATION_ID_PARAMETER, REQUEST_ID_HEADER],
-          requestSchema: 'SubmitGenerativePresentationActionRequest',
-          responseStatus: '200',
-          responseSchema: 'GenerativePresentationDataModelResponse',
-        }),
-      },
       '/api/app/workspaces/{workspaceId}/materials': {
         get: appJsonOperation({
           operationId: 'listWorkspaceMaterials',
@@ -2495,472 +2034,6 @@ export function createAppOpenApiDocument() {
               content: {
                 [JSON_CONTENT_TYPE]: {
                   schema: { $ref: '#/components/schemas/ListServerPermissionDecisionsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/reviews': {
-        get: {
-          operationId: 'listWorkspaceSyncReviews',
-          tags: ['workspace-sync'],
-          summary: 'List workspace synchronization reviews for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace synchronization reviews.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceSyncReviewsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/reviews/{reviewId}': {
-        get: {
-          operationId: 'getWorkspaceSyncReview',
-          tags: ['workspace-sync'],
-          summary: 'Read one workspace synchronization review.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'reviewId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Workspace synchronization review.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/GetWorkspaceSyncReviewResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/reviews/{reviewId}/decision': {
-        post: {
-          operationId: 'submitWorkspaceSyncReviewDecision',
-          tags: ['workspace-sync'],
-          summary: 'Record one durable workspace synchronization review decision.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'reviewId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SubmitWorkspaceSyncReviewDecisionRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Recorded durable workspace synchronization review decision.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/SubmitWorkspaceSyncReviewDecisionResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/input-snapshots': {
-        get: {
-          operationId: 'listWorkspaceInputSnapshots',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace input snapshots for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace input snapshots.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceInputSnapshotsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/materialization-records': {
-        get: {
-          operationId: 'listWorkspaceMaterializationRecords',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace materialization records for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace materialization records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceMaterializationRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/backend-handles': {
-        get: {
-          operationId: 'listBackendWorkspaceHandles',
-          tags: ['workspace-sync'],
-          summary: 'List durable backend workspace handles for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Backend workspace handles.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListBackendWorkspaceHandlesResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/output-manifests': {
-        get: {
-          operationId: 'listWorkerOutputManifests',
-          tags: ['workspace-sync'],
-          summary: 'List durable worker output manifests for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Worker output manifests.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkerOutputManifestsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/change-sets': {
-        get: {
-          operationId: 'listWorkspaceChangeSets',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace change sets for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace change sets.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceChangeSetsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/staged-reviews': {
-        get: {
-          operationId: 'listStagedWorkspaceReviews',
-          tags: ['workspace-sync'],
-          summary: 'List durable staged workspace reviews for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Staged workspace reviews.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListStagedWorkspaceReviewsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/apply-results': {
-        get: {
-          operationId: 'listWorkspaceApplyResults',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace apply results for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace apply results.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceApplyResultsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/apply-plans': {
-        get: {
-          operationId: 'listWorkspaceApplyPlans',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace apply plans for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace apply plans.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceApplyPlansResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/reconciliation-records': {
-        get: {
-          operationId: 'listWorkspaceReconciliationRecords',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace reconciliation records for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace reconciliation records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceReconciliationRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/reconciliation-records/{reconciliationRecordId}/decision':
-        {
-          post: {
-            operationId: 'submitWorkspaceRecoveryDecision',
-            tags: ['workspace-sync'],
-            summary: 'Record one workspace recovery decision.',
-            security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-            parameters: [
-              WORKSPACE_ID_PARAMETER,
-              {
-                name: 'reconciliationRecordId',
-                in: 'path',
-                required: true,
-                schema: { type: 'string', minLength: 1 },
-              },
-            ],
-            requestBody: {
-              required: true,
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/SubmitWorkspaceRecoveryDecisionRequest',
-                  },
-                },
-              },
-            },
-            responses: {
-              '200': {
-                description: 'Recorded workspace recovery decision.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: {
-                      $ref: '#/components/schemas/SubmitWorkspaceRecoveryDecisionResponse',
-                    },
-                  },
-                },
-              },
-              default: {
-                description: 'Protocol error envelope.',
-                content: {
-                  [JSON_CONTENT_TYPE]: {
-                    schema: { $ref: '#/components/schemas/ApiError' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/quarantine-records': {
-        get: {
-          operationId: 'listWorkspaceQuarantineRecords',
-          tags: ['workspace-sync'],
-          summary: 'List durable workspace quarantine records for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace quarantine records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceQuarantineRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workspace-sync/apply-results/{applyResultId}': {
-        get: {
-          operationId: 'getWorkspaceApplyResult',
-          tags: ['workspace-sync'],
-          summary: 'Read one durable workspace apply result.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'applyResultId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Workspace apply result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/GetWorkspaceApplyResultResponse' },
                 },
               },
             },
@@ -4001,38 +3074,7 @@ export function createAppOpenApiDocument() {
         BindThreadMaterialResponse: toJsonSchema(BindThreadMaterialResponseSchema),
         CreateWorkspaceMaterialRequest: toJsonSchema(CreateWorkspaceMaterialRequestSchema),
         CreateWorkspaceMaterialResponse: toJsonSchema(CreateWorkspaceMaterialResponseSchema),
-        CreateLightAppRequest: toJsonSchema(CreateLightAppRequestSchema),
-        CreateLightAppResponse: toJsonSchema(CreateLightAppResponseSchema),
-        GetLightAppRecordResponse: toJsonSchema(GetLightAppRecordResponseSchema),
-        LightAppBatchRequest: toJsonSchema(LightAppBatchRequestSchema),
-        LightAppBatchResponse: toJsonSchema(LightAppBatchResponseSchema),
-        ListLightAppsResponse: toJsonSchema(ListLightAppsResponseSchema),
-        ListLightAppRecordsResponse: toJsonSchema(ListLightAppRecordsResponseSchema),
-        RetireLightAppRequest: toJsonSchema(RetireLightAppRequestSchema),
-        RetireLightAppResponse: toJsonSchema(RetireLightAppResponseSchema),
-        UpdateLightAppSchemaRequest: toJsonSchema(UpdateLightAppSchemaRequestSchema),
-        UpdateLightAppSchemaResponse: toJsonSchema(UpdateLightAppSchemaResponseSchema),
-        UpdateLightAppRecordRequest: toJsonSchema(UpdateLightAppRecordRequestSchema),
-        UpdateLightAppRecordResponse: toJsonSchema(UpdateLightAppRecordResponseSchema),
-        PublishGenerativePresentationRequest: toJsonSchema(
-          PublishGenerativePresentationRequestSchema
-        ),
-        PublishGenerativePresentationResponse: toJsonSchema(
-          PublishGenerativePresentationResponseSchema
-        ),
-        GetGenerativePresentationResponse: toJsonSchema(GetGenerativePresentationResponseSchema),
-        GenerativePresentationResourceResponse: toJsonSchema(
-          GenerativePresentationResourceResponseSchema
-        ),
-        RefreshGenerativePresentationRequest: toJsonSchema(
-          RefreshGenerativePresentationRequestSchema
-        ),
-        SubmitGenerativePresentationActionRequest: toJsonSchema(
-          SubmitGenerativePresentationActionRequestSchema
-        ),
-        GenerativePresentationDataModelResponse: toJsonSchema(
-          GenerativePresentationDataModelResponseSchema
-        ),
+
         ExcludeThreadMaterialRequest: toJsonSchema(ExcludeThreadMaterialRequestSchema),
         ExcludeThreadMaterialResponse: toJsonSchema(ExcludeThreadMaterialResponseSchema),
         GetThreadMaterialResponse: toJsonSchema(GetThreadMaterialResponseSchema),
@@ -4087,9 +3129,7 @@ export function createAppOpenApiDocument() {
           GetAgentEnvironmentPackageSnapshotResponseSchema
         ),
         GetWorkerEnvironmentStatusResponse: toJsonSchema(GetWorkerEnvironmentStatusResponseSchema),
-        GetWorkspaceApplyResultResponse: toJsonSchema(GetWorkspaceApplyResultResponseSchema),
         GetWorkspaceCatalogResponse: toJsonSchema(GetWorkspaceCatalogResponseSchema),
-        GetWorkspaceSyncReviewResponse: toJsonSchema(GetWorkspaceSyncReviewResponseSchema),
         ListAgentCatalogResponse: toJsonSchema(ListAgentCatalogResponseSchema),
         ListAgentEnvironmentPackageSnapshotsResponse: toJsonSchema(
           ListAgentEnvironmentPackageSnapshotsResponseSchema
@@ -4121,41 +3161,8 @@ export function createAppOpenApiDocument() {
         ListWorkspacePermissionDecisionsResponse: toJsonSchema(
           ListWorkspacePermissionDecisionsResponseSchema
         ),
-        ListStagedWorkspaceReviewsResponse: toJsonSchema(ListStagedWorkspaceReviewsResponseSchema),
-        ListWorkspaceApplyPlansResponse: toJsonSchema(ListWorkspaceApplyPlansResponseSchema),
-        ListWorkspaceReconciliationRecordsResponse: toJsonSchema(
-          ListWorkspaceReconciliationRecordsResponseSchema
-        ),
-        ListWorkspaceQuarantineRecordsResponse: toJsonSchema(
-          ListWorkspaceQuarantineRecordsResponseSchema
-        ),
-        ListWorkspaceApplyResultsResponse: toJsonSchema(ListWorkspaceApplyResultsResponseSchema),
-        ListWorkspaceChangeSetsResponse: toJsonSchema(ListWorkspaceChangeSetsResponseSchema),
-        ListWorkspaceInputSnapshotsResponse: toJsonSchema(
-          ListWorkspaceInputSnapshotsResponseSchema
-        ),
-        ListWorkspaceMaterializationRecordsResponse: toJsonSchema(
-          ListWorkspaceMaterializationRecordsResponseSchema
-        ),
-        ListBackendWorkspaceHandlesResponse: toJsonSchema(
-          ListBackendWorkspaceHandlesResponseSchema
-        ),
-        ListWorkerOutputManifestsResponse: toJsonSchema(ListWorkerOutputManifestsResponseSchema),
-        ListWorkspaceSyncReviewsResponse: toJsonSchema(ListWorkspaceSyncReviewsResponseSchema),
         ListWorkspaceVaultUseRecordsResponse: toJsonSchema(
           ListWorkspaceVaultUseRecordsResponseSchema
-        ),
-        SubmitWorkspaceSyncReviewDecisionRequest: toJsonSchema(
-          SubmitWorkspaceSyncReviewDecisionRequestSchema
-        ),
-        SubmitWorkspaceSyncReviewDecisionResponse: toJsonSchema(
-          SubmitWorkspaceSyncReviewDecisionResponseSchema
-        ),
-        SubmitWorkspaceRecoveryDecisionRequest: toJsonSchema(
-          SubmitWorkspaceRecoveryDecisionRequestSchema
-        ),
-        SubmitWorkspaceRecoveryDecisionResponse: toJsonSchema(
-          SubmitWorkspaceRecoveryDecisionResponseSchema
         ),
         QuickChatRequest: toJsonSchema(QuickChatRequestSchema),
         QuickChatResponse: toJsonSchema(QuickChatResponseSchema),

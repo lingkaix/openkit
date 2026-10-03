@@ -3,11 +3,14 @@ import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
   CreateProviderSubscriptionAccountRequestSchema,
+  GENERATIVE_UI_OPERATION_DEFINITIONS,
+  KERNEL_REMAINING_OPERATION_DEFINITIONS,
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
   operationHttpPath,
   SubscriptionProviderIdSchema,
+  SYNC_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
@@ -79,15 +82,10 @@ const PRIVATE_NANOHOST_EFFECT_ROUTES = [
   `POST /api/nanohost/transport/effects/${operation}/result`,
 ]);
 const SESSION_COOKIE_ONLY_ROUTES = new Set([
-  'GET /api/app/workspace-invitations',
-  'POST /api/app/workspace-invitations/{invitationId}/accept',
-  'POST /api/app/workspace-invitations/{invitationId}/decline',
-  'POST /api/app/workspaces/{workspaceId}/leave',
   'GET /api/app/auth/my-admin-tokens',
   'PUT /api/app/auth/my-admin-tokens/default',
   'POST /api/app/workspace-archives/import',
   'POST /api/app/workspace-archives/import-dry-run',
-  'POST /api/app/workspace-deletions/{workspaceId}/recover',
 ]);
 const FIRST_PARTY_CONSUMER_ROOTS = [
   '../../../apps/web/src/',
@@ -1112,93 +1110,34 @@ describe('app api openapi projection', () => {
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/artifacts/{artifactId}/review']?.post
     ).toBeUndefined();
-    expect(document.components.schemas.ListWorkspaceSyncReviewsResponse).toMatchObject({
+    expect(document.components.schemas['sync.review-list.output']).toMatchObject({
       type: 'object',
       required: ['items'],
     });
-    for (const route of [
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/reviews',
-        'listWorkspaceSyncReviews',
-        'ListWorkspaceSyncReviewsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/reviews/{reviewId}',
-        'getWorkspaceSyncReview',
-        'GetWorkspaceSyncReviewResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/input-snapshots',
-        'listWorkspaceInputSnapshots',
-        'ListWorkspaceInputSnapshotsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/materialization-records',
-        'listWorkspaceMaterializationRecords',
-        'ListWorkspaceMaterializationRecordsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/backend-handles',
-        'listBackendWorkspaceHandles',
-        'ListBackendWorkspaceHandlesResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/output-manifests',
-        'listWorkerOutputManifests',
-        'ListWorkerOutputManifestsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/change-sets',
-        'listWorkspaceChangeSets',
-        'ListWorkspaceChangeSetsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/staged-reviews',
-        'listStagedWorkspaceReviews',
-        'ListStagedWorkspaceReviewsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/apply-plans',
-        'listWorkspaceApplyPlans',
-        'ListWorkspaceApplyPlansResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/reconciliation-records',
-        'listWorkspaceReconciliationRecords',
-        'ListWorkspaceReconciliationRecordsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/quarantine-records',
-        'listWorkspaceQuarantineRecords',
-        'ListWorkspaceQuarantineRecordsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/apply-results',
-        'listWorkspaceApplyResults',
-        'ListWorkspaceApplyResultsResponse',
-      ],
-      [
-        '/api/app/workspaces/{workspaceId}/workspace-sync/apply-results/{applyResultId}',
-        'getWorkspaceApplyResult',
-        'GetWorkspaceApplyResultResponse',
-      ],
-    ] as const) {
-      expect(document.paths[route[0]]?.get).toMatchObject({
-        operationId: route[1],
-        tags: ['workspace-sync'],
+    for (const [id, definition] of Object.entries(SYNC_OPERATION_DEFINITIONS)) {
+      expect(document.paths[operationHttpPath(id)]?.post).toMatchObject({
+        operationId: id,
+        tags: ['sync'],
+        requestBody: {
+          content: { 'application/json': { schema: { $ref: `#/components/schemas/${id}.input` } } },
+        },
         responses: {
           '200': {
             content: {
-              'application/json': {
-                schema: {
-                  $ref: `#/components/schemas/${route[2]}`,
-                },
-              },
+              'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
             },
           },
         },
       });
+      expect(document.components.schemas[`${id}.input`]).toHaveProperty('properties.workspaceId');
+      if (definition.mutating)
+        expect(document.paths[operationHttpPath(id)]?.post?.parameters).toContainEqual(
+          expect.objectContaining({ name: 'x-openkit-request-id', in: 'header' })
+        );
     }
+    expect(Object.keys(document.paths).filter((path) => path.includes('/workspace-sync/'))).toEqual(
+      []
+    );
     expect(
       document.paths['/api/app/workspaces/{workspaceId}/workspace-sync/evidence-bundles']
     ).toBeUndefined();
@@ -1233,53 +1172,6 @@ describe('app api openapi projection', () => {
         },
       });
     }
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/workspace-sync/reviews/{reviewId}/decision']
-        ?.post
-    ).toMatchObject({
-      operationId: 'submitWorkspaceSyncReviewDecision',
-      tags: ['workspace-sync'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/SubmitWorkspaceSyncReviewDecisionRequest' },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/SubmitWorkspaceSyncReviewDecisionResponse' },
-            },
-          },
-        },
-      },
-    });
-    expect(
-      document.paths[
-        '/api/app/workspaces/{workspaceId}/workspace-sync/reconciliation-records/{reconciliationRecordId}/decision'
-      ]?.post
-    ).toMatchObject({
-      operationId: 'submitWorkspaceRecoveryDecision',
-      tags: ['workspace-sync'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/SubmitWorkspaceRecoveryDecisionRequest' },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/SubmitWorkspaceRecoveryDecisionResponse' },
-            },
-          },
-        },
-      },
-    });
     expect(document.paths['/api/app/operations/backup.create']?.post).toMatchObject({
       operationId: 'backup.create',
       tags: ['backup'],
@@ -1746,6 +1638,41 @@ describe('app api openapi projection', () => {
     }
   });
 
+  it('projects all remaining Kernel and Generative UI definitions and removes their former paths', () => {
+    const document = createAppOpenApiDocument();
+    for (const [id, definition] of Object.entries({
+      ...KERNEL_REMAINING_OPERATION_DEFINITIONS,
+      ...GENERATIVE_UI_OPERATION_DEFINITIONS,
+    })) {
+      const operation = document.paths[operationHttpPath(id)].post;
+      const status = 'successStatus' in definition ? definition.successStatus : 200;
+      expect(operation).toMatchObject({
+        operationId: id,
+        requestBody: {
+          content: { 'application/json': { schema: { $ref: `#/components/schemas/${id}.input` } } },
+        },
+        responses: {
+          [status]: {
+            content: {
+              'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
+            },
+          },
+        },
+      });
+      expect(document.components.schemas[`${id}.input`]).toBeDefined();
+      expect(document.components.schemas[`${id}.output`]).toBeDefined();
+      if (definition.mutating)
+        expect(operation.parameters).toMatchObject([
+          { name: 'x-openkit-request-id', in: 'header', required: true },
+        ]);
+    }
+    expect(
+      Object.keys(document.paths).filter(
+        (path) => path.includes('/light-apps') || path.includes('/generative-presentations')
+      )
+    ).toEqual([]);
+  });
+
   it('projects the closed Workspace sharing and lifecycle surface from shared schemas', () => {
     const document = createAppOpenApiDocument();
     const operations = [
@@ -1757,102 +1684,102 @@ describe('app api openapi projection', () => {
         'workspace.list.output',
       ],
       [
-        'get',
-        '/api/app/workspaces/{workspaceId}/members',
-        'listWorkspaceMembers',
-        undefined,
-        'ListWorkspaceMembersResponse',
-      ],
-      [
-        'get',
-        '/api/app/workspaces/{workspaceId}/invitations',
-        'listWorkspaceInvitations',
-        undefined,
-        'ListWorkspaceInvitationsResponse',
+        'post',
+        '/api/app/operations/workspace.member-list',
+        'workspace.member-list',
+        'workspace.member-list.input',
+        'workspace.member-list.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/invitations',
-        'createWorkspaceInvitation',
-        'CreateWorkspaceInvitationRequest',
-        'WorkspaceInvitationMutationResponse',
-      ],
-      [
-        'get',
-        '/api/app/workspace-invitations',
-        'listMyWorkspaceInvitations',
-        undefined,
-        'ListWorkspaceInvitationsResponse',
+        '/api/app/operations/workspace.invitation-list',
+        'workspace.invitation-list',
+        'workspace.invitation-list.input',
+        'workspace.invitation-list.output',
       ],
       [
         'post',
-        '/api/app/workspace-invitations/{invitationId}/accept',
-        'acceptWorkspaceInvitation',
-        'AcceptWorkspaceInvitationRequest',
-        'WorkspaceInvitationMutationResponse',
+        '/api/app/operations/workspace.invitation-create',
+        'workspace.invitation-create',
+        'workspace.invitation-create.input',
+        'workspace.invitation-create.output',
       ],
       [
         'post',
-        '/api/app/workspace-invitations/{invitationId}/decline',
-        'declineWorkspaceInvitation',
-        'DeclineWorkspaceInvitationRequest',
-        'WorkspaceInvitationMutationResponse',
+        '/api/app/operations/workspace.my-invitation-list',
+        'workspace.my-invitation-list',
+        'workspace.my-invitation-list.input',
+        'workspace.my-invitation-list.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/invitations/{invitationId}/revoke',
-        'revokeWorkspaceInvitation',
-        'RevokeWorkspaceInvitationRequest',
-        'WorkspaceInvitationMutationResponse',
-      ],
-      [
-        'patch',
-        '/api/app/workspaces/{workspaceId}/members/{userId}',
-        'changeWorkspaceMemberAccess',
-        'ChangeWorkspaceMemberAccessRequest',
-        'WorkspaceMemberMutationResponse',
+        '/api/app/operations/workspace.my-invitation-accept',
+        'workspace.my-invitation-accept',
+        'workspace.my-invitation-accept.input',
+        'workspace.my-invitation-accept.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/members/{userId}/remove',
-        'removeWorkspaceMember',
-        'RemoveWorkspaceMemberRequest',
-        'WorkspaceMemberMutationResponse',
+        '/api/app/operations/workspace.my-invitation-decline',
+        'workspace.my-invitation-decline',
+        'workspace.my-invitation-decline.input',
+        'workspace.my-invitation-decline.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/leave',
-        'leaveWorkspace',
-        'LeaveWorkspaceRequest',
-        'WorkspaceMemberMutationResponse',
+        '/api/app/operations/workspace.invitation-revoke',
+        'workspace.invitation-revoke',
+        'workspace.invitation-revoke.input',
+        'workspace.invitation-revoke.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/ownership/transfer',
-        'transferWorkspaceOwnership',
-        'TransferWorkspaceOwnershipRequest',
-        'WorkspaceOwnershipMutationResponse',
-      ],
-      [
-        'get',
-        '/api/app/workspaces/{workspaceId}/access-recovery',
-        'getWorkspaceAccessRecoveryState',
-        undefined,
-        'WorkspaceAccessRecoveryResponse',
+        '/api/app/operations/workspace.member-access-change',
+        'workspace.member-access-change',
+        'workspace.member-access-change.input',
+        'workspace.member-access-change.output',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/access-recovery',
-        'recoverWorkspaceAccess',
-        'RecoverWorkspaceAccessRequest',
-        'WorkspaceAccessRecoveryResponse',
+        '/api/app/operations/workspace.member-remove',
+        'workspace.member-remove',
+        'workspace.member-remove.input',
+        'workspace.member-remove.output',
       ],
       [
         'post',
-        '/api/app/users/{userId}/disable',
-        'disableUser',
-        'DisableUserRequest',
-        'DisableUserResponse',
+        '/api/app/operations/workspace.leave',
+        'workspace.leave',
+        'workspace.leave.input',
+        'workspace.leave.output',
+      ],
+      [
+        'post',
+        '/api/app/operations/workspace.ownership-transfer',
+        'workspace.ownership-transfer',
+        'workspace.ownership-transfer.input',
+        'workspace.ownership-transfer.output',
+      ],
+      [
+        'post',
+        '/api/app/operations/workspace.access-recovery-read',
+        'workspace.access-recovery-read',
+        'workspace.access-recovery-read.input',
+        'workspace.access-recovery-read.output',
+      ],
+      [
+        'post',
+        '/api/app/operations/workspace.access-recover',
+        'workspace.access-recover',
+        'workspace.access-recover.input',
+        'workspace.access-recover.output',
+      ],
+      [
+        'post',
+        '/api/app/operations/user.disable',
+        'user.disable',
+        'user.disable.input',
+        'user.disable.output',
       ],
     ] as const;
 
@@ -1873,7 +1800,7 @@ describe('app api openapi projection', () => {
             }
           : {}),
         responses: {
-          [operationId === 'createWorkspaceInvitation' ? '201' : '200']: {
+          [operationId === 'workspace.invitation-create' ? '201' : '200']: {
             content: {
               'application/json': {
                 schema: { $ref: `#/components/schemas/${responseSchema}` },
@@ -1892,13 +1819,13 @@ describe('app api openapi projection', () => {
         ])
       )
     ).toMatchObject({
-      listMyWorkspaceInvitations: [{ sessionCookie: [] }],
-      acceptWorkspaceInvitation: [{ sessionCookie: [] }],
-      declineWorkspaceInvitation: [{ sessionCookie: [] }],
-      leaveWorkspace: [{ sessionCookie: [] }],
-      getWorkspaceAccessRecoveryState: [{ bearerAuth: [] }, { sessionCookie: [] }],
-      recoverWorkspaceAccess: [{ bearerAuth: [] }, { sessionCookie: [] }],
-      disableUser: [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.my-invitation-list': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.my-invitation-accept': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.my-invitation-decline': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.leave': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.access-recovery-read': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'workspace.access-recover': [{ bearerAuth: [] }, { sessionCookie: [] }],
+      'user.disable': [{ bearerAuth: [] }, { sessionCookie: [] }],
       'workspace.list': [{ bearerAuth: [] }, { sessionCookie: [] }],
     });
   });
@@ -2446,8 +2373,6 @@ describe('app api openapi projection', () => {
       'downloadWorkspaceExportArchive',
       'dryRunWorkspaceArchiveImport',
       'importWorkspaceArchive',
-      'deleteWorkspace',
-      'recoverDeletedWorkspace',
       'getAgentNativeEnvironment',
       'updateAgentNativeEnvironment',
       'reloadRuntimeConfig',
@@ -2472,19 +2397,6 @@ describe('app api openapi projection', () => {
       'unbindThreadMaterial',
       'excludeThreadMaterial',
       'restoreThreadMaterial',
-      'listLightApps',
-      'createLightApp',
-      'updateLightAppSchema',
-      'retireLightApp',
-      'listLightAppRecords',
-      'getLightAppRecord',
-      'updateLightAppRecord',
-      'batchLightAppRecords',
-      'publishGenerativePresentation',
-      'getGenerativePresentation',
-      'getGenerativePresentationResource',
-      'refreshGenerativePresentation',
-      'submitGenerativePresentationAction',
       'searchApp',
       'listAgentCatalog',
       'getAgentCatalogEntry',
@@ -2514,37 +2426,8 @@ describe('app api openapi projection', () => {
       'listServerPermissionDecisions',
       'getWorkspaceDashboard',
       'refreshAgentHealth',
-      'listWorkspaceMembers',
-      'listWorkspaceInvitations',
-      'createWorkspaceInvitation',
-      'listMyWorkspaceInvitations',
-      'acceptWorkspaceInvitation',
-      'declineWorkspaceInvitation',
-      'revokeWorkspaceInvitation',
-      'changeWorkspaceMemberAccess',
-      'removeWorkspaceMember',
-      'leaveWorkspace',
-      'transferWorkspaceOwnership',
-      'getWorkspaceAccessRecoveryState',
-      'recoverWorkspaceAccess',
-      'disableUser',
       'submitTurnFeedback',
       ...Object.keys(OPERATION_DEFINITIONS),
-      'listWorkspaceSyncReviews',
-      'getWorkspaceSyncReview',
-      'submitWorkspaceSyncReviewDecision',
-      'listWorkspaceInputSnapshots',
-      'listWorkspaceMaterializationRecords',
-      'listBackendWorkspaceHandles',
-      'listWorkerOutputManifests',
-      'listWorkspaceChangeSets',
-      'listStagedWorkspaceReviews',
-      'listWorkspaceApplyPlans',
-      'listWorkspaceReconciliationRecords',
-      'submitWorkspaceRecoveryDecision',
-      'listWorkspaceQuarantineRecords',
-      'listWorkspaceApplyResults',
-      'getWorkspaceApplyResult',
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',
       'listWorkerEnvironments',

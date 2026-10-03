@@ -1,10 +1,9 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
-
 import { recordServerAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
@@ -12,32 +11,31 @@ import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { getRegisteredAppApiOperationIds } from './openapi.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import {
-  readAuthorizedWorkspaces,
-  registerWorkspaceSharingRoutes,
-} from './workspace-sharing-routes.js';
+import { readAuthorizedWorkspaces } from './workspace-sharing-operations.js';
 
 const openDatabases: CoreDb[] = [];
 const SHARING_OPERATION_IDS = [
-  'listWorkspaceMembers',
-  'listWorkspaceInvitations',
-  'createWorkspaceInvitation',
-  'listMyWorkspaceInvitations',
-  'acceptWorkspaceInvitation',
-  'declineWorkspaceInvitation',
-  'revokeWorkspaceInvitation',
-  'changeWorkspaceMemberAccess',
-  'removeWorkspaceMember',
-  'leaveWorkspace',
-  'transferWorkspaceOwnership',
-  'getWorkspaceAccessRecoveryState',
-  'recoverWorkspaceAccess',
-  'disableUser',
+  'workspace.member-list',
+  'workspace.invitation-list',
+  'workspace.invitation-create',
+  'workspace.my-invitation-list',
+  'workspace.my-invitation-accept',
+  'workspace.my-invitation-decline',
+  'workspace.invitation-revoke',
+  'workspace.member-access-change',
+  'workspace.member-remove',
+  'workspace.leave',
+  'workspace.ownership-transfer',
+  'workspace.access-recovery-read',
+  'workspace.access-recover',
+  'user.disable',
 ] as const;
 
 /** Mutable actor holder used by one route fixture. */
@@ -146,7 +144,7 @@ function createFixture(): RouteFixture {
     }
     await next();
   });
-  registerWorkspaceSharingRoutes({
+  registerOperationJsonRoutes({
     app,
     coreDb,
     inflightCommands: new WeakMap(),
@@ -165,15 +163,6 @@ function createFixture(): RouteFixture {
   };
 }
 
-/** Sends one JSON request to a route fixture. */
-function jsonRequest(app: RouteFixture['app'], path: string, method: string, body: unknown) {
-  return app.request(path, {
-    body: JSON.stringify(body),
-    headers: { 'content-type': 'application/json' },
-    method,
-  });
-}
-
 afterEach(() => {
   for (const coreDb of openDatabases.splice(0)) {
     coreDb.sqlite.close();
@@ -184,31 +173,36 @@ describe('Workspace sharing routes', () => {
   it('registers the exact closed operation surface and access owners', () => {
     const fixture = createFixture();
 
-    expect(getRegisteredAppApiOperationIds(fixture.app)).toEqual(SHARING_OPERATION_IDS);
+    expect(getRegisteredAppApiOperationIds(fixture.app)).toEqual(
+      Object.keys(OPERATION_DEFINITIONS)
+    );
+    expect(SHARING_OPERATION_IDS.every((id) => Object.hasOwn(OPERATION_DEFINITIONS, id))).toBe(
+      true
+    );
     expect(PUBLIC_OPERATION_ACCESS).toMatchObject({
       'workspace.list': {
         policyOperation: 'workspace.read',
         resolver: 'authorized-workspace-set',
         scope: 'workspace',
       },
-      listMyWorkspaceInvitations: {
+      'workspace.my-invitation-list': {
         authentication: 'canonical-user',
         policyOperation: 'invitation.respond',
         scope: 'user',
       },
-      leaveWorkspace: {
+      'workspace.leave': {
         authentication: 'canonical-user',
         policyOperation: 'workspace.leave',
         scope: 'user',
       },
-      recoverWorkspaceAccess: {
+      'workspace.access-recover': {
         authentication: 'deployment-admin',
         policyOperation: 'deployment.recover',
         scope: 'server',
       },
-      transferWorkspaceOwnership: {
+      'workspace.ownership-transfer': {
         policyOperation: 'workspace.lifecycle',
-        resolver: 'path-workspace',
+        resolver: 'body-workspace',
         scope: 'workspace',
       },
     });
@@ -286,7 +280,9 @@ describe('Workspace sharing routes', () => {
       .run(now, fixture.foreignWorkspaceId);
     fixture.actorState.current = { kind: 'session', userId: 'user_invitee' };
 
-    const response = await fixture.app.request('/api/app/workspace-invitations');
+    const response = await fixture.app.request(
+      ...operationRequest('workspace.my-invitation-list', {}, {})
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ items: [] });
@@ -294,7 +290,6 @@ describe('Workspace sharing routes', () => {
 
   it('commits one lifecycle audit and pointer receipt, replays, and rejects changed input', async () => {
     const fixture = createFixture();
-    const path = `/api/app/workspaces/${fixture.workspaceId}/invitations`;
     const requestId = '00000000-0000-4000-8000-000000000001';
     const input = {
       inviteeEmail: 'invitee@example.com',
@@ -302,12 +297,42 @@ describe('Workspace sharing routes', () => {
       requestId,
     } as const;
 
-    const created = await jsonRequest(fixture.app, path, 'POST', input);
-    const replayed = await jsonRequest(fixture.app, path, 'POST', input);
-    const changed = await jsonRequest(fixture.app, path, 'POST', {
-      ...input,
-      proposedAccessLevel: 'editor',
-    });
+    const created = await fixture.app.request(
+      ...operationRequest(
+        'workspace.invitation-create',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
+    const replayed = await fixture.app.request(
+      ...operationRequest(
+        'workspace.invitation-create',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
+    const changed = await fixture.app.request(
+      ...operationRequest(
+        'workspace.invitation-create',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...input,
+            proposedAccessLevel: 'editor',
+          }),
+        }
+      )
+    );
 
     expect(created.status).toBe(201);
     expect(replayed.status).toBe(201);
@@ -339,17 +364,36 @@ describe('Workspace sharing routes', () => {
 
   it('writes only a receipt for an exact no-op and returns typed revision conflicts', async () => {
     const fixture = createFixture();
-    const path = `/api/app/workspaces/${fixture.workspaceId}/members/user_editor`;
-    const noOp = await jsonRequest(fixture.app, path, 'PATCH', {
-      accessLevel: 'editor',
-      expectedRevision: 1,
-      requestId: '00000000-0000-4000-8000-000000000002',
-    });
-    const conflict = await jsonRequest(fixture.app, path, 'PATCH', {
-      accessLevel: 'viewer',
-      expectedRevision: 9,
-      requestId: '00000000-0000-4000-8000-000000000003',
-    });
+    const noOp = await fixture.app.request(
+      ...operationRequest(
+        'workspace.member-access-change',
+        { workspaceId: fixture.workspaceId, targetUserId: 'user_editor' },
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            accessLevel: 'editor',
+            expectedRevision: 1,
+            requestId: '00000000-0000-4000-8000-000000000002',
+          }),
+        }
+      )
+    );
+    const conflict = await fixture.app.request(
+      ...operationRequest(
+        'workspace.member-access-change',
+        { workspaceId: fixture.workspaceId, targetUserId: 'user_editor' },
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            accessLevel: 'viewer',
+            expectedRevision: 9,
+            requestId: '00000000-0000-4000-8000-000000000003',
+          }),
+        }
+      )
+    );
 
     expect(noOp.status).toBe(200);
     expect(
@@ -379,16 +423,28 @@ describe('Workspace sharing routes', () => {
         .run(fixture.foreignWorkspaceId, '2026-07-26T00:00:00.000Z', now, now);
       return 'inv_foreign';
     })();
-    const mismatch = await jsonRequest(
-      fixture.app,
-      `/api/app/workspaces/${fixture.workspaceId}/invitations/${invitation}/revoke`,
-      'POST',
-      {
-        expectedRevision: 1,
-        requestId: '00000000-0000-4000-8000-000000000004',
-      }
+    const mismatch = await fixture.app.request(
+      ...operationRequest(
+        'workspace.invitation-revoke',
+        { workspaceId: fixture.workspaceId, invitationId: invitation },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            expectedRevision: 1,
+            requestId: '00000000-0000-4000-8000-000000000004',
+          }),
+        }
+      )
     );
 
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      tokenId: 'token_admin',
+      scope: 'server-admin',
+      ownerUserId: 'user_admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_admin',
@@ -405,13 +461,18 @@ describe('Workspace sharing routes', () => {
       subject: { id: 'user_disable', kind: 'user' },
       summary: 'Canonical user disabled.',
     });
-    const uncertain = await jsonRequest(
-      fixture.app,
-      '/api/app/users/user_disable/disable',
-      'POST',
-      {
-        requestId: '00000000-0000-4000-8000-000000000005',
-      }
+    const uncertain = await fixture.app.request(
+      ...operationRequest(
+        'user.disable',
+        { targetUserId: 'user_disable' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000005',
+          }),
+        }
+      )
     );
 
     expect(mismatch.status).toBe(403);
@@ -423,18 +484,47 @@ describe('Workspace sharing routes', () => {
   it('allows leave only from current policy authority or the exact own tombstone receipt', async () => {
     const fixture = createFixture();
     fixture.actorState.current = { kind: 'session', userId: 'user_editor' };
-    const path = `/api/app/workspaces/${fixture.workspaceId}/leave`;
     const input = {
       expectedRevision: 1,
       requestId: '00000000-0000-4000-8000-000000000006',
     };
 
-    const left = await jsonRequest(fixture.app, path, 'POST', input);
-    const replayed = await jsonRequest(fixture.app, path, 'POST', input);
-    const unrelated = await jsonRequest(fixture.app, path, 'POST', {
-      ...input,
-      requestId: '00000000-0000-4000-8000-000000000007',
-    });
+    const left = await fixture.app.request(
+      ...operationRequest(
+        'workspace.leave',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
+    const replayed = await fixture.app.request(
+      ...operationRequest(
+        'workspace.leave',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
+    const unrelated = await fixture.app.request(
+      ...operationRequest(
+        'workspace.leave',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            ...input,
+            requestId: '00000000-0000-4000-8000-000000000007',
+          }),
+        }
+      )
+    );
 
     expect(left.status).toBe(200);
     await expect(left.json()).resolves.toMatchObject({ member: { status: 'removed' } });
@@ -446,29 +536,72 @@ describe('Workspace sharing routes', () => {
 
   it('keeps deployment recovery and user disable behind explicit administrator authority', async () => {
     const fixture = createFixture();
-    const recoveryPath = `/api/app/workspaces/${fixture.workspaceId}/access-recovery`;
-    const denied = await fixture.app.request(recoveryPath);
+    const denied = await fixture.app.request(
+      ...operationRequest(
+        'workspace.access-recovery-read',
+        { workspaceId: fixture.workspaceId },
+        {}
+      )
+    );
 
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      tokenId: 'token_admin',
+      scope: 'server-admin',
+      ownerUserId: 'user_admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_admin',
       tokenScope: 'server-admin',
       userId: 'user_admin',
     };
-    const read = await fixture.app.request(recoveryPath);
-    const recovered = await jsonRequest(fixture.app, recoveryPath, 'POST', {
-      action: 'add-self-as-editor',
-      expectedRegistryRevision: 1,
-      requestId: '00000000-0000-4000-8000-000000000008',
-    });
-    const disabled = await jsonRequest(fixture.app, '/api/app/users/user_disable/disable', 'POST', {
-      requestId: '00000000-0000-4000-8000-000000000009',
-    });
-    const disabledNoOp = await jsonRequest(
-      fixture.app,
-      '/api/app/users/user_disable/disable',
-      'POST',
-      { requestId: '00000000-0000-4000-8000-000000000010' }
+    const read = await fixture.app.request(
+      ...operationRequest(
+        'workspace.access-recovery-read',
+        { workspaceId: fixture.workspaceId },
+        {}
+      )
+    );
+    const recovered = await fixture.app.request(
+      ...operationRequest(
+        'workspace.access-recover',
+        { workspaceId: fixture.workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'add-self-as-editor',
+            expectedRegistryRevision: 1,
+            requestId: '00000000-0000-4000-8000-000000000008',
+          }),
+        }
+      )
+    );
+    const disabled = await fixture.app.request(
+      ...operationRequest(
+        'user.disable',
+        { targetUserId: 'user_disable' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId: '00000000-0000-4000-8000-000000000009',
+          }),
+        }
+      )
+    );
+    const disabledNoOp = await fixture.app.request(
+      ...operationRequest(
+        'user.disable',
+        { targetUserId: 'user_disable' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId: '00000000-0000-4000-8000-000000000010' }),
+        }
+      )
     );
 
     expect(denied.status).toBe(403);
@@ -502,6 +635,13 @@ describe('Workspace sharing routes', () => {
       ownerUserId: 'user_owner',
       workspaceId,
     });
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      tokenId: 'token_admin',
+      scope: 'server-admin',
+      ownerUserId: 'user_admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_admin',
@@ -509,15 +649,20 @@ describe('Workspace sharing routes', () => {
       userId: 'user_admin',
     };
 
-    const response = await jsonRequest(
-      fixture.app,
-      `/api/app/workspaces/${workspaceId}/access-recovery`,
-      'POST',
-      {
-        action: 'add-self-as-editor',
-        expectedRegistryRevision: 1,
-        requestId: '00000000-0000-4000-8000-000000000011',
-      }
+    const response = await fixture.app.request(
+      ...operationRequest(
+        'workspace.access-recover',
+        { workspaceId: workspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'add-self-as-editor',
+            expectedRegistryRevision: 1,
+            requestId: '00000000-0000-4000-8000-000000000011',
+          }),
+        }
+      )
     );
 
     expect(response.status).toBe(409);
@@ -534,15 +679,20 @@ describe('Workspace sharing routes', () => {
 
 it('keeps sharing request parse detail at its excluded validation publisher', async () => {
   const fixture = createFixture();
-  const response = await jsonRequest(
-    fixture.app,
-    `/api/app/workspaces/${fixture.workspaceId}/invitations`,
-    'POST',
-    {
-      inviteeEmail: 42,
-      proposedAccessLevel: 'viewer',
-      requestId: '00000000-0000-4000-8000-000000000001',
-    }
+  const response = await fixture.app.request(
+    ...operationRequest(
+      'workspace.invitation-create',
+      { workspaceId: fixture.workspaceId },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          inviteeEmail: 42,
+          proposedAccessLevel: 'viewer',
+          requestId: '00000000-0000-4000-8000-000000000001',
+        }),
+      }
+    )
   );
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({

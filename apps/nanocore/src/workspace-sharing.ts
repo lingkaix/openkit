@@ -44,6 +44,8 @@ interface WorkspaceMutationInput {
   workspaceId: string;
   /** Current time override for deterministic tests. */
   now?: Date;
+  /** Current administrator eligibility supplied by the native authorizer, never caller input. */
+  administratorEligible?: boolean;
 }
 
 /** Input for creating one registered-user invitation. */
@@ -366,7 +368,10 @@ export function createWorkspaceInvitation(
   input: CreateWorkspaceInvitationInput
 ): CreateWorkspaceInvitationResult {
   requireOuterTransaction(input.coreDb);
-  if (resolveWorkspaceRole(input.coreDb, input.workspaceId, input.inviterUserId) !== 'owner') {
+  if (
+    !input.administratorEligible &&
+    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.inviterUserId) !== 'owner'
+  ) {
     return { kind: 'workspace_access_denied' };
   }
   const normalizedEmail = input.inviteeEmail.trim().toLowerCase();
@@ -525,7 +530,10 @@ export function revokeWorkspaceInvitation(
   input: RevokeWorkspaceInvitationInput
 ): WorkspaceInvitationTransitionResult {
   requireOuterTransaction(input.coreDb);
-  if (resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner') {
+  if (
+    !input.administratorEligible &&
+    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'
+  ) {
     return { kind: 'workspace_access_denied' };
   }
   const now = input.now ?? new Date();
@@ -562,8 +570,9 @@ export function changeWorkspaceMemberAccess(
   const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
   if (
     !registry ||
-    registry.ownerUserId !== input.ownerUserId ||
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'
+    (!input.administratorEligible &&
+      (registry.ownerUserId !== input.ownerUserId ||
+        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'))
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -614,8 +623,9 @@ export function removeWorkspaceMember(
   const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
   if (
     !registry ||
-    registry.ownerUserId !== input.ownerUserId ||
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'
+    (!input.administratorEligible &&
+      (registry.ownerUserId !== input.ownerUserId ||
+        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.ownerUserId) !== 'owner'))
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -666,8 +676,10 @@ export function transferWorkspaceOwnership(
   const registry = getWorkspaceRegistryFact(input.coreDb, input.workspaceId);
   if (
     !registry ||
-    registry.ownerUserId !== input.currentOwnerUserId ||
-    resolveWorkspaceRole(input.coreDb, input.workspaceId, input.currentOwnerUserId) !== 'owner'
+    (!input.administratorEligible &&
+      (registry.ownerUserId !== input.currentOwnerUserId ||
+        resolveWorkspaceRole(input.coreDb, input.workspaceId, input.currentOwnerUserId) !==
+          'owner'))
   ) {
     return { kind: 'workspace_access_denied' };
   }
@@ -711,7 +723,7 @@ export function transferWorkspaceOwnership(
       input.targetUserId,
       nowIso,
       input.workspaceId,
-      input.currentOwnerUserId,
+      registry.ownerUserId,
       input.expectedRegistryRevision
     );
   if (changed.changes !== 1) {

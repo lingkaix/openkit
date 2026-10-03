@@ -184,10 +184,6 @@ function createPassingTaskModeFixture(options) {
               },
             ],
           }),
-          submitWorkspaceSyncReviewDecision: async (receivedWorkspaceId, reviewId, input) => {
-            options.onReviewDecision?.(receivedWorkspaceId, reviewId, input);
-            return { review: { id: reviewId, status: 'rejected' } };
-          },
         },
         core: { createWorkspace: async () => ({ id: workspaceId }) },
         repositories: {
@@ -196,6 +192,14 @@ function createPassingTaskModeFixture(options) {
           },
         },
         operations: {
+          'sync.review-decide': async ({
+            workspaceId: receivedWorkspaceId,
+            reviewId,
+            ...input
+          }) => {
+            options.onReviewDecision?.(receivedWorkspaceId, reviewId, input);
+            return { review: { id: reviewId, status: 'rejected' } };
+          },
           'task.start': async () => ({
             evidence: { reviewIds: options.reviewIds ?? [] },
             state: 'completed',
@@ -247,7 +251,6 @@ function createDistinctTaskModeActorClients(options) {
       getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics'),
       listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
       listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
-      submitWorkspaceSyncReviewDecision: refuse('admin client must not submit review cleanup'),
     },
     core: { createWorkspace: refuse('admin client must not create a Workspace') },
     repositories: {
@@ -258,6 +261,7 @@ function createDistinctTaskModeActorClients(options) {
       reload: track(fixture.clients.admin.runtimeConfig.reload, adminCalls, 'reload'),
     },
     operations: {
+      'sync.review-decide': refuse('admin client must not submit review cleanup'),
       'task.start': refuse('admin client must not start Task Mode'),
 
       'thread.create': refuse('admin client must not create a Thread'),
@@ -285,10 +289,10 @@ function createDistinctTaskModeActorClients(options) {
     productCalls,
     'startTaskMode'
   );
-  product.app.submitWorkspaceSyncReviewDecision = track(
-    product.app.submitWorkspaceSyncReviewDecision,
+  product.operations['sync.review-decide'] = track(
+    product.operations['sync.review-decide'],
     productCalls,
-    'submitWorkspaceSyncReviewDecision'
+    'sync.review-decide'
   );
   product.operations['thread.create'] = track(
     product.operations['thread.create'],
@@ -827,7 +831,7 @@ describe('real Task Mode worker L3 test policy', () => {
           'listThreadItems',
           'listWorkspaceRuntimeEvidence',
           'startTaskMode',
-          'submitWorkspaceSyncReviewDecision',
+          'sync.review-decide',
         ])
       );
       assert.deepEqual(productCalls.slice(0, 3), [

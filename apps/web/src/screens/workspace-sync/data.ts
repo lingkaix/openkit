@@ -10,29 +10,29 @@ export const workspaceSyncKeys = {
 
 /** Durable review decision submitted by the Workspace changes surface. */
 export type WorkspaceSyncReviewDecision = Parameters<
-  CoreClient['app']['submitWorkspaceSyncReviewDecision']
->[2]['decision'];
+  CoreClient['operations']['sync.review-decide']
+>[0]['decision'];
 
 /** Human recovery decision submitted by the Workspace changes surface. */
 export type WorkspaceRecoveryDecision = Parameters<
-  CoreClient['app']['submitWorkspaceRecoveryDecision']
->[2]['decision'];
+  CoreClient['operations']['sync.recovery-decide']
+>[0]['decision'];
 
 /** Joined selected-Workspace Workspace Sync collections used by the product UI. */
 export type WorkspaceSyncProjection = {
-  reviews: Awaited<ReturnType<CoreClient['app']['listWorkspaceSyncReviews']>>['items'];
-  snapshots: Awaited<ReturnType<CoreClient['app']['listWorkspaceInputSnapshots']>>['items'];
+  reviews: Awaited<ReturnType<CoreClient['operations']['sync.review-list']>>['items'];
+  snapshots: Awaited<ReturnType<CoreClient['operations']['sync.input-snapshot-list']>>['items'];
   materializations: Awaited<
-    ReturnType<CoreClient['app']['listWorkspaceMaterializationRecords']>
+    ReturnType<CoreClient['operations']['sync.materialization-list']>
   >['items'];
-  handles: Awaited<ReturnType<CoreClient['app']['listBackendWorkspaceHandles']>>['items'];
-  manifests: Awaited<ReturnType<CoreClient['app']['listWorkerOutputManifests']>>['items'];
-  changeSets: Awaited<ReturnType<CoreClient['app']['listWorkspaceChangeSets']>>['items'];
-  staged: Awaited<ReturnType<CoreClient['app']['listStagedWorkspaceReviews']>>['items'];
-  plans: Awaited<ReturnType<CoreClient['app']['listWorkspaceApplyPlans']>>['items'];
-  results: Awaited<ReturnType<CoreClient['app']['getWorkspaceApplyResult']>>[];
-  recovery: Awaited<ReturnType<CoreClient['app']['listWorkspaceReconciliationRecords']>>['items'];
-  quarantine: Awaited<ReturnType<CoreClient['app']['listWorkspaceQuarantineRecords']>>['items'];
+  handles: Awaited<ReturnType<CoreClient['operations']['sync.backend-handle-list']>>['items'];
+  manifests: Awaited<ReturnType<CoreClient['operations']['sync.output-manifest-list']>>['items'];
+  changeSets: Awaited<ReturnType<CoreClient['operations']['sync.change-set-list']>>['items'];
+  staged: Awaited<ReturnType<CoreClient['operations']['sync.staged-review-list']>>['items'];
+  plans: Awaited<ReturnType<CoreClient['operations']['sync.apply-plan-list']>>['items'];
+  results: Awaited<ReturnType<CoreClient['operations']['sync.apply-result-read']>>[];
+  recovery: Awaited<ReturnType<CoreClient['operations']['sync.reconciliation-list']>>['items'];
+  quarantine: Awaited<ReturnType<CoreClient['operations']['sync.quarantine-list']>>['items'];
 };
 
 /** Re-export selected-Workspace discovery for the Workspace changes screen. */
@@ -73,9 +73,13 @@ export function useSubmitWorkspaceSyncReviewDecision() {
       reviewId: string;
       decision: WorkspaceSyncReviewDecision;
     }) =>
-      client.app.submitWorkspaceSyncReviewDecision(input.workspaceId, input.reviewId, {
-        decision: input.decision,
-        requestId: createRequestId(),
+      client.operations['sync.review-decide']({
+        workspaceId: input.workspaceId,
+        reviewId: input.reviewId,
+        ...{
+          decision: input.decision,
+          requestId: createRequestId(),
+        },
       }),
     retry: false,
   });
@@ -90,9 +94,13 @@ export function useSubmitWorkspaceRecoveryDecision() {
       reconciliationRecordId: string;
       decision: WorkspaceRecoveryDecision;
     }) =>
-      client.app.submitWorkspaceRecoveryDecision(input.workspaceId, input.reconciliationRecordId, {
-        decision: input.decision,
-        requestId: createRequestId(),
+      client.operations['sync.recovery-decide']({
+        workspaceId: input.workspaceId,
+        reconciliationRecordId: input.reconciliationRecordId,
+        ...{
+          decision: input.decision,
+          requestId: createRequestId(),
+        },
       }),
     retry: false,
   });
@@ -154,28 +162,38 @@ async function loadWorkspaceSyncProjection(
     recovery,
     quarantine,
   ] = await Promise.all([
-    client.app.listWorkspaceSyncReviews(workspaceId),
-    client.app.listWorkspaceInputSnapshots(workspaceId),
-    client.app.listWorkspaceMaterializationRecords(workspaceId),
-    client.app.listBackendWorkspaceHandles(workspaceId),
-    client.app.listWorkerOutputManifests(workspaceId),
-    client.app.listWorkspaceChangeSets(workspaceId),
-    client.app.listStagedWorkspaceReviews(workspaceId),
-    client.app.listWorkspaceApplyPlans(workspaceId),
-    client.app.listWorkspaceApplyResults(workspaceId),
-    client.app.listWorkspaceReconciliationRecords(workspaceId),
-    client.app.listWorkspaceQuarantineRecords(workspaceId),
+    client.operations['sync.review-list']({ workspaceId: workspaceId }),
+    client.operations['sync.input-snapshot-list']({ workspaceId: workspaceId }),
+    client.operations['sync.materialization-list']({ workspaceId: workspaceId }),
+    client.operations['sync.backend-handle-list']({ workspaceId: workspaceId }),
+    client.operations['sync.output-manifest-list']({ workspaceId: workspaceId }),
+    client.operations['sync.change-set-list']({ workspaceId: workspaceId }),
+    client.operations['sync.staged-review-list']({ workspaceId: workspaceId }),
+    client.operations['sync.apply-plan-list']({ workspaceId: workspaceId }),
+    client.operations['sync.apply-result-list']({ workspaceId: workspaceId }),
+    client.operations['sync.reconciliation-list']({ workspaceId: workspaceId }),
+    client.operations['sync.quarantine-list']({ workspaceId: workspaceId }),
   ]);
 
   const detailedPending = await Promise.all(
     reviews.items
       .filter((item) => item.review.status === 'pending')
-      .map((item) => client.app.getWorkspaceSyncReview(workspaceId, item.review.id))
+      .map((item) =>
+        client.operations['sync.review-read']({
+          workspaceId: workspaceId,
+          reviewId: item.review.id,
+        })
+      )
   );
   const pendingById = new Map(detailedPending.map((item) => [item.review.id, item]));
 
   const detailedResults = await Promise.all(
-    results.items.map((item) => client.app.getWorkspaceApplyResult(workspaceId, item.id))
+    results.items.map((item) =>
+      client.operations['sync.apply-result-read']({
+        workspaceId: workspaceId,
+        applyResultId: item.id,
+      })
+    )
   );
 
   return {

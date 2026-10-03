@@ -5,9 +5,17 @@ import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, expect, it } from 'vitest';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../auth/identity.js';
+import {
+  createSchedulerAdmissionEntry,
+  createSchedulerPlacementPlan,
+  createSchedulerSessionLease,
+} from '../scheduler-records.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   createOpenkitGenerativeMcpSupply,
   dispatchOpenkitGenerativeTool,
@@ -50,6 +58,51 @@ const SCHEMA: LightAppSchemaInput = {
   ],
 };
 
+/** Records the exact lease/package authority used by the selected Worker projection. */
+function workerAuthority(dataRoot: string, turnId: string) {
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  createSchedulerAdmissionEntry(coreDb, {
+    queueEntryId: 'queue_test',
+    requestId: 'request_test',
+    triggerActor: { kind: 'user', id: 'user_local' },
+    workspaceId: 'ws_demo',
+    threadId: 'th_demo',
+    turnId,
+    turnInput: 'Proof',
+    requestedAgentId: 'agent_codex_host',
+    priorityClass: 'interactive',
+    requiredPoolConstraints: [],
+  });
+  createSchedulerPlacementPlan(coreDb, {
+    planId: 'plan_test',
+    queueEntryId: 'queue_test',
+    selectedPoolId: 'pool_test',
+    selectedTargetId: 'target_test',
+    plannedLeaseDurationMs: 900000,
+    heartbeatIntervalMs: 10000,
+    heartbeatTimeoutMs: 30000,
+    expectedControlMode: 'poll',
+    expectedDataPlaneMode: 'openshell-files',
+    degradedOptionalFeatures: [],
+    policyDecisionIds: [],
+    schedulerEpoch: 1,
+  });
+  createSchedulerSessionLease(coreDb, {
+    leaseId: 'lease_test',
+    planId: 'plan_test',
+    agentSessionId: 'session_demo',
+    packageSnapshotId: 'package_test',
+    expiresAt: '2999-01-01T00:00:00.000Z',
+    heartbeatDeadline: '2999-01-01T00:00:00.000Z',
+    startupDeadline: '2999-01-01T00:00:00.000Z',
+    sandboxTokenBindingRef: 'binding_test',
+  });
+  return coreDb;
+}
+
 describe('openkit-generative MCP', () => {
   it('projects ListTools schemas that Ajv2020 can compile', () => {
     const validator = new Ajv2020({ allErrors: false, strict: false });
@@ -62,10 +115,19 @@ describe('openkit-generative MCP', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Proof', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    const coreDb = workerAuthority(dataRoot, turn.id);
     const supply = createOpenkitGenerativeMcpSupply();
     expect(supply.id).toBe(OPENKIT_GENERATIVE_MCP_ID);
     expect(supply.allowedTools).toContain('kernel_apps_create');
     const context = {
+      coreDb,
+      packageSnapshotId: 'package_test',
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
@@ -75,7 +137,7 @@ describe('openkit-generative MCP', () => {
       scope: {
         workspaceId: 'ws_demo',
         threadId: 'th_demo',
-        turnId: 'turn_demo',
+        turnId: turn.id,
         agentSessionId: 'session_demo',
         triggerActor: { kind: 'user' as const, id: 'user_local' },
       },
@@ -83,7 +145,6 @@ describe('openkit-generative MCP', () => {
     try {
       const created = await dispatchOpenkitGenerativeTool(context, 'kernel_apps_create', {
         ...SCHEMA,
-        requestId: randomUUID(),
       });
       const listed = await dispatchOpenkitGenerativeTool(context, 'kernel_apps_list', {});
       const apps = listed.structuredContent as { items: Array<{ appId: string; title: string }> };
@@ -91,10 +152,11 @@ describe('openkit-generative MCP', () => {
       expect(created.structuredContent).toMatchObject({ title: SCHEMA.title, lifecycle: 'active' });
     } finally {
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
     }
   });
 
-  it('publishes a native presentation without dropping threadId', async () => {
+  it('binds publication Thread and Turn from immutable Worker lineage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-publish-'));
     const store = createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -103,6 +165,7 @@ describe('openkit-generative MCP', () => {
       kind: 'user',
       id: 'user_local',
     });
+    const coreDb = workerAuthority(dataRoot, turn.id);
     const sourceItem = store.createItem({
       id: `it_${turn.id}_source`,
       workspaceId: 'ws_demo',
@@ -115,6 +178,10 @@ describe('openkit-generative MCP', () => {
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
     const context = {
+      coreDb,
+      packageSnapshotId: 'package_test',
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),
       dataRoot,
@@ -131,9 +198,6 @@ describe('openkit-generative MCP', () => {
     };
     try {
       const published = await dispatchOpenkitGenerativeTool(context, 'generative_ui_publish', {
-        requestId: randomUUID(),
-        threadId: 'th_demo',
-        turnId: turn.id,
         title: 'Mapping view',
         fallbackText: 'Membership 1 maps to CRM 1.',
         messages: [
@@ -167,9 +231,26 @@ describe('openkit-generative MCP', () => {
       const publishTool = OPENKIT_GENERATIVE_TOOLS.find(
         (tool) => tool.name === 'generative_ui_publish'
       );
-      expect(JSON.stringify(publishTool?.inputSchema)).toContain('threadId');
+      expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('threadId');
+      expect(JSON.stringify(publishTool?.inputSchema)).not.toContain('turnId');
+      expect(published.structuredContent).toMatchObject({ threadId: 'th_demo', turnId: turn.id });
+      const count = () =>
+        (
+          workspaceDb.sqlite
+            .prepare('SELECT COUNT(*) AS n FROM generative_presentations')
+            .get() as { n: number }
+        ).n;
+      expect(count()).toBe(1);
+      await expect(
+        dispatchOpenkitGenerativeTool(context, 'generative_ui_publish', {
+          threadId: 'foreign',
+          turnId: turn.id,
+        })
+      ).rejects.toMatchObject({ code: 'bound_input_conflict', status: 403 });
+      expect(count()).toBe(1);
     } finally {
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
     }
   });
 });

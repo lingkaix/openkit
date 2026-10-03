@@ -235,7 +235,21 @@ function createRelayStandIn(options = {}) {
       listAgentEnvironmentPackageSnapshots: async () => ({
         items: turns.map((turn) => observationFor(turn).aepItem),
       }),
-      submitWorkspaceSyncReviewDecision: async (receivedWorkspaceId, receivedReviewId, input) => {
+    },
+    core: {
+      createWorkspace: async () => ({ id: workspaceId }),
+      updateWorkspace: async (_workspaceId, input) => {
+        defaultAgentId = input?.defaults?.defaultAgentId ?? defaultAgentId;
+        selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
+        return { defaults: { defaultAgentId }, id: workspaceId };
+      },
+    },
+    operations: {
+      'sync.review-decide': async ({
+        workspaceId: receivedWorkspaceId,
+        reviewId: receivedReviewId,
+        ...input
+      }) => {
         const evidenceExistedAtCleanup = Boolean(
           options.evidenceDir &&
             (existsSync(join(options.evidenceDir, RESULT_FILE)) ||
@@ -252,16 +266,6 @@ function createRelayStandIn(options = {}) {
         }
         return { review: { id: receivedReviewId, status: 'rejected' } };
       },
-    },
-    core: {
-      createWorkspace: async () => ({ id: workspaceId }),
-      updateWorkspace: async (_workspaceId, input) => {
-        defaultAgentId = input?.defaults?.defaultAgentId ?? defaultAgentId;
-        selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
-        return { defaults: { defaultAgentId }, id: workspaceId };
-      },
-    },
-    operations: {
       'task.start': async () => ({
         evidence: { reviewIds: [reviewId] },
         state: 'completed',
@@ -1121,7 +1125,7 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     const hangCanary = 'relay-cleanup-timeout-canary-secret';
     const hung = createHungWait();
     const standIn = createRelayStandIn();
-    standIn.clients.core.app.submitWorkspaceSyncReviewDecision = hung.wait;
+    standIn.clients.core.operations['sync.review-decide'] = hung.wait;
     let settled = false;
     const runPromise = runWorkerResponsesRelayRealProviderTest({
       clients: standIn.clients,
