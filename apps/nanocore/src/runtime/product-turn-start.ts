@@ -14,6 +14,7 @@ import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   ensureConfiguredSchedulerBaseline,
+  listSchedulerSessionLeasesForTurn,
   requireSchedulerAdmissionEntry,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
@@ -305,4 +306,126 @@ function schedulerAdmissionIdSuffix(
     )
     .digest('hex')
     .slice(0, 16);
+}
+
+/**
+ * Observes one worker execution without making response delivery own its closeout.
+ *
+ * Callers validate their durable family-specific tuple before signalling admission. The scheduler execution retains its database handle; the supplied closeout and settlement callbacks retain additional family-owned handles until settlement.
+ *
+ * @param input Existing execution, closeout, and resource owners.
+ * @returns Admission, full execution, and observed closeout promises.
+ */
+export function observeTurnAdmission<T>(input: {
+  readonly execute: (admit: (turn: z.infer<typeof TurnSchema>) => void) => Promise<T>;
+  readonly closeout?: (result: T) => Promise<void> | void;
+  readonly settled: () => void;
+  readonly failed: () => void;
+}) {
+  let resolveAdmission!: (turn: z.infer<typeof TurnSchema>) => void;
+  const admission = new Promise<z.infer<typeof TurnSchema>>((resolve) => {
+    resolveAdmission = resolve;
+  });
+  let admitted = false;
+  const execution = input.execute((turn) => {
+    admitted = true;
+    resolveAdmission(turn);
+  });
+  const closeout = execution.then(input.closeout).finally(input.settled);
+  // Observe every rejection, including pre-admission failures that escape through accepted.
+  void closeout.catch(() => {
+    if (admitted) input.failed();
+  });
+  const accepted = Promise.race([
+    admission,
+    execution.then(() => {
+      if (!admitted)
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Worker execution has no durable Turn admission signal.',
+          409
+        );
+      return admission;
+    }),
+  ]);
+  return { accepted, execution, closeout };
+}
+
+/**
+ * Validates the common live Turn, scheduler, and optional initiating Item owners.
+ *
+ * Family-specific request hashes and checkpoint context remain with their command owner.
+ *
+ * @param input Exact human command and admitted Turn lineage.
+ * @returns The validated Turn, lease, and scheduler admission.
+ * @throws TurnStartValidationError when live ownership is missing or contradictory.
+ */
+export function validateLiveProductTurnAdmission(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly actorId: string;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly turnId: string;
+}) {
+  try {
+    const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    const leases = listSchedulerSessionLeasesForTurn(input.coreDb, input);
+    const lease = leases[0];
+    if (
+      !['pending', 'running'].includes(turn.status) ||
+      turn.triggerActor.kind !== 'user' ||
+      turn.triggerActor.id !== input.actorId ||
+      leases.length !== 1 ||
+      !lease ||
+      !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+      lease.recoveryState !== null ||
+      (turn.agentSessionId && turn.agentSessionId !== lease.agentSessionId)
+    )
+      throw new Error('Live Turn lease contradicts command admission.');
+    const plan = input.coreDb.sqlite
+      .prepare(
+        "SELECT queue_entry_id AS queueEntryId FROM scheduler_placement_plans WHERE plan_id = ? AND workspace_id = ? AND thread_id = ? AND turn_id = ? AND status = 'executing' AND selected_pool_id = ? AND selected_target_id = ?"
+      )
+      .get(
+        lease.planId,
+        input.workspaceId,
+        input.threadId,
+        input.turnId,
+        lease.poolId,
+        lease.targetId
+      ) as { queueEntryId: string } | undefined;
+    if (!plan) throw new Error('Live Turn has no exact scheduler plan.');
+    const admission = requireSchedulerAdmissionEntry(input.coreDb, plan.queueEntryId, input);
+    if (
+      admission.workspaceId !== input.workspaceId ||
+      admission.threadId !== input.threadId ||
+      admission.turnId !== input.turnId ||
+      admission.requestId !== input.requestId ||
+      admission.status !== 'admitted' ||
+      admission.triggerActor.kind !== 'user' ||
+      admission.triggerActor.id !== input.actorId ||
+      admission.requestedAgentId !== turn.agentId
+    )
+      throw new Error('Live Turn admission contradicts command identity.');
+    const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+    if (
+      initiatingItem &&
+      (initiatingItem.type !== 'user-message' ||
+        initiatingItem.status !== 'completed' ||
+        initiatingItem.workspaceId !== input.workspaceId ||
+        initiatingItem.threadId !== input.threadId ||
+        initiatingItem.turnId !== input.turnId ||
+        initiatingItem.text !== admission.turnInput)
+    )
+      throw new Error('Live Turn input Item contradicts scheduler admission.');
+    return { turn, lease, admission };
+  } catch {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The live Turn admission owner tuple requires recovery.',
+      409
+    );
+  }
 }

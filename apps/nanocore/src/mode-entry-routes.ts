@@ -95,6 +95,10 @@ import {
   proveFrozenDelivery,
 } from './runtime/pending-requests.js';
 import {
+  observeTurnAdmission,
+  validateLiveProductTurnAdmission,
+} from './runtime/product-turn-start.js';
+import {
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
   parseWorkerCheckpointContextAssembly,
@@ -116,7 +120,6 @@ import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
   isTerminalLeaseStatus,
   listSchedulerSessionLeasesForTurn,
-  requireSchedulerAdmissionEntry,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
@@ -899,15 +902,13 @@ function validateLiveTaskAdmission(input: {
   readonly turnId: string;
   readonly contextDigest?: string;
 }): void {
-  const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const checkpoint = getWorkerCheckpoint(
     input.workspaceDb,
     input.workspaceId,
     input.threadId,
     input.turnId
   );
-  const leases = listSchedulerSessionLeasesForTurn(input.coreDb, input);
-  const lease = leases[0];
+  const { lease, admission } = validateLiveProductTurnAdmission(input);
   if (
     !checkpoint ||
     checkpoint.requestId !== input.requestId ||
@@ -921,57 +922,14 @@ function validateLiveTaskAdmission(input: {
     (input.contextDigest !== undefined && checkpoint.contextDigest !== input.contextDigest) ||
     parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
       checkpoint.contextDigest ||
-    !['pending', 'running'].includes(turn.status) ||
-    turn.triggerActor.kind !== 'user' ||
-    turn.triggerActor.id !== input.actorId ||
-    leases.length !== 1 ||
-    !lease ||
-    !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
-    lease.recoveryState !== null ||
-    (turn.agentSessionId && turn.agentSessionId !== lease.agentSessionId) ||
     (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== lease.agentSessionId)
   )
     throw directTaskModeRecoveryError('The Task live admission owner tuple requires recovery.');
-  const plan = input.coreDb.sqlite
-    .prepare(
-      "SELECT queue_entry_id AS queueEntryId FROM scheduler_placement_plans WHERE plan_id = ? AND workspace_id = ? AND thread_id = ? AND turn_id = ? AND status = 'executing' AND selected_pool_id = ? AND selected_target_id = ?"
-    )
-    .get(
-      lease.planId,
-      input.workspaceId,
-      input.threadId,
-      input.turnId,
-      lease.poolId,
-      lease.targetId
-    ) as { queueEntryId: string } | undefined;
-  if (!plan) throw directTaskModeRecoveryError('The Task admission has no exact scheduler plan.');
-  const admission = requireSchedulerAdmissionEntry(input.coreDb, plan.queueEntryId, input);
   const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
     JSON.parse(admission.turnInput)
   );
-  if (
-    admission.workspaceId !== input.workspaceId ||
-    admission.threadId !== input.threadId ||
-    admission.turnId !== input.turnId ||
-    admission.requestId !== input.requestId ||
-    admission.status !== 'admitted' ||
-    admission.triggerActor.kind !== 'user' ||
-    admission.triggerActor.id !== input.actorId ||
-    admission.requestedAgentId !== turn.agentId ||
-    commandInputHash(workerRequest) !== checkpoint.contextDigest
-  )
+  if (commandInputHash(workerRequest) !== checkpoint.contextDigest)
     throw directTaskModeRecoveryError('The Task scheduler input contradicts its checkpoint.');
-  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
-  if (
-    initiatingItem &&
-    (initiatingItem.type !== 'user-message' ||
-      initiatingItem.status !== 'completed' ||
-      initiatingItem.workspaceId !== input.workspaceId ||
-      initiatingItem.threadId !== input.threadId ||
-      initiatingItem.turnId !== input.turnId ||
-      initiatingItem.text !== admission.turnInput)
-  )
-    throw directTaskModeRecoveryError('The Task initiating Item contradicts its admission.');
 }
 
 /**
@@ -3255,98 +3213,90 @@ export function createConversationService({
           chatInput.requestId
         );
 
-        let resolveAccepted!: () => void;
-        const accepted = new Promise<void>((resolve) => {
-          resolveAccepted = resolve;
+        const observed = observeTurnAdmission({
+          execute: async (admit) => {
+            try {
+              await runWorkerTurnLoop({
+                coreDb,
+                triggerActor,
+                requestActor: actor,
+                workspaceDb,
+                workspaceId,
+                threadId,
+                requestId: chatInput.requestId,
+                requestInputHash: commandInputHash({ input: chatInput.input }),
+                reviewRequired: false,
+                prepare: () => ({
+                  delegationRequest: workerRequest,
+                  contextPackageDigest: commandInputHash(workerRequest),
+                  knowledgeSelectionInput: null,
+                }),
+                reserveTurn: () => ({ turnId: reservedTurnId }),
+                startWorker: async ({ turnId, prepared }) => {
+                  const turn = await startModeWorkerTurn({
+                    triggerActor,
+                    requestActor: actor,
+                    store,
+                    workspaceId,
+                    threadId,
+                    prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                    requestId: chatInput.requestId,
+                    requestedAgentId: taskDecision.worker.agentId,
+                    reservedTurnId: turnId,
+                    onTurnCreated: (created) => {
+                      if (created.id !== turnId)
+                        throw directTaskModeRecoveryError(
+                          'The Assistant Task admitted another Turn.'
+                        );
+                      validateLiveTaskAdmission({
+                        coreDb,
+                        store,
+                        workspaceDb,
+                        actorId,
+                        workspaceId,
+                        threadId,
+                        requestId: chatInput.requestId,
+                        requestInputHash: commandInputHash({ input: chatInput.input }),
+                        turnId,
+                        contextDigest: prepared.contextPackageDigest,
+                      });
+                      admit(created);
+                    },
+                  });
+                  return { workerSessionId: turn.agentSessionId ?? null };
+                },
+                awaitWorker: ({ turnId }) => {
+                  const turn = store.getTurn(workspaceId, threadId, turnId);
+                  const stopReason = taskModeTerminalStopReason(store, turnId);
+                  if (!stopReason) {
+                    throw new Error('Task worker Turn has no unique terminal outcome.');
+                  }
+                  const evidence = taskModeEvidenceForTurn(
+                    store,
+                    workspaceDb,
+                    workspaceId,
+                    threadId,
+                    turn
+                  );
+                  return {
+                    stopReason,
+                    itemIds: evidence.itemIds,
+                    artifactIds: evidence.artifactIds,
+                    diagnosticsSummary:
+                      turn.error?.message ??
+                      (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+                  };
+                },
+              });
+            } finally {
+              workspaceDb.sqlite.close();
+            }
+          },
+          settled: () => activeTaskCloseouts.delete(reservedTurnId),
+          failed: () => console.error('assistant_task_closeout_failed_after_admission'),
         });
-        let admissionSignalled = false;
-        const workerLoop = (async () => {
-          try {
-            await runWorkerTurnLoop({
-              coreDb,
-              triggerActor,
-              requestActor: actor,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              requestId: chatInput.requestId,
-              requestInputHash: commandInputHash({ input: chatInput.input }),
-              reviewRequired: false,
-              prepare: () => ({
-                delegationRequest: workerRequest,
-                contextPackageDigest: commandInputHash(workerRequest),
-                knowledgeSelectionInput: null,
-              }),
-              reserveTurn: () => ({ turnId: reservedTurnId }),
-              startWorker: async ({ turnId, prepared }) => {
-                const turn = await startModeWorkerTurn({
-                  triggerActor,
-                  requestActor: actor,
-                  store,
-                  workspaceId,
-                  threadId,
-                  prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-                  requestId: chatInput.requestId,
-                  requestedAgentId: taskDecision.worker.agentId,
-                  reservedTurnId: turnId,
-                  onTurnCreated: (created) => {
-                    if (created.id !== turnId)
-                      throw directTaskModeRecoveryError(
-                        'The Assistant Task admitted another Turn.'
-                      );
-                    validateLiveTaskAdmission({
-                      coreDb,
-                      store,
-                      workspaceDb,
-                      actorId,
-                      workspaceId,
-                      threadId,
-                      requestId: chatInput.requestId,
-                      requestInputHash: commandInputHash({ input: chatInput.input }),
-                      turnId,
-                      contextDigest: prepared.contextPackageDigest,
-                    });
-                    admissionSignalled = true;
-                    resolveAccepted();
-                  },
-                });
-                return { workerSessionId: turn.agentSessionId ?? null };
-              },
-              awaitWorker: ({ turnId }) => {
-                const turn = store.getTurn(workspaceId, threadId, turnId);
-                const stopReason = taskModeTerminalStopReason(store, turnId);
-                if (!stopReason) {
-                  throw new Error('Task worker Turn has no unique terminal outcome.');
-                }
-                const evidence = taskModeEvidenceForTurn(
-                  store,
-                  workspaceDb,
-                  workspaceId,
-                  threadId,
-                  turn
-                );
-                return {
-                  stopReason,
-                  itemIds: evidence.itemIds,
-                  artifactIds: evidence.artifactIds,
-                  diagnosticsSummary:
-                    turn.error?.message ??
-                    (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
-                };
-              },
-            });
-          } finally {
-            workspaceDb.sqlite.close();
-          }
-        })();
-        const closeout = workerLoop.finally(() => activeTaskCloseouts.delete(reservedTurnId));
-        activeTaskCloseouts.set(reservedTurnId, closeout);
-        void closeout.catch(() => {
-          if (admissionSignalled) console.error('assistant_task_closeout_failed_after_admission');
-        });
-        await Promise.race([accepted, workerLoop]);
-        if (!admissionSignalled)
-          throw directTaskModeRecoveryError('The Assistant Task has no admission signal.');
+        activeTaskCloseouts.set(reservedTurnId, observed.closeout);
+        await observed.accepted;
 
         return {
           body: createHandoffResponse('task', taskDecision.rationale),
@@ -4203,159 +4153,156 @@ export function createTaskStartOperation({
       const workerStorageChoice = directTaskWorkerStorageChoice(taskInput.workerStorageChoice);
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      let resolveAccepted!: () => void;
-      const accepted = new Promise<void>((resolve) => {
-        resolveAccepted = resolve;
-      });
-      let admissionSignalled = false;
-      const workerExecution = (async () => {
-        await runWorkerTurnLoop({
-          coreDb,
-          triggerActor,
-          requestActor: actor,
-          workspaceDb,
-          workspaceId,
-          threadId,
-          requestId: taskInput.requestId,
-          requestInputHash,
-          reviewRequired: false,
-          prepare: async () => {
-            const dataRoot = store.getDataRoot();
-            if (!dataRoot) {
-              throw directTaskModeRecoveryError(
-                'Task Knowledge retrieval requires a file-backed data root.'
-              );
-            }
+      const observed = observeTurnAdmission({
+        execute: async (admit) => {
+          await runWorkerTurnLoop({
+            coreDb,
+            triggerActor,
+            requestActor: actor,
+            workspaceDb,
+            workspaceId,
+            threadId,
+            requestId: taskInput.requestId,
+            requestInputHash,
+            reviewRequired: false,
+            prepare: async () => {
+              const dataRoot = store.getDataRoot();
+              if (!dataRoot) {
+                throw directTaskModeRecoveryError(
+                  'Task Knowledge retrieval requires a file-backed data root.'
+                );
+              }
 
-            let knowledgeSelectionInput: { readonly retrievalTraceId: string };
-            try {
-              knowledgeSelectionInput = await createOperationInvocation({
-                coreDb,
+              let knowledgeSelectionInput: { readonly retrievalTraceId: string };
+              try {
+                knowledgeSelectionInput = await createOperationInvocation({
+                  coreDb,
+                  store,
+                  inflightCommands,
+                  repositoryWorkspaceDb,
+                  workspaceMutationAdmission,
+                })(
+                  'knowledge.context.prepare',
+                  { workspaceId, query: taskInput.input },
+                  {
+                    kind: 'task',
+                    actor: actor,
+                    traceId: directTaskKnowledgeRetrievalTraceId(
+                      actorId,
+                      workspaceId,
+                      threadId,
+                      taskInput.requestId
+                    ),
+                  }
+                );
+              } catch (error) {
+                throw directTaskModeRecoveryError(
+                  error instanceof Error &&
+                    error.message === 'Duplicate Knowledge retrieval trace id.'
+                    ? 'Task Knowledge retrieval exists without a provable worker owner.'
+                    : 'Task Knowledge retrieval could not establish one coherent selection.'
+                );
+              }
+
+              return {
+                delegationRequest: workerRequest,
+                contextPackageDigest: commandInputHash(workerRequest),
+                knowledgeSelectionInput,
+              };
+            },
+            reserveTurn: () => ({ turnId: reservedTurnId }),
+            startWorker: async ({ turnId, prepared }) => {
+              const turn = await startModeWorkerTurn({
+                triggerActor,
+                requestActor: actor,
                 store,
-                inflightCommands,
-                repositoryWorkspaceDb,
-                workspaceMutationAdmission,
-              })(
-                'knowledge.context.prepare',
-                { workspaceId, query: taskInput.input },
-                {
-                  kind: 'task',
-                  actor: actor,
-                  traceId: directTaskKnowledgeRetrievalTraceId(
+                workspaceId,
+                threadId,
+                prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                modelId: taskInput.modelId,
+                requestId: taskInput.requestId,
+                requestedAgentId: taskDecision.worker.agentId,
+                reservedTurnId: turnId,
+                ...(workerStorageChoice ? { workerStorageChoice } : {}),
+                onTurnCreated: (created) => {
+                  if (created.id !== turnId)
+                    throw directTaskModeRecoveryError('The Task admitted another Turn.');
+                  validateLiveTaskAdmission({
+                    coreDb,
+                    store,
+                    workspaceDb,
                     actorId,
                     workspaceId,
                     threadId,
-                    taskInput.requestId
-                  ),
-                }
+                    requestId: taskInput.requestId,
+                    requestInputHash,
+                    turnId,
+                    contextDigest: prepared.contextPackageDigest,
+                  });
+                  admit(created);
+                },
+              });
+              return { workerSessionId: turn.agentSessionId ?? null };
+            },
+            awaitWorker: ({ turnId }) => {
+              const turn = store.getTurn(workspaceId, threadId, turnId);
+              const stopReason = taskModeTerminalStopReason(store, turnId);
+              if (!stopReason) {
+                throw new Error('Task worker Turn has no unique terminal outcome.');
+              }
+              const evidence = taskModeEvidenceForTurn(
+                store,
+                workspaceDb,
+                workspaceId,
+                threadId,
+                turn
               );
-            } catch (error) {
-              throw directTaskModeRecoveryError(
-                error instanceof Error &&
-                  error.message === 'Duplicate Knowledge retrieval trace id.'
-                  ? 'Task Knowledge retrieval exists without a provable worker owner.'
-                  : 'Task Knowledge retrieval could not establish one coherent selection.'
-              );
-            }
-
-            return {
-              delegationRequest: workerRequest,
-              contextPackageDigest: commandInputHash(workerRequest),
-              knowledgeSelectionInput,
-            };
-          },
-          reserveTurn: () => ({ turnId: reservedTurnId }),
-          startWorker: async ({ turnId, prepared }) => {
-            const turn = await startModeWorkerTurn({
-              triggerActor,
-              requestActor: actor,
-              store,
-              workspaceId,
-              threadId,
-              prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-              modelId: taskInput.modelId,
-              requestId: taskInput.requestId,
-              requestedAgentId: taskDecision.worker.agentId,
-              reservedTurnId: turnId,
-              ...(workerStorageChoice ? { workerStorageChoice } : {}),
-              onTurnCreated: (created) => {
-                if (created.id !== turnId)
-                  throw directTaskModeRecoveryError('The Task admitted another Turn.');
-                validateLiveTaskAdmission({
-                  coreDb,
-                  store,
-                  workspaceDb,
-                  actorId,
-                  workspaceId,
-                  threadId,
-                  requestId: taskInput.requestId,
-                  requestInputHash,
-                  turnId,
-                  contextDigest: prepared.contextPackageDigest,
-                });
-                admissionSignalled = true;
-                resolveAccepted();
-              },
-            });
-            return { workerSessionId: turn.agentSessionId ?? null };
-          },
-          awaitWorker: ({ turnId }) => {
-            const turn = store.getTurn(workspaceId, threadId, turnId);
-            const stopReason = taskModeTerminalStopReason(store, turnId);
-            if (!stopReason) {
-              throw new Error('Task worker Turn has no unique terminal outcome.');
-            }
-            const evidence = taskModeEvidenceForTurn(
-              store,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              turn
-            );
-            return {
-              stopReason,
-              itemIds: evidence.itemIds,
-              artifactIds: evidence.artifactIds,
-              diagnosticsSummary:
-                turn.error?.message ??
-                (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
-            };
-          },
-        });
-        const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, reservedTurnId);
-        if (!checkpoint) {
-          throw directTaskModeRecoveryError('The Task worker checkpoint is unavailable.');
-        }
-        return recoverDirectTaskModeCheckpoint({
-          coreDb,
-          store,
-          workspaceDb,
-          workspaceId,
-          threadId,
-          requestId: taskInput.requestId,
-          requestInputHash,
-          turnId: reservedTurnId,
-          checkpoint,
-        });
-      })();
-      backgroundCloseout = workerExecution
-        .then(async () => {
+              return {
+                stopReason,
+                itemIds: evidence.itemIds,
+                artifactIds: evidence.artifactIds,
+                diagnosticsSummary:
+                  turn.error?.message ??
+                  (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+              };
+            },
+          });
+          const checkpoint = getWorkerCheckpoint(
+            workspaceDb,
+            workspaceId,
+            threadId,
+            reservedTurnId
+          );
+          if (!checkpoint) {
+            throw directTaskModeRecoveryError('The Task worker checkpoint is unavailable.');
+          }
+          return recoverDirectTaskModeCheckpoint({
+            coreDb,
+            store,
+            workspaceDb,
+            workspaceId,
+            threadId,
+            requestId: taskInput.requestId,
+            requestInputHash,
+            turnId: reservedTurnId,
+            checkpoint,
+          });
+        },
+        closeout: async () => {
           await receiptPublished;
           await closeoutTaskCommand(workspaceDb);
-        })
-        .finally(() => {
+        },
+        settled: () => {
           activeTaskCloseouts.delete(reservedTurnId);
           workspaceDb.sqlite.close();
-        });
-      activeTaskCloseouts.set(reservedTurnId, backgroundCloseout);
-      void backgroundCloseout.catch(() => {
-        if (admissionSignalled) console.error('task_worker_closeout_failed_after_admission');
+        },
+        failed: () => console.error('task_worker_closeout_failed_after_admission'),
       });
-      await Promise.race([accepted, workerExecution]);
-      if (!admissionSignalled)
-        throw directTaskModeRecoveryError('The Task worker has no admission signal.');
+      backgroundCloseout = observed.closeout;
+      activeTaskCloseouts.set(reservedTurnId, backgroundCloseout);
+      await observed.accepted;
       const turn = store.getTurn(workspaceId, threadId, reservedTurnId);
-      if (turn.status !== 'pending' && turn.status !== 'running') return workerExecution;
+      if (turn.status !== 'pending' && turn.status !== 'running') return observed.execution;
       validateLiveTaskAdmission({
         coreDb,
         store,

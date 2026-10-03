@@ -20,13 +20,71 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
-import { startProductTurn } from './runtime/product-turn-start.js';
+import {
+  observeTurnAdmission,
+  startProductTurn,
+  validateLiveProductTurnAdmission,
+} from './runtime/product-turn-start.js';
 import type { TurnExecutor } from './runtime/types.js';
-import { completeSchedulerLeaseForTerminalTurn } from './scheduler-records.js';
+import {
+  completeSchedulerLeaseForTerminalTurn,
+  listSchedulerSessionLeasesForTurn,
+} from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
+
+// Core database identity scopes process-local execution ownership to this App.
+const activeTurnCloseouts = new WeakMap<CoreDb, Map<string, Promise<void>>>();
+
+/**
+ * Binds Core command input to the common durable live Turn admission.
+ *
+ * Receipt lookup already verifies the complete semantic-input hash before replay; this predicate verifies that the scheduler owners still carry that same admitted input.
+ *
+ * @param coreDb Scheduler authority, required for worker admission.
+ * @param store Command store.
+ * @param input Immutable command input.
+ * @param actorId Original initiating actor, retained on replay.
+ * @param turnId Original admitted Turn.
+ * @throws TurnStartValidationError when Core input or scheduler authority disagrees.
+ */
+function validateCoreTurnAdmission(
+  coreDb: CoreDb | undefined,
+  store: FsStore,
+  input: z.infer<typeof SubmitTurnInputRequestSchema>,
+  actorId: string,
+  turnId: string
+): void {
+  if (!coreDb)
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Turn admission has no scheduler storage.',
+      409
+    );
+  const { admission } = validateLiveProductTurnAdmission({
+    coreDb,
+    store,
+    actorId,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: input.requestId,
+    turnId,
+  });
+  if (
+    admission.turnInput !== input.input ||
+    admission.modelId !== (input.modelId ?? null) ||
+    admission.profileRef !== (input.profileId ?? null) ||
+    (input.agentId !== undefined && admission.requestedAgentId !== input.agentId) ||
+    admission.reasoningEffort !== input.reasoningEffort
+  )
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Turn scheduler admission contradicts command input.',
+      409
+    );
+}
 
 /**
  * Projects one durable Turn onto the ordinary product-safe response shape.
@@ -93,27 +151,92 @@ export async function startTurn(
           );
         }
 
-        const handle = await startProductTurn({
-          input,
-          requestActor: actor,
-          providerCredentialResolver,
-          schedulerEpoch,
-          snapshot: runtimeConfig(),
-          store,
-          triggerActor: { kind: 'user', id: actor.userId },
-          turnExecutor,
-          workerPlacement,
-          ...(coreDb ? { coreDb } : {}),
+        const closeouts = coreDb
+          ? (activeTurnCloseouts.get(coreDb) ?? new Map<string, Promise<void>>())
+          : new Map<string, Promise<void>>();
+        if (coreDb) activeTurnCloseouts.set(coreDb, closeouts);
+        let admittedTurnId: string | undefined;
+        const observed = observeTurnAdmission({
+          execute: (admit) =>
+            startProductTurn({
+              input,
+              requestActor: actor,
+              providerCredentialResolver,
+              schedulerEpoch,
+              snapshot: runtimeConfig(),
+              store,
+              triggerActor: { kind: 'user', id: actor.userId },
+              turnExecutor,
+              workerPlacement,
+              ...(coreDb ? { coreDb } : {}),
+              onTurnCreated: (created) => {
+                validateCoreTurnAdmission(coreDb, store, input, actor.userId, created.id);
+                admittedTurnId = created.id;
+                closeouts.set(created.id, observed.closeout);
+                admit(created);
+              },
+            }),
+          closeout: (handle) => completeSchedulerLeaseForTerminalTurn(coreDb, handle.turn),
+          settled: () => {
+            if (admittedTurnId) closeouts.delete(admittedTurnId);
+          },
+          failed: () => console.error('turn_worker_closeout_failed_after_admission'),
         });
-
-        return TurnSchema.parse(handle.turn);
+        const admitted = await observed.accepted;
+        // Terminal publication can precede cleanup; only replay joins that closeout.
+        return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, admitted.id));
       },
-      replay: (record) =>
-        TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, record.response.id)),
+      replay: async (record) => {
+        try {
+          // The receipt kind and exact owner must agree before either replay branch is selected.
+          if (record.response.kind !== 'turn') throw new Error('Turn receipt kind contradiction.');
+          const current = TurnSchema.parse(
+            store.getTurn(input.workspaceId, input.threadId, record.response.id)
+          );
+          if (current.status === 'pending' || current.status === 'running') {
+            validateCoreTurnAdmission(coreDb, store, input, current.triggerActor.id, current.id);
+          } else {
+            const closeout = coreDb ? activeTurnCloseouts.get(coreDb)?.get(current.id) : undefined;
+            if (closeout) {
+              try {
+                await closeout;
+              } catch {
+                // A durable failed Turn remains readable; a successful Turn cannot hide failed closeout.
+                if (current.status !== 'failed')
+                  throw new TurnStartValidationError(
+                    'recovery_required',
+                    'The original Turn worker closeout failed.',
+                    409
+                  );
+              }
+            }
+            if (
+              coreDb &&
+              current.status === 'completed' &&
+              listSchedulerSessionLeasesForTurn(coreDb, {
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                turnId: current.id,
+              }).some((lease) => lease.status !== 'released')
+            )
+              throw new TurnStartValidationError(
+                'recovery_required',
+                'The terminal Turn lease requires recovery.',
+                409
+              );
+          }
+          return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, current.id));
+        } catch (error) {
+          if (error instanceof TurnStartValidationError) throw error;
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The original Turn receipt owner is missing or contradictory.',
+            409
+          );
+        }
+      },
       responseId: (result) => result.id,
     });
-
-    completeSchedulerLeaseForTerminalTurn(coreDb, turn);
 
     return projectOrdinaryTurn(turn);
   } catch (error) {

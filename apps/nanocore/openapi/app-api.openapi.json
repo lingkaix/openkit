@@ -845,7 +845,7 @@
         "tags": [
           "turn"
         ],
-        "summary": "Start one worker Turn in its addressed Thread with exact command replay.",
+        "summary": "Admit one worker Turn in its addressed Thread; return before completion and replay its current owner.",
         "security": [
           {
             "bearerAuth": []
@@ -877,7 +877,7 @@
         },
         "responses": {
           "202": {
-            "description": "Start one worker Turn in its addressed Thread with exact command replay.",
+            "description": "Admit one worker Turn in its addressed Thread; return before completion and replay its current owner.",
             "content": {
               "application/json": {
                 "schema": {
@@ -85935,5 +85935,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:3b4056bc91164daf04f257633909e77436163fd5ecc91ed8a43c9bb6a3d3ef6e"
+  "x-openkit-source-digest": "sha256:031e1e96f57a8beb1b7fc8708cee79b73a12645e646c18b57e247226aa72cf4a"
 }

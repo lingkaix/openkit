@@ -107,7 +107,8 @@ export const CORE_COMMAND_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'turn.start': {
-    description: 'Start one worker Turn in its addressed Thread with exact command replay.',
+    description:
+      'Admit one worker Turn in its addressed Thread; return before completion and replay its current owner.',
     inputSchema: SubmitTurnInputRequestSchema.strict(),
     outputSchema: ProductTurnSchema,
     credentials,

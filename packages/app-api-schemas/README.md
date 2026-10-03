@@ -112,3 +112,5 @@ Conversation, Task, Attention and Pending Request operations are composed from t
 `InjectionVisibilitySchema` in `src/vault-injection.ts` defines the closed visibility set shared by public injection-plan responses, NanoCore storage typing, and Workspace archive validation. Workspace plan lists include runtime-env plans without exposing credential values.
 
 `src/core-commands.ts` defines the eleven ordinary Workspace, Thread and Turn commands and Quick Chat operations using complete existing schemas and preserving each schema's unknown-field policy; the CLI retains its separate strict input projection. Its static composition in `operation-definitions.ts` derives the JSON, client, OpenAPI, MCP and CLI surfaces; SSE remains separate.
+
+`turn.start` keeps its existing Product Turn schema and HTTP 202 binding; its definition describes the durable admission response and current-owner replay. Worker completion is observed through existing product reads and exact replay.
