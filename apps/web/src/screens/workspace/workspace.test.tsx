@@ -834,7 +834,12 @@ function knowledgePanel(name: 'Sources' | 'Ledger' | 'Retrieval' | 'Manager') {
   return screen.getByRole('region', { name });
 }
 
-/** Enters bounded Knowledge panel fields without using the page-CRUD Title/Content labels. */
+/** Stops queued input after a test timeout before it can reach the next test's focused field. */
+function setupKnowledgeUser(signal: AbortSignal) {
+  return userEvent.setup({ advanceTimers: () => signal.throwIfAborted() });
+}
+
+/** Pastes Knowledge drafts into focused fields; these journeys assert values, not keystrokes. */
 async function fillKnowledgeFields(
   user: ReturnType<typeof userEvent.setup>,
   region: HTMLElement,
@@ -843,7 +848,7 @@ async function fillKnowledgeFields(
   for (const [name, value] of fields) {
     const field = within(region).getByRole('textbox', { name });
     await user.clear(field);
-    await user.type(field, value);
+    await user.paste(value);
   }
 }
 
@@ -3105,6 +3110,18 @@ describe('Agents actual Workers', () => {
 });
 
 describe('Knowledge (board 14)', () => {
+  it('stops cancelled draft input before it can edit the next focused field', async () => {
+    const cancellation = new AbortController();
+    const user = setupKnowledgeUser(cancellation.signal);
+    render(<input aria-label="Next draft" defaultValue="Untouched draft" />);
+    const nextDraft = screen.getByRole('textbox', { name: 'Next draft' });
+    await user.click(nextDraft);
+
+    cancellation.abort(new Error('Draft test timed out'));
+    await expect(user.keyboard('Late draft bytes')).rejects.toThrow('Draft test timed out');
+    expect(nextDraft).toHaveValue('Untouched draft');
+  });
+
   it('lists knowledge entries', async () => {
     const client = makeClient({
       core: { 'knowledge.list': vi.fn().mockResolvedValue({ items: [KNOWLEDGE_ENTRY] }) },
@@ -3125,8 +3142,10 @@ describe('Knowledge (board 14)', () => {
     renderApp('/knowledge', client);
     await screen.findByText(/No entries yet/i);
     await user.click(screen.getByRole('button', { name: /Add knowledge/i }));
-    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Prefer concise memos');
-    await user.type(screen.getByRole('textbox', { name: 'Content' }), 'Keep it short.');
+    await user.click(screen.getByRole('textbox', { name: 'Title' }));
+    await user.paste('Prefer concise memos');
+    await user.click(screen.getByRole('textbox', { name: 'Content' }));
+    await user.paste('Keep it short.');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(createKnowledge).toHaveBeenCalledWith(
@@ -3178,10 +3197,12 @@ describe('Knowledge (board 14)', () => {
     expect(save).toBeDisabled();
 
     await user.clear(title);
-    await user.type(title, '   ');
+    await user.click(title);
+    await user.paste('   ');
     expect(save).toBeDisabled();
     await user.clear(title);
-    await user.type(title, 'Prefer concise release notes');
+    await user.click(title);
+    await user.paste('Prefer concise release notes');
     await user.click(save);
 
     await waitFor(() =>
@@ -3230,7 +3251,8 @@ describe('Knowledge (board 14)', () => {
     expect(save).toBeDisabled();
 
     await user.clear(content);
-    await user.type(content, 'Changed server content');
+    await user.click(content);
+    await user.paste('Changed server content');
     await user.click(save);
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
@@ -3265,7 +3287,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
     const content = screen.getByRole('textbox', { name: 'Content' });
     await user.clear(content);
-    await user.type(content, 'Unsaved local content');
+    await user.click(content);
+    await user.paste('Unsaved local content');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
 
@@ -3378,7 +3401,8 @@ describe('Knowledge (board 14)', () => {
       );
       const title = screen.getByRole('textbox', { name: 'Title' });
       await user.clear(title);
-      await user.type(title, 'Unsaved local wording');
+      await user.click(title);
+      await user.paste('Unsaved local wording');
       await user.click(screen.getByRole('button', { name: 'Save changes' }));
     } else {
       await user.click(
@@ -3459,8 +3483,10 @@ describe('Knowledge (board 14)', () => {
     if (operation === 'create') {
       await screen.findByText(/No entries yet/i);
       await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Prefer concise memos');
-      await user.type(screen.getByRole('textbox', { name: 'Content' }), 'Keep it short.');
+      await user.click(screen.getByRole('textbox', { name: 'Title' }));
+      await user.paste('Prefer concise memos');
+      await user.click(screen.getByRole('textbox', { name: 'Content' }));
+      await user.paste('Keep it short.');
       await user.click(screen.getByRole('button', { name: 'Save' }));
     } else if (operation === 'update') {
       await user.click(
@@ -3468,7 +3494,8 @@ describe('Knowledge (board 14)', () => {
       );
       const title = screen.getByRole('textbox', { name: 'Title' });
       await user.clear(title);
-      await user.type(title, 'Unsaved local wording');
+      await user.click(title);
+      await user.paste('Unsaved local wording');
       await user.click(screen.getByRole('button', { name: 'Save changes' }));
     } else {
       await user.click(
@@ -3502,8 +3529,10 @@ describe('Knowledge (board 14)', () => {
         expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
       );
       await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.type(screen.getByRole('textbox', { name: 'Title' }), laterEntry.title);
-      await user.type(screen.getByRole('textbox', { name: 'Content' }), laterEntry.content);
+      await user.click(screen.getByRole('textbox', { name: 'Title' }));
+      await user.paste(laterEntry.title);
+      await user.click(screen.getByRole('textbox', { name: 'Content' }));
+      await user.paste(laterEntry.content);
       await user.click(screen.getByRole('button', { name: 'Save' }));
     } else if (operation === 'update') {
       await waitFor(() =>
@@ -3512,7 +3541,8 @@ describe('Knowledge (board 14)', () => {
       await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
       const title = screen.getByRole('textbox', { name: 'Title' });
       await user.clear(title);
-      await user.type(title, laterEntry.title);
+      await user.click(title);
+      await user.paste(laterEntry.title);
       await user.click(screen.getByRole('button', { name: 'Save changes' }));
     } else {
       await waitFor(() =>
@@ -3566,7 +3596,8 @@ describe('Knowledge (board 14)', () => {
     await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
     const content = screen.getByRole('textbox', { name: 'Content' });
     await user.clear(content);
-    await user.type(content, 'Pending content change');
+    await user.click(content);
+    await user.paste('Pending content change');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(updateKnowledge).toHaveBeenCalledTimes(1));
 
@@ -3621,14 +3652,17 @@ describe('Knowledge (board 14)', () => {
     await screen.findByText(KNOWLEDGE_ENTRY.title);
     if (operation === 'create') {
       await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-      await user.type(screen.getByRole('textbox', { name: 'Title' }), 'New preference');
-      await user.type(screen.getByRole('textbox', { name: 'Content' }), 'New content');
+      await user.click(screen.getByRole('textbox', { name: 'Title' }));
+      await user.paste('New preference');
+      await user.click(screen.getByRole('textbox', { name: 'Content' }));
+      await user.paste('New content');
       await user.click(screen.getByRole('button', { name: 'Save' }));
     } else if (operation === 'update') {
       await user.click(screen.getByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
       const title = screen.getByRole('textbox', { name: 'Title' });
       await user.clear(title);
-      await user.type(title, 'Changed preference');
+      await user.click(title);
+      await user.paste('Changed preference');
       await user.click(screen.getByRole('button', { name: 'Save changes' }));
     } else {
       await user.click(screen.getByRole('button', { name: `Remove ${KNOWLEDGE_ENTRY.title}` }));
@@ -4081,8 +4115,10 @@ describe('Knowledge (board 14)', () => {
     expect(readKnowledgeSource).toHaveBeenCalledTimes(1);
   });
 
-  it('records ledger rows from the Ledger panel, lists conflicts, and resolves through an accessible control', async () => {
-    const user = userEvent.setup();
+  it('records ledger rows from the Ledger panel, lists conflicts, and resolves through an accessible control', async ({
+    signal,
+  }) => {
+    const user = setupKnowledgeUser(signal);
     const listKnowledgeObservations = vi
       .fn()
       .mockResolvedValueOnce({ items: [] })
@@ -5037,8 +5073,10 @@ describe('Knowledge (board 14)', () => {
     expect(knowledgeScreenSource).not.toMatch(/role=["']listbox["']/);
   });
 
-  it('does not keep Workspace A Knowledge drafts submit-capable after switching to Workspace B', async () => {
-    const user = userEvent.setup();
+  it('does not keep Workspace A Knowledge drafts submit-capable after switching to Workspace B', async ({
+    signal,
+  }) => {
+    const user = setupKnowledgeUser(signal);
     const registerKnowledgeSource = vi.fn();
     const recordKnowledgeObservation = vi.fn();
     const recordKnowledgeClaim = vi.fn();
@@ -5091,6 +5129,7 @@ describe('Knowledge (board 14)', () => {
       ).toBeEnabled();
     }
 
+    signal.throwIfAborted();
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Knowledge' })).toBeInTheDocument();
     for (const item of KNOWLEDGE_DRAFT_WRITES) {
@@ -5132,8 +5171,10 @@ describe('Knowledge (board 14)', () => {
 
     await screen.findByText(/No entries yet/i);
     await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
-    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Prefer concise memos');
-    await user.type(screen.getByRole('textbox', { name: 'Content' }), 'Keep it short.');
+    await user.click(screen.getByRole('textbox', { name: 'Title' }));
+    await user.paste('Prefer concise memos');
+    await user.click(screen.getByRole('textbox', { name: 'Content' }));
+    await user.paste('Keep it short.');
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
@@ -5309,7 +5350,8 @@ describe('Knowledge (board 14)', () => {
       );
       const title = screen.getByRole('textbox', { name: 'Title' });
       await user.clear(title);
-      await user.type(title, 'Prefer concise release notes');
+      await user.click(title);
+      await user.paste('Prefer concise release notes');
       await user.click(screen.getByRole('button', { name: 'Save changes' }));
     } else {
       await user.click(
