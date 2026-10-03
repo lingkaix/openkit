@@ -1349,6 +1349,45 @@ describe('real Task Mode worker L3 test policy', () => {
     }
   });
 
+  it('reads an admitted running Turn and replays its original request for completion', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-admission-runner-'));
+    const workerImageRef = 'example.invalid/openkit-worker:test';
+    const fixture = createPassingTaskModeFixture({ workerImageRef });
+    const terminalStart = fixture.clients.core.operations['task.start'];
+    const events = [];
+    let originalInput;
+    fixture.clients.core.operations['task.start'] = async (input) => {
+      events.push('task.start');
+      if (!originalInput) {
+        originalInput = input;
+        return { state: 'running', turn: { id: 'turn_acceptance' }, evidence: { reviewIds: [] } };
+      }
+      assert.deepEqual(input, originalInput);
+      assert.equal(typeof input.requestId, 'string');
+      return terminalStart(input);
+    };
+    fixture.clients.core.operations['turn.read'] = async (input) => {
+      events.push('turn.read');
+      assert.equal(input.turnId, 'turn_acceptance');
+      return { id: input.turnId, status: 'completed' };
+    };
+    try {
+      const result = await runTaskModeRealWorkerTest({
+        clients: fixture.clients,
+        configureRuntime: async () => ({ providerId: 'openai_codex' }),
+        env: enabledTaskModeEnv({
+          OPENKIT_L6_EVIDENCE_DIR: join(tempRoot, 'evidence'),
+          OPENKIT_L6_TASK_WORKER_IMAGE_REF: workerImageRef,
+        }),
+        stdout: () => {},
+      });
+      assert.equal(result.status, 'ok');
+      assert.deepEqual(events, ['task.start', 'turn.read', 'task.start']);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it('writes the failed Turn product-safe runtime evidence into failure evidence', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'openkit-task-runtime-failure-evidence-'));
     const evidenceDir = join(tempRoot, 'evidence');

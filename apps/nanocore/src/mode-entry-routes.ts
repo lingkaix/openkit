@@ -116,6 +116,7 @@ import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
   isTerminalLeaseStatus,
   listSchedulerSessionLeasesForTurn,
+  requireSchedulerAdmissionEntry,
   requireSchedulerSessionLeaseAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
@@ -593,16 +594,37 @@ function replayConversationCommand(
         downstreamTurn.threadId !== threadId ||
         downstreamTurn.id !==
           chatTaskModeTurnId(actorId, workspaceId, threadId, record.requestId) ||
-        !downstreamTurn.items.some(
-          (item) =>
-            item.id === `it_user_${downstreamTurn.id}` &&
-            item.type === 'user-message' &&
-            item.status === 'completed'
-        )
+        (!(downstreamTurn.status === 'pending' || downstreamTurn.status === 'running') &&
+          !downstreamTurn.items.some(
+            (item) =>
+              item.id === `it_user_${downstreamTurn.id}` &&
+              item.type === 'user-message' &&
+              item.status === 'completed'
+          ))
       ) {
         throw new Error('Chat Task downstream owner contradiction.');
       }
 
+      if (downstreamTurn.status === 'pending' || downstreamTurn.status === 'running') {
+        if (!coreDb) throw new Error('Chat Task runtime owners are unavailable.');
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          // The existing handoff checkpoint binds the Assistant's initiating text.
+          validateLiveTaskAdmission({
+            coreDb,
+            store,
+            workspaceDb,
+            actorId,
+            workspaceId,
+            threadId,
+            requestId: record.requestId,
+            requestInputHash: commandInputHash({ input: userItem.text }),
+            turnId: downstreamTurn.id,
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
       outcome = 'task-handoff';
       explanation = resultItem.summary;
       handoff = { targetMode: 'task', reason: resultItem.summary, statusItemId: resultItem.id };
@@ -708,6 +730,63 @@ function replayTaskModeCommand(
     }
 
     if (currentTurn.id === directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId)) {
+      if (currentTurn.status === 'pending' || currentTurn.status === 'running') {
+        if (!coreDb) throw new Error('Task runtime owners are unavailable.');
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          validateLiveTaskAdmission({
+            coreDb,
+            store,
+            workspaceDb,
+            actorId,
+            workspaceId,
+            threadId,
+            requestId: record.requestId,
+            requestInputHash: record.inputHash,
+            turnId: currentTurn.id,
+          });
+          return StartTaskModeResponseSchema.parse({
+            state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),
+            turn: currentTurn,
+            completion: null,
+            evidence: taskModeEvidenceForTurn(
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              currentTurn
+            ),
+          });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+      // A receipt published at admission cannot bypass an unfinished or contradictory closeout.
+      if (coreDb) {
+        const workspaceDb = repositoryWorkspaceDb(workspaceId);
+        try {
+          const checkpoint = getWorkerCheckpoint(
+            workspaceDb,
+            workspaceId,
+            threadId,
+            currentTurn.id
+          );
+          if (checkpoint)
+            return recoverDirectTaskModeCheckpoint({
+              coreDb,
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              requestId: record.requestId,
+              requestInputHash: record.inputHash,
+              turnId: currentTurn.id,
+              checkpoint,
+            });
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
       const initiatingItem = currentTurn.items.find(
         (item) => item.id === `it_user_${currentTurn.id}`
       );
@@ -800,6 +879,99 @@ function replayTaskModeCommand(
       409
     );
   }
+}
+
+/**
+ * Validates durable Task admission before the executor has necessarily written its input Item.
+ *
+ * @param input Exact command, checkpoint, Turn and scheduler owners.
+ * @throws TurnStartValidationError when live admission authority is absent or contradictory.
+ */
+function validateLiveTaskAdmission(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly actorId: string;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly requestInputHash: string;
+  readonly turnId: string;
+  readonly contextDigest?: string;
+}): void {
+  const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  const checkpoint = getWorkerCheckpoint(
+    input.workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    input.turnId
+  );
+  const leases = listSchedulerSessionLeasesForTurn(input.coreDb, input);
+  const lease = leases[0];
+  if (
+    !checkpoint ||
+    checkpoint.requestId !== input.requestId ||
+    checkpoint.requestInputHash !== input.requestInputHash ||
+    checkpoint.goalId !== null ||
+    checkpoint.taskId !== null ||
+    checkpoint.iteration !== 0 ||
+    !['preparing', 'running_worker'].includes(checkpoint.stage) ||
+    checkpoint.stopReason !== null ||
+    !checkpoint.contextDigest ||
+    (input.contextDigest !== undefined && checkpoint.contextDigest !== input.contextDigest) ||
+    parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
+      checkpoint.contextDigest ||
+    !['pending', 'running'].includes(turn.status) ||
+    turn.triggerActor.kind !== 'user' ||
+    turn.triggerActor.id !== input.actorId ||
+    leases.length !== 1 ||
+    !lease ||
+    !['acquired', 'starting', 'active', 'idle'].includes(lease.status) ||
+    lease.recoveryState !== null ||
+    (turn.agentSessionId && turn.agentSessionId !== lease.agentSessionId) ||
+    (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== lease.agentSessionId)
+  )
+    throw directTaskModeRecoveryError('The Task live admission owner tuple requires recovery.');
+  const plan = input.coreDb.sqlite
+    .prepare(
+      "SELECT queue_entry_id AS queueEntryId FROM scheduler_placement_plans WHERE plan_id = ? AND workspace_id = ? AND thread_id = ? AND turn_id = ? AND status = 'executing' AND selected_pool_id = ? AND selected_target_id = ?"
+    )
+    .get(
+      lease.planId,
+      input.workspaceId,
+      input.threadId,
+      input.turnId,
+      lease.poolId,
+      lease.targetId
+    ) as { queueEntryId: string } | undefined;
+  if (!plan) throw directTaskModeRecoveryError('The Task admission has no exact scheduler plan.');
+  const admission = requireSchedulerAdmissionEntry(input.coreDb, plan.queueEntryId, input);
+  const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
+    JSON.parse(admission.turnInput)
+  );
+  if (
+    admission.workspaceId !== input.workspaceId ||
+    admission.threadId !== input.threadId ||
+    admission.turnId !== input.turnId ||
+    admission.requestId !== input.requestId ||
+    admission.status !== 'admitted' ||
+    admission.triggerActor.kind !== 'user' ||
+    admission.triggerActor.id !== input.actorId ||
+    admission.requestedAgentId !== turn.agentId ||
+    commandInputHash(workerRequest) !== checkpoint.contextDigest
+  )
+    throw directTaskModeRecoveryError('The Task scheduler input contradicts its checkpoint.');
+  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  if (
+    initiatingItem &&
+    (initiatingItem.type !== 'user-message' ||
+      initiatingItem.status !== 'completed' ||
+      initiatingItem.workspaceId !== input.workspaceId ||
+      initiatingItem.threadId !== input.threadId ||
+      initiatingItem.turnId !== input.turnId ||
+      initiatingItem.text !== admission.turnInput)
+  )
+    throw directTaskModeRecoveryError('The Task initiating Item contradicts its admission.');
 }
 
 /**
@@ -1075,11 +1247,6 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     checkpoint
   );
   if (retryDecision.status === 'reconnect-pending') {
-    if (receipt) {
-      throw directTaskModeRecoveryError(
-        'The reconnectable Task checkpoint already has a terminal command receipt.'
-      );
-    }
     return 'live';
   }
 
@@ -1742,6 +1909,8 @@ export function createConversationService({
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }) {
+  // App-local handoff execution ownership survives the admission response until closeout settles.
+  const activeTaskCloseouts = new Map<string, Promise<void>>();
   // These process-local handles stop admitted model work; the Turn remains the durable owner.
   const activeChatRuns = new WeakMap<
     FsStore,
@@ -3086,63 +3255,98 @@ export function createConversationService({
           chatInput.requestId
         );
 
-        try {
-          await runWorkerTurnLoop({
-            coreDb,
-            triggerActor,
-            requestActor: actor,
-            workspaceDb,
-            workspaceId,
-            threadId,
-            requestId: chatInput.requestId,
-            requestInputHash: commandInputHash({ input: chatInput.input }),
-            reviewRequired: false,
-            prepare: () => ({
-              delegationRequest: workerRequest,
-              contextPackageDigest: commandInputHash(workerRequest),
-              knowledgeSelectionInput: null,
-            }),
-            reserveTurn: () => ({ turnId: reservedTurnId }),
-            startWorker: async ({ turnId, prepared }) => {
-              const turn = await startModeWorkerTurn({
-                triggerActor,
-                requestActor: actor,
-                store,
-                workspaceId,
-                threadId,
-                prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
-                requestId: chatInput.requestId,
-                requestedAgentId: taskDecision.worker.agentId,
-                reservedTurnId: turnId,
-              });
-              return { workerSessionId: turn.agentSessionId ?? null };
-            },
-            awaitWorker: ({ turnId }) => {
-              const turn = store.getTurn(workspaceId, threadId, turnId);
-              const stopReason = taskModeTerminalStopReason(store, turnId);
-              if (!stopReason) {
-                throw new Error('Task worker Turn has no unique terminal outcome.');
-              }
-              const evidence = taskModeEvidenceForTurn(
-                store,
-                workspaceDb,
-                workspaceId,
-                threadId,
-                turn
-              );
-              return {
-                stopReason,
-                itemIds: evidence.itemIds,
-                artifactIds: evidence.artifactIds,
-                diagnosticsSummary:
-                  turn.error?.message ??
-                  (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
-              };
-            },
-          });
-        } finally {
-          workspaceDb.sqlite.close();
-        }
+        let resolveAccepted!: () => void;
+        const accepted = new Promise<void>((resolve) => {
+          resolveAccepted = resolve;
+        });
+        let admissionSignalled = false;
+        const workerLoop = (async () => {
+          try {
+            await runWorkerTurnLoop({
+              coreDb,
+              triggerActor,
+              requestActor: actor,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              requestId: chatInput.requestId,
+              requestInputHash: commandInputHash({ input: chatInput.input }),
+              reviewRequired: false,
+              prepare: () => ({
+                delegationRequest: workerRequest,
+                contextPackageDigest: commandInputHash(workerRequest),
+                knowledgeSelectionInput: null,
+              }),
+              reserveTurn: () => ({ turnId: reservedTurnId }),
+              startWorker: async ({ turnId, prepared }) => {
+                const turn = await startModeWorkerTurn({
+                  triggerActor,
+                  requestActor: actor,
+                  store,
+                  workspaceId,
+                  threadId,
+                  prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
+                  requestId: chatInput.requestId,
+                  requestedAgentId: taskDecision.worker.agentId,
+                  reservedTurnId: turnId,
+                  onTurnCreated: (created) => {
+                    if (created.id !== turnId)
+                      throw directTaskModeRecoveryError(
+                        'The Assistant Task admitted another Turn.'
+                      );
+                    validateLiveTaskAdmission({
+                      coreDb,
+                      store,
+                      workspaceDb,
+                      actorId,
+                      workspaceId,
+                      threadId,
+                      requestId: chatInput.requestId,
+                      requestInputHash: commandInputHash({ input: chatInput.input }),
+                      turnId,
+                      contextDigest: prepared.contextPackageDigest,
+                    });
+                    admissionSignalled = true;
+                    resolveAccepted();
+                  },
+                });
+                return { workerSessionId: turn.agentSessionId ?? null };
+              },
+              awaitWorker: ({ turnId }) => {
+                const turn = store.getTurn(workspaceId, threadId, turnId);
+                const stopReason = taskModeTerminalStopReason(store, turnId);
+                if (!stopReason) {
+                  throw new Error('Task worker Turn has no unique terminal outcome.');
+                }
+                const evidence = taskModeEvidenceForTurn(
+                  store,
+                  workspaceDb,
+                  workspaceId,
+                  threadId,
+                  turn
+                );
+                return {
+                  stopReason,
+                  itemIds: evidence.itemIds,
+                  artifactIds: evidence.artifactIds,
+                  diagnosticsSummary:
+                    turn.error?.message ??
+                    (turn.status === 'completed' ? null : 'Worker turn ended without success.'),
+                };
+              },
+            });
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        })();
+        const closeout = workerLoop.finally(() => activeTaskCloseouts.delete(reservedTurnId));
+        activeTaskCloseouts.set(reservedTurnId, closeout);
+        void closeout.catch(() => {
+          if (admissionSignalled) console.error('assistant_task_closeout_failed_after_admission');
+        });
+        await Promise.race([accepted, workerLoop]);
+        if (!admissionSignalled)
+          throw directTaskModeRecoveryError('The Assistant Task has no admission signal.');
 
         return {
           body: createHandoffResponse('task', taskDecision.rationale),
@@ -3341,8 +3545,25 @@ export function createConversationService({
         execute: () => executeChatCommand(store, workspaceId, threadId),
         inflightCommands,
         input: conversationCommandInput(chatInput),
-        replay: (record) =>
-          replayConversationCommand(
+        replay: async (record) => {
+          const downstream = record.response.conversationMetadata?.downstream;
+          if (
+            record.response.conversationMetadata?.resultKind === 'task-handoff' &&
+            downstream?.kind === 'task' &&
+            downstream.turnId ===
+              chatTaskModeTurnId(actorId, workspaceId, threadId, record.requestId)
+          ) {
+            const closeout = activeTaskCloseouts.get(downstream.turnId);
+            if (closeout) {
+              try {
+                const turn = store.getTurnById(downstream.turnId);
+                if (turn.status !== 'pending' && turn.status !== 'running') await closeout;
+              } catch {
+                throw directTaskModeRecoveryError('The original Assistant Task closeout failed.');
+              }
+            }
+          }
+          return replayConversationCommand(
             store,
             actorId,
             repositoryWorkspaceDb,
@@ -3350,7 +3571,8 @@ export function createConversationService({
             threadId,
             record,
             coreDb
-          ),
+          );
+        },
         requestId: chatInput.requestId,
         responseId: ({ body }) => body.turn.id,
         responseKind: 'turn',
@@ -3768,6 +3990,7 @@ export function createTaskStartOperation({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
@@ -3775,6 +3998,8 @@ export function createTaskStartOperation({
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }) {
+  // One App-local owner per original Turn prevents replay from competing with its collector.
+  const activeTaskCloseouts = new Map<string, Promise<void>>();
   return async (
     store: FsStore,
     taskInput: z.infer<typeof StartTaskModeRequestSchema> & {
@@ -3794,6 +4019,66 @@ export function createTaskStartOperation({
       modelId: taskInput.modelId,
       workerStorageChoice: taskInput.workerStorageChoice,
     });
+
+    let resolveReceiptPublished!: () => void;
+    const receiptPublished = new Promise<void>((resolve) => {
+      resolveReceiptPublished = resolve;
+    });
+    let backgroundCloseout: Promise<void> | undefined;
+    let joinedCloseout = false;
+
+    /**
+     * Collects a terminal checkpoint only after the exact receipt and closeout owners agree.
+     *
+     * @param workspaceDb Database retained by worker execution through closeout.
+     */
+    async function closeoutTaskCommand(workspaceDb: WorkspaceDb): Promise<void> {
+      const turnId = directTaskModeTurnId(actorId, workspaceId, threadId, taskInput.requestId);
+      const checkpoint = getWorkerCheckpoint(workspaceDb, workspaceId, threadId, turnId);
+      if (!checkpoint) return;
+      const receipt = store.getCommandRequest('task.start', taskInput.requestId, {
+        actorId,
+        workspaceId,
+        threadId,
+      });
+      if (
+        !receipt ||
+        receipt.inputHash !== requestInputHash ||
+        receipt.response.kind !== 'turn' ||
+        receipt.response.id !== turnId
+      ) {
+        throw directTaskModeRecoveryError('The Task receipt contradicts its worker checkpoint.');
+      }
+      const recovered = recoverDirectTaskModeCheckpoint({
+        coreDb: coreDb!,
+        store,
+        workspaceDb,
+        workspaceId,
+        threadId,
+        requestId: taskInput.requestId,
+        requestInputHash,
+        turnId,
+        checkpoint,
+      });
+      if (
+        classifyClosedWorkerApprovalGate(store, TurnSchema.parse(recovered.turn)) ??
+        classifyClosedWorkerUserInputGate(store, TurnSchema.parse(recovered.turn))
+      ) {
+        throw directTaskModeRecoveryError('The Task Gate response receipt is not durable.');
+      }
+      if (
+        checkpoint.stage !== 'waiting_for_user' &&
+        !(await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+          workspaceId,
+          threadId,
+          turnId,
+        }))
+      ) {
+        throw directTaskModeRecoveryError(
+          'The Task worker checkpoint is not ready for terminal cleanup.'
+        );
+      }
+    }
 
     /**
      * Executes one fresh direct Task command after the ledger accepts its identity.
@@ -3918,7 +4203,12 @@ export function createTaskStartOperation({
       const workerStorageChoice = directTaskWorkerStorageChoice(taskInput.workerStorageChoice);
 
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
-      try {
+      let resolveAccepted!: () => void;
+      const accepted = new Promise<void>((resolve) => {
+        resolveAccepted = resolve;
+      });
+      let admissionSignalled = false;
+      const workerExecution = (async () => {
         await runWorkerTurnLoop({
           coreDb,
           triggerActor,
@@ -3988,6 +4278,24 @@ export function createTaskStartOperation({
               requestedAgentId: taskDecision.worker.agentId,
               reservedTurnId: turnId,
               ...(workerStorageChoice ? { workerStorageChoice } : {}),
+              onTurnCreated: (created) => {
+                if (created.id !== turnId)
+                  throw directTaskModeRecoveryError('The Task admitted another Turn.');
+                validateLiveTaskAdmission({
+                  coreDb,
+                  store,
+                  workspaceDb,
+                  actorId,
+                  workspaceId,
+                  threadId,
+                  requestId: taskInput.requestId,
+                  requestInputHash,
+                  turnId,
+                  contextDigest: prepared.contextPackageDigest,
+                });
+                admissionSignalled = true;
+                resolveAccepted();
+              },
             });
             return { workerSessionId: turn.agentSessionId ?? null };
           },
@@ -4029,9 +4337,42 @@ export function createTaskStartOperation({
           turnId: reservedTurnId,
           checkpoint,
         });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+      })();
+      backgroundCloseout = workerExecution
+        .then(async () => {
+          await receiptPublished;
+          await closeoutTaskCommand(workspaceDb);
+        })
+        .finally(() => {
+          activeTaskCloseouts.delete(reservedTurnId);
+          workspaceDb.sqlite.close();
+        });
+      activeTaskCloseouts.set(reservedTurnId, backgroundCloseout);
+      void backgroundCloseout.catch(() => {
+        if (admissionSignalled) console.error('task_worker_closeout_failed_after_admission');
+      });
+      await Promise.race([accepted, workerExecution]);
+      if (!admissionSignalled)
+        throw directTaskModeRecoveryError('The Task worker has no admission signal.');
+      const turn = store.getTurn(workspaceId, threadId, reservedTurnId);
+      if (turn.status !== 'pending' && turn.status !== 'running') return workerExecution;
+      validateLiveTaskAdmission({
+        coreDb,
+        store,
+        workspaceDb,
+        actorId,
+        workspaceId,
+        threadId,
+        requestId: taskInput.requestId,
+        requestInputHash,
+        turnId: reservedTurnId,
+      });
+      return StartTaskModeResponseSchema.parse({
+        state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),
+        turn,
+        completion: null,
+        evidence: taskModeEvidenceForTurn(store, workspaceDb, workspaceId, threadId, turn),
+      });
     }
 
     try {
@@ -4045,8 +4386,21 @@ export function createTaskStartOperation({
           modelId: taskInput.modelId,
           workerStorageChoice: taskInput.workerStorageChoice,
         },
-        replay: (record) =>
-          replayTaskModeCommand(
+        replay: async (record) => {
+          const turnId = directTaskModeTurnId(actorId, workspaceId, threadId, record.requestId);
+          const closeout = activeTaskCloseouts.get(turnId);
+          if (closeout && record.response.kind === 'turn' && record.response.id === turnId) {
+            try {
+              const turn = store.getTurnById(turnId);
+              if (turn.status !== 'pending' && turn.status !== 'running') {
+                joinedCloseout = true;
+                await closeout;
+              }
+            } catch {
+              throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+            }
+          }
+          return replayTaskModeCommand(
             store,
             actorId,
             coreDb,
@@ -4054,7 +4408,8 @@ export function createTaskStartOperation({
             workspaceId,
             threadId,
             record
-          ),
+          );
+        },
         requestId: taskInput.requestId,
         responseId: ({ turn }) => turn.id,
         responseKind: 'turn',
@@ -4062,56 +4417,25 @@ export function createTaskStartOperation({
         store,
       });
 
-      if (coreDb) {
-        const reservedTurnId = directTaskModeTurnId(
-          actorId,
-          workspaceId,
-          threadId,
-          taskInput.requestId
-        );
+      resolveReceiptPublished();
+      if (coreDb && !backgroundCloseout && !joinedCloseout) {
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
-          const checkpoint = getWorkerCheckpoint(
-            workspaceDb,
-            workspaceId,
-            threadId,
-            reservedTurnId
-          );
-          if (checkpoint) {
-            const recovered = recoverDirectTaskModeCheckpoint({
-              coreDb,
-              store,
-              workspaceDb,
-              workspaceId,
-              threadId,
-              requestId: taskInput.requestId,
-              requestInputHash,
-              turnId: reservedTurnId,
-              checkpoint,
-            });
-            if (recovered.turn.id !== result.turn.id) {
-              throw directTaskModeRecoveryError(
-                'The Task receipt contradicts its worker checkpoint.'
-              );
-            }
-            if (
-              classifyClosedWorkerApprovalGate(store, TurnSchema.parse(recovered.turn)) ??
-              classifyClosedWorkerUserInputGate(store, TurnSchema.parse(recovered.turn))
-            ) {
-              throw directTaskModeRecoveryError('The Task Gate response receipt is not durable.');
-            }
-          }
-          if (checkpoint && checkpoint.stage !== 'waiting_for_user') {
-            const cleared = await clearWorkerCheckpointAfterTerminalState(workspaceDb, {
-              workspaceId,
-              threadId,
-              turnId: reservedTurnId,
-            });
-            if (!cleared) {
-              throw directTaskModeRecoveryError(
-                'The Task worker checkpoint is not ready for terminal cleanup.'
-              );
-            }
+          const turn = store.getTurnById(result.turn.id);
+          if (
+            turn.id === directTaskModeTurnId(actorId, workspaceId, threadId, taskInput.requestId) &&
+            turn.status !== 'pending' &&
+            turn.status !== 'running'
+          ) {
+            // A live replay can become terminal while the ledger result is being delivered.
+            const closeout = activeTaskCloseouts.get(turn.id);
+            if (closeout) {
+              try {
+                await closeout;
+              } catch {
+                throw directTaskModeRecoveryError('The original Task worker closeout failed.');
+              }
+            } else await closeoutTaskCommand(workspaceDb);
           }
         } finally {
           workspaceDb.sqlite.close();
@@ -4163,6 +4487,8 @@ export function createTaskStartOperation({
         publishedErrorMessage(error),
         404
       );
+    } finally {
+      resolveReceiptPublished();
     }
   };
 }

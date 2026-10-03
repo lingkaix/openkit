@@ -3,8 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
-import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import {
+  StartTaskModeResponseSchema,
+  SubmitConversationResponseSchema,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -14,8 +18,12 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
+import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import * as recoveryOwners from './runtime/worker-recovery.js';
 import { isTerminalWorkerTurnStage } from './runtime/worker-stage.js';
+import * as loopOwners from './runtime/worker-turn-loop.js';
+import * as schedulerOwners from './scheduler-records.js';
 import {
   isTerminalLeaseStatus,
   listSchedulerAdmissionEntriesForWorkspace,
@@ -112,6 +120,10 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
  * The conversation.submit route already reaches this executor. Holding completion lets the test observe whether that route accepts the durable Worker tuple before Worker closeout.
  */
 class HoldingTurnExecutor extends CompletingTurnExecutor {
+  /** Number of actual executor entries, including unresolved launches. */
+  public launches = 0;
+  /** Controlled closeout failure after canonical completion. */
+  public failCloseout = false;
   /** Resolves once the route has invoked `startTurn`. */
   public readonly launched = Promise.withResolvers<void>();
   /** Resolves when the test allows Worker closeout. */
@@ -133,10 +145,26 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
     input: string,
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
+    this.launches += 1;
     this.launched.resolve();
     try {
       await this.completion.promise;
+      const turn = store.getTurnById(turnId);
+      const at = turn.startedAt ?? new Date().toISOString();
+      store.createItem({
+        id: `it_user_${turnId}`,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        turnId,
+        type: 'user-message',
+        status: 'completed',
+        text: input,
+        actor: turn.triggerActor,
+        createdAt: at,
+        completedAt: at,
+      });
       await super.startTurn(store, turnId, input, context);
+      if (this.failCloseout) throw new Error('Controlled worker closeout failure.');
     } finally {
       this.finished.resolve();
     }
@@ -1397,4 +1425,509 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
   expect(choices.find((model: { id: string }) => model.id === 'plain')).not.toHaveProperty(
     'reasoningEffortLevels'
   );
+});
+
+describe('Task durable admission response', () => {
+  it.each([
+    'direct',
+    'assistant',
+    'remote-mcp',
+    'closeout-failure',
+  ] as const)('returns %s admission and its receipt before the held worker finishes', async (entry) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-admission-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new HoldingTurnExecutor();
+    executor.failCloseout = entry === 'closeout-failure';
+    const setup = createTestAgentSetup();
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: executor,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const requestId = '0190f4c8-0000-7000-8000-000000000601';
+    const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
+    const input = 'Implement a focused change and run its tests.';
+    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const token =
+      entry === 'remote-mcp'
+        ? createOpenKitAccessTokenRecord(coreDb, {
+            ownerUserId: 'user_local',
+            scope: 'workspace',
+            workspaceIds: ['ws_demo'],
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          })
+        : null;
+    /** Calls the real JSON or remote MCP binding with the same immutable request identity. */
+    const submit = (text = input) => {
+      const body =
+        command === 'conversation.submit'
+          ? { input: text, requestId, targetRef: 'internal-role:assistant', artifactRefs: [] }
+          : { input: text, requestId };
+      if (token)
+        return app.request('http://127.0.0.1/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${token.secret}`,
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: {
+              name: 'call',
+              arguments: {
+                operation: 'task.start',
+                input: { ...body, workspaceId: 'ws_demo', threadId: 'th_demo' },
+              },
+            },
+          }),
+        });
+      return app.request(
+        ...operationRequest(
+          command,
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }
+        )
+      );
+    };
+    const checkpointDeletion = vi.spyOn(checkpointOwners, 'clearWorkerCheckpoint');
+    const leaseCloseout = vi.spyOn(schedulerOwners, 'completeSchedulerLeaseForTerminalTurn');
+    const publicationEvents: string[] = [];
+    const recordReceipt = store.recordCommandRequest.bind(store);
+    const receiptPublication = vi
+      .spyOn(store, 'recordCommandRequest')
+      .mockImplementation((...args) => {
+        const receipt = recordReceipt(...args);
+        if (receipt.command === command && receipt.requestId === requestId)
+          publicationEvents.push('publication');
+        return receipt;
+      });
+    let receiptAtResponse: ReturnType<FsStore['getCommandRequest']>;
+    let responseObserved = false;
+    // Attach the first observation immediately; no await may precede this receipt read.
+    const pending = submit().then((response) => {
+      receiptAtResponse = store.getCommandRequest(command, requestId, scope);
+      publicationEvents.push('response');
+      responseObserved = true;
+      return response;
+    });
+    let turnId: string | undefined;
+    try {
+      await Promise.race([
+        executor.launched.promise,
+        pending.then(async (response) => {
+          throw new Error(
+            `Worker was not entered: ${response.status} ${await response.clone().text()}`
+          );
+        }),
+      ]);
+      turnId = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_demo',
+        statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+      })[0]!.turnId;
+      let completionObserved = false;
+      void executor.finished.promise.then(() => {
+        completionObserved = true;
+      });
+      await setImmediate();
+      // Ordered events are the oracle: the executor is still waiting on test-owned release.
+      expect(responseObserved).toBe(true);
+      expect(receiptAtResponse).toMatchObject({ command, requestId });
+      expect(publicationEvents).toEqual(['publication', 'response']);
+      expect(completionObserved).toBe(false);
+      const response = await pending;
+      expect(response.status, await response.clone().text()).toBe(token ? 200 : 202);
+      const wire = await response.json();
+      const result = token ? JSON.parse(wire.result.content[0].text) : wire;
+      if (entry === 'assistant') {
+        const accepted = SubmitConversationResponseSchema.parse(result);
+        expect(accepted.outcome).toBe('task-handoff');
+        expect(accepted.turn.status).toBe('completed');
+        expect(accepted.handoff?.statusItemId).toBe(accepted.item.id);
+      } else {
+        const accepted = StartTaskModeResponseSchema.parse(result);
+        expect(accepted.state).toBe('running');
+        expect(accepted.turn).toMatchObject({ id: turnId, status: 'running' });
+        expect(accepted.completion ?? null).toBeNull();
+        expect(accepted.evidence).toEqual({ itemIds: [], artifactIds: [], reviewIds: [] });
+      }
+      const receipt = receiptAtResponse!;
+      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+      expect(receipt).toMatchObject({ command, requestId, response: { kind: 'turn' } });
+      if (entry === 'assistant') {
+        expect(receipt.response.conversationMetadata).toMatchObject({
+          resultKind: 'task-handoff',
+          downstream: { kind: 'task', turnId },
+        });
+        expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toHaveLength(
+          0
+        );
+      } else expect(receipt.response.id).toBe(turnId);
+      const replay = await submit();
+      expect(replay.status, await replay.clone().text()).toBe(token ? 200 : 202);
+      expect(await replay.json()).toEqual(wire);
+      const conflict = await submit('Implement a different change.');
+      if (!token) {
+        expect(conflict.status).toBe(409);
+        await expect(conflict.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
+      } else {
+        expect(conflict.status).toBe(200);
+        const refused = (await conflict.json()).result;
+        expect(refused.isError).toBe(true);
+        expect(JSON.parse(refused.content[0].text)).toMatchObject({
+          code: 'idempotency_key_conflict',
+        });
+      }
+      expect(executor.launches).toBe(1);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })
+      ).toHaveLength(1);
+      expect(store.getTurnById(turnId).items.some((i) => i.id === `it_user_${turnId}`)).toBe(false);
+      if (entry === 'direct') {
+        const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turnId)!;
+        try {
+          for (const [column, original] of [
+            ['request_input_hash', checkpoint.requestInputHash],
+            ['context_digest', checkpoint.contextDigest],
+          ] as const) {
+            workspaceDb.sqlite
+              .prepare(`UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`)
+              .run('sha256:contradiction', checkpoint.checkpointId);
+            const refused = await submit();
+            expect(refused.status).toBe(409);
+            await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
+            workspaceDb.sqlite
+              .prepare(`UPDATE worker_turn_checkpoints SET ${column} = ? WHERE checkpoint_id = ?`)
+              .run(original, checkpoint.checkpointId);
+          }
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+        const lease = listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId,
+        })[0]!;
+        for (const status of ['planned', 'stale', 'releasing'] as const) {
+          try {
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_session_leases SET status = ? WHERE lease_id = ?')
+              .run(status, lease.leaseId);
+            const refused = await submit();
+            expect(refused.status).toBe(409);
+            await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
+          } finally {
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_session_leases SET status = ? WHERE lease_id = ?')
+              .run(lease.status, lease.leaseId);
+          }
+        }
+        try {
+          coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_placement_plans SET selected_target_id = ? WHERE plan_id = ?'
+            )
+            .run('contradictory-target', lease.planId);
+          const refused = await submit();
+          expect(refused.status).toBe(409);
+          await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
+        } finally {
+          coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_placement_plans SET selected_target_id = ? WHERE plan_id = ?'
+            )
+            .run(lease.targetId, lease.planId);
+        }
+        expect((await submit()).status).toBe(202);
+        expect(executor.launches).toBe(1);
+      }
+      executor.completion.resolve();
+      await executor.finished.promise;
+      await vi.waitFor(() =>
+        expect(
+          listSchedulerSessionLeasesForTurn(coreDb, {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+            turnId: turnId!,
+          })[0]?.status
+        ).toBe(entry === 'closeout-failure' ? 'failed' : 'released')
+      );
+      await setImmediate();
+      const turnRead = await app.request(
+        ...operationRequest(
+          'turn.read',
+          { workspaceId: 'ws_demo', threadId: 'th_demo', turnId },
+          { method: 'GET' }
+        )
+      );
+      expect(turnRead.status).toBe(200);
+      expect(await turnRead.json()).toMatchObject({ id: turnId, status: 'completed' });
+      const itemsRead = await app.request(
+        ...operationRequest(
+          'thread.items',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          { method: 'GET' }
+        )
+      );
+      expect(itemsRead.status).toBe(200);
+      expect((await itemsRead.json()).items).toContainEqual(
+        expect.objectContaining({
+          id: `it_assistant_${turnId}`,
+          type: 'assistant-message',
+          status: 'completed',
+        })
+      );
+      const terminalReplay = await submit();
+      if (entry === 'closeout-failure') {
+        expect(terminalReplay.status).toBe(409);
+        await expect(terminalReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      } else {
+        expect(terminalReplay.status).toBe(token ? 200 : 202);
+        const terminalWire = await terminalReplay.json();
+        if (entry === 'assistant') expect(terminalWire).toEqual(wire);
+        else {
+          const terminal = StartTaskModeResponseSchema.parse(
+            token ? JSON.parse(terminalWire.result.content[0].text) : terminalWire
+          );
+          expect(terminal).toMatchObject({
+            state: 'completed',
+            turn: { id: turnId },
+            completion: { itemId: `it_assistant_${turnId}` },
+          });
+        }
+      }
+      const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      try {
+        const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turnId);
+        if (entry === 'closeout-failure' || entry === 'assistant')
+          expect(checkpoint?.stage).toBe(entry === 'closeout-failure' ? 'failed' : 'completed');
+        else expect(checkpoint).toBeNull();
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      expect(
+        checkpointDeletion.mock.calls.filter(([, , , clearedTurnId]) => clearedTurnId === turnId)
+      ).toHaveLength(entry === 'direct' || entry === 'remote-mcp' ? 1 : 0);
+      const closedLease = listSchedulerSessionLeasesForTurn(coreDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId,
+      })[0]!;
+      const repeatedReplay = await submit();
+      expect(repeatedReplay.status).toBe(entry === 'closeout-failure' ? 409 : token ? 200 : 202);
+      expect(
+        listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId,
+        })[0]
+      ).toEqual(closedLease);
+      expect(
+        store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      expect(leaseCloseout.mock.calls.filter(([, turn]) => turn.id === turnId)).toHaveLength(
+        entry === 'closeout-failure' ? 0 : 1
+      );
+      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+      expect(executor.launches).toBe(1);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })
+      ).toHaveLength(1);
+    } finally {
+      executor.completion.resolve();
+      await pending.catch(() => undefined);
+      if (executor.launches > 0) await executor.finished.promise;
+      await setImmediate();
+      receiptPublication.mockRestore();
+      checkpointDeletion.mockRestore();
+      leaseCloseout.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+});
+
+describe('Task terminal replay closeout ownership', () => {
+  it.each([
+    { entry: 'direct', failCollection: false },
+    { entry: 'direct', failCollection: true },
+    { entry: 'assistant', failCollection: false },
+    { entry: 'assistant', failCollection: true },
+  ] as const)('joins the original $entry closeout during terminal replay (failure=$failCollection)', async ({
+    entry,
+    failCollection,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-closeout-owner-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new HoldingTurnExecutor();
+    const setup = createTestAgentSetup();
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: executor,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const requestId = '0190f4c8-0000-7000-8000-000000000602';
+    const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
+    const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
+    const submit = () =>
+      app.request(
+        ...operationRequest(
+          command,
+          {
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+          },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId,
+              input: 'Implement a focused change and run its tests.',
+              ...(entry === 'assistant'
+                ? { targetRef: 'internal-role:assistant', artifactRefs: [] }
+                : {}),
+            }),
+          }
+        )
+      );
+    const collecting = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const collected = Promise.withResolvers<void>();
+    const originalCollect = recoveryOwners.clearWorkerCheckpointAfterTerminalState;
+    const collector = vi
+      .spyOn(recoveryOwners, 'clearWorkerCheckpointAfterTerminalState')
+      .mockImplementation(async (...args) => {
+        const collectionIndex = collector.mock.calls.length;
+        collecting.resolve();
+        await release.promise;
+        try {
+          if (failCollection && collectionIndex === 1)
+            throw new Error('Controlled checkpoint collection failure.');
+          return await originalCollect(...args);
+        } finally {
+          collected.resolve();
+        }
+      });
+    const originalLoop = loopOwners.runWorkerTurnLoop;
+    const loopCloseout =
+      entry === 'assistant'
+        ? vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation(async (...args) => {
+            const result = await originalLoop(...args);
+            collecting.resolve();
+            await release.promise;
+            try {
+              if (failCollection) throw new Error('Controlled Assistant Task closeout failure.');
+              return result;
+            } finally {
+              collected.resolve();
+            }
+          })
+        : undefined;
+    const closeoutOwner = loopCloseout ?? collector;
+    const pending = submit();
+    let replay: Promise<Response> | undefined;
+    try {
+      const admitted = await pending;
+      expect(admitted.status, await admitted.clone().text()).toBe(202);
+      const admittedBody = await admitted.json();
+      const receipt = store.getCommandRequest(command, requestId, scope)!;
+      const downstream = receipt.response.conversationMetadata?.downstream;
+      const turnId: string =
+        entry === 'assistant' && downstream?.kind === 'task'
+          ? downstream.turnId
+          : admittedBody.turn.id;
+      executor.completion.resolve();
+      await collecting.promise;
+      // The real collector's terminal proof is available before the injected asynchronous hold.
+      expect(store.getTurnById(turnId).status).toBe('completed');
+      expect(
+        listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId,
+        })[0]?.status
+      ).toBe('released');
+      let replayObserved = false;
+      replay = submit().then((response) => {
+        replayObserved = true;
+        return response;
+      });
+      await setImmediate();
+      const collectorEntriesDuringHold = closeoutOwner.mock.calls.length;
+      const replayObservedDuringHold = replayObserved;
+      release.resolve();
+      const result = await replay;
+      expect({
+        collectorEntriesDuringHold,
+        replayObservedDuringHold,
+        status: result.status,
+      }).toEqual({
+        collectorEntriesDuringHold: 1,
+        replayObservedDuringHold: false,
+        status: failCollection ? 409 : 202,
+      });
+      if (failCollection) {
+        await expect(result.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      } else if (entry === 'assistant') {
+        expect(await result.json()).toEqual(admittedBody);
+      } else {
+        expect(StartTaskModeResponseSchema.parse(await result.json())).toMatchObject({
+          state: 'completed',
+          turn: { id: turnId },
+          completion: { itemId: `it_assistant_${turnId}` },
+        });
+      }
+      expect(closeoutOwner).toHaveBeenCalledTimes(1);
+      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+      // Once the owner settles it is removed: ordinary receipt-based recovery remains available.
+      const subsequent = await submit();
+      expect(subsequent.status).toBe(202);
+      expect(closeoutOwner).toHaveBeenCalledTimes(
+        entry === 'assistant' ? 1 : failCollection ? 2 : 1
+      );
+      expect(store.getCommandRequest(command, requestId, scope)).toEqual(receipt);
+      expect(executor.launches).toBe(1);
+    } finally {
+      executor.completion.resolve();
+      release.resolve();
+      await pending.catch(() => undefined);
+      if (executor.launches > 0) {
+        await executor.finished.promise;
+        await collected.promise;
+      }
+      await replay?.catch(() => undefined);
+      await setImmediate();
+      loopCloseout?.mockRestore();
+      collector.mockRestore();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 });

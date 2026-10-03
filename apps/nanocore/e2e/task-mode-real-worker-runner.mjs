@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { Agent } from 'undici';
@@ -552,14 +553,14 @@ async function executeTaskModeRealWorkerTest({
     'Task Mode workspace data source safe reload did not defer cleanly without restart.'
   );
 
-  const task = await clients.core.operations['task.start']({
+  const taskInput = {
     workspaceId,
-    threadId: threadId,
-    ...{
-      input: prerequisites.config.taskInput,
-    },
-  });
-  const reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
+    threadId,
+    input: prerequisites.config.taskInput,
+    requestId: randomUUID(),
+  };
+  let task = await clients.core.operations['task.start'](taskInput);
+  let reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
   let provenance;
   let aep;
   let items = [];
@@ -570,6 +571,27 @@ async function executeTaskModeRealWorkerTest({
   try {
     assert(task.state !== 'escalated-to-goal', 'Task Mode escalated a bounded real-worker task.');
     assert(typeof task.turn?.id === 'string', 'Task Mode response did not include a turn id.');
+    const admittedTurnId = task.turn.id;
+    // The existing process supervisor bounds this integration run; each read remains an ordinary operation.
+    while (task.state === 'running') {
+      await delay(100);
+      const current = await clients.core.operations['turn.read']({
+        workspaceId,
+        threadId,
+        turnId: admittedTurnId,
+      });
+      assert(current?.id === admittedTurnId, 'Task read changed the admitted Turn lineage.');
+      if (current.status === 'pending' || current.status === 'running') continue;
+      try {
+        task = await clients.core.operations['task.start'](taskInput);
+      } catch (error) {
+        // A terminal Turn can precede the full backend/checkpoint closeout; never launch a new request.
+        if (error?.code === 'recovery_required') continue;
+        throw error;
+      }
+      assert(task.turn?.id === admittedTurnId, 'Task replay changed the admitted Turn lineage.');
+    }
+    reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
     assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
     runtimeEvidencePromise = clients.core.app.listWorkspaceRuntimeEvidence(workspaceId);
     const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
