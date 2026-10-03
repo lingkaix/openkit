@@ -85,6 +85,7 @@ describe('AuthoredAgentConfigSchema', () => {
     ).toThrow(/must not declare requirementId/);
   });
 
+  // Hashing and parsing real 256 MiB boundary inputs needs extra time under parallel CI load.
   it('accepts exactly one reference or bounded build image form', () => {
     const config = validAgentConfig();
     const dockerfile = 'FROM node:24.16.0';
@@ -201,7 +202,7 @@ describe('AuthoredAgentConfigSchema', () => {
         `accepted invalid image ${JSON.stringify(image)}`
       ).toBe(false);
     }
-  });
+  }, 30_000);
 
   it('accepts one strict opaque runtime declaration', () => {
     const parsed = AuthoredAgentConfigSchema.parse(validAgentConfig());

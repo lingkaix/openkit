@@ -16,6 +16,8 @@ Worker sandbox filesystem grants must use canonical absolute paths. Authored rea
 
 Authored and resolved build images require exactly one nonempty inline Dockerfile of 1 through 268,435,456 UTF-8 bytes with matching canonical lowercase SHA-256, independently of exact zero-entry `build-context://empty/v1` plus its empty-byte digest, with no locator or compatibility form.
 
+The authored image-form test exercises the actual 256 MiB maximum and one byte above it. It has a 30-second per-test timeout because hashing and parsing these inputs can exceed Vitest's default timeout under parallel CI load.
+
 Authored and resolved build-argument checks share only the stateless secret-shape pattern in the package-internal `src/build-argument-pattern.ts`; their schema definitions and refinements remain separate. The pattern is not exported by `src/index.ts`, and the browser-safe App API projection retains its separate pattern.
 
 The closed provider-subscription identities admit only `openai-codex` and `xai`, with bounded account-slot identifiers. Authored OAuth profiles in either normalized family must bind one explicit `extensions.openkit.subscriptionAccount.accountSlotId` and omit `secretRef` and `baseUrl`; other OpenKit extension fields are rejected, while ordinary non-OAuth xAI profiles remain direct provider configurations.
