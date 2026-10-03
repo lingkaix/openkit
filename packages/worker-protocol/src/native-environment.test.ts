@@ -100,6 +100,26 @@ describe('native environment core', () => {
     expect(isProtectedNativeEnvironmentName('OPENCODE_SETTING', 'opencode')).toBe(false);
   });
   it.each([
+    'ALL_PROXY',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'grpc_proxy',
+    'NODE_USE_ENV_PROXY',
+    'NODE_EXTRA_CA_CERTS',
+    'DENO_CERT',
+    'SSL_CERT_FILE',
+    'REQUESTS_CA_BUNDLE',
+    'CURL_CA_BUNDLE',
+    'GIT_SSL_CAINFO',
+  ])('protects managed proxy/TLS bootstrap name %s for every adapter', (name) => {
+    for (const adapter of ['codex', 'pi', 'opencode', 'deepseek', 'future-adapter'])
+      expect(isProtectedNativeEnvironmentName(name, adapter)).toBe(true);
+  });
+  it.each([
     'DSH_HOME',
     'DSH_PERMISSION_MODE',
     'DSH_TELEMETRY_MODE',

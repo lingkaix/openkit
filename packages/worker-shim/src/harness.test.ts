@@ -2296,6 +2296,59 @@ describe('N4c local input cleanup proof', () => {
 });
 
 describe('session-static public native environment', () => {
+  // Exact child bootstrap names from pinned OpenShell child_env.rs; use distinct CA paths.
+  const managedBootstrap = {
+    ALL_PROXY: 'http://10.200.0.1:3128',
+    HTTP_PROXY: 'http://10.200.0.1:3128',
+    HTTPS_PROXY: 'http://10.200.0.1:3128',
+    NO_PROXY: '127.0.0.1,localhost,::1',
+    http_proxy: 'http://10.200.0.1:3128',
+    https_proxy: 'http://10.200.0.1:3128',
+    no_proxy: '127.0.0.1,localhost,::1',
+    grpc_proxy: 'http://10.200.0.1:3128',
+    NODE_USE_ENV_PROXY: '1',
+    NODE_EXTRA_CA_CERTS: '/etc/openshell-tls/openshell-ca.pem',
+    DENO_CERT: '/etc/openshell-tls/openshell-ca.pem',
+    SSL_CERT_FILE: '/etc/openshell-tls/ca-bundle.pem',
+    REQUESTS_CA_BUNDLE: '/etc/openshell-tls/ca-bundle.pem',
+    CURL_CA_BUNDLE: '/etc/openshell-tls/ca-bundle.pem',
+    GIT_SSL_CAINFO: '/etc/openshell-tls/ca-bundle.pem',
+  };
+
+  it.each([
+    {},
+    { HELLO_NATIVE: 'hello', EMPTY_NATIVE: '' },
+  ])('preserves every managed proxy/TLS bootstrap value with public map %j', async (nativeEnvironment) => {
+    const f = harnessFixture({
+      environment: { ...managedBootstrap, UNRELATED_HOST_SETTING: 'host-only' },
+    });
+    expect(await f.open('as-bootstrap', { nativeEnvironment })).toMatchObject({
+      disposition: 'succeeded',
+    });
+    const environment = f.fake.residents[0]!.input.environment;
+    for (const [name, value] of Object.entries(managedBootstrap))
+      expect.soft(environment[name], name).toBe(value);
+    expect(environment).toMatchObject(nativeEnvironment);
+    expect(environment).not.toHaveProperty('UNRELATED_HOST_SETTING');
+  });
+
+  it.each(
+    Object.keys(managedBootstrap)
+  )('refuses public and runtime-env override of managed bootstrap %s before child creation', async (name) => {
+    for (const extra of [
+      { nativeEnvironment: { [name]: 'untrusted' } },
+      { runtimeEnvironment: { [name]: 'untrusted' } },
+    ]) {
+      const f = harnessFixture({ environment: managedBootstrap });
+      expect(await f.open('as-bootstrap-conflict', extra)).toMatchObject({
+        disposition: 'refused',
+        body: { reasonCode: 'unsupported' },
+      });
+      expect(f.fake.residents).toHaveLength(0);
+      expect(f.integration.loopbacks.size).toBe(0);
+    }
+  });
+
   it.each([
     { nativeEnvironment: { HOME: '/user' } },
     { nativeEnvironment: { OPENKIT_ROUTE: 'user' } },

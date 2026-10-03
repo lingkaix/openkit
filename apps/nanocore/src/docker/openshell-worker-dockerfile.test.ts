@@ -401,6 +401,18 @@ describe('governed worker image contracts', () => {
     );
     const inherited = {
       ALL_PROXY: 'http://proxy.invalid:8080',
+      HTTP_PROXY: 'http://proxy.invalid:8080',
+      HTTPS_PROXY: 'http://proxy.invalid:8080',
+      http_proxy: 'http://proxy.invalid:8080',
+      https_proxy: 'http://proxy.invalid:8080',
+      grpc_proxy: 'http://proxy.invalid:8080',
+      NODE_USE_ENV_PROXY: '1',
+      NODE_EXTRA_CA_CERTS: '/etc/openshell-tls/openshell-ca.pem',
+      DENO_CERT: '/etc/openshell-tls/openshell-ca.pem',
+      SSL_CERT_FILE: '/etc/openshell-tls/ca-bundle.pem',
+      REQUESTS_CA_BUNDLE: '/etc/openshell-tls/ca-bundle.pem',
+      CURL_CA_BUNDLE: '/etc/openshell-tls/ca-bundle.pem',
+      GIT_SSL_CAINFO: '/etc/openshell-tls/ca-bundle.pem',
       HOME: '/sandbox',
       NO_PROXY: '127.0.0.1,localhost',
       PATH: '/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin',
@@ -428,9 +440,24 @@ describe('governed worker image contracts', () => {
         })
     );
 
-    expect(environment.ALL_PROXY).toBe(inherited.ALL_PROXY);
-    expect(environment.NO_PROXY).toBe(inherited.NO_PROXY);
-    expect(environment.no_proxy).toBe(inherited.no_proxy);
+    for (const name of [
+      'ALL_PROXY',
+      'HTTP_PROXY',
+      'HTTPS_PROXY',
+      'NO_PROXY',
+      'http_proxy',
+      'https_proxy',
+      'no_proxy',
+      'grpc_proxy',
+      'NODE_USE_ENV_PROXY',
+      'NODE_EXTRA_CA_CERTS',
+      'DENO_CERT',
+      'SSL_CERT_FILE',
+      'REQUESTS_CA_BUNDLE',
+      'CURL_CA_BUNDLE',
+      'GIT_SSL_CAINFO',
+    ] as const)
+      expect.soft(environment[name], name).toBe(inherited[name]);
     expect(environment.BASH_ENV).toBe('/opt/openkit/.bashrc');
     expect(environment.ENV).toBe('/opt/openkit/.bashrc');
     expect(environment.VIRTUAL_ENV).toBe('/opt/openkit/venv');

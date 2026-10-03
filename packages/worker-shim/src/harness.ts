@@ -55,6 +55,9 @@ const NATIVE_SCRATCH_ROOT = '/tmp/openkit-bootstrap';
 const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
   'ALL_PROXY',
   'COLORTERM',
+  'CURL_CA_BUNDLE',
+  'DENO_CERT',
+  'GIT_SSL_CAINFO',
   'HOME',
   'HTTP_PROXY',
   'HTTPS_PROXY',
@@ -62,15 +65,18 @@ const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
   'LC_ALL',
   'LC_CTYPE',
   'LOGNAME',
+  'NODE_EXTRA_CA_CERTS',
   'NODE_USE_ENV_PROXY',
   'NO_COLOR',
   'NO_PROXY',
   'PATH',
+  'REQUESTS_CA_BUNDLE',
   'SHELL',
   'SSL_CERT_DIR',
   'SSL_CERT_FILE',
   'TERM',
   'USER',
+  'grpc_proxy',
   'http_proxy',
   'https_proxy',
   'no_proxy',
@@ -859,7 +865,9 @@ function residentEnvironment(
   selected.TEMP = NATIVE_SCRATCH_ROOT;
   selected.TMP = NATIVE_SCRATCH_ROOT;
   selected.TMPDIR = NATIVE_SCRATCH_ROOT;
-  if (selected.SSL_CERT_FILE) selected.NODE_EXTRA_CA_CERTS = selected.SSL_CERT_FILE;
+  // Preserve supervisor-supplied Node trust; derive it only when that binding is absent.
+  if (!selected.NODE_EXTRA_CA_CERTS && selected.SSL_CERT_FILE)
+    selected.NODE_EXTRA_CA_CERTS = selected.SSL_CERT_FILE;
   const bundledNodeRoot = dirname(dirname(process.execPath));
   if (existsSync(join(bundledNodeRoot, 'include', 'node', 'node.h'))) {
     selected.NPM_CONFIG_NODEDIR = bundledNodeRoot;
