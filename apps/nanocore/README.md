@@ -88,6 +88,8 @@ Authored manifests and profiles are validated by AuthoredAgentConfigSchema in `@
 
 Incremental work retention enters through `src/storage/work-observations.ts`; runtime ingress, Gateway capture and the authorized Thread dashboard share that owner. Complete admitted originals remain governed by the Turn-bound capture setting and existing restricted EvidenceBundle lifecycle; runtime activity is a lossy display projection.
 
+Selected Workspace catalog MCP servers resolve into the same secret-free AEP supply for Codex, Pi, OpenCode and DeepSeek. Each adapter projects those ids onto the fixed Integration capability loopback using its native MCP interface; NanoCore retains upstream configuration, credentials and admission checks. Run `pnpm --filter @openkit/nanocore exec vitest run src/runtime/agent-environment.test.ts` for the adapter-neutral supply regression.
+
 Every Worker package supplies the built-in `openkit-work` MCP server. It raises pending input requests and provides read-only same-Sandbox peer discovery and product history under the responsible user's current access. The [runtime guide](src/runtime/README.md) describes the Turn-scoped handles, paging, and existing Gateway evidence path.
 
 ## Commands

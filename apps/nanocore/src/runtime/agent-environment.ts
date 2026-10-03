@@ -443,7 +443,6 @@ function resolveOpenShellAgentEnvironmentPackage(
   const workerMcpServers = [
     ...resolveWorkerMcpServerSupply(
       (manifest.mcp ?? []).map((server) => server.id),
-      manifest.runtime.adapter,
       input.workspaceMcpServerCatalog
     ),
     createOpenkitGenerativeMcpSupply(),
@@ -1098,22 +1097,15 @@ function resolveWorkerSkillSupply(
  * Resolves requested MCP server ids into catalog-approved AEP supply snapshots.
  *
  * @param mcpServerIds Worker MCP server ids requested by the selected agent.
- * @param adapter Runtime adapter that will consume the supply.
  * @param catalog Workspace-owned MCP catalog captured for this Turn.
  * @returns Catalog-resolved MCP server supply entries.
- * @throws DeterministicAgentPreparationError when the selected adapter cannot consume MCP supply.
+ * @throws Error when the catalog or a selected enabled server is unavailable.
  */
 function resolveWorkerMcpServerSupply(
   mcpServerIds: string[],
-  adapter: string,
   catalog: WorkspaceMcpServerCatalog | undefined
 ) {
   if (mcpServerIds.length === 0) return [];
-  if (adapter !== 'codex') {
-    throw new DeterministicAgentPreparationError(
-      `Worker MCP supply does not support runtime adapter: ${adapter}`
-    );
-  }
   return mcpServerIds.map((mcpServerId) => {
     if (!catalog)
       throw new Error('Workspace MCP server catalog is required by the selected Agent.');

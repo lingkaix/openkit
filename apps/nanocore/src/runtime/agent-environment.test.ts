@@ -1028,11 +1028,17 @@ describe('agent environment package resolver', () => {
     }
   });
 
-  it('resolves selected MCP supply without exposing its server topology', () => {
+  it.each([
+    'codex',
+    'pi',
+    'opencode',
+    'deepseek',
+  ])('resolves selected MCP supply for %s without exposing its server topology', (adapter) => {
     const turn = createTurnFixture('Use static supply');
     const resolved = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({
+        adapter,
         mcpIds: ['github'],
         skillIds: [],
       }),
