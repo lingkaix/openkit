@@ -1508,7 +1508,7 @@ fn finalize_seed_root(path: &Path, uid: u32, gid: u32, mode: u32) -> io::Result<
     File::open(path)?.sync_all()
 }
 
-/// Refuses all Linux xattrs, reporting only bounded names and the caller's seed-relative path.
+/// Refuses all visible Linux xattrs, reporting bounded names and the seed-relative path.
 fn reject_extended_metadata(path: &Path, relative: &Path) -> io::Result<()> {
     let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| io::Error::other("seed metadata path invalid"))?;
@@ -1516,32 +1516,49 @@ fn reject_extended_metadata(path: &Path, relative: &Path) -> io::Result<()> {
     {
         // SAFETY: path is NUL-terminated; a null list with zero size queries only its length.
         let length = unsafe { libc::llistxattr(path.as_ptr(), std::ptr::null_mut(), 0) };
-        if length < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if length > 0 {
-            // Bound the diagnostic read independently of a changing filesystem's reported length.
-            let mut names = vec![0_u8; length.min(65_536) as usize];
+        let length = usize::try_from(length).map_err(|_| io::Error::last_os_error());
+        // Bound the diagnostic read independently of a changing filesystem's reported length.
+        let mut names = vec![0_u8; length.as_ref().map_or(0, |length| (*length).min(65_536))];
+        let listing = if names.is_empty() {
+            Ok(&names[..])
+        } else {
             // SAFETY: path is NUL-terminated and names is writable for exactly its stated length.
             let read =
                 unsafe { libc::llistxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
-            let summary = if read > 0 {
-                seed_attribute_names(&names[..read as usize])
+            if read < 0 {
+                Err(io::Error::last_os_error())
             } else {
-                // The first query already established refusal; a race/read failure cannot admit it.
-                "names unavailable (...)".to_string()
-            };
-            return Err(io::Error::other(format!(
-                "extended seed metadata rejected at {relative:?}: {summary}"
-            )));
-        }
-        Ok(())
+                Ok(&names[..read as usize])
+            }
+        };
+        decide_seed_metadata(length, listing, relative)
     }
     #[cfg(target_os = "macos")]
     {
         let _ = (path, relative);
         Ok(())
     }
+}
+
+/// Decides refusal from listed names, since overlayfs can include private names in a size query.
+#[cfg(target_os = "linux")]
+fn decide_seed_metadata(
+    length: io::Result<usize>,
+    listing: io::Result<&[u8]>,
+    relative: &Path,
+) -> io::Result<()> {
+    if length? == 0 {
+        return Ok(());
+    }
+    // Preserve OS errors, including ERANGE when the list grew, rather than admitting an unknown list.
+    let names = listing?;
+    if names.is_empty() {
+        return Ok(());
+    }
+    let summary = seed_attribute_names(names);
+    Err(io::Error::other(format!(
+        "extended seed metadata rejected at {relative:?}: {summary}"
+    )))
 }
 
 /// Formats at most four names, each limited to 64 raw bytes, without accessing attribute values.
@@ -2191,6 +2208,62 @@ pub(crate) mod tests {
                 parse_image_inspect(&image_digest, &serde_json::to_vec(&fixture).unwrap()).is_err()
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_metadata_positive_size_with_empty_listing_admits() {
+        decide_seed_metadata(Ok(64), Ok(&[]), Path::new("."))
+            .expect("a size query does not establish any visible seed metadata");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_metadata_failed_listing_preserves_errno() {
+        for errno in [libc::ERANGE, libc::EACCES] {
+            let error = decide_seed_metadata(
+                Ok(64),
+                Err(io::Error::from_raw_os_error(errno)),
+                Path::new("."),
+            )
+            .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(errno));
+            assert!(error.to_string().contains(&format!("os error {errno}")));
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_metadata_visible_names_are_all_refused() {
+        let error = decide_seed_metadata(
+            Ok(64),
+            Ok(b"user.visible\0trusted.overlay.visible\0"),
+            Path::new("nested/file"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        let message = error.to_string();
+        assert!(message.contains("user.visible"), "{message}");
+        assert!(message.contains("trusted.overlay.visible"), "{message}");
+        assert!(message.contains("nested/file"), "{message}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn seed_metadata_size_query_controls_whether_listing_is_needed() {
+        let error = decide_seed_metadata(
+            Err(io::Error::from_raw_os_error(libc::EACCES)),
+            Ok(&[]),
+            Path::new("."),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+        decide_seed_metadata(
+            Ok(0),
+            Err(io::Error::from_raw_os_error(libc::ERANGE)),
+            Path::new("."),
+        )
+        .expect("a zero size query does not need a listing");
     }
 
     #[test]

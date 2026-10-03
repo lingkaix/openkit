@@ -130,7 +130,7 @@ cargo fmt
 
 The deterministic Cargo suite runs as root in the CI test image and also supports a non-root caller. Collection failure fixtures use filesystem substitutions at the existing cleanup/open hooks, because root bypasses ordinary permission modes. Worker Git fixture setup removes ambient Git repository/configuration variables so concurrently tested hostile environments cannot redirect another fixture's repository initialization.
 
-Linux seed validation refuses every extended attribute and reports the affected seed-relative path plus at most four attribute names, each limited to 64 raw bytes with an elision marker. Names use lossy UTF-8 and escaped diagnostic quoting; values are never read or reported. Diagnostic listing failure still refuses the seed. The Linux attribute regression may skip only when setting its `user.` fixture attribute returns `ENOTSUP`, with an explicit reason printed by that test.
+Linux seed validation uses the attribute size query only to size the bounded listing buffer and refuses every name returned by the actual listing. A zero size or empty listing admits the seed; overlayfs can report space for private attributes that it excludes from the listing. A failed size query or listing still refuses with its OS error and errno, including `ERANGE` if the list grew. Attribute refusal reports the affected seed-relative path plus at most four names, each limited to 64 raw bytes with an elision marker. Names use lossy UTF-8 and escaped diagnostic quoting; values are never read or reported. The Linux attribute regression may skip only when setting its `user.` fixture attribute returns `ENOTSUP`, with an explicit reason printed by that test.
 
 ## Related documentation
 
