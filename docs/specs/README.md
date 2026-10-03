@@ -180,7 +180,6 @@ Storage, knowledge, policy, vault, audit, and metering:
 Deprecated transition specifications remain at the root only while their documented legacy behavior is still implemented. Load their `Current Guidance` before reading historical contract text, do not extend them, and move them to the matching terminal directory only after their migration exit condition is proved.
 
 - [`20260715-openshell_disposable_cell_lifecycle.md`](./20260715-openshell_disposable_cell_lifecycle.md) — legacy per-session Cell implementation pending Runtime Epoch cutover and deletion
-- [`20260704-git_write_workflow.md`](./20260704-git_write_workflow.md) — legacy host Git publication pending removal; not current guidance
 
 Capability and provider slices:
 

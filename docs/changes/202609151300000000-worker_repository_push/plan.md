@@ -14,7 +14,7 @@ The engineer authorized Codex implementation and separate Codex review after Cur
 
 ## Accepted Direction And Owners
 
-The worker capability and selected MCP owners are `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md`. `docs/specs/20260704-git_write_workflow.md` owns publication, target authority and push recovery. The public Skill remains an external App API client; workers use the selected capability rather than a general App API tunnel or injected administrator credential. Existing repository, Vault, review-linkage, protected-target and interrupted-effect checks remain required.
+The worker capability and selected MCP owners are `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260704-worker_mcp_tool_supply.md`. `docs/specs/retired/20260704-git_write_workflow.md` owns publication, target authority and push recovery. The public Skill remains an external App API client; workers use the selected capability rather than a general App API tunnel or injected administrator credential. Existing repository, Vault, review-linkage, protected-target and interrupted-effect checks remain required.
 
 ## Evidence
 

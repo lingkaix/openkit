@@ -98,7 +98,7 @@ branch: main
 - `docs/specs/20260703-schema_evolution_record_envelope.md` owns additive evolution and explicit extension behavior for authored JSONC surfaces.
 - `docs/specs/20260629-openkit_policy_model.md`, `docs/specs/20260703-policy_enforcement_mapping.md`, and `docs/specs/20260709-worker_sandbox_freedom_policy.md` own OpenKit policy input, enforcement mapping, and the worker-freedom projection affected by composed policy and credential separation.
 - `docs/specs/20260629-worker_runtime_communication_model.md` owns worker-visible logical-model admission and the inference relay boundary; `docs/specs/20260721-worker_execution_environment_images.md` owns image projection and image-generation vocabulary.
-- `docs/specs/20260703-openshell_mechanism_internalization.md` owns the OpenShell mechanism projection, while `docs/specs/20260704-git_write_workflow.md` owns governed Git materialization and writeback vocabulary.
+- `docs/specs/20260703-openshell_mechanism_internalization.md` owns the OpenShell mechanism projection, while `docs/specs/retired/20260704-git_write_workflow.md` owns governed Git materialization and writeback vocabulary.
 - `docs/specs/20260704-agent_session_continuity.md` owns exact same-Thread AgentSession continuity, native-handle reuse, and successor behavior.
 - `docs/specs/20260704-workflow_coordinator_internal_agent.md` and `docs/specs/20260709-quick_chat_workspace.md` own the affected internal-role and Quick Chat selection projections.
 - `docs/specs/20260715-multi_user_workspace_system.md` owns the multi-user Workspace storage, membership, and joined public Workspace projection boundary.

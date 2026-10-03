@@ -87,7 +87,6 @@ and are not listed here.
 - `docs/specs/20260704-app_api_openapi_projection.md` — Accepted, Implemented — The rule that the shared Zod schema packages remain the single contract source for the App API, and that OpenAPI is a generated projection, never a source.
 - `docs/specs/20260704-capability_usage_gateway_foundation.md` — Accepted, Partial — The shared ledger foundation used by every current NanoCore `CapabilityCall` producer, including the selected Worker MCP producer.
 - `docs/specs/20260704-chat_mode_assistant.md` — Accepted, Partial — Chat Mode as the lightweight user interaction path before delegated worker work starts.
-- `docs/specs/20260704-git_write_workflow.md` — Deprecated, Partial — The commit-on-apply contract: creating commits in linked repositories from accepted workspace reviews.
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` — Accepted, Partial — The deterministic app-local service interface for the Knowledge Manager Internal Core Role.
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md` — Accepted, Partial — The ordered NanoCore boot phase contract, including which phases fail closed and which degrade.
 - `docs/specs/20260704-remote_auth_credential_bootstrap.md` — Accepted, Partial — The human remote-access token format, lifecycle, and closed v1 scope set.
@@ -156,6 +155,7 @@ and are not listed here.
 - `docs/specs/retired/20260627-openkit_development_loop_protocol.md` — Retired
 - `docs/specs/retired/20260627-remote_openshell_gateway.md` — Retired
 - `docs/specs/retired/20260628-spec_inventory_release_triage.md` — Retired
+- `docs/specs/retired/20260704-git_write_workflow.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_artifact_detail.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_inline_approvals.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_inline_questions.md` — Retired
@@ -229,6 +229,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20260821-agent_coordination_playbook.md` — Agent Coordination Playbook Audit
 - `docs/audits/20260905-delegated_engineering_governance.md` — Delegated Engineering Governance Audit
 - `docs/audits/20260930-delayed_user_input_terminal_archive.md` — Delayed User Input Terminal Archive
+- `docs/audits/20261003-git_write_workflow_terminal_archive.md` — Git Write Workflow Terminal Archive
 - `docs/audits/20261003-goal_mode_coordination_terminal_archive.md` — Goal Mode Coordination Terminal Archive
 
 ## Platform References

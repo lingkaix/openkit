@@ -10,7 +10,7 @@ The engineer requested implementation of [#66](https://github.com/lingkaix/openk
 
 ## Owners And Method
 
-`docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260703-vault_secret_injection.md`, and `docs/specs/20260704-git_write_workflow.md` own material custody, reference/grant lifecycle, and approved host push. Implement their existing lifecycle through deployment-admin workspace operations, with fresh server-generated reference/grant ids and existing repository binding. The primary owns all changed paths. No registered `.codex/agents/` capabilities exist in this checkout.
+`docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260703-vault_secret_injection.md`, and `docs/specs/retired/20260704-git_write_workflow.md` own material custody, reference/grant lifecycle, and approved host push. Implement their existing lifecycle through deployment-admin workspace operations, with fresh server-generated reference/grant ids and existing repository binding. The primary owns all changed paths. No registered `.codex/agents/` capabilities exist in this checkout.
 
 ## Checkpoint
 

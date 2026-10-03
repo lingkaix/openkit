@@ -11,7 +11,7 @@ Source: GitHub issue #71. `approval.respond` for policy `repo.push` Gates on Tur
 
 ## Owners
 
-`docs/specs/20260531-human_attention_intervention_model.md` owns Action Center approval respond. `docs/specs/20260704-git_write_workflow.md` owns policy `repo.push` Gates. Scheduler lease ownership remains with the worker runtime owners; policy-local closeout may fence a Turn-bound lease when formal placement completion is unavailable because no worker Gate checkpoint exists.
+`docs/specs/20260531-human_attention_intervention_model.md` owns Action Center approval respond. `docs/specs/retired/20260704-git_write_workflow.md` owns policy `repo.push` Gates. Scheduler lease ownership remains with the worker runtime owners; policy-local closeout may fence a Turn-bound lease when formal placement completion is unavailable because no worker Gate checkpoint exists.
 
 ## Checkpoint
 

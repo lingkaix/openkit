@@ -11,7 +11,7 @@ Source: GitHub issue #85. Task Mode rejected prompts containing `\breview\b` wit
 
 ## Owners
 
-`docs/specs` worker coordinator / Task Mode entry owns routing heuristics. `docs/specs/20260704-git_write_workflow.md` owns review linkage for publication. Host App API push remains distinct from worker-selected `openkit-repository` tools.
+`docs/specs` worker coordinator / Task Mode entry owns routing heuristics. `docs/specs/retired/20260704-git_write_workflow.md` owns review linkage for publication. Host App API push remains distinct from worker-selected `openkit-repository` tools.
 
 ## Checkpoint
 

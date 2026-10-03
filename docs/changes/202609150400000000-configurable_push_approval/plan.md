@@ -10,7 +10,7 @@ Source: engineer request to implement [OpenKit #68](https://github.com/lingkaix/
 
 ## Owners And Decisions
 
-`docs/specs/20260704-git_write_workflow.md` owns host push and its approval modes; `20260703-policy_enforcement_mapping.md` owns decision/audit projection; `20260703-workspace_synchronization.md` delegates publication. Use deployment-owned per-Workspace action entries in existing server config, avoiding new storage, Workspace-imported policy authority, or client payloads. Reuse granted Approval and Item ownership with a direct policy allow, not a fabricated human response. Changes activate after restart and only affect new requests.
+`docs/specs/retired/20260704-git_write_workflow.md` owns host push and its approval modes; `20260703-policy_enforcement_mapping.md` owns decision/audit projection; `20260703-workspace_synchronization.md` delegates publication. Use deployment-owned per-Workspace action entries in existing server config, avoiding new storage, Workspace-imported policy authority, or client payloads. Reuse granted Approval and Item ownership with a direct policy allow, not a fabricated human response. Changes activate after restart and only affect new requests.
 
 ## Checkpoint
 

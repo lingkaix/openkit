@@ -276,7 +276,7 @@ The primary derived these details inside the accepted decisions. A fresh Pi Cons
 31. **The resume locator (completion, 2026-09-30).** The owners said that Core stores the resume locator and the digest but not what the locator is or which record keeps it, and runtime-binding rows are deleted at `session.close`. The locator is the `agentSessionId` of the AgentSession whose binding proved a ready native handle, so no wire field is added. When a binding reports ready, its Harness has stored the adapter's restricted handle in retained Sandbox storage under that id, and `nativeHandleDigest` is the SHA-256 of exactly those bytes. Core records the digest on the AgentSession record when it accepts the proof and keeps it after close. A successor's `resume` is the pair of the predecessor it succeeds; the Harness reads only that reference and requires the carried digest. The Persistent Worker Volumes owner lost its older fallback that created a fresh native execution from Core context when exact resume was unavailable. Pi reviewed this completion and accepted it with those two corrections.
 
 **Owners added by the review:**
-- [Git write workflow](../../specs/20260704-git_write_workflow.md);
+- [Git write workflow](../../specs/retired/20260704-git_write_workflow.md);
 - [internal agent resource integration](../../specs/20260909-internal_agent_resource_integration.md), with human attention's internal branch;
 - [worker credential access declarations](../../specs/20260709-worker_credential_access_declarations.md);
 - [runtime scheduling scale](../../specs/20260703-runtime_scheduling_scale.md), for concurrent active Turns across distinct AgentSessions, which it already accepts but which is not implemented;
