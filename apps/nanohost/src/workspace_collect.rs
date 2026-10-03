@@ -2609,13 +2609,14 @@ fn read_link_at(dir: &OwnedFd, name: &OsStr) -> Result<Vec<u8>, ScanFault> {
     Ok(buffer)
 }
 
+/// Reads one bounded regular file without following symbolic links.
 fn read_regular_at(dir: &OwnedFd, name: &str, cap: usize) -> Result<Option<Vec<u8>>, ScanFault> {
     let stat = match fstatat_nofollow(dir, OsStr::new(name)) {
         Ok(stat) => stat,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(ScanFault::MetadataUnavailable),
     };
-    if file_kind(stat.st_mode) != libc::S_IFREG as u32 {
+    if file_kind(stat.st_mode) != libc::S_IFREG {
         return Ok(None);
     }
     if stat.st_size < 0 || u64::try_from(stat.st_size).unwrap_or(u64::MAX) > cap as u64 {
@@ -2640,21 +2641,25 @@ fn same_file(left: &libc::stat, right: &libc::stat) -> bool {
     left.st_dev == right.st_dev && left.st_ino == right.st_ino
 }
 
-fn file_kind(mode: libc::mode_t) -> u32 {
-    (mode as u32) & (libc::S_IFMT as u32)
+/// Extracts the file-kind mask in the platform's native mode type.
+fn file_kind(mode: libc::mode_t) -> libc::mode_t {
+    mode & libc::S_IFMT
 }
 
+/// Classifies the native file-kind mask without changing its integer width.
 fn entry_kind(mode: libc::mode_t) -> EntryKind {
     match file_kind(mode) {
-        value if value == libc::S_IFREG as u32 => EntryKind::File,
-        value if value == libc::S_IFDIR as u32 => EntryKind::Dir,
-        value if value == libc::S_IFLNK as u32 => EntryKind::Symlink,
+        value if value == libc::S_IFREG => EntryKind::File,
+        value if value == libc::S_IFDIR => EntryKind::Dir,
+        value if value == libc::S_IFLNK => EntryKind::Symlink,
         _ => EntryKind::Other,
     }
 }
 
+/// Extracts supported permission bits into the manifest's fixed integer width.
 fn perm_bits(mode: libc::mode_t) -> u32 {
-    (mode as u32) & 0o7777
+    // mode_t is u16 on macOS and u32 on Linux; the return type fixes the manifest width.
+    (mode & 0o7777) as _
 }
 
 #[cfg(target_os = "macos")]
