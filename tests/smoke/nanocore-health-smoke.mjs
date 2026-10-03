@@ -47,14 +47,11 @@ async function main() {
     await waitForHttp(`${baseUrl}/api/health`, child, output);
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
-    const fencedRead = await fetch(
-      `${baseUrl}/api/app/operations/workspace.dashboard`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ workspaceId: deletion.workspaceId }),
-      }
-    );
+    const fencedRead = await fetch(`${baseUrl}/api/app/operations/workspace.dashboard`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: deletion.workspaceId }),
+    });
     const fencedReadBody = await fencedRead.json();
     if (fencedRead.status !== 403 || fencedReadBody.code !== 'workspace_access_denied') {
       throw new Error(

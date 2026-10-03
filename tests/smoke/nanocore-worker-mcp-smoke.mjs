@@ -174,7 +174,10 @@ async function main() {
           assert.equal(importCount, 1, 'The canonical AEP must be the first Turn import.');
           assert.equal(environmentPackage, null, 'NanoHost imported more than one canonical AEP.');
           environmentPackage = JSON.parse(imported.bodyBytes.toString('utf8'));
-          assert.equal(metadata.relativePath, `${environmentPackage.scope.agentSessionId}/config/package.json`);
+          assert.equal(
+            metadata.relativePath,
+            `${environmentPackage.scope.agentSessionId}/config/package.json`
+          );
           assert.deepEqual(environmentPackage.runtime.environment, {
             imageDigest: smokeImageDigest,
             ...smokeImageDefaults,
@@ -772,12 +775,15 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
   await seedDemoWorkspaceAuthority(dataRoot);
   // Mirror the existing confirmed-synthetic-image fixture through built production settlements.
   // Real Task admission still requires exact image/default evidence; no runtime fallback is installed.
-  const [{ openCoreDb }, { commandInputHash }, { admitWorkerImageEnvironment, writeWorkerImageSettlement }] =
-    await Promise.all([
-      import('../../apps/nanocore/dist/storage/db.js'),
-      import('../../apps/nanocore/dist/runtime/idempotent-command.js'),
-      import('../../apps/nanocore/dist/runtime/worker-image-settlements.js'),
-    ]);
+  const [
+    { openCoreDb },
+    { commandInputHash },
+    { admitWorkerImageEnvironment, writeWorkerImageSettlement },
+  ] = await Promise.all([
+    import('../../apps/nanocore/dist/storage/db.js'),
+    import('../../apps/nanocore/dist/runtime/idempotent-command.js'),
+    import('../../apps/nanocore/dist/runtime/worker-image-settlements.js'),
+  ]);
   const coreDb = openCoreDb(dataRoot);
   try {
     const inputDigest = commandInputHash(runtimeImage);
@@ -1017,16 +1023,20 @@ async function waitForHarnessOperation(client, binding, operation, child, output
 async function settleEmptyWorkspaceCollection(client, response) {
   const command = parseJson(response, 'workspace.collect command');
   assert.ok(['baseline', 'capture'].includes(command.mode));
-  await settleJsonEffect(client, 'workspace.collect', command.mode === 'baseline'
-    ? {
-        requestId: command.requestId,
-        outcome: 'baseline',
-        head: {
-          tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-          manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
-        },
-      }
-    : { requestId: command.requestId, outcome: 'no_new_head', unstable: false });
+  await settleJsonEffect(
+    client,
+    'workspace.collect',
+    command.mode === 'baseline'
+      ? {
+          requestId: command.requestId,
+          outcome: 'baseline',
+          head: {
+            tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+            manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+          },
+        }
+      : { requestId: command.requestId, outcome: 'no_new_head', unstable: false }
+  );
   return command.mode;
 }
 
