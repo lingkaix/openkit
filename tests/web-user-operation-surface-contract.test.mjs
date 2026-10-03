@@ -183,10 +183,10 @@ const WEB_OPERATION_GROUPS = {
   Portability: {
     downloadWorkspaceExportArchive: { disposition: 'roadmap', roadmap: 'R008' },
     dryRunWorkspaceArchiveImport: { disposition: 'roadmap', roadmap: 'R008' },
-    dryRunWorkspaceImport: { disposition: 'live', surface: 'Portability' },
-    exportWorkspace: { disposition: 'live', surface: 'Portability' },
+    'workspace.import-dry-run': { disposition: 'live', surface: 'Portability' },
+    'workspace.export': { disposition: 'live', surface: 'Portability' },
     importWorkspaceArchive: { disposition: 'roadmap', roadmap: 'R008' },
-    importWorkspace: { disposition: 'live', surface: 'Portability' },
+    'workspace.import': { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
     createWorkspaceVaultGrant: { disposition: 'live', surface: 'Vault backend' },

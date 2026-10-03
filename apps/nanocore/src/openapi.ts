@@ -185,10 +185,7 @@ import {
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDashboardResponseSchema,
   WorkspaceDeletionResponseSchema,
-  WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunRequestSchema,
   WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportRequestSchema,
   WorkspaceImportResponseSchema,
   WorkspaceInvitationMutationResponseSchema,
   WorkspaceMemberMutationResponseSchema,
@@ -3146,33 +3143,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/export': {
-        post: {
-          operationId: 'exportWorkspace',
-          tags: ['storage'],
-          summary: 'Create and verify one workspace export.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace export manifest and verification summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceExportResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
           operationId: 'downloadWorkspaceExportArchive',
@@ -3253,74 +3223,6 @@ export function createAppOpenApiDocument() {
             content: {
               'application/vnd.openkit.workspace-export+tar.zstd': {
                 schema: { type: 'string', format: 'binary' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Imported workspace and verification summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspace-imports/dry-run': {
-        post: {
-          operationId: 'dryRunWorkspaceImport',
-          tags: ['storage'],
-          summary: 'Verify a server-managed workspace export without importing it.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/WorkspaceImportDryRunRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Workspace import dry-run report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspace-imports': {
-        post: {
-          operationId: 'importWorkspace',
-          tags: ['storage'],
-          summary: 'Import one verified server-managed workspace export.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/WorkspaceImportRequest' },
               },
             },
           },
@@ -4350,10 +4252,7 @@ export function createAppOpenApiDocument() {
         VaultAdminStatusResponse: toJsonSchema(VaultAdminStatusResponseSchema),
         VaultAdminUnlockRequest: toJsonSchema(VaultAdminUnlockRequestSchema),
         VaultAdminUnlockResponse: toJsonSchema(VaultAdminUnlockResponseSchema),
-        WorkspaceExportResponse: toJsonSchema(WorkspaceExportResponseSchema),
-        WorkspaceImportDryRunRequest: toJsonSchema(WorkspaceImportDryRunRequestSchema),
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
-        WorkspaceImportRequest: toJsonSchema(WorkspaceImportRequestSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
         WorkspaceDashboardResponse: toJsonSchema(WorkspaceDashboardResponseSchema),
         WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),

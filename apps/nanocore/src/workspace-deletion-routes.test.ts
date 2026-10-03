@@ -10,9 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-
 import { expect, it, vi } from 'vitest';
-
 import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -23,6 +21,7 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createVerifiedWorkspaceExport } from './storage/workspace-transfer-routes.js';
+import { operationRequest } from './test-support/operation-request.js';
 import {
   createWorkspaceDeletionClosure,
   WORKSPACE_DELETION_LEGAL_HOLD_OWNERS,
@@ -1237,9 +1236,15 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       ownerUserId: 'user_local',
       workspaceId: workspace.id,
     });
-    const priorExportResponse = await app.request(`/api/app/workspaces/${workspace.id}/export`, {
-      method: 'POST',
-    });
+    const priorExportResponse = await app.request(
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: workspace.id },
+        {
+          method: 'POST',
+        }
+      )
+    );
     expect(priorExportResponse.status, await priorExportResponse.clone().text()).toBe(200);
     const priorExport = (await priorExportResponse.json()) as { exportId: string };
 

@@ -30,6 +30,7 @@ import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
+  isCanonicalUserOperationAuthorized,
   registerOperationAccessGuards,
 } from './operation-authorizer.js';
 
@@ -143,7 +144,6 @@ function createFixture() {
     workspaceMutationAdmission,
     inflightCommands: new WeakMap(),
   });
-  app.post('/api/app/workspace-imports/dry-run', (c) => c.json(c.get('actor')));
   app.post('/api/workspaces', (c) => c.json({ actor: c.get('actor') }));
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
   app.post('/api/turns/:turnId/feedback', (c) => c.json(c.get('workspaceAccess') ?? null));
@@ -1036,9 +1036,7 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('limits canonical-user operations to local, session, and usable server-admin actors', async () => {
-    const session = await fixture.app.request('/api/app/workspace-imports/dry-run', {
-      method: 'POST',
-    });
+    const session = isCanonicalUserOperationAuthorized(fixture.coreDb, fixture.actorState.current);
     fixture.actorState.current = {
       kind: 'token',
       tokenId: 'token_workspace',
@@ -1046,9 +1044,7 @@ describe('central Workspace operation authorizer', () => {
       tokenWorkspaceIds: [fixture.workspace.id],
       userId: 'user_local',
     };
-    const token = await fixture.app.request('/api/app/workspace-imports/dry-run', {
-      method: 'POST',
-    });
+    const token = isCanonicalUserOperationAuthorized(fixture.coreDb, fixture.actorState.current);
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -1063,14 +1059,11 @@ describe('central Workspace operation authorizer', () => {
       tokenWorkspaceIds: [],
       userId: 'user_local',
     };
-    const admin = await fixture.app.request('/api/app/workspace-imports/dry-run', {
-      method: 'POST',
-    });
+    const admin = isCanonicalUserOperationAuthorized(fixture.coreDb, fixture.actorState.current);
 
-    expect(session.status).toBe(200);
-    expect(token.status).toBe(403);
-    await expect(token.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
-    expect(admin.status).toBe(200);
+    expect(session).toBe(true);
+    expect(token).toBe(false);
+    expect(admin).toBe(true);
   });
 
   it('provisions only the usable server-admin actor Quick Chat before administration submit', async () => {

@@ -13,6 +13,7 @@ import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -257,9 +258,15 @@ describe('workspace portable file state', () => {
       }),
     ]);
 
-    const exportRes = await app.request(`/api/app/workspaces/${sourceWorkspaceId}/export`, {
-      method: 'POST',
-    });
+    const exportRes = await app.request(
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: sourceWorkspaceId },
+        {
+          method: 'POST',
+        }
+      )
+    );
     expect(exportRes.status, await exportRes.clone().text()).toBe(200);
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
     const verified = verifyWorkspaceExportTree({
@@ -309,15 +316,21 @@ describe('workspace portable file state', () => {
         name
       ).toThrow(/Knowledge Page/i);
     }
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId,
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d901',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId,
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d901',
+          }),
+        }
+      )
+    );
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
     const importedWorkspaceId = imported.importedWorkspaceId;

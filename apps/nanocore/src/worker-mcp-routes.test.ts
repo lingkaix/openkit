@@ -3195,9 +3195,15 @@ describe('worker MCP routes', () => {
           turnExecutor: new SimulatedTurnExecutor(),
           workerMcpGateway,
         });
-        const exportResponse = await exportApp.request('/api/app/workspaces/ws_demo/export', {
-          method: 'POST',
-        });
+        const exportResponse = await exportApp.request(
+          ...operationRequest(
+            'workspace.export',
+            { workspaceId: 'ws_demo' },
+            {
+              method: 'POST',
+            }
+          )
+        );
         expect(exportResponse.status).toBe(200);
         const exported = WorkspaceExportResponseSchema.parse(await exportResponse.json());
         const exportRoot = join(

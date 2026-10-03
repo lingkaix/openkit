@@ -40,6 +40,7 @@ import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
   DeploymentAdminRequiredError,
+  isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
@@ -90,6 +91,10 @@ import {
   DataRootAdminOperationError,
 } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import {
+  createWorkspaceTransferOperationImplementations,
+  WorkspaceTransferOperationError,
+} from './storage/workspace-transfer-operations.js';
 import { createThread } from './thread-routes.js';
 import { readTurn } from './turn-routes.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -398,6 +403,7 @@ function createOperationImplementations(
     ...createRecoveryOperationImplementations(dependencies),
     ...createKernelOperationImplementations(dependencies),
     ...createWorkspaceOperationImplementations(dependencies),
+    ...createWorkspaceTransferOperationImplementations(dependencies),
     ...createThreadOperationImplementations(dependencies),
     ...createTurnOperationImplementations(dependencies),
     ...createKnowledgeOperationImplementations(dependencies),
@@ -478,7 +484,14 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         : { kind: 'user' as const, id: context.actor.userId };
     let release: (() => void) | undefined;
     let workspaceIds: readonly string[] = [];
-    if (definition.scope.kind === 'server') {
+    if (definition.scope.kind === 'user') {
+      if (
+        context.kind !== 'public' ||
+        !coreDb ||
+        !isCanonicalUserOperationAuthorized(coreDb, context.actor)
+      )
+        throw denied();
+    } else if (definition.scope.kind === 'server') {
       if (context.kind !== 'public') throw denied();
       if (!coreDb && context.actor.kind !== 'local')
         throw new OperationInvocationError(
@@ -674,6 +687,7 @@ export function createOperationInvocation(dependencies: OperationInvocationDepen
         error instanceof AutomationOperationError ||
         error instanceof SchedulerAdmissionOperationError ||
         error instanceof RecoveryOperationError ||
+        error instanceof WorkspaceTransferOperationError ||
         error instanceof KnowledgeOperationError ||
         error instanceof ArtifactOperationError ||
         error instanceof HumanAttentionReadError ||

@@ -461,10 +461,7 @@ async function authorizeOperation(
 
   if (route.access.scope === 'user') {
     if (route.access.authentication === 'canonical-user') {
-      if (actor.kind === 'local' || actor.kind === 'session') {
-        return null;
-      }
-      return isUsablePresentedServerAdminToken(input.coreDb, actor)
+      return isCanonicalUserOperationAuthorized(input.coreDb, actor)
         ? null
         : workspaceAccessDenied();
     }
@@ -485,6 +482,16 @@ async function authorizeOperation(
   }
 
   return authorizeWorkspaceOperation(context, actor, { ...route, access: route.access }, input);
+}
+
+/** Reuses canonical-user admission, including current administrator eligibility, without Workspace membership. */
+export function isCanonicalUserOperationAuthorized(coreDb: CoreDb, actor: Actor): boolean {
+  if (!isCanonicalUserActive(coreDb, actor.userId)) return false;
+  return (
+    actor.kind === 'local' ||
+    actor.kind === 'session' ||
+    isCurrentDeploymentAdministrator(coreDb, actor)
+  );
 }
 
 /**

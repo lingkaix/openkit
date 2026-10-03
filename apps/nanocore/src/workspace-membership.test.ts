@@ -9,6 +9,7 @@ import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { operationRequest } from './test-support/operation-request.js';
 import {
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
@@ -500,8 +501,7 @@ describe('workspace membership foundation', () => {
       });
       const workspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
       const exportedResponse = await exporterApp.request(
-        `/api/app/workspaces/${source.id}/export`,
-        { method: 'POST' }
+        ...operationRequest('workspace.export', { workspaceId: source.id }, { method: 'POST' })
       );
       const exported = (await exportedResponse.json()) as { exportId: string };
       recordDataRootDeploymentMove(dataRoot, 'dep_moved_after_export');
@@ -513,29 +513,43 @@ describe('workspace membership foundation', () => {
 
       expect(exportedResponse.status).toBe(200);
 
-      for (const path of ['/api/app/workspace-imports/dry-run', '/api/app/workspace-imports']) {
+      for (const operation of ['workspace.import-dry-run', 'workspace.import'] as const) {
         getWorkspace.mockClear();
-        const denied = await otherApp.request(path, {
-          body: JSON.stringify(
-            path.endsWith('/dry-run') ? request : { ...request, requestId: randomUUID() }
-          ),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        });
+        const denied = await otherApp.request(
+          ...operationRequest(
+            operation,
+            {},
+            {
+              body: JSON.stringify(
+                operation === 'workspace.import-dry-run'
+                  ? request
+                  : { ...request, requestId: randomUUID() }
+              ),
+              headers: { 'content-type': 'application/json' },
+              method: 'POST',
+            }
+          )
+        );
 
-        expect(denied.status, `${path}: ${await denied.clone().text()}`).toBe(403);
+        expect(denied.status, `${operation}: ${await denied.clone().text()}`).toBe(403);
         await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_import_forbidden' });
         expect(getWorkspace).not.toHaveBeenCalled();
       }
 
-      const missing = await otherApp.request('/api/app/workspace-imports/dry-run', {
-        body: JSON.stringify({
-          exportId: 'wsexp_missing',
-          sourceWorkspaceId: 'ws_missing',
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const missing = await otherApp.request(
+        ...operationRequest(
+          'workspace.import-dry-run',
+          {},
+          {
+            body: JSON.stringify({
+              exportId: 'wsexp_missing',
+              sourceWorkspaceId: 'ws_missing',
+            }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       const missingBody = await missing.text();
 
       expect(missing.status).toBe(400);

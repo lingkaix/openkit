@@ -2667,9 +2667,11 @@ describe('createCoreClient', () => {
         },
       },
       'POST /api/app/operations/backup.verify': { body: dataRootBackupResponse() },
-      'POST /api/app/workspaces/ws_demo/export': { body: workspaceExportResponse() },
-      'POST /api/app/workspace-imports/dry-run': { body: workspaceImportDryRunResponse() },
-      'POST /api/app/workspace-imports': { body: workspaceImportResponse() },
+      'POST /api/app/operations/workspace.export': { body: workspaceExportResponse() },
+      'POST /api/app/operations/workspace.import-dry-run': {
+        body: workspaceImportDryRunResponse(),
+      },
+      'POST /api/app/operations/workspace.import': { body: workspaceImportResponse() },
       'POST /api/app/workspaces/ws_demo/vault/references/vault_imported/rebind': {
         body: {
           backendKind: 'encrypted-file',
@@ -3296,17 +3298,30 @@ describe('createCoreClient', () => {
     await expect(client.operations['backup.verify']({ backupId: 'drb_demo' })).resolves.toEqual(
       dataRootBackupResponse()
     );
-    await expect(client.app.exportWorkspace('ws_demo')).resolves.toEqual(workspaceExportResponse());
     await expect(
-      client.app.dryRunWorkspaceImport({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo' })
+      client.operations['workspace.export']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceExportResponse());
+    await expect(
+      client.operations['workspace.import-dry-run']({
+        sourceWorkspaceId: 'ws_demo',
+        exportId: 'wsexp_demo',
+      })
     ).resolves.toEqual(workspaceImportDryRunResponse());
     await expect(
-      client.app.importWorkspace({
+      client.operations['workspace.import']({
         sourceWorkspaceId: 'ws_demo',
         exportId: 'wsexp_demo',
         requestId: 'req_import',
       })
     ).resolves.toEqual(workspaceImportResponse());
+    expect(
+      requests.find(({ path }) => path === '/api/app/operations/workspace.export')?.body
+    ).toEqual({ workspaceId: 'ws_demo' });
+    const importRequest = requests.find(
+      ({ path }) => path === '/api/app/operations/workspace.import'
+    );
+    expect(importRequest?.headers['x-openkit-request-id']).toBe('req_import');
+    expect(importRequest?.body).toEqual({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo' });
     await expect(
       client.app.rebindWorkspaceVaultReference('ws_demo', 'vault_imported', {
         materialBase64: Buffer.from('workspace-secret').toString('base64'),
@@ -3678,9 +3693,9 @@ describe('createCoreClient', () => {
       'GET /api/app/app-update/11111111-1111-4111-8111-111111111111',
       'POST /api/app/auth/bootstrap/consume',
       'POST /api/app/operations/backup.verify',
-      'POST /api/app/workspaces/ws_demo/export',
-      'POST /api/app/workspace-imports/dry-run',
-      'POST /api/app/workspace-imports',
+      'POST /api/app/operations/workspace.export',
+      'POST /api/app/operations/workspace.import-dry-run',
+      'POST /api/app/operations/workspace.import',
       'POST /api/app/workspaces/ws_demo/vault/references/vault_imported/rebind',
       'GET /api/app/workspaces/ws_demo/vault/references',
       'GET /api/app/workspaces/ws_demo/vault/grants',

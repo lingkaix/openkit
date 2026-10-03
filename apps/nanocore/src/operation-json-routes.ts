@@ -77,6 +77,8 @@ export function registerOperationJsonRoutes(
           return asApiError(error.message, error.code, error.status);
         // Administration preserves the HTTP framework's unexpected-error response.
         if (definition.scope.kind === 'server') throw error;
+        // Export's native owner historically propagates unexpected failures to the app error handler.
+        if (id === 'workspace.export') throw error;
         if (id.startsWith('kernel.')) return asKernelApiError(error);
         return asCommandError(error, definition.mutating ? 'thread_create_failed' : 'not_found');
       }

@@ -1064,9 +1064,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
   if (exportedWorkspaceRecord.id !== report.manifest.workspaceId) {
     throw new Error('Workspace record id does not match the export manifest.');
   }
-  const exportedThreads = readImportJsonl(context.files, 'records/threads.jsonl').map((record) =>
-    ThreadSchema.parse(record)
-  );
+  const exportedThreads = readWorkspaceExportThreads(context.files);
   const threads = exportedThreads.map((thread, index) =>
     ThreadSchema.parse({
       ...thread,
@@ -4298,6 +4296,19 @@ function readImportJson(files: ReadonlyMap<string, string>, exportPath: string):
   rejectUnsupportedRecordFeatures(record, exportPath);
 
   return record;
+}
+
+/**
+ * Parses source Threads from verified export bytes for import and current audience admission.
+ *
+ * @param files Exact verified export contents; source files are never reopened.
+ * @returns Canonical source Threads, without reminting their identities or audience.
+ * @throws Error when required Thread content or supported record semantics cannot be parsed.
+ */
+export function readWorkspaceExportThreads(files: ReadonlyMap<string, string>): Thread[] {
+  return readImportJsonl(files, 'records/threads.jsonl').map((record) =>
+    ThreadSchema.parse(record)
+  );
 }
 
 /**

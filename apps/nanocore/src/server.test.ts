@@ -1437,9 +1437,13 @@ describe('nanocore server', () => {
       title: 'Export route knowledge',
       content: 'Export this note.',
     });
-    const app = createApp({ dataRoot, store });
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const res = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
 
     expect(res.status).toBe(200);
     const body = WorkspaceExportResponseSchema.parse(await res.json());
@@ -1484,21 +1488,32 @@ describe('nanocore server', () => {
       readFileSync(join(exportRoot, 'records/vault-injection-receipts.jsonl'), 'utf8'),
     ]).toEqual(['', '']);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
+    coreDb.sqlite.close();
   });
 
   it('dry-runs workspace import through the App API without creating a workspace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-dry-run-route-'));
     const store = createDemoStore({ dataRoot });
-    const app = createApp({ dataRoot, store });
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const app = createApp({ coreDb, dataRoot, store });
     const beforeCount = store.listWorkspaces().length;
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    const dryRunRes = await app.request('/api/app/workspace-imports/dry-run', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
-    });
+    const dryRunRes = await app.request(
+      ...operationRequest(
+        'workspace.import-dry-run',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sourceWorkspaceId: 'ws_demo', exportId: exported.exportId }),
+        }
+      )
+    );
 
     expect(dryRunRes.status).toBe(200);
     const body = WorkspaceImportDryRunResponseSchema.parse(await dryRunRes.json());
@@ -1512,6 +1527,7 @@ describe('nanocore server', () => {
     });
     expect(store.listWorkspaces()).toHaveLength(beforeCount);
     expect(JSON.stringify(body)).not.toContain(dataRoot);
+    coreDb.sqlite.close();
   });
 
   it('imports one workspace through the App API with collision reminting', async () => {
@@ -1527,18 +1543,26 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
     const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d701',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d701',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -1621,20 +1645,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/audit-events.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d722',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d722',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -1685,7 +1717,9 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+      const exportRes = await app.request(
+        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      );
 
       expect(exportRes.status).toBe(200);
       const body = WorkspaceExportResponseSchema.parse(await exportRes.json());
@@ -1703,7 +1737,9 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+      const exportRes = await app.request(
+        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      );
       const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
       const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
 
@@ -1754,17 +1790,25 @@ describe('nanocore server', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+      const exportRes = await app.request(
+        ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+      );
       const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-      const importRes = await app.request('/api/app/workspace-imports', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          sourceWorkspaceId: 'ws_demo',
-          exportId: exported.exportId,
-          requestId: '00000000-0000-4000-8000-00000000d733',
-        }),
-      });
+      const importRes = await app.request(
+        ...operationRequest(
+          'workspace.import',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              sourceWorkspaceId: 'ws_demo',
+              exportId: exported.exportId,
+              requestId: '00000000-0000-4000-8000-00000000d733',
+            }),
+          }
+        )
+      );
 
       expect(importRes.status, await importRes.clone().text()).toBe(200);
       const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -1860,21 +1904,29 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/capability-calls.jsonl');
     expect(exported.checkedFiles).toContain('records/usage-records.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d732',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d732',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -1935,22 +1987,30 @@ describe('nanocore server', () => {
       'Deployment note source material.'
     );
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/knowledge-sources.jsonl');
     expect(exported.checkedFiles).toContain('sources/materials/ks_source_1/content.txt');
     expect(exported.checkedFiles).toContain('sources/derived/ks_source_1/text.json');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d736',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d736',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2040,24 +2100,35 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
 
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
     const sourceRoot = workspaceExportRoot(dataRoot, 'ws_demo', exported.exportId);
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d747',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d747',
+          }),
+        }
+      )
+    );
     const importPayload = await importRes.json();
     expect(importRes.status, JSON.stringify(importPayload)).toBe(200);
     const imported = WorkspaceImportResponseSchema.parse(importPayload);
     const reExportRes = await app.request(
-      `/api/app/workspaces/${imported.importedWorkspaceId}/export`,
-      { method: 'POST' }
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: imported.importedWorkspaceId },
+        { method: 'POST' }
+      )
     );
     const reExported = WorkspaceExportResponseSchema.parse(await reExportRes.json());
     const reExportRoot = workspaceExportRoot(
@@ -2125,20 +2196,28 @@ describe('nanocore server', () => {
       now: () => '2026-07-06T00:00:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-references.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d711',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d711',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(400);
     expect(
@@ -2184,18 +2263,26 @@ describe('nanocore server', () => {
       (SELECT COUNT(*) FROM vault_injection_receipts) AS injectionReceipts`);
     const beforeCoreRows = coreRowCounts.get();
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d712',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d712',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(400);
     expect({
@@ -2246,20 +2333,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-use-records.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d842',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d842',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2320,20 +2415,28 @@ describe('nanocore server', () => {
       now: () => '2026-07-06T00:11:00.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-grants.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d852',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d852',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2435,7 +2538,9 @@ describe('nanocore server', () => {
       now: () => '2026-07-06T00:12:01.000Z',
     });
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-plans.jsonl');
@@ -2452,15 +2557,21 @@ describe('nanocore server', () => {
       })
     ).toThrow('Unsupported workspace export record path: records/injection-plans.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d862',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d862',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2565,7 +2676,9 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-receipts.jsonl');
@@ -2582,15 +2695,21 @@ describe('nanocore server', () => {
       })
     ).toThrow('Unsupported workspace export record path: records/injection-receipts.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d872',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d872',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2669,20 +2788,28 @@ describe('nanocore server', () => {
       )}\n`
     );
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/data-sources.json');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d741',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d741',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2770,7 +2897,9 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/staged-workspace-reviews.jsonl');
@@ -2779,15 +2908,21 @@ describe('nanocore server', () => {
     expect(exported.checkedFiles).toContain('records/workspace-materialization-records.jsonl');
     expect(exported.checkedFiles).toContain('records/backend-workspace-handles.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d762',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d762',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -2934,20 +3069,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/workspace-apply-results.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d772',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d772',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -3071,20 +3214,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/permission-decisions.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d782',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d782',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -3950,20 +4101,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/worker-turn-checkpoints.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d802',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d802',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -4042,20 +4201,28 @@ describe('nanocore server', () => {
       sourceDb.sqlite.close();
     }
     const app = createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request('/api/app/workspaces/ws_demo/export', { method: 'POST' });
+    const exportRes = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
+    );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/mcp-tool-schema-snapshots.jsonl');
 
-    const importRes = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: 'ws_demo',
-        exportId: exported.exportId,
-        requestId: '00000000-0000-4000-8000-00000000d832',
-      }),
-    });
+    const importRes = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: 'ws_demo',
+            exportId: exported.exportId,
+            requestId: '00000000-0000-4000-8000-00000000d832',
+          }),
+        }
+      )
+    );
 
     expect(importRes.status, await importRes.clone().text()).toBe(200);
     const body = WorkspaceImportResponseSchema.parse(await importRes.json());
@@ -4128,14 +4295,14 @@ describe('nanocore server', () => {
             operationId: 'backup.verify',
           },
         },
-        '/api/app/workspaces/{workspaceId}/export': {
+        '/api/app/operations/workspace.export': {
           post: {
-            operationId: 'exportWorkspace',
+            operationId: 'workspace.export',
           },
         },
-        '/api/app/workspace-imports/dry-run': {
+        '/api/app/operations/workspace.import-dry-run': {
           post: {
-            operationId: 'dryRunWorkspaceImport',
+            operationId: 'workspace.import-dry-run',
           },
         },
       },

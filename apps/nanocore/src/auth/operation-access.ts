@@ -196,7 +196,7 @@ registerOperations(catalog, ['disableUser'], {
   scope: 'server',
 });
 
-registerOperations(catalog, ['dryRunWorkspaceImport', 'dryRunWorkspaceArchiveImport'], {
+registerOperations(catalog, ['dryRunWorkspaceArchiveImport'], {
   authentication: 'canonical-user',
   mutating: false,
   policyOperation: 'workspace.write',
@@ -238,7 +238,7 @@ registerOperations(catalog, ['recoverDeletedWorkspace'], {
   policyOperation: 'workspace.write',
   scope: 'user',
 });
-registerOperations(catalog, ['importWorkspace', 'importWorkspaceArchive', 'POST /api/workspaces'], {
+registerOperations(catalog, ['importWorkspaceArchive', 'POST /api/workspaces'], {
   authentication: 'canonical-user',
   mutating: true,
   policyOperation: 'workspace.write',
@@ -393,12 +393,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['exportWorkspace'], {
-  mutating: true,
-  policyOperation: 'workspace.export',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
   mutating: false,
   policyOperation: 'workspace.export',
@@ -607,12 +601,19 @@ for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
           policyOperation: definition.policyOperation,
           scope: 'server',
         }
-      : {
-          mutating: definition.mutating,
-          policyOperation: definition.policyOperation,
-          resolver: definition.scope.kind,
-          scope: 'workspace',
-        }
+      : definition.scope.kind === 'user'
+        ? {
+            authentication: 'canonical-user',
+            mutating: definition.mutating,
+            policyOperation: definition.policyOperation,
+            scope: 'user',
+          }
+        : {
+            mutating: definition.mutating,
+            policyOperation: definition.policyOperation,
+            resolver: definition.scope.kind,
+            scope: 'workspace',
+          }
   );
 }
 

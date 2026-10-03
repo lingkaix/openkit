@@ -61,3 +61,5 @@ The Conversation, Task, Attention and Pending Request CLI entries derive from th
 The NanoHost, backup and storage-report rows derive from the same composed table as product operations. Their access text is deployment-administrator authority; `strictShared` preserves complete input refinements and the generic client handler. NanoHost credential writes remain Core-owned exclusive sinks with redacted CLI and MCP results.
 
 The four Automation, three Scheduler and two Recovery CLI entries derive from the composed product definitions and call `client.operations[id]`; their literal catalog rows are removed. Automation deletion returns logical JSON `null` after its bodyless HTTP 204 success. Recovery retry retains full Workspace, Thread, Turn and request lineage. Rebuild the bundled executable with `pnpm build:openkit`.
+
+The three server-managed JSON transfer CLI operations derive from the Workspace transfer definition family and use `strictShared` input validation. The local-file archive download, dry-run and import paths retain their existing stream and file ownership rules.

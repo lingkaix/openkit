@@ -368,3 +368,5 @@ Artifact inventory, inspection, import, introduction, Action Center Review decis
 Conversation targets/navigation/submission, Task entry, attention reads, approval decisions, question answers and withdrawal use definition-derived `client.operations` with one selector object. Existing retry identities, caches and exact-effect disclosure remain with the Chat and Workspace hooks.
 
 The Operations screen invokes `automation.*`, `scheduler.*` and `recovery.*` through `client.operations` with complete logical selector objects. Recovery retry preserves Workspace, Thread, Turn and request identities; its UI checkpoint id is excluded from the strict request. Optimistic state, rollback and frozen retry identities remain covered by `screens/operations/operations.test.tsx`.
+
+Portability submits complete logical inputs through `client.operations` for `workspace.export`, `workspace.import-dry-run`, and `workspace.import`. The import retains its caller-owned request id and existing Workspace discovery and UI outcomes; archive download and upload retain their streaming client methods.

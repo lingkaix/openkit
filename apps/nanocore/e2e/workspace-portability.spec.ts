@@ -36,7 +36,9 @@ describe('nanocore e2e workspace portability', () => {
     );
 
     const exported = await expectJson(
-      await postJson(`${sourceHarness.baseUrl}/api/app/workspaces/${workspaceId}/export`, {}),
+      await postJson(`${sourceHarness.baseUrl}/api/app/operations/workspace.export`, {
+        workspaceId,
+      }),
       { workspaceId }
     );
     const exportId = String(exported.exportId);
@@ -100,7 +102,7 @@ describe('nanocore e2e workspace portability', () => {
 
     const workspaceId = 'ws_demo';
     const exported = await expectJson(
-      await postJson(`${harness.baseUrl}/api/app/workspaces/${workspaceId}/export`, {}),
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.export`, { workspaceId }),
       { workspaceId }
     );
     const exportId = String(exported.exportId);
@@ -130,7 +132,7 @@ describe('nanocore e2e workspace portability', () => {
     );
 
     await expectErrorJson(
-      await postJson(`${harness.baseUrl}/api/app/workspace-imports`, {
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
         requestId: randomUUID(),
         sourceWorkspaceId: workspaceId,
@@ -160,7 +162,7 @@ describe('nanocore e2e workspace portability', () => {
 
     const workspaceId = 'ws_demo';
     const exported = await expectJson(
-      await postJson(`${harness.baseUrl}/api/app/workspaces/${workspaceId}/export`, {}),
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.export`, { workspaceId }),
       { workspaceId }
     );
     const exportId = String(exported.exportId);
@@ -178,7 +180,7 @@ describe('nanocore e2e workspace portability', () => {
     await writeFile(workspaceRecordPath, '{"id":"tampered"}\n');
 
     await expectErrorJson(
-      await postJson(`${harness.baseUrl}/api/app/workspace-imports`, {
+      await postJson(`${harness.baseUrl}/api/app/operations/workspace.import`, {
         exportId,
         requestId: randomUUID(),
         sourceWorkspaceId: workspaceId,

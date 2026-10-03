@@ -329,7 +329,6 @@ function isProductWorkAdmissionRequest(method: string, path: string): boolean {
     ['DELETE', 'PATCH', 'POST', 'PUT'].includes(method) &&
     (path === '/api/workspaces' ||
       path.startsWith('/api/workspaces/') ||
-      path === '/api/app/workspace-imports' ||
       path.startsWith('/api/app/workspaces/'))
   );
 }
@@ -1552,7 +1551,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     coreDb: options.coreDb,
     dataRoot,
-    repositoryWorkspaceDb,
     requestStore,
   });
   registerWorkspaceDeletionRoutes({

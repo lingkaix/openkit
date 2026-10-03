@@ -145,6 +145,8 @@ export interface VerifiedWorkspaceExportTree {
 
 /** Input for writing one workspace export tree. */
 export interface WriteWorkspaceExportTreeInput {
+  /** Trusted current administrator eligibility for including private project history; never caller input. */
+  administratorEligible?: boolean;
   /** Export root directory to populate. */
   exportRoot: string;
   /** Stable export record id. */
@@ -316,7 +318,10 @@ export function writeWorkspaceExportTree(
     agentSessions: input.agentSessions,
     turnEvents: input.turnEvents,
   });
-  if (history.threads.some((thread) => thread.visibility === 'private')) {
+  if (
+    !input.administratorEligible &&
+    history.threads.some((thread) => thread.visibility === 'private')
+  ) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
   const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));

@@ -41,3 +41,4 @@ export * from './workers.js';
 export * from './workspace-archive-history.js';
 export * from './workspace-sharing.js';
 export * from './workspace-sync.js';
+export * from './workspace-transfer.js';

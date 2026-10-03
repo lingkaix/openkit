@@ -430,11 +430,6 @@ function makeClient(
       ...overrides.core,
     },
     app: {
-      exportWorkspace: vi.fn().mockResolvedValue(EXPORT_RESULT),
-      dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN),
-      importWorkspace: vi
-        .fn()
-        .mockImplementation((input: unknown) => Promise.resolve(importResultFor(input))),
       listWorkspaceVaultReferences: vi.fn().mockResolvedValue(VAULT_LIST),
       listWorkspaceVaultGrants: vi
         .fn()
@@ -460,6 +455,11 @@ function makeClient(
     },
 
     operations: {
+      'workspace.export': vi.fn().mockResolvedValue(EXPORT_RESULT),
+      'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN),
+      'workspace.import': vi
+        .fn()
+        .mockImplementation((input: unknown) => Promise.resolve(importResultFor(input))),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
 
@@ -769,7 +769,7 @@ function expectVaultUiAbsent(client: CoreClient) {
   expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /rebind/i })).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
-  expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+  expect(client.operations['workspace.export']).not.toHaveBeenCalled();
   expect(client.app.listWorkspaceVaultReferences).not.toHaveBeenCalled();
   expect(client.app.listWorkspaceVaultGrants).not.toHaveBeenCalled();
   expect(client.app.listWorkspaceVaultUseRecords).not.toHaveBeenCalled();
@@ -791,21 +791,21 @@ async function proveUserScopedImport(
   expectVaultUiAbsent(client);
   await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
   await waitFor(() =>
-    expect(vi.mocked(client.app.dryRunWorkspaceImport).mock.calls).toEqual([
+    expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
       [AVAILABLE_DRY_RUN_REQUEST],
     ])
   );
   expectReviewSummary(DRY_RUN_AVAILABLE);
   expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-  expect(client.app.importWorkspace).not.toHaveBeenCalled();
+  expect(client.operations['workspace.import']).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-  await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
   const acceptedImport = acceptedImportCommand(
-    vi.mocked(client.app.importWorkspace),
+    vi.mocked(client.operations['workspace.import']),
     0,
     AVAILABLE_DRY_RUN_REQUEST
   );
-  expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+  expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
   await expectImportedSuccess({ id: EXPORTED_ABSENT_ID, name: IMPORTED_WORKSPACE.name });
   expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
   expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
@@ -911,9 +911,9 @@ describe('Portability', () => {
     expect(
       vi.mocked(client.app.listWorkspaceVaultReferences).mock.invocationCallOrder[0]
     ).toBeGreaterThan(listWorkspaces.mock.invocationCallOrder[1]);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
   });
 
@@ -1000,30 +1000,34 @@ describe('Portability', () => {
     await user.click(screen.getByRole('button', { name: 'Export workspace' }));
 
     await waitFor(() =>
-      expect(vi.mocked(client.app.exportWorkspace).mock.calls).toEqual([[WORKSPACE.id]])
+      expect(vi.mocked(client.operations['workspace.export']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+      ])
     );
     expect(await screen.findByText(EXPORT_ID)).toBeInTheDocument();
     expect(screen.getByText('1 file', { exact: false })).toBeInTheDocument();
     expectDownloadArchiveLink(WORKSPACE.id, EXPORT_ID);
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     await reviewImport(user);
     await waitFor(() =>
-      expect(vi.mocked(client.app.dryRunWorkspaceImport).mock.calls).toEqual([[DRY_RUN_REQUEST]])
+      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
+        [DRY_RUN_REQUEST],
+      ])
     );
     expect(await screen.findByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
     expectReviewSummary(DRY_RUN);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
-    const acceptedImport = acceptedImportCommand(vi.mocked(client.app.importWorkspace));
-    expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
+    const acceptedImport = acceptedImportCommand(vi.mocked(client.operations['workspace.import']));
+    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
     await expectImportedSuccess({
       id: COLLISION.suggestedWorkspaceId,
@@ -1059,9 +1063,9 @@ describe('Portability', () => {
     expect(await screen.findByText('Active', { exact: true })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
     expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
-    expect(client.app.exportWorkspace).toHaveBeenCalledTimes(1);
-    expect(client.app.dryRunWorkspaceImport).toHaveBeenCalledTimes(1);
-    expect(client.app.importWorkspace).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.export']).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1);
     expect(client.app.rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
     assertNoLeakedInternals(queryClient);
   });
@@ -1080,11 +1084,13 @@ describe('Portability', () => {
     const client = makeClient({
       core: {},
       app: {
-        dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         listWorkspaceVaultReferences: vi.fn().mockResolvedValue(EMPTY_VAULT_B),
       },
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1104,13 +1110,13 @@ describe('Portability', () => {
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     await reviewImport(user, EXPORTED_ABSENT_ID, EXPORT_ID);
     await waitFor(() =>
-      expect(vi.mocked(client.app.dryRunWorkspaceImport).mock.calls).toEqual([
+      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
         [AVAILABLE_DRY_RUN_REQUEST],
       ])
     );
     expectReviewSummary(DRY_RUN_AVAILABLE);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1129,7 +1135,12 @@ describe('Portability', () => {
       .fn()
       .mockResolvedValueOnce(DRY_RUN)
       .mockResolvedValue(nextReview);
-    const client = makeClient({ app: { dryRunWorkspaceImport } });
+    const client = makeClient({
+      operations: {
+        'workspace.import-dry-run': dryRunWorkspaceImport,
+      },
+      app: {},
+    });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expectReviewIdentities(nextReview, nextRequest);
@@ -1145,22 +1156,22 @@ describe('Portability', () => {
     await user.clear(screen.getByRole('textbox', { name: edited }));
     await user.type(screen.getByRole('textbox', { name: edited }), nextValue);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Review import' }));
     await waitFor(() => expect(dryRunWorkspaceImport).toHaveBeenCalledTimes(2));
     expect(dryRunWorkspaceImport.mock.calls[1]).toEqual([nextRequest]);
     expectReviewSummary(nextReview);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
     const acceptedImport = acceptedImportCommand(
-      vi.mocked(client.app.importWorkspace),
+      vi.mocked(client.operations['workspace.import']),
       0,
       nextRequest
     );
-    expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1178,8 +1189,11 @@ describe('Portability', () => {
     const exportWorkspace = vi.fn().mockRejectedValue(new Error('export-private failure'));
     const client = makeClient({
       core: {},
-      app: { exportWorkspace },
-      operations: { 'workspace.list': listWorkspaces },
+      app: {},
+      operations: {
+        'workspace.export': exportWorkspace,
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1196,20 +1210,23 @@ describe('Portability', () => {
     expect(alert).not.toHaveTextContent('export-private failure');
     expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
-    expect(exportWorkspace.mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(exportWorkspace.mock.calls).toEqual([[{ workspaceId: WORKSPACE.id }]]);
     expect(exportWorkspace).toHaveBeenCalledTimes(1);
     expect(listWorkspaces).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Export workspace' }));
     await waitFor(() =>
-      expect(exportWorkspace.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]])
+      expect(exportWorkspace.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+        [{ workspaceId: WORKSPACE.id }],
+      ])
     );
     expect(
       within(screen.getByRole('alert')).queryByRole('button', { name: 'Try again' })
     ).toBeNull();
     expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
@@ -1219,7 +1236,12 @@ describe('Portability', () => {
     const dryRunWorkspaceImport = vi
       .fn()
       .mockRejectedValue(privateFailure(400, 'workspace_import_dry_run_failed'));
-    const client = makeClient({ app: { dryRunWorkspaceImport } });
+    const client = makeClient({
+      operations: {
+        'workspace.import-dry-run': dryRunWorkspaceImport,
+      },
+      app: {},
+    });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
@@ -1236,8 +1258,8 @@ describe('Portability', () => {
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     expect(dryRunWorkspaceImport.mock.calls).toEqual([[DRY_RUN_REQUEST]]);
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
@@ -1248,8 +1270,8 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
@@ -1259,7 +1281,12 @@ describe('Portability', () => {
     const importWorkspace = vi
       .fn()
       .mockRejectedValue(privateFailure(400, 'workspace_import_failed'));
-    const client = makeClient({ app: { importWorkspace } });
+    const client = makeClient({
+      operations: {
+        'workspace.import': importWorkspace,
+      },
+      app: {},
+    });
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(
@@ -1279,7 +1306,7 @@ describe('Portability', () => {
     const acceptedImport = acceptedImportCommand(importWorkspace);
     expect(importWorkspace.mock.calls).toEqual([[acceptedImport]]);
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
@@ -1288,8 +1315,8 @@ describe('Portability', () => {
       expect(importWorkspace.mock.calls).toEqual([[acceptedImport], [acceptedImport]])
     );
     expect(screen.getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
-    expect(client.app.dryRunWorkspaceImport).toHaveBeenCalledTimes(1);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
@@ -1339,9 +1366,9 @@ describe('Portability', () => {
       ])
     );
     expect(vaultMaterialInput()).toHaveValue('');
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1384,9 +1411,9 @@ describe('Portability', () => {
     expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
     expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1430,9 +1457,9 @@ describe('Portability', () => {
     expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
     expect(screen.getByText(/no vault references/i)).toBeInTheDocument();
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1469,9 +1496,12 @@ describe('Portability', () => {
       .mockReturnValue(operation === 'rebind' ? pending.promise : Promise.resolve(REBIND_MUTATION));
     const client = makeClient({
       core: {},
-      app: { importWorkspace, listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+      app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.import': importWorkspace,
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1561,7 +1591,7 @@ describe('Portability', () => {
     expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE_B.id]]);
     expect(importWorkspace).toHaveBeenCalledTimes(operation === 'import' ? 1 : 0);
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(operation === 'rebind' ? 1 : 0);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1622,9 +1652,12 @@ describe('Portability', () => {
     });
     const client = makeClient({
       core: {},
-      app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1652,9 +1685,12 @@ describe('Portability', () => {
     });
     const client = makeClient({
       core: {},
-      app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1827,10 +1863,12 @@ describe('Portability', () => {
       .mockRejectedValue(scenario.command === 'rebind' ? error : undefined)
       .mockResolvedValue(REBIND_MUTATION);
     const client = makeClient({
+      operations: {
+        'workspace.export': exportWorkspace,
+        'workspace.import-dry-run': dryRunWorkspaceImport,
+        'workspace.import': importWorkspace,
+      },
       app: {
-        exportWorkspace,
-        dryRunWorkspaceImport,
-        importWorkspace,
         rebindWorkspaceVaultReference,
       },
     });
@@ -1893,9 +1931,12 @@ describe('Portability', () => {
     });
     const client = makeClient({
       core: {},
-      app: { dryRunWorkspaceImport: vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE) },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/', client);
 
@@ -1923,7 +1964,10 @@ describe('Portability', () => {
     const listWorkspaceVaultReferences = vi.fn().mockReturnValue(pendingVault.promise);
     const importWorkspace = vi.fn().mockReturnValue(pendingImport.promise);
     const client = makeClient({
-      app: { listWorkspaceVaultReferences, importWorkspace },
+      operations: {
+        'workspace.import': importWorkspace,
+      },
+      app: { listWorkspaceVaultReferences },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1941,18 +1985,20 @@ describe('Portability', () => {
 
     await reviewImport(user);
     await waitFor(() =>
-      expect(vi.mocked(client.app.dryRunWorkspaceImport).mock.calls).toEqual([[DRY_RUN_REQUEST]])
+      expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls).toEqual([
+        [DRY_RUN_REQUEST],
+      ])
     );
     expectReviewSummary(DRY_RUN);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
-    const acceptedImport = acceptedImportCommand(vi.mocked(client.app.importWorkspace));
-    expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
+    const acceptedImport = acceptedImportCommand(vi.mocked(client.operations['workspace.import']));
+    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     expect(importSection()).toBe(importNode);
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
     expect(client.app.listWorkspaceVaultReferences).toHaveBeenCalledTimes(1);
@@ -1967,9 +2013,9 @@ describe('Portability', () => {
     expect(importSection()).toBe(importNode);
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
-    expect(client.app.dryRunWorkspaceImport).toHaveBeenCalledTimes(1);
-    expect(client.app.importWorkspace).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(client.app.importWorkspace).mock.calls).toEqual([[acceptedImport]]);
+    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1990,9 +2036,10 @@ describe('Portability', () => {
     await user.click(within(emptyDialog).getByRole('button', { name: 'Cancel' }));
     await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
     const readsAfterLoad = {
-      exportWorkspace: vi.mocked(client.app.exportWorkspace).mock.calls.length,
-      dryRunWorkspaceImport: vi.mocked(client.app.dryRunWorkspaceImport).mock.calls.length,
-      importWorkspace: vi.mocked(client.app.importWorkspace).mock.calls.length,
+      exportWorkspace: vi.mocked(client.operations['workspace.export']).mock.calls.length,
+      dryRunWorkspaceImport: vi.mocked(client.operations['workspace.import-dry-run']).mock.calls
+        .length,
+      importWorkspace: vi.mocked(client.operations['workspace.import']).mock.calls.length,
       listWorkspaceVaultReferences: vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls
         .length,
       listWorkspaceVaultGrants: vi.mocked(client.app.listWorkspaceVaultGrants).mock.calls.length,
@@ -2014,13 +2061,13 @@ describe('Portability', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient, 'cache');
-    expect(vi.mocked(client.app.exportWorkspace).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['workspace.export']).mock.calls.length).toBe(
       readsAfterLoad.exportWorkspace
     );
-    expect(vi.mocked(client.app.dryRunWorkspaceImport).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['workspace.import-dry-run']).mock.calls.length).toBe(
       readsAfterLoad.dryRunWorkspaceImport
     );
-    expect(vi.mocked(client.app.importWorkspace).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['workspace.import']).mock.calls.length).toBe(
       readsAfterLoad.importWorkspace
     );
     expect(vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls.length).toBe(
@@ -2045,9 +2092,9 @@ describe('Portability', () => {
     expect(vi.mocked(client.app.rebindWorkspaceVaultReference).mock.calls).toEqual([
       [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
     ]);
-    expect(client.app.exportWorkspace).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.export']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2106,8 +2153,8 @@ describe('Portability', () => {
     expect(link).toBeEnabled();
     expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
   });
 
   it('reviews a local archive File, then imports that same File after preview', async () => {
@@ -2148,8 +2195,8 @@ describe('Portability', () => {
     expectReviewSummary(DRY_RUN_AVAILABLE);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
     expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
     await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
@@ -2162,8 +2209,8 @@ describe('Portability', () => {
     expect(retainedPortabilityState(queryClient)).not.toContain(
       btoa(String.fromCharCode(...ARCHIVE_BYTES))
     );
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2190,7 +2237,7 @@ describe('Portability', () => {
     ).toBeInTheDocument();
     await reviewImport(user);
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
-    await waitFor(() => expect(client.app.importWorkspace).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1));
     await expectImportedSuccess({
       id: COLLISION.suggestedWorkspaceId,
       name: IMPORTED_WORKSPACE.name,
@@ -2247,8 +2294,8 @@ describe('Portability', () => {
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
     await waitFor(() => expect(client.app.importWorkspaceArchive).toHaveBeenCalledTimes(1));
     expect(vi.mocked(client.app.importWorkspaceArchive).mock.calls[0]?.[0]).toBe(second);
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
   });
 
   it('retries the exact archive import requestId after a typed failure', async () => {
@@ -2278,7 +2325,7 @@ describe('Portability', () => {
     expect(accepted?.[1]).toEqual(expect.any(String));
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(importWorkspaceArchive.mock.calls).toEqual([accepted, accepted]));
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2339,8 +2386,8 @@ describe('Portability', () => {
     await user.click(screen.getByRole('button', { name: 'Open workspace' }));
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(EXPORTED_ABSENT_ID);
     expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
-    expect(client.app.dryRunWorkspaceImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -2363,7 +2410,7 @@ describe('Portability', () => {
     expect(screen.getByRole('button', { name: 'Use server export' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     expect(client.app.dryRunWorkspaceArchiveImport).not.toHaveBeenCalled();
-    expect(client.app.importWorkspace).not.toHaveBeenCalled();
+    expect(client.operations['workspace.import']).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Use server export' }));
     expect(screen.getByLabelText('Portable archive')).toHaveValue('');
@@ -2371,10 +2418,12 @@ describe('Portability', () => {
     expect(screen.getByRole('textbox', { name: 'Source workspace ID' })).toHaveValue(WORKSPACE.id);
     expect(screen.getByRole('textbox', { name: 'Export ID' })).toHaveValue(EXPORT_ID);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
-    expect(client.app.dryRunWorkspaceImport).toHaveBeenCalledTimes(1);
+    expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: 'Review import' }));
-    await waitFor(() => expect(client.app.dryRunWorkspaceImport).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(2)
+    );
     expectReviewSummary(DRY_RUN);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
     expect(client.app.importWorkspaceArchive).not.toHaveBeenCalled();
@@ -2464,6 +2513,8 @@ describe('Portability', () => {
       within(exportRegion).queryByRole('button', { name: 'Download archive' })
     ).not.toBeInTheDocument();
     expect(client.app.downloadWorkspaceExportArchive).not.toHaveBeenCalled();
-    expect(vi.mocked(client.app.exportWorkspace).mock.calls).toEqual([[WORKSPACE.id]]);
+    expect(vi.mocked(client.operations['workspace.export']).mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
   });
 });

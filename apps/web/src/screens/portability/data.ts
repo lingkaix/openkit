@@ -10,14 +10,16 @@ import { useCoreClient } from '../../app/core-client';
 import { chatKeys, useCurrentWorkspaceId, useWorkspaces } from '../chat/data';
 import { settingsKeys } from '../settings/data';
 
-/** Schema-owned dry-run review from `dryRunWorkspaceImport`. */
+/** Schema-owned dry-run review from `workspace.import-dry-run`. */
 export type PortabilityImportReview = Awaited<
-  ReturnType<CoreClient['app']['dryRunWorkspaceImport']>
+  ReturnType<CoreClient['operations']['workspace.import-dry-run']>
 >;
-/** Exact import command accepted by `importWorkspace`. */
-export type PortabilityImportCommand = Parameters<CoreClient['app']['importWorkspace']>[0];
-/** Exact dry-run command accepted by `dryRunWorkspaceImport`. */
-export type PortabilityReviewCommand = Parameters<CoreClient['app']['dryRunWorkspaceImport']>[0];
+/** Exact import command accepted by `workspace.import`. */
+export type PortabilityImportCommand = Parameters<CoreClient['operations']['workspace.import']>[0];
+/** Exact dry-run command accepted by `workspace.import-dry-run`. */
+export type PortabilityReviewCommand = Parameters<
+  CoreClient['operations']['workspace.import-dry-run']
+>[0];
 /** Exact archive import command accepted by `importWorkspaceArchive`. */
 export type PortabilityArchiveImportCommand = {
   file: File;
@@ -79,7 +81,7 @@ export function isPortabilityProjectKind(kind: string | undefined): boolean {
  * @param previous Command retained by a failed import, if any.
  * @param sourceWorkspaceId Source Workspace handle from the review form.
  * @param exportId Export handle from the review form.
- * @returns Exact `importWorkspace` payload.
+ * @returns Exact `workspace.import` payload.
  */
 export function nextImportCommand(
   previous: PortabilityImportCommand | undefined,
@@ -221,14 +223,14 @@ export function rebindWorkspaceVaultError(error: unknown): string {
 }
 
 /**
- * Exports the selected Workspace through `exportWorkspace`.
+ * Exports the selected Workspace through `workspace.export`.
  *
  * @returns Mutation that retains the schema-owned export response.
  */
 export function useExportWorkspace() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (workspaceId: string) => client.app.exportWorkspace(workspaceId),
+    mutationFn: (workspaceId: string) => client.operations['workspace.export']({ workspaceId }),
     retry: false,
   });
 }
@@ -247,20 +249,21 @@ export function useDryRunWorkspaceArchiveImport() {
 }
 
 /**
- * Reviews a server-managed import through `dryRunWorkspaceImport`.
+ * Reviews a server-managed import through `workspace.import-dry-run`.
  *
  * @returns Mutation that retains the schema-owned dry-run response.
  */
 export function useDryRunWorkspaceImport() {
   const client = useCoreClient();
   return useMutation({
-    mutationFn: (input: PortabilityReviewCommand) => client.app.dryRunWorkspaceImport(input),
+    mutationFn: (input: PortabilityReviewCommand) =>
+      client.operations['workspace.import-dry-run'](input),
     retry: false,
   });
 }
 
 /**
- * Imports a reviewed workspace export through `importWorkspace`, then refreshes Workspace discovery.
+ * Imports a reviewed workspace export through `workspace.import`, then refreshes Workspace discovery.
  *
  * @returns Mutation that keeps the exact request identity for retry.
  */
@@ -268,7 +271,8 @@ export function useImportWorkspace() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (command: PortabilityImportCommand) => client.app.importWorkspace(command),
+    mutationFn: (command: PortabilityImportCommand) =>
+      client.operations['workspace.import'](command),
     retry: false,
     onSuccess: (result) => {
       queryClient.setQueryData<WorkspaceRecord[]>(chatKeys.workspaces, (current) => {

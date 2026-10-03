@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
+import { ensureLocalUser } from '../auth/identity.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
   bindThreadMaterial,
@@ -928,9 +930,20 @@ describe('workspace export verifier', () => {
       Array.from({ length: 100 }, (_, index) => index + 2)
     );
 
-    const response = await createApp({ dataRoot, store }).request(
-      `/api/app/workspaces/${fixture.workspace.id}/export`,
-      { method: 'POST' }
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: fixture.workspace.id,
+    });
+    const response = await createApp({ coreDb, dataRoot, store }).request(
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: fixture.workspace.id },
+        { method: 'POST' }
+      )
     );
     expect.soft(response.status).toBe(200);
     const responseText = await response.text();
@@ -944,6 +957,7 @@ describe('workspace export verifier', () => {
         Array.from({ length: 101 }, (_, index) => index + 1)
       );
     }
+    coreDb.sqlite.close();
   });
 
   it('round-trips private Material and Review owners through the workspace endpoints', async () => {
@@ -1047,20 +1061,32 @@ describe('workspace export verifier', () => {
     workspaceDb.sqlite.close();
 
     const app = createApp({ coreDb, dataRoot, store });
-    const response = await app.request(`/api/app/workspaces/${fixture.workspace.id}/export`, {
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: fixture.workspace.id },
+        {
+          method: 'POST',
+        }
+      )
+    );
     expect(response.status).toBe(200);
     const { exportId } = (await response.json()) as { exportId: string };
-    const importResponse = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: fixture.workspace.id,
-        exportId,
-        requestId: '00000000-0000-4000-8000-000000000051',
-      }),
-    });
+    const importResponse = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: fixture.workspace.id,
+            exportId,
+            requestId: '00000000-0000-4000-8000-000000000051',
+          }),
+        }
+      )
+    );
     const importResponseText = await importResponse.text();
     expect(importResponse.status, importResponseText).toBe(200);
     const { importedWorkspaceId } = JSON.parse(importResponseText) as {
@@ -1084,20 +1110,29 @@ describe('workspace export verifier', () => {
     }
 
     const reExportResponse = await app.request(
-      `/api/app/workspaces/${importedWorkspaceId}/export`,
-      { method: 'POST' }
+      ...operationRequest(
+        'workspace.export',
+        { workspaceId: importedWorkspaceId },
+        { method: 'POST' }
+      )
     );
     expect(reExportResponse.status).toBe(200);
     const { exportId: reExportId } = (await reExportResponse.json()) as { exportId: string };
-    const secondImportResponse = await app.request('/api/app/workspace-imports', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        sourceWorkspaceId: importedWorkspaceId,
-        exportId: reExportId,
-        requestId: '00000000-0000-4000-8000-000000000052',
-      }),
-    });
+    const secondImportResponse = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: importedWorkspaceId,
+            exportId: reExportId,
+            requestId: '00000000-0000-4000-8000-000000000052',
+          }),
+        }
+      )
+    );
     expect(secondImportResponse.status).toBe(200);
     coreDb.sqlite.close();
   });

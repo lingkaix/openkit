@@ -290,14 +290,8 @@ import {
   WorkspaceDashboardResponseSchema,
   type WorkspaceDeletionResponse,
   WorkspaceDeletionResponseSchema,
-  type WorkspaceExportResponse,
-  WorkspaceExportResponseSchema,
-  type WorkspaceImportDryRunRequest,
-  WorkspaceImportDryRunRequestSchema,
   type WorkspaceImportDryRunResponse,
   WorkspaceImportDryRunResponseSchema,
-  type WorkspaceImportRequest,
-  WorkspaceImportRequestSchema,
   type WorkspaceImportResponse,
   WorkspaceImportResponseSchema,
   type WorkspaceInvitationMutationResponse,
@@ -831,8 +825,6 @@ export interface AppApiClient {
   ): Promise<ListWorkspacePermissionDecisionsResponse>;
   /** Lists server permission decisions. */
   listServerPermissionDecisions(): Promise<ListServerPermissionDecisionsResponse>;
-  /** Creates and verifies one workspace export tree. */
-  exportWorkspace(workspaceId: string): Promise<WorkspaceExportResponse>;
   /** Downloads one verified Workspace export as a raw archive stream. */
   downloadWorkspaceExportArchive(
     workspaceId: string,
@@ -842,12 +834,6 @@ export interface AppApiClient {
   dryRunWorkspaceArchiveImport(body: BodyInit): Promise<WorkspaceImportDryRunResponse>;
   /** Imports one raw Workspace archive stream with a caller-selected or generated request id. */
   importWorkspaceArchive(body: BodyInit, requestId?: string): Promise<WorkspaceImportResponse>;
-  /** Verifies a server-managed workspace export without importing it. */
-  dryRunWorkspaceImport(
-    input: WorkspaceImportDryRunRequest
-  ): Promise<WorkspaceImportDryRunResponse>;
-  /** Imports one server-managed workspace export. */
-  importWorkspace(input: WorkspaceImportRequest): Promise<WorkspaceImportResponse>;
   /** Lists redacted workspace vault references. */
   listWorkspaceVaultReferences(
     workspaceId: string
@@ -1476,12 +1462,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         '/api/app/permission-decisions',
         ListServerPermissionDecisionsResponseSchema
       ),
-    exportWorkspace: (workspaceId) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/export`,
-        {},
-        WorkspaceExportResponseSchema
-      ),
     downloadWorkspaceExportArchive: (workspaceId, exportId) =>
       transport.getStream(
         `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,
@@ -1502,18 +1482,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
           'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
           'x-openkit-request-id': requestId ?? createRequestId(),
         },
-        WorkspaceImportResponseSchema
-      ),
-    dryRunWorkspaceImport: (input) =>
-      transport.postJson(
-        '/api/app/workspace-imports/dry-run',
-        WorkspaceImportDryRunRequestSchema.parse(input),
-        WorkspaceImportDryRunResponseSchema
-      ),
-    importWorkspace: (input) =>
-      transport.postJson(
-        '/api/app/workspace-imports',
-        WorkspaceImportRequestSchema.parse(input),
         WorkspaceImportResponseSchema
       ),
     listWorkspaceVaultReferences: (workspaceId) =>

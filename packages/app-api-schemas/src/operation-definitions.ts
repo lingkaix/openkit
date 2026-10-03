@@ -91,6 +91,7 @@ import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { StartTaskModeRequestSchema, StartTaskModeResponseSchema } from './task-mode.js';
 import { ListAuthorizedWorkspacesResponseSchema } from './workspace-sharing.js';
+import { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from './workspace-transfer.js';
 
 /** Current trusted authentication procedures eligible for Kernel operations. */
 type KernelCredential =
@@ -711,6 +712,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = {
   ...RECOVERY_OPERATION_DEFINITIONS,
   ...KERNEL_OPERATION_DEFINITIONS,
   ...WORKSPACE_OPERATION_DEFINITIONS,
+  ...WORKSPACE_TRANSFER_OPERATION_DEFINITIONS,
   ...THREAD_OPERATION_DEFINITIONS,
   ...TURN_OPERATION_DEFINITIONS,
   ...KNOWLEDGE_OPERATION_DEFINITIONS,

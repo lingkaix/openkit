@@ -659,6 +659,164 @@
         }
       }
     },
+    "/api/app/operations/workspace.export": {
+      "post": {
+        "operationId": "workspace.export",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Create and verify one server-managed Workspace export.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.export.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Create and verify one server-managed Workspace export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.export.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/workspace.import-dry-run": {
+      "post": {
+        "operationId": "workspace.import-dry-run",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Verify a server-managed Workspace export without importing it.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.import-dry-run.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verify a server-managed Workspace export without importing it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.import-dry-run.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/workspace.import": {
+      "post": {
+        "operationId": "workspace.import",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Import one verified server-managed Workspace export.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.import.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Import one verified server-managed Workspace export.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.import.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/thread.create": {
       "post": {
         "operationId": "thread.create",
@@ -10450,55 +10608,6 @@
         }
       }
     },
-    "/api/app/workspaces/{workspaceId}/export": {
-      "post": {
-        "operationId": "exportWorkspace",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Create and verify one workspace export.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Workspace export manifest and verification summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceExportResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/workspaces/{workspaceId}/exports/{exportId}/archive": {
       "get": {
         "operationId": "downloadWorkspaceExportArchive",
@@ -10635,104 +10744,6 @@
               "schema": {
                 "type": "string",
                 "format": "binary"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Imported workspace and verification summary.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceImportResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspace-imports/dry-run": {
-      "post": {
-        "operationId": "dryRunWorkspaceImport",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Verify a server-managed workspace export without importing it.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceImportDryRunRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Workspace import dry-run report.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceImportDryRunResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspace-imports": {
-      "post": {
-        "operationId": "importWorkspace",
-        "tags": [
-          "storage"
-        ],
-        "summary": "Import one verified server-managed workspace export.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceImportRequest"
               }
             }
           }
@@ -14213,6 +14224,863 @@
           "skills",
           "agents",
           "models"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.export.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.export.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "exportId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordType": {
+                "type": "string",
+                "const": "workspace-export"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "lineage": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redactionLevel": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "redacted",
+                  "full"
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "extensions": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exportCreatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "exportFormatVersion": {
+                "type": "number",
+                "const": 2
+              },
+              "contentInventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "recordType",
+              "id",
+              "ownerScope",
+              "lineage",
+              "createdAt",
+              "updatedAt",
+              "contentDigest",
+              "redactionLevel",
+              "sensitivity",
+              "requiredFeatures",
+              "extensions",
+              "sourceDeploymentId",
+              "workspaceId",
+              "exportCreatedAt",
+              "exportFormatVersion",
+              "contentInventory"
+            ],
+            "additionalProperties": false
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "totalBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "checkedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "exportId",
+          "workspaceId",
+          "manifest",
+          "fileCount",
+          "totalBytes",
+          "checkedFiles"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.import-dry-run.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sourceWorkspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "exportId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "sourceWorkspaceId",
+          "exportId"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.import-dry-run.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "dry-run"
+          },
+          "exportId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exportedWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordType": {
+                "type": "string",
+                "const": "workspace-export"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "lineage": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redactionLevel": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "redacted",
+                  "full"
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "extensions": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exportCreatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "exportFormatVersion": {
+                "type": "number",
+                "const": 2
+              },
+              "contentInventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "recordType",
+              "id",
+              "ownerScope",
+              "lineage",
+              "createdAt",
+              "updatedAt",
+              "contentDigest",
+              "redactionLevel",
+              "sensitivity",
+              "requiredFeatures",
+              "extensions",
+              "sourceDeploymentId",
+              "workspaceId",
+              "exportCreatedAt",
+              "exportFormatVersion",
+              "contentInventory"
+            ],
+            "additionalProperties": false
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "checkedFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "fileCount",
+              "totalBytes",
+              "checkedFiles"
+            ],
+            "additionalProperties": false
+          },
+          "collision": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "available"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "status",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "collides"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "suggestedWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "status",
+                  "workspaceId",
+                  "suggestedWorkspaceId"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "exportId",
+          "sourceWorkspaceId",
+          "exportedWorkspaceId",
+          "manifest",
+          "verification",
+          "collision"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.import.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "sourceWorkspaceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "exportId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "sourceWorkspaceId",
+          "exportId"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.import.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "imported"
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exportId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exportedWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "importedWorkspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "schemaVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "recordType": {
+                "type": "string",
+                "const": "workspace-export"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ownerScope": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "lineage": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "contentDigest": {
+                "type": "string",
+                "minLength": 1
+              },
+              "redactionLevel": {
+                "type": "string",
+                "enum": [
+                  "metadata",
+                  "redacted",
+                  "full"
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "requiredFeatures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "extensions": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exportCreatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "exportFormatVersion": {
+                "type": "number",
+                "const": 2
+              },
+              "contentInventory": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "digest",
+                    "bytes"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "recordType",
+              "id",
+              "ownerScope",
+              "lineage",
+              "createdAt",
+              "updatedAt",
+              "contentDigest",
+              "redactionLevel",
+              "sensitivity",
+              "requiredFeatures",
+              "extensions",
+              "sourceDeploymentId",
+              "workspaceId",
+              "exportCreatedAt",
+              "exportFormatVersion",
+              "contentInventory"
+            ],
+            "additionalProperties": false
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "checkedFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "fileCount",
+              "totalBytes",
+              "checkedFiles"
+            ],
+            "additionalProperties": false
+          },
+          "collision": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "available"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "status",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "const": "collides"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "suggestedWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "status",
+                  "workspaceId",
+                  "suggestedWorkspaceId"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "workspace": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "code",
+                  "content",
+                  "personal-ops",
+                  "research",
+                  "operations",
+                  "general",
+                  "quick-chat"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived"
+                ]
+              },
+              "counts": {
+                "type": "object",
+                "properties": {
+                  "threadCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "artifactCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "knowledgeEntryCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "threadCount",
+                  "artifactCount",
+                  "knowledgeEntryCount"
+                ],
+                "additionalProperties": false
+              },
+              "importedFrom": {
+                "type": "object",
+                "properties": {
+                  "sourceDeploymentId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceWorkspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exportCreatedAt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "manifestDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                },
+                "required": [
+                  "sourceDeploymentId",
+                  "sourceWorkspaceId",
+                  "exportCreatedAt",
+                  "manifestDigest"
+                ],
+                "additionalProperties": false
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "updatedAt": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "status",
+              "counts",
+              "createdAt",
+              "updatedAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "mode",
+          "requestId",
+          "exportId",
+          "sourceWorkspaceId",
+          "exportedWorkspaceId",
+          "importedWorkspaceId",
+          "manifest",
+          "verification",
+          "collision",
+          "workspace"
         ],
         "additionalProperties": false
       },
@@ -72950,210 +73818,6 @@
         ],
         "additionalProperties": false
       },
-      "WorkspaceExportResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "exportId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "manifest": {
-            "type": "object",
-            "properties": {
-              "schemaVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              },
-              "recordType": {
-                "type": "string",
-                "const": "workspace-export"
-              },
-              "id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "ownerScope": {
-                "type": "string",
-                "const": "workspace"
-              },
-              "lineage": {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "required": [
-                  "workspaceId"
-                ],
-                "additionalProperties": false
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "updatedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "contentDigest": {
-                "type": "string",
-                "minLength": 1
-              },
-              "redactionLevel": {
-                "type": "string",
-                "enum": [
-                  "metadata",
-                  "redacted",
-                  "full"
-                ]
-              },
-              "sensitivity": {
-                "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
-              },
-              "requiredFeatures": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "extensions": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
-              },
-              "sourceDeploymentId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "exportCreatedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "exportFormatVersion": {
-                "type": "number",
-                "const": 2
-              },
-              "contentInventory": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "digest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "bytes": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "digest",
-                    "bytes"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "schemaVersion",
-              "recordType",
-              "id",
-              "ownerScope",
-              "lineage",
-              "createdAt",
-              "updatedAt",
-              "contentDigest",
-              "redactionLevel",
-              "sensitivity",
-              "requiredFeatures",
-              "extensions",
-              "sourceDeploymentId",
-              "workspaceId",
-              "exportCreatedAt",
-              "exportFormatVersion",
-              "contentInventory"
-            ],
-            "additionalProperties": false
-          },
-          "fileCount": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "totalBytes": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "checkedFiles": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        },
-        "required": [
-          "exportId",
-          "workspaceId",
-          "manifest",
-          "fileCount",
-          "totalBytes",
-          "checkedFiles"
-        ],
-        "additionalProperties": false
-      },
-      "WorkspaceImportDryRunRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "sourceWorkspaceId": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.:-]+$"
-          },
-          "exportId": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.:-]+$"
-          }
-        },
-        "required": [
-          "sourceWorkspaceId",
-          "exportId"
-        ],
-        "additionalProperties": false
-      },
       "WorkspaceImportDryRunResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -73399,31 +74063,6 @@
           "manifest",
           "verification",
           "collision"
-        ],
-        "additionalProperties": false
-      },
-      "WorkspaceImportRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "sourceWorkspaceId": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.:-]+$"
-          },
-          "exportId": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_.:-]+$"
-          },
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "sourceWorkspaceId",
-          "exportId"
         ],
         "additionalProperties": false
       },
@@ -74694,5 +75333,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:ac49cf782d198d10ea33e8e6bd7a18bda0305adbe4154fd9454d8ce71c70396c"
+  "x-openkit-source-digest": "sha256:531db28469ccd5af74dc4af84f8a7a1cd7d6a5ad29a85dab3966161fc4e4299b"
 }

@@ -23,6 +23,9 @@ describe('definition-derived client operations', () => {
     }
     expect(calls).toBe(0);
     expect(client.app).not.toHaveProperty('getLightApp');
+    expect(client.app).not.toHaveProperty('exportWorkspace');
+    expect(client.app).not.toHaveProperty('dryRunWorkspaceImport');
+    expect(client.app).not.toHaveProperty('importWorkspace');
     expect(client.app).not.toHaveProperty('createLightAppRecord');
   });
 

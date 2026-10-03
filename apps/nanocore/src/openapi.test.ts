@@ -165,6 +165,30 @@ function isProjectedAppApiRoute(method: string, path: string): boolean {
 }
 
 describe('app api openapi projection', () => {
+  it('projects the three JSON transfer definitions and removes their former bindings', () => {
+    const document = createAppOpenApiDocument();
+    for (const id of [
+      'workspace.export',
+      'workspace.import-dry-run',
+      'workspace.import',
+    ] as const) {
+      const operation = document.paths[operationHttpPath(id)]!.post!;
+      expect(operation.operationId).toBe(id);
+      expect(operation.responses).toHaveProperty('200');
+      expect(operation.requestBody).toHaveProperty('required', true);
+    }
+    for (const path of [
+      '/api/app/workspaces/{workspaceId}/export',
+      '/api/app/workspace-imports/dry-run',
+      '/api/app/workspace-imports',
+    ])
+      expect(document.paths).not.toHaveProperty(path);
+    expect(document.components.schemas['workspace.export.input']).toMatchObject({
+      required: ['workspaceId'],
+      additionalProperties: false,
+    });
+  });
+
   it('keeps AgentSession continuity out of ordinary App API operations and schemas', () => {
     const document = createAppOpenApiDocument();
     const restartPath =
@@ -2130,13 +2154,13 @@ describe('app api openapi projection', () => {
       policyOperation: 'workspace.write',
       scope: 'user',
     });
-    expect(PUBLIC_OPERATION_ACCESS.dryRunWorkspaceImport).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['workspace.import-dry-run']).toMatchObject({
       authentication: 'canonical-user',
       mutating: false,
       policyOperation: 'workspace.write',
       scope: 'user',
     });
-    expect(PUBLIC_OPERATION_ACCESS.importWorkspace).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['workspace.import']).toMatchObject({
       authentication: 'canonical-user',
       mutating: true,
       policyOperation: 'workspace.write',
@@ -2419,12 +2443,9 @@ describe('app api openapi projection', () => {
       'prepareAppUpdate',
       'startAppUpdate',
       'getAppUpdateStatus',
-      'exportWorkspace',
       'downloadWorkspaceExportArchive',
       'dryRunWorkspaceArchiveImport',
       'importWorkspaceArchive',
-      'dryRunWorkspaceImport',
-      'importWorkspace',
       'deleteWorkspace',
       'recoverDeletedWorkspace',
       'getAgentNativeEnvironment',

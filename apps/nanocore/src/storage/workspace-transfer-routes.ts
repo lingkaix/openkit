@@ -6,9 +6,7 @@ import { createZstdCompress } from 'node:zlib';
 
 import {
   WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunRequestSchema,
   WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportRequestSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
@@ -18,7 +16,7 @@ import {
   importResolvedAgentSetups,
   listExportableResolvedAgentSetups,
 } from '../agents/setup-ledger.js';
-import { asApiError, asInvalidRequestError } from '../api-errors.js';
+import { asApiError } from '../api-errors.js';
 import { listExportableArtifactReviews } from '../artifact-reviews.js';
 import {
   importWorkspaceAuditEvents,
@@ -26,7 +24,10 @@ import {
   recordWorkspaceAuditEvent,
 } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from '../auth/operation-authorizer.js';
 import {
   finishCapabilityCall,
   importWorkspaceCapabilityUsageLedger,
@@ -114,7 +115,12 @@ import {
 } from '../vault-injection-receipts.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { type CoreDb, openWorkspaceDbAtRoot, type WorkspaceDb } from './db.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openWorkspaceDbAtRoot,
+  type WorkspaceDb,
+} from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   assertExportableGenerativePresentations,
@@ -153,6 +159,7 @@ import {
   writeFileAtomic,
 } from './workspace-file-records.js';
 import {
+  readWorkspaceExportThreads,
   readWorkspaceImportSnapshot,
   verifyImportedWorkerContextPackageSnapshot,
   type WorkspaceImportSnapshot,
@@ -188,7 +195,7 @@ function nextImportedWorkspaceId(baseId: string, exists: (workspaceId: string) =
  * @param workspaceId Candidate workspace id.
  * @returns True when either owner already has the id.
  */
-function importedWorkspaceExists(
+export function importedWorkspaceExists(
   coreDb: CoreDb | undefined,
   store: FsStore,
   dataRoot: string,
@@ -216,21 +223,20 @@ function importedWorkspaceExists(
 }
 
 /**
- * Checks whether the current source owner may consume a server-managed export.
+ * Requires the creating actor's current source-export authority and persisted export attribution.
  *
- * Foreign deployment handles are never portable input. Current and predecessor handles remain
- * private to the source owner and require the workspace.export operation.
+ * The existing storage call and usage rows are the creator proof; missing or contradictory proof fails closed. Private history also requires the creator's current administrator eligibility, derived from verified content.
  *
  * @param dataRoot Canonical data root carrying the current deployment marker.
- * @param store Current user Store.
- * @param actor Authenticated actor whose current source-export authority is required.
- * @param verified Verified export tree whose manifest identifies the source Workspace.
- * @param coreDb Optional Core membership and policy authority.
- * @returns True when the export may be previewed or imported by this store.
+ * @param _store Store supplied by unchanged archive callers; creator authority comes only from Core.
+ * @param actor Authenticated creator whose current source-export authority is required.
+ * @param verified Verified export tree identifying the exact source Workspace and export.
+ * @param coreDb Current Core membership and policy authority.
+ * @returns True only for the currently authorized recorded creator.
  */
-function canReadWorkspaceExport(
+export function canReadWorkspaceExport(
   dataRoot: string,
-  store: FsStore,
+  _store: FsStore,
   actor: AuthVariables['actor'],
   verified: VerifiedWorkspaceExportTree,
   coreDb: CoreDb | undefined
@@ -239,24 +245,69 @@ function canReadWorkspaceExport(
   if (
     verified.manifest.sourceDeploymentId !== marker.deploymentId &&
     verified.manifest.sourceDeploymentId !== marker.predecessorDeploymentId
-  ) {
+  )
     return false;
-  }
-
-  if (coreDb) {
-    return isWorkspaceOperationAuthorized(coreDb, actor, verified.manifest.workspaceId, {
+  if (
+    !coreDb ||
+    !isWorkspaceOperationAuthorized(coreDb, actor, verified.manifest.workspaceId, {
       mutating: false,
       policyOperation: 'workspace.export',
-    });
-  }
+    })
+  )
+    return false;
 
   try {
-    store.getWorkspace(verified.manifest.workspaceId);
+    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, verified.manifest.workspaceId);
+    try {
+      const rows = workspaceDb.sqlite
+        .prepare(`
+        SELECT call.workspace_id AS call_workspace_id, call.family, call.operation,
+               call.capability_id, call.status, usage.workspace_id, usage.usage_id,
+               usage.category, usage.unit, usage.responsible_user_id
+        FROM capability_calls call
+        JOIN usage_records usage ON usage.capability_call_id = call.call_id
+        WHERE call.call_id = ?
+      `)
+        .all(`cap_storage_export_${verified.manifest.id}`) as Array<{
+        call_workspace_id: string;
+        family: string;
+        operation: string;
+        capability_id: string;
+        status: string;
+        workspace_id: string;
+        usage_id: string;
+        category: string;
+        unit: string;
+        responsible_user_id: string | null;
+      }>;
+      return (
+        rows.some(
+          (row) =>
+            row.usage_id === `use_storage_export_files_${verified.manifest.id}` &&
+            row.category === 'storage' &&
+            row.unit === 'files'
+        ) &&
+        rows.every(
+          (row) =>
+            row.call_workspace_id === verified.manifest.workspaceId &&
+            row.family === 'storage' &&
+            row.operation === 'workspace.export.write' &&
+            row.capability_id === 'storage.workspace_export' &&
+            row.status === 'succeeded' &&
+            row.workspace_id === verified.manifest.workspaceId &&
+            row.responsible_user_id === actor.userId
+        ) &&
+        (!readWorkspaceExportThreads(verified.fileContents).some(
+          (thread) => thread.visibility === 'private'
+        ) ||
+          isCurrentDeploymentAdministrator(coreDb, actor))
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   } catch {
     return false;
   }
-
-  return true;
 }
 
 /**
@@ -402,7 +453,7 @@ async function writeWorkspaceArchive(
  * @param sourceWorkspaceId Requested source workspace handle.
  * @param exportId Requested export handle.
  */
-function assertRequestedExportHandles(
+export function assertRequestedExportHandles(
   report: { sourceWorkspaceId: string; exportId: string },
   sourceWorkspaceId: string,
   exportId: string
@@ -894,6 +945,7 @@ export function importVerifiedWorkspace({
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
   authorityUserId,
+  administratorEligible = false,
   coreDb,
   dataRoot,
   exportId = `wsexp_${randomUUID()}`,
@@ -902,6 +954,8 @@ export function createVerifiedWorkspaceExport({
   workspaceId,
 }: {
   readonly authorityUserId: string;
+  /** Trusted current administrator eligibility; JSON input cannot select this audience. */
+  readonly administratorEligible?: boolean;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string;
   readonly exportId?: string;
@@ -911,7 +965,7 @@ export function createVerifiedWorkspaceExport({
 }) {
   const workspace = store.getWorkspace(workspaceId);
   const threads = store.listThreads(workspaceId);
-  if (threads.some((thread) => thread.visibility === 'private')) {
+  if (!administratorEligible && threads.some((thread) => thread.visibility === 'private')) {
     throw new Error('Private Thread history requires a separately authorized export.');
   }
   const turns = threads.flatMap((thread) => store.listThreadTurns(workspaceId, thread.id));
@@ -1064,6 +1118,7 @@ export function createVerifiedWorkspaceExport({
   }
   const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
+    administratorEligible,
     exportRoot,
     exportId,
     sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
@@ -1209,7 +1264,7 @@ export function createVerifiedWorkspaceExport({
 }
 
 /**
- * Registers the complete workspace export and import App API feature path.
+ * Registers the three Workspace archive streaming bindings; JSON transfer joins use the native owners above.
  *
  * @param dependencies Hono app and workspace portability storage dependencies.
  */
@@ -1217,32 +1272,13 @@ export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
-  repositoryWorkspaceDb,
   requestStore,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
-  registerAppApiRoute(app, 'exportWorkspace', (c) => {
-    if (!dataRoot) {
-      return asApiError('Workspace export is unavailable.', 'workspace_export_unavailable', 503);
-    }
-
-    return c.json(
-      createVerifiedWorkspaceExport({
-        authorityUserId: c.get('actor').userId,
-        coreDb,
-        dataRoot,
-        repositoryWorkspaceDb,
-        store: requestStore(c),
-        workspaceId: c.req.param('workspaceId'),
-      }).response
-    );
-  });
-
   registerAppApiRoute(app, 'downloadWorkspaceExportArchive', (c) => {
     if (!dataRoot) {
       return asApiError(
@@ -1385,99 +1421,6 @@ export function registerWorkspaceTransferRoutes({
       );
     } finally {
       staged?.remove();
-    }
-  });
-
-  registerAppApiRoute(app, 'dryRunWorkspaceImport', async (c) => {
-    if (!dataRoot) {
-      return asApiError(
-        'Workspace import dry-run is unavailable.',
-        'workspace_import_unavailable',
-        503
-      );
-    }
-
-    const parsed = WorkspaceImportDryRunRequestSchema.safeParse(
-      await c.req.json().catch(() => ({}))
-    );
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    try {
-      const store = requestStore(c);
-      const verified = verifyWorkspaceExportTree({
-        exportRoot: existingWorkspaceExportRoot(
-          dataRoot,
-          parsed.data.sourceWorkspaceId,
-          parsed.data.exportId
-        ),
-      });
-      if (!canReadWorkspaceExport(dataRoot, store, c.get('actor'), verified, coreDb)) {
-        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
-      }
-      const report = dryRunWorkspaceImport({
-        verified,
-        workspaceExists: (workspaceId) =>
-          importedWorkspaceExists(coreDb, store, dataRoot, workspaceId),
-      });
-      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
-
-      return c.json(WorkspaceImportDryRunResponseSchema.parse(report));
-    } catch {
-      return asApiError(
-        'Workspace import dry-run could not verify the requested export.',
-        'workspace_import_dry_run_failed',
-        400
-      );
-    }
-  });
-
-  registerAppApiRoute(app, 'importWorkspace', async (c) => {
-    if (!dataRoot) {
-      return asApiError('Workspace import is unavailable.', 'workspace_import_unavailable', 503);
-    }
-
-    const parsed = WorkspaceImportRequestSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) {
-      return asInvalidRequestError(parsed.error);
-    }
-
-    const store = requestStore(c);
-
-    try {
-      const verified = verifyWorkspaceExportTree({
-        exportRoot: existingWorkspaceExportRoot(
-          dataRoot,
-          parsed.data.sourceWorkspaceId,
-          parsed.data.exportId
-        ),
-      });
-      if (!canReadWorkspaceExport(dataRoot, store, c.get('actor'), verified, coreDb)) {
-        return asApiError('Workspace export is unavailable.', 'workspace_import_forbidden', 403);
-      }
-      const report = dryRunWorkspaceImport({
-        verified,
-        workspaceExists: (workspaceId) =>
-          importedWorkspaceExists(coreDb, store, dataRoot, workspaceId),
-      });
-      assertRequestedExportHandles(report, parsed.data.sourceWorkspaceId, parsed.data.exportId);
-      return c.json(
-        importVerifiedWorkspace({
-          authorityUserId: c.get('actor').userId,
-          coreDb,
-          dataRoot,
-          requestId: parsed.data.requestId ?? null,
-          store,
-          verified,
-        })
-      );
-    } catch {
-      return asApiError(
-        'Workspace import could not verify or publish the requested export.',
-        'workspace_import_failed',
-        400
-      );
     }
   });
 }
