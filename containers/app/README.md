@@ -10,6 +10,8 @@ After readiness and Caddy startup, the entrypoint waits for either NanoCore or C
 
 The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes, including exact `/mcp` before the Web catch-all, and does not publish or connect to the separate private NanoHost HTTP/2 listener.
 
+The root `Caddyfile` owns one shared `nanocore_transport` snippet for all NanoCore proxies, including SSE and remote MCP. Its upstream idle keep-alive is 4 seconds, below the shipped Node server's default 5 seconds (plus its 1-second socket buffer), so Caddy retires pooled sockets before Node closes them and avoids reset races that can produce HTTP 502 on POSTs. This idle setting does not limit active requests or SSE streams. Run `node --test tests/app-image-entrypoint.test.mjs` for the timeout-ordering and routing regressions; the entrypoint lifecycle cases require Bash with `wait -n` support.
+
 `scripts/docker/smoke-image.sh app` checks packaged tools and recovery commands, then starts the ordinary entrypoint with a disposable Data Root. It requires public `/api/health` within 60 seconds and checks the SPA root before stopping the server and removing its temporary data. This exercises schema conversion using the production dependency layout created by `pnpm deploy`.
 
 Workspace Zod 4 dependencies pin 4.6.5 exactly so legacy deploy cannot resolve a newer shared schema implementation than NanoCore's locked JSON Schema converter. The separate root A2UI overrides retain Zod 3.25.76 for those packages.

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -11,6 +12,31 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const caddyfile = join(repoRoot, 'Caddyfile');
 const dockerfile = join(repoRoot, 'containers', 'app', 'Dockerfile');
 const entrypoint = join(repoRoot, 'containers', 'app', 'entrypoint.sh');
+
+test('retires every upstream idle connection before Node closes it', async () => {
+  const source = await readFile(caddyfile, 'utf8');
+  const transport = source.match(
+    /^\(nanocore_transport\) \{\s+transport http \{\s+(?:#[^\n]*\n\s*)?keepalive (\d+)s\s+\}\s+\}/mu
+  );
+  // Caddy 2.6.2 defaults to two minutes when no transport is configured.
+  // https://github.com/caddyserver/caddy/blob/v2.6.2/modules/caddyhttp/reverseproxy/httptransport.go
+  const proxyIdleTimeoutMs = transport ? Number(transport[1]) * 1000 : 120_000;
+  const server = createServer();
+  // Compare against the advertised Node default, without depending on its extra socket buffer.
+  assert.ok(
+    proxyIdleTimeoutMs > 0 && proxyIdleTimeoutMs < server.keepAliveTimeout,
+    `Caddy idle timeout ${proxyIdleTimeoutMs}ms must be below Node's ${server.keepAliveTimeout}ms`
+  );
+  assert.equal([...source.matchAll(/^\s*keepalive /gmu)].length, 1, source);
+  const proxies = [...source.matchAll(/reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}/gu)];
+  assert.ok(proxies.length > 0, source);
+  const configuredProxies = [
+    ...source.matchAll(
+      /reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\} \{\s+import nanocore_transport(?:\s+flush_interval -1)?\s+\}/gu
+    ),
+  ];
+  assert.equal(configuredProxies.length, proxies.length, source);
+});
 
 test('uses the App HTTP upstream without publishing NanoHost transport', async () => {
   const source = await readFile(caddyfile, 'utf8');
@@ -35,7 +61,7 @@ test('proxies the exact remote MCP path to the App before the Web catch-all', as
   assert.ok(remoteMcp >= 0 && remoteMcp < webCatchAll, source);
   assert.match(
     source.slice(remoteMcp, webCatchAll),
-    /^handle \/mcp \{\s+reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}\s+\}/u
+    /^handle \/mcp \{\s+reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\} \{\s+import nanocore_transport\s+\}\s+\}/u
   );
   assert.doesNotMatch(source, /handle \/mcp\*/u);
   assert.doesNotMatch(source, /handle \/mcp\//u);

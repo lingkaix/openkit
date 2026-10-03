@@ -1,3 +1,10 @@
+(nanocore_transport) {
+	transport http {
+		# Retire idle sockets before Node's 5s timeout to avoid reset races on POSTs.
+		keepalive 4s
+	}
+}
+
 :{$CADDY_HTTP_PORT:8080} {
 	@compressed {
 		not path /api/workspaces/*/threads/*/events
@@ -6,6 +13,7 @@
 
 	handle /api/workspaces/*/threads/*/events {
 		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317} {
+			import nanocore_transport
 			flush_interval -1
 		}
 	}
@@ -15,15 +23,21 @@
 	}
 
 	handle /api/* {
-		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317}
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317} {
+			import nanocore_transport
+		}
 	}
 
 	handle /internal/* {
-		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317}
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317} {
+			import nanocore_transport
+		}
 	}
 
 	handle /mcp {
-		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317}
+		reverse_proxy 127.0.0.1:{$OPENKIT_HTTP_PORT:4317} {
+			import nanocore_transport
+		}
 	}
 
 	handle {
