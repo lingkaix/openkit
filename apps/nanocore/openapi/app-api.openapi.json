@@ -66542,7 +66542,10 @@
                   "enum": [
                     "gateway-only",
                     "backend-provider",
-                    "runtime-file"
+                    "runtime-file",
+                    "runtime-env",
+                    "runtime-token",
+                    "external-handle"
                   ]
                 },
                 "targetPath": {
@@ -80238,5 +80241,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:72826a6eeeb18acbd1fe019d88cb0105e45c729bfaf5e18b741673c787fbfb16"
+  "x-openkit-source-digest": "sha256:b2b29500ad960e3abc2e8c407a41b7aecfea0cbe052cdd711df48d8ba5a02efb"
 }
