@@ -21,6 +21,7 @@ const CONNECTION_RECEIVE_WINDOW_BYTES = 5 * 1024 * 1024;
 const PER_STREAM_RECEIVE_WINDOW_BYTES = 256 * 1024;
 const WORKER_CONTROL_MAX_BYTES = 1024 * 1024;
 const INFERENCE_MAX_BYTES = 16 * 1024 * 1024;
+/** Per-request collection limit, independent of the capability family DATA reservation. */
 const CAPABILITY_MAX_BYTES = 512 * 1024;
 const MAX_HTTP2_WRITE_BYTES = 64 * 1024;
 const LOOPBACK_CREDENTIAL_PATTERN = /^[A-Za-z0-9_-]{43}$/;

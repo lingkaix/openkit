@@ -536,6 +536,25 @@ describe('Sandbox Integration', () => {
         authorization: `Bearer ${capabilityToken}`,
         path: '/capabilities/mcp/echo',
       });
+      // The four-stream reservation does not widen a single native capability request.
+      const exactCapabilityLimit = await nativeRequest(nativeTarget, {
+        authorization: `Bearer ${capabilityCredential}`,
+        body: Buffer.alloc(512 * 1024),
+        method: 'POST',
+        path: '/capabilities/mcp/echo',
+      });
+      expect(exactCapabilityLimit.status).toBe(202);
+      expect(requests.at(-1)?.bodyBytes).toBe(512 * 1024);
+      const beforeCapabilityOverflow = requests.length;
+      const oversizedCapability = await nativeRequest(nativeTarget, {
+        authorization: `Bearer ${capabilityCredential}`,
+        body: Buffer.alloc(512 * 1024 + 1),
+        method: 'POST',
+        path: '/capabilities/mcp/echo',
+      });
+      expect(oversizedCapability.status).toBe(413);
+      expect(requests).toHaveLength(beforeCapabilityOverflow);
+
       const beforeOversized = requests.length;
       const oversized = await nativeRequest(nativeTarget, {
         authorization: `Bearer ${inferenceCredential}`,

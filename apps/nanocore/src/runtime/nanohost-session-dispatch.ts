@@ -56,7 +56,7 @@ import {
 const CONTROL_BODY_MAX_BYTES = 1024 * 1024;
 /** Exact outer-session inference request ceiling preserved from its semantic owner. */
 const INFERENCE_BODY_MAX_BYTES = 2 * 1024 * 1024;
-/** Exact outer-session capability request ceiling. */
+/** Per-request capability body ceiling, independent of the family DATA reservation. */
 const CAPABILITY_BODY_MAX_BYTES = 512 * 1024;
 /** Exact V1 maximum for one file-data body. */
 const FILE_DATA_MAX_BYTES = 256 * 1024 * 1024;

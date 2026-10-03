@@ -35,10 +35,10 @@ pub const CONNECTION_RECEIVE_WINDOW_BYTES: usize = 5 * 1024 * 1024;
 pub const PER_STREAM_RECEIVE_WINDOW_BYTES: usize = 256 * 1024;
 
 /// Maximum concurrent streams in one sandbox-nested HTTP/2 session.
-pub const NESTED_MAX_CONCURRENT_STREAMS: u32 = 14;
+pub const NESTED_MAX_CONCURRENT_STREAMS: u32 = 16;
 
 /// Maximum concurrent streams in the NanoHost-to-NanoCore HTTP/2 session.
-pub const OUTER_MAX_CONCURRENT_STREAMS: u32 = 16;
+pub const OUTER_MAX_CONCURRENT_STREAMS: u32 = 18;
 
 /// Worker-control aggregate in-flight DATA ceiling.
 pub const WORKER_CONTROL_IN_FLIGHT_BYTES: usize = 1024 * 1024;
@@ -47,7 +47,7 @@ pub const WORKER_CONTROL_IN_FLIGHT_BYTES: usize = 1024 * 1024;
 pub const INFERENCE_IN_FLIGHT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Capability aggregate in-flight DATA ceiling when the family is enabled.
-pub const CAPABILITY_IN_FLIGHT_BYTES: usize = 512 * 1024;
+pub const CAPABILITY_IN_FLIGHT_BYTES: usize = 1024 * 1024;
 
 /// NanoHost control/readiness aggregate in-flight DATA ceiling.
 pub const NANOHOST_CONTROL_IN_FLIGHT_BYTES: usize = 512 * 1024;
@@ -964,7 +964,7 @@ mod tests {
     use http::{Method, Request, Response, StatusCode};
     use openshell_sdk::raw::proto::{TcpForwardFrame, tcp_forward_frame};
     use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-    use tokio::sync::{Notify, mpsc};
+    use tokio::sync::{Notify, Semaphore, mpsc};
 
     use super::{
         BRIDGE_REESTABLISH_HARD_BOUND, BRIDGE_REESTABLISH_TARGET, BridgeBinding,
@@ -979,6 +979,11 @@ mod tests {
 
     #[test]
     fn wp4_transport_capacity_composes_and_routes_only_declared_families() {
+        assert_eq!(route_stream_limit(RouteFamily::WorkerControl), 4);
+        assert_eq!(route_stream_limit(RouteFamily::Inference), 8);
+        assert_eq!(route_stream_limit(RouteFamily::Capabilities), 4);
+        assert_eq!(NESTED_MAX_CONCURRENT_STREAMS, 16);
+        assert_eq!(OUTER_MAX_CONCURRENT_STREAMS, 18);
         for (family, family_ceiling) in [
             (RouteFamily::WorkerControl, WORKER_CONTROL_IN_FLIGHT_BYTES),
             (RouteFamily::Inference, INFERENCE_IN_FLIGHT_BYTES),
@@ -997,6 +1002,11 @@ mod tests {
             route_stream_limit(RouteFamily::WorkerControl)
                 + route_stream_limit(RouteFamily::Inference)
                 + route_stream_limit(RouteFamily::Capabilities)
+        );
+        assert_eq!(nested_reserved, 4 * 1024 * 1024);
+        assert_eq!(
+            nested_reserved + NANOHOST_CONTROL_IN_FLIGHT_BYTES,
+            4608 * 1024
         );
         assert!(nested_reserved < CONNECTION_RECEIVE_WINDOW_BYTES);
         assert_eq!(
@@ -1065,11 +1075,14 @@ mod tests {
             let (handled_tx, mut handled_rx) = mpsc::unbounded_channel();
             let release_inference = Arc::new(Notify::new());
             let server_release_inference = Arc::clone(&release_inference);
+            let release_capabilities = Arc::new(Semaphore::new(0));
+            let server_release_capabilities = Arc::clone(&release_capabilities);
             let server = tokio::spawn(async move {
                 let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
                 serve_sandbox_http2(&mut stream, move |family, request, mut respond| {
                     let handled_tx = handled_tx.clone();
                     let release_inference = Arc::clone(&server_release_inference);
+                    let release_capabilities = Arc::clone(&server_release_capabilities);
                     async move {
                         handled_tx
                             .send((family, request.uri().to_string()))
@@ -1077,15 +1090,27 @@ mod tests {
                         if family == RouteFamily::Inference {
                             release_inference.notified().await;
                         }
-                        respond
+                        // Keep the selected catalog response body open after headers; all other startup exchanges wait before headers.
+                        let hold_capability = family == RouteFamily::Capabilities
+                            && request.uri().path() != "/capabilities/mcp/fresh";
+                        let hold_body = request.uri().path() == "/capabilities/mcp/catalog";
+                        if hold_capability && !hold_body {
+                            release_capabilities.acquire().await.expect("startup release").forget();
+                        }
+                        let mut output = respond
                             .send_response(
                                 Response::builder()
                                     .status(StatusCode::OK)
                                     .body(())
                                     .expect("fixed response must build"),
-                                true,
+                                !hold_body,
                             )
                             .expect("handler response must remain writable");
+                        if hold_body {
+                            release_capabilities.acquire().await.expect("response-body release").forget();
+                            output.send_data(bytes::Bytes::from_static(b"catalog response"), true)
+                                .expect("held response body must complete");
+                        }
                     }
                 })
                 .await
@@ -1116,7 +1141,7 @@ mod tests {
             );
 
             let mut saturated_inference = Vec::new();
-            for request_index in 0..route_stream_limit(RouteFamily::Inference) {
+            for request_index in 0..8 {
                 let request = Request::builder()
                     .method(Method::POST)
                     .uri(format!(
@@ -1129,7 +1154,7 @@ mod tests {
                     .expect("reserved inference request must be sent");
                 saturated_inference.push(response);
             }
-            for request_index in 0..route_stream_limit(RouteFamily::Inference) {
+            for request_index in 0..8 {
                 assert_eq!(
                     handled_rx.recv().await,
                     Some((
@@ -1157,6 +1182,49 @@ mod tests {
                 StatusCode::TOO_MANY_REQUESTS
             );
 
+            // The two always-supplied built-ins and one catalog server must initialize concurrently without retry.
+            let mut held_capabilities = Vec::new();
+            let mut catalog_body = None;
+            for server_id in ["openkit-generative", "openkit-work", "catalog", "additional"] {
+                let uri = format!("http://sandbox-integration:80/capabilities/mcp/{server_id}");
+                let request = Request::builder().method(Method::POST).uri(&uri)
+                    .header("content-type", "application/json").body(())
+                    .expect("concurrent capability request must build");
+                let (mut response, mut body) = client.send_request(request, false)
+                    .expect("concurrent capability request must reach admission");
+                body.send_data(bytes::Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"startup-regression","version":"1"}}}"#), true)
+                    .expect("initialize request body must be sent");
+                tokio::select! {
+                    biased;
+                    arrival = handled_rx.recv() => {
+                        assert_eq!(arrival, Some((RouteFamily::Capabilities, uri)));
+                    }
+                    result = &mut response => {
+                        assert_eq!(result.expect("startup response").status(), StatusCode::OK,
+                            "the third overlapping supplied MCP initialize must be admitted without retry");
+                        panic!("a held startup exchange completed before its handler arrival");
+                    }
+                }
+                if server_id == "catalog" {
+                    let response = response.await.expect("catalog response headers");
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert!(!response.body().is_end_stream(), "headers do not complete an exchange");
+                    catalog_body = Some(response.into_body());
+                } else {
+                    held_capabilities.push(response);
+                }
+            }
+            assert_eq!(held_capabilities.len() + usize::from(catalog_body.is_some()), 4);
+            let overflow = Request::builder().method(Method::POST)
+                .uri("http://sandbox-integration:80/capabilities/mcp/overflow").body(())
+                .expect("fifth capability request must build");
+            let (overflow, _) = client.send_request(overflow, true)
+                .expect("fifth capability request must reach admission");
+            let mut overflow = overflow.await.expect("immediate capability refusal");
+            assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert!(overflow.body_mut().data().await.is_none(), "429 must be empty");
+            assert!(handled_rx.try_recv().is_err(), "refused request must not enter the handler");
+
             let reserved_worker_control = Request::builder()
                 .method(Method::POST)
                 .uri("http://sandbox-integration:80/worker-control/harness/poll")
@@ -1180,6 +1248,24 @@ mod tests {
                 ))
             );
 
+            // Completion, including the open catalog response body, returns all four permits.
+            release_capabilities.add_permits(4);
+            for response in held_capabilities {
+                assert_eq!(response.await.expect("released capability response").status(), StatusCode::OK);
+            }
+            let mut catalog_body = catalog_body.expect("catalog body remains held");
+            let data = catalog_body.data().await.expect("catalog body chunk").expect("catalog body bytes");
+            assert_eq!(data.as_ref(), b"catalog response");
+            catalog_body.flow_control().release_capacity(data.len()).expect("catalog body consumed");
+            assert!(catalog_body.data().await.is_none());
+            let fresh = Request::builder().method(Method::POST)
+                .uri("http://sandbox-integration:80/capabilities/mcp/fresh").body(())
+                .expect("fresh capability request must build");
+            let (fresh, _) = client.send_request(fresh, true).expect("fresh request after release");
+            assert_eq!(fresh.await.expect("fresh capability response").status(), StatusCode::OK);
+            assert_eq!(handled_rx.recv().await, Some((RouteFamily::Capabilities,
+                "http://sandbox-integration:80/capabilities/mcp/fresh".into())));
+
             release_inference.notify_waiters();
             for response in saturated_inference {
                 assert_eq!(
@@ -1190,29 +1276,6 @@ mod tests {
                     StatusCode::OK
                 );
             }
-
-            let capability = Request::builder()
-                .method(Method::POST)
-                .uri("http://sandbox-integration:80/capabilities/mcp/echo")
-                .body(())
-                .expect("fixed capability request must build");
-            let (capability, _) = client
-                .send_request(capability, true)
-                .expect("fixed capability request must be sent");
-            assert_eq!(
-                capability
-                    .await
-                    .expect("fixed capability response")
-                    .status(),
-                StatusCode::OK
-            );
-            assert_eq!(
-                handled_rx.recv().await,
-                Some((
-                    RouteFamily::Capabilities,
-                    "http://sandbox-integration:80/capabilities/mcp/echo".into()
-                ))
-            );
 
             for request in [
                 Request::builder()

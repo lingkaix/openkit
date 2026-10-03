@@ -37,10 +37,13 @@ use crate::credential_slots::{
 };
 use crate::epoch_coordinator::RuntimeEffectKind;
 use crate::sandbox_bridge::{
-    CAPABILITY_IN_FLIGHT_BYTES, CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES,
-    OUTER_MAX_CONCURRENT_STREAMS, PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult,
-    RouteFamily, WORKER_CONTROL_IN_FLIGHT_BYTES,
+    CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
+    PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult, RouteFamily,
+    WORKER_CONTROL_IN_FLIGHT_BYTES,
 };
+
+/// Per-request capability collection bound, independent of the aggregate DATA reservation.
+const CAPABILITY_BODY_MAX_BYTES: usize = 512 * 1024;
 
 const FILE_DATA_BODY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const FILE_DATA_APPLICATION_CHUNK_BYTES: usize = 64 * 1024;
@@ -141,7 +144,7 @@ impl OuterRouteProjection {
         let body_limit = match family {
             RouteFamily::WorkerControl => WORKER_CONTROL_IN_FLIGHT_BYTES,
             RouteFamily::Inference => INFERENCE_IN_FLIGHT_BYTES,
-            RouteFamily::Capabilities => CAPABILITY_IN_FLIGHT_BYTES,
+            RouteFamily::Capabilities => CAPABILITY_BODY_MAX_BYTES,
         };
         let (parts, mut nested_body) = request.into_parts();
         let mut body = BytesMut::new();
@@ -2771,12 +2774,12 @@ mod tests {
 
     #[test]
     fn wp5_outer_session_is_one_authenticated_outbound_h2_client_runner() {
-        assert_eq!(OUTER_MAX_CONCURRENT_STREAMS, 16);
+        assert_eq!(OUTER_MAX_CONCURRENT_STREAMS, 18);
         assert_eq!(CONNECTION_RECEIVE_WINDOW_BYTES, 5 * 1024 * 1024);
         assert_eq!(PER_STREAM_RECEIVE_WINDOW_BYTES, 256 * 1024);
         assert_eq!(WORKER_CONTROL_IN_FLIGHT_BYTES, 1024 * 1024);
         assert_eq!(INFERENCE_IN_FLIGHT_BYTES, 2 * 1024 * 1024);
-        assert_eq!(CAPABILITY_IN_FLIGHT_BYTES, 512 * 1024);
+        assert_eq!(CAPABILITY_IN_FLIGHT_BYTES, 1024 * 1024);
         assert_eq!(NANOHOST_CONTROL_IN_FLIGHT_BYTES, 512 * 1024);
         assert!(
             WORKER_CONTROL_IN_FLIGHT_BYTES
@@ -2964,6 +2967,109 @@ mod tests {
             &credential_headers,
             body,
         ));
+    }
+
+    /// The aggregate capability reservation must never widen one collected request beyond 512 KiB.
+    #[tokio::test]
+    async fn capability_request_body_keeps_512_kib_bound() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let projection = OuterRouteProjection::new();
+            let (outer_client_io, outer_server_io) = tokio::io::duplex(1024 * 1024);
+            let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+            let outer_server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(outer_server_io)
+                    .await
+                    .expect("outer handshake");
+                while let Some(incoming) = connection.accept().await {
+                    let (request, mut respond) = incoming.expect("outer request");
+                    let seen_tx = seen_tx.clone();
+                    tokio::spawn(async move {
+                        let mut body = request.into_body();
+                        let mut count = 0;
+                        while let Some(chunk) = body.data().await {
+                            let chunk = chunk.expect("outer body chunk");
+                            count += chunk.len();
+                            body.flow_control()
+                                .release_capacity(chunk.len())
+                                .expect("outer consumption");
+                        }
+                        seen_tx.send(count).expect("outer observation");
+                        respond
+                            .send_response(
+                                Response::builder().status(StatusCode::OK).body(()).unwrap(),
+                                true,
+                            )
+                            .expect("outer response");
+                    });
+                }
+            });
+            let (outer_sender, outer_connection) = h2::client::handshake(outer_client_io)
+                .await
+                .expect("outer client");
+            let outer_driver = tokio::spawn(outer_connection);
+            projection.bind("http://core.test", outer_sender).await;
+            let (nested_client_io, nested_server_io) = tokio::io::duplex(1024 * 1024);
+            let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel();
+            let nested_server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(nested_server_io)
+                    .await
+                    .expect("nested handshake");
+                while let Some(incoming) = connection.accept().await {
+                    let (request, respond) = incoming.expect("nested request");
+                    let projection = projection.clone();
+                    let result_tx = result_tx.clone();
+                    tokio::spawn(async move {
+                        let result = projection
+                            .forward(RouteFamily::Capabilities, request, respond, "binding")
+                            .await;
+                        result_tx.send(result).expect("forward result");
+                    });
+                }
+            });
+            let (mut sender, nested_connection) = h2::client::handshake(nested_client_io)
+                .await
+                .expect("nested client");
+            let nested_driver = tokio::spawn(nested_connection);
+            for (length, expected_status) in [
+                (512 * 1024, StatusCode::OK),
+                (512 * 1024 + 1, StatusCode::PAYLOAD_TOO_LARGE),
+            ] {
+                let request = Request::builder()
+                    .method(Method::POST)
+                    .uri("/capabilities/mcp/catalog")
+                    .body(())
+                    .unwrap();
+                let (response, mut output) = sender
+                    .send_request(request, false)
+                    .expect("capability request");
+                super::send_h2_bytes(&mut output, Bytes::from(vec![b'x'; length]), true)
+                    .await
+                    .expect("capability upload");
+                assert_eq!(
+                    response.await.expect("capability response").status(),
+                    expected_status
+                );
+                if expected_status == StatusCode::OK {
+                    assert_eq!(result_rx.recv().await, Some(Ok(false)));
+                    assert_eq!(seen_rx.recv().await, Some(512 * 1024));
+                } else {
+                    assert_eq!(
+                        result_rx.recv().await,
+                        Some(Err("sandbox route body exceeded bound"))
+                    );
+                    assert!(
+                        seen_rx.try_recv().is_err(),
+                        "oversized request must not reach outer dispatch"
+                    );
+                }
+            }
+            nested_driver.abort();
+            nested_server.abort();
+            outer_driver.abort();
+            outer_server.abort();
+        })
+        .await
+        .expect("capability collection bound must settle");
     }
 
     #[tokio::test]
