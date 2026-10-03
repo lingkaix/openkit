@@ -580,6 +580,9 @@ export const ALREADY_DECIDED_PUBLICATION_ADMISSION = {
   category: 'already-decided-publication',
 } as const;
 
+/** Item fields admitted by the named post-terminal display-projection refresh. */
+export const DISPLAY_PROJECTION_REFRESH_FIELDS = ['level', 'title', 'summary'] as const;
+
 /** Named field-limited display-projection refresh; this is not already-decided publication. */
 export const DISPLAY_PROJECTION_REFRESH_ADMISSION = {
   category: 'display-projection-refresh',
@@ -3009,7 +3012,7 @@ export class FsStore {
     if (isSealedTurnTerminal(turn.status)) {
       if (admission?.category === 'display-projection-refresh') {
         const unsupportedField = Object.keys(input).find(
-          (field) => !['level', 'title', 'summary'].includes(field)
+          (field) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)
         );
         if (unsupportedField) {
           throw terminalTurnWriteRejected(turn.id);

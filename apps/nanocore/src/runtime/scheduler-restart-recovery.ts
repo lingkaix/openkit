@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { recordServerAuditEvent } from '../audit-events.js';
-import type { FsStore } from '../lib/store.js';
+import { DISPLAY_PROJECTION_REFRESH_FIELDS, type FsStore } from '../lib/store.js';
 import {
   completeSchedulerSessionLease,
   requireSchedulerAdmissionEntry,
@@ -507,12 +507,19 @@ function settleTerminalFailedStart(
     const terminalEvents = store
       .getTurnEvents(turn.id)
       .filter((event) => event.event === 'turn.completed');
+    // Preserve all decided content while excluding only the store-admitted Item display fields.
     if (
       terminalEvents.some(
         (event) =>
+          event.workspaceId !== turn.workspaceId ||
+          event.threadId !== turn.threadId ||
+          event.turnId !== turn.id ||
           event.data.type !== 'turn-completed' ||
           event.data.stopReason !== 'error' ||
-          !isDeepStrictEqual(event.data.turn, turn)
+          !isDeepStrictEqual(
+            withoutItemDisplayFields(event.data.turn),
+            withoutItemDisplayFields(turn)
+          )
       )
     ) {
       throw new Error('Failed-start terminal publication contradicts its decided Turn.');
@@ -531,6 +538,25 @@ function settleTerminalFailedStart(
   } finally {
     workspace.db.sqlite.close();
   }
+}
+
+/**
+ * Omits only the store-admitted Item display fields from a terminal snapshot comparison.
+ *
+ * @param turn Published or currently hydrated Turn.
+ * @returns All Turn content and ordered Items with their decided non-display fields intact.
+ */
+function withoutItemDisplayFields(turn: ReturnType<FsStore['getTurnById']>) {
+  return {
+    ...turn,
+    items: turn.items.map((item) =>
+      Object.fromEntries(
+        Object.entries(item).filter(
+          ([field]) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)
+        )
+      )
+    ),
+  };
 }
 
 /** Throws one aggregate after every independent recovery candidate was attempted. */

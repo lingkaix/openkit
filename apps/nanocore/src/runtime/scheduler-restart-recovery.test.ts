@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,7 +13,7 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from '../lib/store.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -263,6 +264,310 @@ function createFailedStartFixture(suffix: string, outcome = false, anchored = tr
 }
 
 describe('terminal failed-start product recovery', () => {
+  it.each([
+    'maintenance',
+    'ordinary-owner',
+  ] as const)('leaves complete %s publication unchanged across later passes and display refreshes', async (owner) => {
+    const f = createFailedStartFixture(`repeat_${owner}`, owner === 'maintenance');
+    let timestamp = f.input.now();
+    f.input.now = () => timestamp;
+    try {
+      const display = f.store.createItem({
+        id: `it_display_${owner}`,
+        workspaceId: 'ws_demo',
+        threadId: f.threadId,
+        turnId: f.turnId,
+        type: 'status',
+        status: 'completed',
+        level: 'warning',
+        title: 'Worker Turn accepted',
+        summary: 'Conversation continued with agent_codex_host.',
+        createdAt: f.input.now(),
+        completedAt: f.input.now(),
+      });
+      const recovery = await runSchedulerRestartRecovery(f.coreDb, f.input);
+      if (owner === 'maintenance') {
+        await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, f.input);
+      } else {
+        terminalizeGovernedWorkerTurn({
+          store: f.store,
+          turnId: f.turnId,
+          agentSessionId: f.agentSessionId,
+          requestId: `request_repeat_${owner}`,
+          completedAt: f.input.now(),
+          errorCode: 'worker_governance_turn_failed',
+          message: 'Worker turn ended without success.',
+          outcome: 'failed',
+        });
+      }
+      const eventsPath = join(
+        f.store.workspaceRootPath('ws_demo'),
+        'threads',
+        f.threadId,
+        'turns',
+        f.turnId,
+        'runtime',
+        'events.jsonl'
+      );
+      const eventsBefore = readFileSync(eventsPath, 'utf8');
+      const published = f.store
+        .getTurnEvents(f.turnId)
+        .find((event) => event.event === 'turn.completed');
+      expect(published?.data).toMatchObject({
+        type: 'turn-completed',
+        stopReason: 'error',
+        turn: { status: 'failed' },
+      });
+      const decided = f.store.getTurnById(f.turnId);
+      const session = f.store.getAgentSession(f.agentSessionId);
+      expect(session.status).toBe('failed');
+      expect(
+        f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+      ).toHaveLength(1);
+      timestamp = '2026-10-03T00:01:00.000Z';
+      await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, f.input);
+      expect(f.store.getTurnById(f.turnId)).toEqual(decided);
+      expect(f.store.getAgentSession(f.agentSessionId)).toEqual(session);
+      expect(readFileSync(eventsPath, 'utf8')).toBe(eventsBefore);
+
+      // Core Protocol admits only these named display fields after the terminal snapshot.
+      f.store.updateItem(
+        display.id,
+        {
+          title: 'Worker Turn failed',
+          summary: 'Worker turn ended without success.',
+        },
+        DISPLAY_PROJECTION_REFRESH_ADMISSION
+      );
+      const restarted = new FsStore({ dataRoot: f.dataRoot });
+      const current = restarted.getTurnById(f.turnId);
+      expect(published?.data.type).toBe('turn-completed');
+      if (published?.data.type !== 'turn-completed') throw new Error('Missing terminal snapshot.');
+      expect(
+        Object.keys(current).filter(
+          (key) =>
+            !isDeepStrictEqual(
+              current[key as keyof typeof current],
+              published.data.turn[key as keyof typeof current]
+            )
+        )
+      ).toEqual(['items']);
+      expect(current.items.find((item) => item.id === display.id)).toMatchObject({
+        level: 'warning',
+        title: 'Worker Turn failed',
+        summary: 'Worker turn ended without success.',
+      });
+      expect(current.items).toEqual(
+        published.data.turn.items.map((item) =>
+          item.id === display.id
+            ? {
+                ...item,
+                title: 'Worker Turn failed',
+                summary: 'Worker turn ended without success.',
+              }
+            : item
+        )
+      );
+      expect(published.data.turn.items.find((item) => item.id === display.id)).toMatchObject({
+        level: 'warning',
+        title: 'Worker Turn accepted',
+        summary: 'Conversation continued with agent_codex_host.',
+      });
+      const lease = requireSchedulerSessionLease(f.coreDb, `lease_repeat_${owner}`);
+      const backend = getWorkerBackendSession(f.coreDb, lease.leaseId);
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      const pending = readPendingRequest(db.sqlite, `input_repeat_${owner}`);
+      db.sqlite.close();
+      for (let pass = 0; pass < 2; pass += 1) {
+        timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
+        await runSchedulerRecoveryMaintenance(f.coreDb, recovery.schedulerEpoch, {
+          ...f.input,
+          store: restarted,
+        });
+        const durable = new FsStore({ dataRoot: f.dataRoot });
+        expect(durable.getTurnById(f.turnId)).toEqual(current);
+        expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(readFileSync(eventsPath, 'utf8')).toBe(eventsBefore);
+        expect(requireSchedulerSessionLease(f.coreDb, lease.leaseId)).toEqual(lease);
+        expect(getWorkerBackendSession(f.coreDb, lease.leaseId)).toEqual(backend);
+        const after = openWorkspaceDb(f.dataRoot, 'ws_demo');
+        expect(readPendingRequest(after.sqlite, `input_repeat_${owner}`)).toEqual(pending);
+        after.sqlite.close();
+      }
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'status',
+    'stop-reason',
+    'agent',
+    'session',
+    'error-code',
+    'error-message',
+    'completion-time',
+  ] as const)('preserves a contradictory terminal %s and still maintains an independent lease', async (contradiction) => {
+    const suffix = `publication_${contradiction}`;
+    const f = createFailedStartFixture(suffix);
+    let timestamp = f.input.now();
+    f.input.now = () => timestamp;
+    try {
+      const running = f.store.getTurnById(f.turnId);
+      const decided = {
+        ...running,
+        status: 'failed' as const,
+        completedAt: f.input.now(),
+        durationMs: running.startedAt
+          ? Math.max(0, Date.parse(f.input.now()) - Date.parse(running.startedAt))
+          : running.durationMs,
+        error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
+      };
+      // Publish before the terminal row so the real store can represent conflicting history.
+      f.store.emitTurnEvent(f.turnId, {
+        workspaceId: 'ws_demo',
+        threadId: f.threadId,
+        turnId: f.turnId,
+        requestId: `request_${suffix}`,
+        event: 'turn.completed',
+        data: {
+          type: 'turn-completed',
+          stopReason: contradiction === 'stop-reason' ? 'aborted' : 'error',
+          turn: {
+            ...decided,
+            ...(contradiction === 'status' ? { status: 'interrupted' as const } : {}),
+            ...(contradiction === 'agent' ? { agentId: 'agent_foreign' } : {}),
+            ...(contradiction === 'session' ? { agentSessionId: 'as_foreign' } : {}),
+            ...(contradiction === 'error-code'
+              ? { error: { ...decided.error, code: 'delivery_unknown' } }
+              : {}),
+            ...(contradiction === 'error-message'
+              ? { error: { ...decided.error, message: 'A different failure.' } }
+              : {}),
+            ...(contradiction === 'completion-time'
+              ? { completedAt: '2026-10-02T23:59:00.000Z' }
+              : {}),
+          },
+        },
+      });
+      f.store.updateTurn(f.turnId, {
+        status: decided.status,
+        completedAt: decided.completedAt,
+        error: decided.error,
+      });
+      const sibling = `z_after_publication_${contradiction}`;
+      f.store.createThread('ws_demo', 'Independent worker', `thread_${sibling}`);
+      f.store.createAgentSession({
+        id: `as_${sibling}`,
+        agentId: 'agent_codex_host',
+        workspaceId: 'ws_demo',
+        threadId: `thread_${sibling}`,
+        status: 'busy',
+        message: null,
+        environmentPackageSnapshotId: `aepsnap_turn_${sibling}_as_${sibling}`,
+        createdAt: f.input.now(),
+        updatedAt: f.input.now(),
+      });
+      f.store.createTurn(
+        'ws_demo',
+        `thread_${sibling}`,
+        'Independent work',
+        { kind: 'user', id: LOCAL_USER_ID },
+        null,
+        {
+          turnId: `turn_${sibling}`,
+          agentId: 'agent_codex_host',
+          agentSessionId: `as_${sibling}`,
+          status: 'running',
+          executorKind: 'worker',
+        }
+      );
+      dispatchLease(f.coreDb, sibling);
+      recordBackendSession(f.coreDb, sibling, 'cleaned');
+      completeSchedulerTurnLease(f.coreDb, {
+        workspaceId: 'ws_demo',
+        threadId: `thread_${sibling}`,
+        turnId: `turn_${sibling}`,
+        recoveryState: 'needs-evidence',
+        releaseReason: 'turn-start-failed',
+        terminalStatus: 'failed',
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare(
+            `SELECT lease_id AS leaseId FROM scheduler_session_leases
+             WHERE status = 'failed' AND release_reason = 'turn-start-failed'
+               AND recovery_state = 'needs-evidence' ORDER BY lease_id`
+          )
+          .all()
+      ).toEqual([{ leaseId: `lease_${suffix}` }, { leaseId: `lease_${sibling}` }]);
+      const store = new FsStore({ dataRoot: f.dataRoot });
+      const before = store.getTurnById(f.turnId);
+      const session = store.getAgentSession(f.agentSessionId);
+      const events = store.getTurnEventsForExport(f.turnId);
+      const publication = store
+        .getTurnEvents(f.turnId)
+        .find((event) => event.event === 'turn.completed');
+      if (publication?.data.type !== 'turn-completed')
+        throw new Error('Missing contradictory snapshot.');
+      const differingFields = Object.keys(before).filter(
+        (key) =>
+          !isDeepStrictEqual(
+            before[key as keyof typeof before],
+            publication.data.turn[key as keyof typeof before]
+          )
+      );
+      expect(differingFields).toEqual(
+        contradiction === 'stop-reason'
+          ? []
+          : [
+              contradiction === 'status'
+                ? 'status'
+                : contradiction === 'agent'
+                  ? 'agentId'
+                  : contradiction === 'session'
+                    ? 'agentSessionId'
+                    : contradiction === 'completion-time'
+                      ? 'completedAt'
+                      : 'error',
+            ]
+      );
+      const input = { ...f.input, store, cleanupBackendSession: vi.fn(async () => {}) };
+      const completedAt = '2026-10-03T00:01:00.000Z';
+      for (let pass = 0; pass < 2; pass += 1) {
+        timestamp = new Date(Date.parse(timestamp) + 60_000).toISOString();
+        await expect(runSchedulerRecoveryMaintenance(f.coreDb, 9, input)).rejects.toThrow(
+          'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
+        );
+        const durable = new FsStore({ dataRoot: f.dataRoot });
+        expect(durable.getTurnById(f.turnId)).toEqual(before);
+        expect(durable.getAgentSession(f.agentSessionId)).toEqual(session);
+        expect(durable.getTurnEventsForExport(f.turnId)).toEqual(events);
+        expect(requireSchedulerSessionLease(f.coreDb, `lease_${sibling}`).status).toBe('failed');
+        expect(getWorkerBackendSession(f.coreDb, `lease_${sibling}`)?.state).toBe('cleaned');
+        expect(durable.getTurnById(`turn_${sibling}`)).toMatchObject({
+          status: 'failed',
+          completedAt,
+          error: { code: 'worker_governance_turn_failed' },
+        });
+        expect(durable.getAgentSession(`as_${sibling}`)).toMatchObject({
+          status: 'failed',
+          updatedAt: completedAt,
+        });
+        expect(
+          durable
+            .getTurnEvents(`turn_${sibling}`)
+            .filter((event) => event.event === 'turn.completed')
+        ).toHaveLength(1);
+      }
+      expect(input.cleanupBackendSession).not.toHaveBeenCalled();
+      expect(f.input.projectRecoveredTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('settles unknown delivery and admits an Assistant conversation without claiming worker continuity', async () => {
     const f = createFailedStartFixture('unknown_outcome', true);
     try {
