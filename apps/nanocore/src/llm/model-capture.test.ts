@@ -415,8 +415,7 @@ describe('Gateway model retention', () => {
       expect(adapterRequest).not.toHaveProperty('max_completion_tokens');
       expect(adapterRequest).not.toHaveProperty('reasoning_effort');
       expect(adapterRequest.reasoning).toEqual({ effort: 'high' });
-      if (maxTokens === undefined) expect(adapterRequest).not.toHaveProperty('max_output_tokens');
-      else expect(adapterRequest.max_output_tokens).toBe(maxTokens);
+      expect(adapterRequest.max_output_tokens).toBe(request.max_completion_tokens);
       const rows = readWorkObservations(f.workspaceDb, f);
       const observation = rows.find((row) => row.payload.direction === 'request');
       expect(observation?.payload).toMatchObject({

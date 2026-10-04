@@ -7,10 +7,16 @@ import {
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import {
+  executeGatewayPlan,
+  type GatewayAttemptContext,
+  type GatewaySelection,
+} from './gateway-execution.js';
 import { GatewayUsageTracker } from './gateway-usage.js';
 import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleChatCompletionResponse,
+  OpenAICompatibleChatMessage,
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
@@ -728,5 +734,278 @@ describe('LLMGatewayProviderDispatcher Codex chat bridge admission', () => {
 
     expect(response.choices[0]?.message.content).toBe('Codex admitted.');
     expect(faux.state.callCount).toBe(1);
+  });
+});
+
+describe('Responses-native Chat function round trip', () => {
+  it.each([
+    '{"x":1}',
+    '{ "x": 1 }',
+  ])('preserves stock-parser function arguments through the production bridge: %s', async (args) => {
+    // Only external fetch is replaced: stock parsing, PiAiGatewayClient and dispatch remain real.
+    const credential = {
+      type: 'oauth' as const,
+      access: [
+        'e30',
+        Buffer.from(
+          JSON.stringify({
+            'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-probe' },
+          })
+        ).toString('base64url'),
+        'signature',
+      ].join('.'),
+      refresh: 'synthetic',
+      expires: Date.now() + 3_600_000,
+    };
+    const models = createModels({
+      credentials: {
+        async delete() {},
+        async list() {
+          return [{ providerId: 'openai-codex', type: 'oauth' }];
+        },
+        async modify(_id, update) {
+          return update(credential);
+        },
+        async read() {
+          return credential;
+        },
+      },
+    });
+    models.setProvider(openaiCodexProvider());
+    const item = {
+      type: 'function_call',
+      id: 'fc_probe',
+      call_id: 'call_probe',
+      name: 'lookup',
+      namespace: 'functions',
+      arguments: args,
+      status: 'completed',
+    };
+    const events = [
+      {
+        type: 'response.created',
+        response: { id: 'resp_probe', status: 'in_progress', output: [] },
+      },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { ...item, arguments: '', status: 'in_progress' },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        item_id: item.id,
+        delta: args,
+      },
+      { type: 'response.output_item.done', output_index: 0, item },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_probe',
+          status: 'completed',
+          output: [item],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    ];
+    const fetch = vi.fn(
+      async () =>
+        new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+    );
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const stream = await new LLMGatewayProviderDispatcher({}).createChatCompletionStream(
+        piProviderConfig({
+          adapterId: 'openai-codex',
+          apiKey: null,
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          id: 'codex-probe',
+          models: ['openai-codex/gpt-5.6-sol'],
+          requiresApiKey: false,
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'probe',
+        } as Partial<ResolvedLLMProviderConfig>),
+        {
+          model: 'openai-codex/gpt-5.6-sol',
+          messages: [{ role: 'user', content: 'Call lookup' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'lookup',
+                parameters: {
+                  type: 'object',
+                  properties: { x: { type: 'number' } },
+                  required: ['x'],
+                },
+              },
+            },
+          ],
+        },
+        { models }
+      );
+      const wire = await new Response(stream).text();
+      const chunks = wire
+        .split('\n\n')
+        .filter((frame) => frame && frame !== 'data: [DONE]')
+        .map((frame) => JSON.parse(frame.slice(6)));
+      const calls = chunks.flatMap((chunk) => chunk.choices[0].delta.tool_calls ?? []);
+      expect(calls[0]).toMatchObject({
+        id: 'call_probe',
+        index: 0,
+        type: 'function',
+        function: { name: 'lookup' },
+      });
+      // Completion reserializes JSON; retain the raw delta bytes exactly once downstream.
+      expect(calls.map((call) => call.function.arguments ?? '').join('')).toBe(args);
+      expect(chunks.at(-1).choices[0].finish_reason).toBe('tool_calls');
+      expect(wire.split('data: [DONE]')).toHaveLength(2);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('releases function output with correlated success and converts its continuation through the actual dispatcher', async () => {
+    const item = {
+      type: 'function_call',
+      id: 'fc_dispatch',
+      call_id: 'call_dispatch',
+      name: 'lookup',
+      arguments: '{"id":"one"}',
+    };
+    const piAiClient = new PiAiGatewayClient();
+    const nativeStream = vi
+      .spyOn(piAiClient, 'createResponsesStream')
+      .mockImplementation(async (_provider, request, onUsage) => {
+        onUsage?.({ input_tokens: 4, output_tokens: 2, total_tokens: 6 });
+        return new ReadableStream({
+          start(controller) {
+            for (const frame of [
+              { type: 'response.created', response: { id: 'resp_dispatch_tool' } },
+              {
+                type: 'response.output_item.added',
+                output_index: 0,
+                item: { ...item, arguments: '' },
+              },
+              {
+                type: 'response.function_call_arguments.delta',
+                output_index: 0,
+                item_id: item.id,
+                delta: item.arguments,
+              },
+              { type: 'response.output_item.done', output_index: 0, item },
+              {
+                type: 'response.completed',
+                response: {
+                  id: 'resp_dispatch_tool',
+                  model: request.model,
+                  status: 'completed',
+                  output: [item],
+                },
+              },
+            ])
+              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+            controller.close();
+          },
+        });
+      });
+    const provider = piProviderConfig({
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    });
+    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
+    const onUsage = vi.fn();
+    let execution: GatewayAttemptContext | undefined;
+    const states: string[] = [];
+    const stream = await executeGatewayPlan({
+      autoFailover: false,
+      selections: [{ selected: true, reason: 'primary' } as GatewaySelection],
+      signal: new AbortController().signal,
+      attempt: async (_selection, context) => {
+        execution = context;
+        return context.prepareStream(
+          await dispatcher.createChatCompletionStream(
+            provider,
+            { model: 'faux-chat', messages: [{ role: 'user', content: 'Lookup one' }] },
+            { onUsage }
+          ),
+          (state) => states.push(state)
+        );
+      },
+    });
+    const wire = await new Response(stream).text();
+    const chunks = wire
+      .split('\n\n')
+      .filter((frame) => frame && frame !== 'data: [DONE]')
+      .map((frame) => JSON.parse(frame.slice(6)));
+    const calls = chunks.flatMap((frame) => frame.choices[0].delta.tool_calls ?? []);
+    expect(calls[0]).toMatchObject({
+      index: 0,
+      id: 'call_dispatch',
+      type: 'function',
+      function: { name: 'lookup' },
+    });
+    expect(calls.map((call) => call.function.arguments ?? '').join('')).toBe(item.arguments);
+    expect(chunks.at(-1)).toMatchObject({
+      id: 'resp_dispatch_tool',
+      choices: [{ finish_reason: 'tool_calls' }],
+    });
+    expect(execution?.outputBegan).toBe(true);
+    expect(states).toContain('output');
+    expect(states.at(-1)).toBe('completed');
+    expect(onUsage).toHaveBeenCalledOnce();
+    const nativeComplete = vi.spyOn(piAiClient, 'createResponses').mockResolvedValue({
+      id: 'resp_continued',
+      object: 'response',
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Found' }] }],
+    });
+    const result = await dispatcher.createChatCompletion(provider, {
+      model: 'faux-chat',
+      messages: [
+        { role: 'user', content: 'Lookup one' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: item.call_id,
+              type: 'function',
+              function: { name: item.name, arguments: item.arguments },
+            },
+          ],
+        } as OpenAICompatibleChatMessage,
+        { role: 'tool', tool_call_id: item.call_id, content: 'one-result' },
+      ],
+    });
+    expect(result.choices[0]?.message.content).toBe('Found');
+    expect(nativeComplete.mock.calls[0]?.[1].input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'Lookup one' }] },
+      { type: 'function_call', call_id: item.call_id, name: item.name, arguments: item.arguments },
+      { type: 'function_call_output', call_id: item.call_id, output: 'one-result' },
+    ]);
+    expect(nativeStream).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unsupported Chat semantics before a native provider call', async () => {
+    const piAiClient = new PiAiGatewayClient();
+    const call = vi.spyOn(piAiClient, 'createResponsesStream');
+    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
+    await expect(
+      dispatcher.createChatCompletionStream(
+        piProviderConfig({
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+        }),
+        {
+          model: 'faux-chat',
+          messages: [{ role: 'user', content: 'Hi' }],
+          response_format: { type: 'json_schema' },
+        }
+      )
+    ).rejects.toMatchObject({ code: 'unsupported_gateway_feature', status: 400 });
+    expect(call).not.toHaveBeenCalled();
   });
 });

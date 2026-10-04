@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type {
   OpenAICompatibleChatCompletionRequest,
   OpenAICompatibleChatCompletionResponse,
@@ -5,6 +6,7 @@ import type {
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
+import { attachPiAiFailure } from './pi-ai-failure.js';
 
 /**
  * Error thrown when a gateway bridge cannot preserve requested semantics.
@@ -38,6 +40,16 @@ export class GatewayUnsupportedFeatureError extends Error {
 export function convertChatCompletionToResponsesRequest(
   request: OpenAICompatibleChatCompletionRequest
 ): OpenAICompatibleResponsesRequest {
+  assertChatBridgeRequest(request);
+  for (const message of request.messages) {
+    if (
+      (message.role === 'system' || message.role === 'developer') &&
+      Object.keys(message).some((key) => key !== 'role' && key !== 'content')
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat instruction fields');
+    }
+  }
+  const pendingCalls = new Set<string>();
   const instructions = request.messages
     .filter((message) => message.role === 'system' || message.role === 'developer')
     .map((message) => textFromChatContent(message.content, message.role))
@@ -45,22 +57,23 @@ export function convertChatCompletionToResponsesRequest(
     .join('\n\n');
   const input = request.messages
     .filter((message) => message.role !== 'system' && message.role !== 'developer')
-    .map((message) => chatMessageToResponsesInput(message));
+    .flatMap((message) => chatMessageToResponsesInput(message, pendingCalls));
   const output: Record<string, unknown> = {
     ...copySelectedFields(request, [
       'metadata',
+      'store',
       'parallel_tool_calls',
       'prompt_cache_key',
       'prompt_cache_retention',
       'temperature',
-      'tool_choice',
       'top_p',
     ]),
     model: request.model,
     input,
     stream: request.stream ?? false,
   };
-  const maxOutputTokens = request.max_output_tokens ?? request.max_tokens;
+  const maxOutputTokens =
+    request.max_completion_tokens ?? request.max_output_tokens ?? request.max_tokens;
 
   if (instructions) {
     output.instructions = instructions;
@@ -75,6 +88,9 @@ export function convertChatCompletionToResponsesRequest(
   }
   if (Array.isArray(request.tools)) {
     output.tools = convertChatToolsToResponsesTools(request.tools);
+  }
+  if (request.tool_choice !== undefined) {
+    output.tool_choice = chatToolChoiceToResponses(request.tool_choice);
   }
 
   return output as OpenAICompatibleResponsesRequest;
@@ -158,7 +174,7 @@ export function convertChatCompletionResponseToResponsesResponse(
 }
 
 /**
- * Converts a Responses response to a minimal Chat Completions response.
+ * Converts bounded Responses text and function output without inventing successful terminals.
  *
  * @param response Responses API response.
  * @param model Fallback model name for providers that omit model in the response.
@@ -168,7 +184,8 @@ export function convertResponsesResponseToChatCompletionResponse(
   response: OpenAICompatibleResponsesResponse,
   model: string
 ): OpenAICompatibleChatCompletionResponse {
-  const content = extractResponsesOutputText(response);
+  assertResponsesTerminal(response);
+  const { content, toolCalls } = responsesOutputToChat(response);
 
   return {
     id: response.id,
@@ -178,8 +195,13 @@ export function convertResponsesResponseToChatCompletionResponse(
     choices: [
       {
         index: 0,
-        message: { role: 'assistant', content },
-        finish_reason: response.status === 'incomplete' ? 'length' : 'stop',
+        message: {
+          role: 'assistant',
+          content: content || (toolCalls.length ? null : ''),
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+        },
+        finish_reason:
+          response.status === 'incomplete' ? 'length' : toolCalls.length ? 'tool_calls' : 'stop',
       },
     ],
     ...(response.usage ? { usage: normalizeResponsesUsageForChat(response.usage) } : {}),
@@ -199,7 +221,7 @@ export function convertChatCompletionStreamToResponsesStream(
 }
 
 /**
- * Converts text-only Responses SSE chunks to Chat Completions SSE chunks.
+ * Converts Responses text and function SSE events, preserving terminal and usage semantics.
  *
  * @param stream Responses SSE stream.
  * @param model Fallback model name for emitted chat chunks.
@@ -209,7 +231,7 @@ export function convertResponsesStreamToChatCompletionStream(
   stream: ReadableStream<Uint8Array>,
   model: string
 ): ReadableStream<Uint8Array> {
-  return convertSseStream(stream, (event) => responsesSseEventToChat(event, model));
+  return convertSseStream(stream, responsesSseEventToChat(model));
 }
 
 function copySelectedFields(
@@ -227,23 +249,130 @@ function copySelectedFields(
   return selected;
 }
 
-function chatMessageToResponsesInput(
-  message: OpenAICompatibleChatMessage
-): Record<string, unknown> {
-  if (message.role === 'tool') {
-    return {
-      role: 'tool',
-      tool_call_id: message.tool_call_id,
-      content: [{ type: 'input_text', text: textFromChatContent(message.content, 'tool') }],
-    };
+/** Rejects semantic fields the bounded native bridge cannot represent before dispatch. */
+function assertChatBridgeRequest(request: OpenAICompatibleChatCompletionRequest): void {
+  const supported = new Set([
+    'model',
+    'store',
+    'messages',
+    'stream',
+    'metadata',
+    'parallel_tool_calls',
+    'prompt_cache_key',
+    'prompt_cache_retention',
+    'temperature',
+    'tool_choice',
+    'top_p',
+    'max_tokens',
+    'max_completion_tokens',
+    'max_output_tokens',
+    'reasoning',
+    'reasoning_effort',
+    'tools',
+    'stream_options',
+  ]);
+  for (const [field, value] of Object.entries(request)) {
+    if (value !== undefined && !supported.has(field))
+      throw new GatewayUnsupportedFeatureError(`chat ${field}`);
   }
+  if (request.stream_options !== undefined) {
+    const options = readRecord(request.stream_options);
+    if (
+      Object.keys(options).some((key) => key !== 'include_usage') ||
+      typeof options.include_usage !== 'boolean'
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat stream_options');
+    }
+  }
+}
 
-  const type = message.role === 'assistant' ? 'output_text' : 'input_text';
+/** Projects only the standard simple function choice, never a custom or built-in tool. */
+function chatToolChoiceToResponses(choice: unknown): unknown {
+  if (choice === 'auto' || choice === 'none' || choice === 'required') return choice;
+  const record = readRecord(choice);
+  const fn = readRecord(record.function);
+  if (
+    record.type !== 'function' ||
+    typeof fn.name !== 'string' ||
+    !fn.name ||
+    Object.keys(record).some((key) => key !== 'type' && key !== 'function') ||
+    Object.keys(fn).some((key) => key !== 'name')
+  ) {
+    throw new GatewayUnsupportedFeatureError('chat tool_choice');
+  }
+  return { type: 'function', name: fn.name };
+}
 
-  return {
-    role: message.role,
-    content: [{ type, text: textFromChatContent(message.content, message.role) }],
-  };
+/** Expands assistant history in order and consumes each correlated text tool result once. */
+function chatMessageToResponsesInput(
+  message: OpenAICompatibleChatMessage,
+  pendingCalls: Set<string>
+): Record<string, unknown>[] {
+  const record = message as unknown as Record<string, unknown>;
+  if (
+    Object.keys(record).some(
+      (key) => !['role', 'content', 'tool_calls', 'tool_call_id'].includes(key)
+    )
+  ) {
+    throw new GatewayUnsupportedFeatureError('chat message fields');
+  }
+  if (message.role === 'tool') {
+    if (
+      !message.tool_call_id ||
+      !pendingCalls.delete(message.tool_call_id) ||
+      record.tool_calls !== undefined
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat unmatched tool result');
+    }
+    return [
+      {
+        type: 'function_call_output',
+        call_id: message.tool_call_id,
+        output: textFromChatContent(message.content, 'tool'),
+      },
+    ];
+  }
+  if (!['user', 'assistant'].includes(message.role) || message.tool_call_id !== undefined) {
+    throw new GatewayUnsupportedFeatureError('chat input role');
+  }
+  const content = textFromChatContent(message.content, message.role);
+  const items: Record<string, unknown>[] = [];
+  if (content || record.tool_calls === undefined)
+    items.push({
+      role: message.role,
+      content: [
+        { type: message.role === 'assistant' ? 'output_text' : 'input_text', text: content },
+      ],
+    });
+  if (record.tool_calls !== undefined) {
+    if (message.role !== 'assistant' || !Array.isArray(record.tool_calls))
+      throw new GatewayUnsupportedFeatureError('chat tool calls');
+    for (const value of record.tool_calls) {
+      const call = readRecord(value);
+      const fn = readRecord(call.function);
+      if (
+        call.type !== 'function' ||
+        typeof call.id !== 'string' ||
+        !call.id ||
+        typeof fn.name !== 'string' ||
+        !fn.name ||
+        typeof fn.arguments !== 'string' ||
+        Object.keys(call).some((key) => !['id', 'type', 'function'].includes(key)) ||
+        Object.keys(fn).some((key) => !['name', 'arguments'].includes(key)) ||
+        pendingCalls.has(call.id)
+      ) {
+        throw new GatewayUnsupportedFeatureError('chat function call');
+      }
+      pendingCalls.add(call.id);
+      items.push({
+        type: 'function_call',
+        call_id: call.id,
+        name: fn.name,
+        arguments: fn.arguments,
+      });
+    }
+  }
+  return items;
 }
 
 function textFromChatContent(
@@ -257,6 +386,7 @@ function textFromChatContent(
     return '';
   }
 
+  if (!Array.isArray(content)) throw new GatewayUnsupportedFeatureError(`${role} non-text content`);
   const textParts = content.map((part) => {
     if (typeof part !== 'object' || part === null) {
       throw new GatewayUnsupportedFeatureError(`${role} non-text content`);
@@ -350,9 +480,20 @@ function convertChatToolsToResponsesTools(tools: readonly unknown[]): Record<str
       throw new GatewayUnsupportedFeatureError('chat function tool');
     }
 
+    if (
+      !fn.name ||
+      Object.keys(record).some((key) => key !== 'type' && key !== 'function') ||
+      Object.keys(fn).some(
+        (key) => !['name', 'description', 'parameters', 'strict'].includes(key)
+      ) ||
+      (fn.strict !== undefined && typeof fn.strict !== 'boolean')
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat function tool fields');
+    }
     return {
       type: 'function',
       name: fn.name,
+      ...(fn.strict !== undefined ? { strict: fn.strict } : {}),
       ...(typeof fn.description === 'string' ? { description: fn.description } : {}),
       ...(fn.parameters !== undefined ? { parameters: fn.parameters } : {}),
     };
@@ -384,26 +525,62 @@ function convertResponsesToolsToChatTools(tools: readonly unknown[]): Record<str
   });
 }
 
-function extractResponsesOutputText(response: OpenAICompatibleResponsesResponse): string {
-  return (response.output ?? [])
-    .flatMap((item) => {
-      const content = item.content;
+/** A native unsuccessful terminal is an error, with no upstream body in the public cause. */
+function assertResponsesTerminal(response: OpenAICompatibleResponsesResponse): void {
+  if (
+    response.error ||
+    (response.status !== undefined &&
+      response.status !== 'completed' &&
+      !(
+        response.status === 'incomplete' &&
+        readRecord(response.incomplete_details).reason === 'max_output_tokens'
+      ))
+  ) {
+    throw attachPiAiFailure(
+      new Error('Provider request failed.'),
+      response.error ??
+        (response.status === 'incomplete'
+          ? { code: readRecord(response.incomplete_details).reason }
+          : response)
+    );
+  }
+}
 
-      if (!Array.isArray(content)) {
-        return [];
+/** Preserves complete bounded text/function items and rejects unsupported response semantics. */
+function responsesOutputToChat(response: OpenAICompatibleResponsesResponse): {
+  content: string;
+  toolCalls: Record<string, unknown>[];
+} {
+  let content = '';
+  const toolCalls: Record<string, unknown>[] = [];
+  const callIds = new Set<string>();
+  for (const item of response.output ?? []) {
+    if (item.type === 'function_call') {
+      if (
+        typeof item.call_id !== 'string' ||
+        !item.call_id ||
+        typeof item.name !== 'string' ||
+        !item.name ||
+        typeof item.arguments !== 'string' ||
+        (item.namespace !== undefined && item.namespace !== '' && item.namespace !== 'functions')
+      ) {
+        throw new GatewayUnsupportedFeatureError('responses function identity');
       }
-
-      return content.flatMap((part) => {
-        if (typeof part !== 'object' || part === null) {
-          return [];
-        }
-
-        const record = part as Record<string, unknown>;
-
-        return typeof record.text === 'string' ? [record.text] : [];
+      if (callIds.has(item.call_id))
+        throw new GatewayUnsupportedFeatureError('responses duplicate function call');
+      callIds.add(item.call_id);
+      toolCalls.push({
+        id: item.call_id,
+        type: 'function',
+        function: { name: item.name, arguments: item.arguments },
       });
-    })
-    .join('');
+    } else if (item.type === 'message') {
+      content += textFromResponsesContent(item.content);
+    } else {
+      throw new GatewayUnsupportedFeatureError('responses output item');
+    }
+  }
+  return { content, toolCalls };
 }
 
 function normalizeChatUsageForResponses(usage: unknown): unknown {
@@ -523,7 +700,7 @@ function convertSseStream(
           }
 
           buffer += decoder.decode(result.value, { stream: true });
-          const events = buffer.split('\n\n');
+          const events = buffer.split(/\r?\n\r?\n/);
           buffer = events.pop() ?? '';
 
           let emitted = false;
@@ -537,8 +714,14 @@ function convertSseStream(
         }
       } catch (error) {
         if (!readerReleased) {
-          readerReleased = true;
-          reader.releaseLock();
+          try {
+            await reader.cancel(error);
+          } catch {
+            // A read failure may already have errored the source; retain the deciding failure.
+          } finally {
+            readerReleased = true;
+            reader.releaseLock();
+          }
         }
         if (!cancelled) {
           controller.error(error);
@@ -595,40 +778,216 @@ function chatSseEventToResponses(event: string): string[] {
   return [];
 }
 
-function responsesSseEventToChat(event: string, model: string): string[] {
-  const payload = dataPayloadFromSseEvent(event);
+/** Builds one request-local stream projection; completed snapshots reconcile rather than repeat deltas. */
+function responsesSseEventToChat(model: string): (event: string) => string[] {
+  let responseId = 'chatcmpl_bridge';
+  let created = Math.floor(Date.now() / 1000);
+  let terminal = false;
+  let text = '';
+  const textParts = new Map<string, string>();
+  const calls = new Map<
+    number,
+    {
+      index: number;
+      itemId?: string;
+      id?: string;
+      name?: string;
+      arguments: string;
+      emitted: string;
+      announced: boolean;
+    }
+  >();
 
-  if (!payload) {
+  const emit = (
+    delta: Record<string, unknown>,
+    finishReason: string | null = null,
+    usage?: unknown
+  ) =>
+    `data: ${JSON.stringify({
+      id: responseId,
+      object: 'chat.completion.chunk',
+      created,
+      model,
+      choices: [{ index: 0, delta, finish_reason: finishReason }],
+      ...(usage ? { usage: normalizeResponsesUsageForChat(usage) } : {}),
+    })}`;
+
+  const textEvent = (chunk: Record<string, unknown>, snapshot?: unknown): string[] => {
+    const key = `${chunk.output_index ?? 0}:${chunk.content_index ?? 0}`;
+    const prior = textParts.get(key) ?? '';
+    if (snapshot === undefined && typeof chunk.delta !== 'string')
+      throw new GatewayUnsupportedFeatureError('responses text content');
+    const value = snapshot === undefined ? prior + chunk.delta : snapshot;
+    if (typeof value !== 'string' || !value.startsWith(prior))
+      throw new GatewayUnsupportedFeatureError('responses text snapshot');
+    textParts.set(key, value);
+    const delta = value.slice(prior.length);
+    text += delta;
+    return delta ? [emit({ content: delta })] : [];
+  };
+
+  // The existing Gateway publisher owns the public envelope; retain private failure classification.
+  const fail = (source: unknown): never => {
+    terminal = true;
+    throw attachPiAiFailure(new Error('Provider request failed.'), source);
+  };
+
+  const callEvent = (chunk: Record<string, unknown>, item?: Record<string, unknown>): string[] => {
+    const position = chunk.output_index;
+    if (typeof position !== 'number' || !Number.isInteger(position) || position < 0) {
+      throw new GatewayUnsupportedFeatureError('responses function output index');
+    }
+    let call = calls.get(position);
+    if (!call) {
+      call = { index: calls.size, arguments: '', emitted: '', announced: false };
+      calls.set(position, call);
+    }
+    const itemId = item?.id ?? chunk.item_id;
+    if (typeof itemId === 'string') {
+      if (call.itemId && call.itemId !== itemId)
+        throw new GatewayUnsupportedFeatureError('responses function item identity');
+      call.itemId = itemId;
+    }
+    if (item) {
+      if (item.namespace !== undefined && item.namespace !== '' && item.namespace !== 'functions')
+        throw new GatewayUnsupportedFeatureError('responses function namespace');
+      for (const [field, value] of [
+        ['id', item.call_id],
+        ['name', item.name],
+      ] as const) {
+        if (value !== undefined) {
+          if (typeof value !== 'string' || !value || (call[field] && call[field] !== value))
+            throw new GatewayUnsupportedFeatureError('responses function identity');
+          if (
+            field === 'id' &&
+            [...calls.values()].some((other) => other !== call && other.id === value)
+          ) {
+            throw new GatewayUnsupportedFeatureError('responses duplicate function call');
+          }
+          call[field] = value;
+        }
+      }
+    }
+    const snapshot = item?.arguments ?? chunk.arguments;
+    if (typeof chunk.delta === 'string') call.arguments += chunk.delta;
+    else if (snapshot !== undefined) {
+      if (typeof snapshot !== 'string')
+        throw new GatewayUnsupportedFeatureError('responses function arguments');
+      if (snapshot.startsWith(call.arguments)) call.arguments = snapshot;
+      else {
+        // pi-ai reserializes completed JSON. Equivalent snapshots keep raw deltas, never replay them.
+        let equivalent = false;
+        try {
+          equivalent = isDeepStrictEqual(JSON.parse(call.arguments), JSON.parse(snapshot));
+        } catch {
+          // Partial or malformed JSON cannot prove that a differently serialized snapshot agrees.
+        }
+        if (!equivalent) throw new GatewayUnsupportedFeatureError('responses function arguments');
+      }
+    }
+    if (!call.id || !call.name) return [];
+    const delta: Record<string, unknown> = {
+      index: call.index,
+      function: {
+        arguments: call.arguments.slice(call.emitted.length),
+        ...(!call.announced ? { name: call.name } : {}),
+      },
+    };
+    if (!call.announced) Object.assign(delta, { id: call.id, type: 'function' });
+    if (call.announced && call.emitted === call.arguments) return [];
+    call.announced = true;
+    call.emitted = call.arguments;
+    return [emit({ tool_calls: [delta] })];
+  };
+
+  return (event) => {
+    const payload = dataPayloadFromSseEvent(event);
+    if (!payload || terminal) return [];
+    // EOF or a transport sentinel is not native successful terminal evidence.
+    if (payload === '[DONE]') return [];
+    const chunk = JSON.parse(payload) as Record<string, unknown>;
+    const response = readRecord(chunk.response);
+    if (typeof response.id === 'string') responseId = response.id;
+    else if (typeof chunk.response_id === 'string') responseId = chunk.response_id;
+    if (typeof response.created_at === 'number') created = response.created_at;
+    if (
+      chunk.error ||
+      chunk.type === 'error' ||
+      chunk.type === 'response.failed' ||
+      response.status === 'failed'
+    )
+      return fail(response.error ?? chunk.error ?? chunk);
+    if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') {
+      return textEvent(chunk);
+    }
+    if (chunk.type === 'response.output_text.done') return textEvent(chunk, chunk.text);
+    if (
+      chunk.type === 'response.function_call_arguments.delta' ||
+      chunk.type === 'response.function_call_arguments.done'
+    )
+      return callEvent(chunk);
+    if (chunk.type === 'response.output_item.added' || chunk.type === 'response.output_item.done') {
+      const item = readRecord(chunk.item);
+      if (item.type === 'function_call') return callEvent(chunk, item);
+      if (item.type !== 'message')
+        throw new GatewayUnsupportedFeatureError('responses output item');
+      if (item.content !== undefined) textFromResponsesContent(item.content);
+      if (chunk.type === 'response.output_item.done' && Array.isArray(item.content)) {
+        return item.content.flatMap((part, content_index) =>
+          textEvent({ ...chunk, content_index }, readRecord(part).text)
+        );
+      }
+      return [];
+    }
+    if (
+      chunk.type === 'response.content_part.added' ||
+      chunk.type === 'response.content_part.done'
+    ) {
+      textFromResponsesContent([chunk.part]);
+      return chunk.type === 'response.content_part.done'
+        ? textEvent(chunk, readRecord(chunk.part).text)
+        : [];
+    }
+    if (chunk.type === 'response.completed' || chunk.type === 'response.incomplete') {
+      if (
+        response.error ||
+        (response.status !== undefined &&
+          !['completed', 'incomplete'].includes(String(response.status)))
+      )
+        return fail(response.error ?? response);
+      const incomplete = chunk.type === 'response.incomplete' || response.status === 'incomplete';
+      if (incomplete && readRecord(response.incomplete_details).reason !== 'max_output_tokens')
+        return fail({ code: readRecord(response.incomplete_details).reason });
+      const frames: string[] = [];
+      if (Array.isArray(response.output)) {
+        const complete = responsesOutputToChat(
+          response as unknown as OpenAICompatibleResponsesResponse
+        );
+        if (!complete.content.startsWith(text))
+          throw new GatewayUnsupportedFeatureError('responses text snapshot');
+        if (complete.content.length > text.length)
+          frames.push(emit({ content: complete.content.slice(text.length) }));
+        for (const [output_index, value] of response.output.entries()) {
+          const item = readRecord(value);
+          if (item.type === 'function_call') frames.push(...callEvent({ output_index }, item));
+        }
+        if (complete.toolCalls.length !== calls.size)
+          throw new GatewayUnsupportedFeatureError('responses function snapshot');
+      }
+      if ([...calls.values()].some((call) => !call.announced))
+        throw new GatewayUnsupportedFeatureError('responses incomplete function identity');
+      terminal = true;
+      frames.push(
+        emit({}, incomplete ? 'length' : calls.size ? 'tool_calls' : 'stop', response.usage),
+        'data: [DONE]'
+      );
+      return frames;
+    }
+    if (
+      typeof chunk.type === 'string' &&
+      !['response.created', 'response.in_progress', 'response.queued'].includes(chunk.type)
+    )
+      throw new GatewayUnsupportedFeatureError('responses stream event');
     return [];
-  }
-  if (payload === '[DONE]') {
-    return ['data: [DONE]'];
-  }
-
-  const chunk = JSON.parse(payload) as Record<string, unknown>;
-  if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') {
-    return [
-      `data: ${JSON.stringify({
-        id: typeof chunk.response_id === 'string' ? chunk.response_id : 'chatcmpl_bridge',
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: { content: chunk.delta }, finish_reason: null }],
-      })}`,
-    ];
-  }
-  if (chunk.type === 'response.completed') {
-    return [
-      `data: ${JSON.stringify({
-        id: 'chatcmpl_bridge',
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      })}`,
-      'data: [DONE]',
-    ];
-  }
-
-  return [];
+  };
 }

@@ -299,7 +299,7 @@ The bounded bridge supports:
 - `max_tokens`, `max_completion_tokens`, and `max_output_tokens`
 - reasoning-effort mapping
 - simple `tool_choice`
-- text-only streaming delta conversion
+- text-only message streaming and simple function-call identity, index, name and argument-delta conversion, with correlated function results in continuation history and truthful terminal and usage semantics
 - optional cache-scope input
 
 The bridge rejects:
