@@ -3,7 +3,12 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { type KernelOperationId, operationToolName } from '@openkit/app-api-schemas';
+import {
+  type JsonOperationId,
+  type KernelOperationId,
+  OPERATION_DEFINITIONS,
+  operationToolName,
+} from '@openkit/app-api-schemas';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
@@ -21,7 +26,11 @@ import { createLightApp, listRecords, updateRecord } from './generative-kernel/c
 import { KernelCommandError } from './generative-kernel/errors.js';
 import * as invocation from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
+import type { OperationImplementations } from './operation-contract.js';
+import { OperationError } from './operation-error.js';
+import { createOperationEngine } from './operation-invocation.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import type { OperationAdmissionDependencies } from './operation-resolvers.js';
 import {
   dispatchOpenkitGenerativeTool,
   OPENKIT_GENERATIVE_TOOL_OPERATIONS,
@@ -45,6 +54,28 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('shared family contract', () => {
+  it.each(
+    Object.entries(OPERATION_DEFINITIONS)
+      .filter(([, definition]) => definition.binding === 'streaming')
+      .map(([id]) => id)
+  )('refuses native streaming invocation %s before parsing, admission or effects', async (id) => {
+    const touched = vi.fn(() => {
+      throw new Error('Native streaming invocation crossed its refusal boundary.');
+    });
+    const invoke = createOperationEngine(
+      new Proxy({}, { get: touched }) as OperationImplementations,
+      new Proxy({}, { get: touched }) as OperationAdmissionDependencies
+    );
+    // An untyped caller can cross the compile-time JSON-only boundary; runtime must fail closed.
+    const error = await invoke(id as JsonOperationId, null, {
+      kind: 'public',
+      actor: { kind: 'local', userId: 'user_local' },
+    }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(OperationError);
+    expect(error).toMatchObject({ code: 'unsupported_operation', status: 400 });
+    expect(touched).not.toHaveBeenCalled();
+  });
+
   it.each([
     'success',
     'typed refusal',

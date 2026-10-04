@@ -151,7 +151,7 @@ describe('runtime config reload API', () => {
       expect.objectContaining({ path: 'providers' }),
     ]);
 
-    const diagnosticsRes = await app.request('/api/app/diagnostics');
+    const diagnosticsRes = await app.request(...operationRequest('diagnostics.app', {}));
     const diagnostics = (await diagnosticsRes.json()) as {
       runtimeConfig: { currentVersion: number };
       providers: { registry: Array<{ id: string; models: string[] }> };

@@ -2738,7 +2738,7 @@ describe('createCoreClient', () => {
     ].join('\n');
     const proposalPageDigest = `sha256:${'e'.repeat(64)}`;
     const { client, requests } = createFakeClient({
-      'GET /api/app/diagnostics': { body: appDiagnostics() },
+      'POST /api/app/operations/diagnostics.app': { body: appDiagnostics() },
       'POST /api/app/operations/storage.layout-report': { body: storageLayoutReport() },
       'POST /api/app/operations/backup.create': { body: dataRootBackupResponse() },
       'POST /api/app/operations/app-update.prepare': { body: appUpdatePrepared() },
@@ -3355,7 +3355,7 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.app.getDiagnostics()).resolves.toEqual(appDiagnostics());
+    await expect(client.operations['diagnostics.app']({})).resolves.toEqual(appDiagnostics());
     await expect(client.operations['storage.layout-report']({})).resolves.toEqual(
       storageLayoutReport()
     );
@@ -3795,7 +3795,7 @@ describe('createCoreClient', () => {
     });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'GET /api/app/diagnostics',
+      'POST /api/app/operations/diagnostics.app',
       'POST /api/app/operations/storage.layout-report',
       'POST /api/app/operations/backup.create',
       'POST /api/app/operations/app-update.prepare',
@@ -4075,7 +4075,7 @@ describe('createCoreClient', () => {
           },
         },
       },
-      'GET /api/setup/diagnostics': { body: setupDiagnostics() },
+      'POST /api/app/operations/diagnostics.setup': { body: setupDiagnostics() },
       'POST /api/app/operations/automation.list': { body: { items: [automation()] } },
       'POST /api/app/operations/automation.create': { body: automation() },
       'POST /api/app/operations/automation.update': {
@@ -4151,7 +4151,7 @@ describe('createCoreClient', () => {
         present: false,
       },
     });
-    await expect(client.app.getSetupDiagnostics()).resolves.toEqual(setupDiagnostics());
+    await expect(client.operations['diagnostics.setup']({})).resolves.toEqual(setupDiagnostics());
     await expect(client.operations['automation.list']({})).resolves.toEqual({
       items: [automation()],
     });
@@ -4537,7 +4537,7 @@ describe('createCoreClient', () => {
 
   it('uses the strict diagnostics schema without unsupported response shapes', async () => {
     const { client } = createFakeClient({
-      'GET /api/app/diagnostics': {
+      'POST /api/app/operations/diagnostics.app': {
         body: {
           ...appDiagnostics(),
           providers: [],
@@ -4545,7 +4545,9 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.app.getDiagnostics()).rejects.toBeInstanceOf(ProtocolValidationError);
+    await expect(client.operations['diagnostics.app']({})).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
   });
 
   it('reads the exact public NanoHost RuntimeTarget admin response', async () => {

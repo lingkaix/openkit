@@ -12,7 +12,6 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as appSchemas from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
-import * as protocol from '@openkit/protocol';
 import { z } from 'zod';
 import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
@@ -55,10 +54,8 @@ const DEPLOYMENT_ADMIN_ACCESS = Object.freeze({
 });
 const LOCAL_WORKSPACE_ARCHIVE_ACCESS = Object.freeze({
   requiredAccess:
-    'implicit local actor; bundled CLI Workspace archive operations are local-mode only',
+    'canonical user: implicit local actor or server-admin bearer token; secret-safe local archive files',
 });
-
-const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
 
 /**
  * Creates one strict flat input schema by combining URL scope fields with a shared request body.
@@ -312,55 +309,16 @@ function requireAgentReadableMaterial(sensitivity) {
   }
 }
 
-/**
- * The single transport-neutral OpenKit operation inventory.
- *
- * Each network handler invokes exactly one public Core Client operation. Local-only handlers touch
- * only the configured endpoint credential store.
- */
-export const operationCatalog = [
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'diagnostics.app',
-    source: 'app-api',
-    appOperationId: 'getAppDiagnostics',
-    clientMethod: 'app.getDiagnostics',
-    group: 'diagnostics',
-    summary: 'Read application runtime diagnostics.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.app.getDiagnostics(),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'diagnostics.setup',
-    source: 'app-api',
-    appOperationId: 'getSetupDiagnostics',
-    clientMethod: 'app.getSetupDiagnostics',
-    group: 'diagnostics',
-    summary: 'Read setup diagnostics.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.app.getSetupDiagnostics(),
-  },
-  {
-    ...STANDARD,
-    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
-    inputSensitivity: 'host-local path',
-    id: 'workspace.archive-download',
-    source: 'app-api',
-    appOperationId: 'downloadWorkspaceExportArchive',
+/** Retained stream bindings add only CLI-local file inputs and exclusive sink effects. */
+const archiveBindings = {
+  'workspace.archive-download': {
     clientMethod: 'app.downloadWorkspaceExportArchive',
-    group: 'workspace',
-    summary: 'Download one portable Workspace archive to a new local file.',
-    mutating: true,
-    inputSchema: strictScope({
-      ...workspaceScope,
-      exportId: IDENTIFIER,
-      destinationPath: z.string().min(1),
-    }),
+    inputSchema: strictShared(
+      appSchemas.WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS[
+        'workspace.archive-download'
+      ].inputSchema.safeExtend({ destinationPath: z.string().min(1) })
+    ),
+    mutating: true, // Exclusive local destination creation is a CLI effect.
     async handler({ client }, input) {
       const stream = await client.app.downloadWorkspaceExportArchive(
         input.workspaceId,
@@ -370,53 +328,35 @@ export const operationCatalog = [
       return { downloaded: true };
     },
   },
-  {
-    ...STANDARD,
-    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
-    inputSensitivity: 'host-local path',
-    id: 'workspace.archive-import-dry-run',
-    source: 'app-api',
-    appOperationId: 'dryRunWorkspaceArchiveImport',
+  'workspace.archive-import-dry-run': {
     clientMethod: 'app.dryRunWorkspaceArchiveImport',
-    group: 'workspace',
-    summary: 'Verify one local portable Workspace archive without importing it.',
-    mutating: false,
-    inputSchema: strictScope({ sourcePath: z.string().min(1) }),
+    inputSchema: strictShared(
+      appSchemas.WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS[
+        'workspace.archive-import-dry-run'
+      ].inputSchema.safeExtend({ sourcePath: z.string().min(1) })
+    ),
     handler: ({ client }, input) =>
       client.app.dryRunWorkspaceArchiveImport(openWorkspaceArchive(input.sourcePath)),
   },
-  {
-    ...STANDARD,
-    ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
-    inputSensitivity: 'host-local path',
-    id: 'workspace.archive-import',
-    source: 'app-api',
-    appOperationId: 'importWorkspaceArchive',
+  'workspace.archive-import': {
     clientMethod: 'app.importWorkspaceArchive',
-    group: 'workspace',
-    summary: 'Import one local portable Workspace archive.',
-    mutating: true,
-    inputSchema: strictScope({
-      sourcePath: z.string().min(1),
-      requestId: protocol.RequestIdSchema,
-    }),
+    inputSchema: strictShared(
+      appSchemas.WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS[
+        'workspace.archive-import'
+      ].inputSchema.safeExtend({ sourcePath: z.string().min(1) })
+    ),
     handler: ({ client }, input) =>
       client.app.importWorkspaceArchive(openWorkspaceArchive(input.sourcePath), input.requestId),
   },
-  {
-    ...STANDARD,
-    requiredAccess: 'public metadata read; no authenticated actor',
-    id: 'connection.meta',
-    source: 'core-projection',
-    clientMethod: 'core.meta',
-    protocolSchema: 'MetaResponseSchema',
-    group: 'connection',
-    summary: 'Read NanoCore protocol metadata and capabilities.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.core.meta(),
-  },
+};
 
+/**
+ * The single transport-neutral OpenKit operation inventory.
+ *
+ * Each network handler invokes exactly one public Core Client operation. Local-only handlers touch
+ * only the configured endpoint credential store.
+ */
+export const operationCatalog = [
   {
     ...LOCAL_CREDENTIAL,
     id: 'credential.store',
@@ -503,11 +443,24 @@ export const operationCatalog = [
     },
     credentials: definition.credentials,
     ...secretDeliveryProjection(id, definition),
+    ...(definition.binding === 'streaming'
+      ? {
+          ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
+          inputSensitivity: 'host-local path',
+          ...archiveBindings[id],
+        }
+      : {}),
   })),
 ];
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
 export const operationExclusions = [
+  {
+    source: 'core-projection',
+    name: 'meta',
+    reason: 'Unauthenticated connection probing is a support binding, outside operation discovery.',
+    owner: 'docs/specs/20261002-operation_definition.md',
+  },
   {
     source: 'core-projection',
     name: 'subscribeTurnEvents',

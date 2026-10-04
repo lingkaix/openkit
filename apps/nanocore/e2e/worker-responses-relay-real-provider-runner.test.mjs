@@ -328,9 +328,9 @@ function createRelayStandIn(options = {}) {
     configCalls,
     clients: {
       admin: {
-        operations: configuration,
-        app: {
-          getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
+        operations: {
+          ...configuration,
+          'diagnostics.app': async () => ({ boot: { acceptingProductWork: true } }),
         },
       },
       core,
@@ -1058,7 +1058,7 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     const evidenceDir = join(tempRoot, 'evidence');
     const providerCanary = 'xai-grok-private-upstream-canary';
     const standIn = createRelayStandIn();
-    standIn.clients.admin.app.getDiagnostics = async () => {
+    standIn.clients.admin.operations['diagnostics.app'] = async () => {
       throw new Error(`upstream provider ${providerCanary} refused the relay`);
     };
 
@@ -1143,7 +1143,7 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     {
       cleanup: RELAY_CLEANUP.succeeded,
       hang(standIn, hung) {
-        standIn.clients.admin.app.getDiagnostics = hung.wait;
+        standIn.clients.admin.operations['diagnostics.app'] = hung.wait;
       },
       name: 'diagnostics',
     },

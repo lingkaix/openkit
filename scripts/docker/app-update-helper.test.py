@@ -413,7 +413,7 @@ class RecordingEffects:
 
     def http_json(self, url: str, headers: Optional[dict] = None, timeout: Optional[float] = None, method: str = "GET", body=None):
         self.http_calls.append(url)
-        if url.endswith("/api/app/diagnostics"):
+        if url.endswith("/api/app/operations/diagnostics.app"):
             if self.diagnostics_status != 200:
                 return self.diagnostics_status, None
             if self.replaced and self.boot_payload_after is not None:

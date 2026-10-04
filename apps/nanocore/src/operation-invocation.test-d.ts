@@ -1,6 +1,7 @@
 import type {
   AUTOMATION_OPERATION_DEFINITIONS,
-  OPERATION_DEFINITIONS,
+  JsonOperationId,
+  OperationId,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import type { createAutomationOperationImplementations } from './automation-operations.js';
@@ -15,22 +16,19 @@ export type ActualAutomationJoin = AssertTrue<
   >
 >;
 
-/** The concrete composition must retain every family key, including accidental extras. */
+/** The concrete composition must retain every JSON family key, including accidental extras. */
 export type ActualComposedJoin = AssertTrue<
-  Identical<
-    keyof ReturnType<typeof createOperationImplementations>,
-    keyof typeof OPERATION_DEFINITIONS
-  >
+  Identical<keyof ReturnType<typeof createOperationImplementations>, JsonOperationId>
 >;
 
-/** Compile-time equality oracle for the exact definition/implementation key join. */
+/** Compile-time equality oracle for the exact JSON definition/implementation key join. */
 type Identical<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 /** Fails compilation if its owner-derived predicate is false. */
 type AssertTrue<T extends true> = T;
 /** The implementation cannot independently add or lose definition keys. */
 export type ExactOperationJoin = AssertTrue<
-  Identical<keyof OperationImplementations, keyof typeof OPERATION_DEFINITIONS>
+  Identical<keyof OperationImplementations, JsonOperationId>
 >;
 
 /** Negative compile probes; deliberately never executed. */
@@ -49,3 +47,8 @@ export function rejectBrokenJoins(handlers: OperationImplementations): void {
   void extra;
   void mismatched;
 }
+
+/** Retained streams cannot acquire a parallel native JSON implementation. */
+export type NoStreamingImplementation = AssertTrue<
+  Identical<Extract<keyof OperationImplementations, Exclude<OperationId, JsonOperationId>>, never>
+>;

@@ -525,7 +525,9 @@ it('skips a missing API key with auth_rejected lineage and only backup effort le
   const f = fixture(true);
   f.backup.setResponses([fauxAssistantMessage('backup served')]);
   try {
-    const diagnostics = await (await f.app.request('/api/app/diagnostics')).json();
+    const diagnostics = await (
+      await f.app.request(...operationRequest('diagnostics.app', {}))
+    ).json();
     expect(diagnostics.gateway.models[0].reasoningEffortLevels).toEqual(['high']);
     const response = await f.post('responses');
     expect(response.status, await response.text()).toBe(200);

@@ -15,3 +15,5 @@ This directory owns redacted NanoCore diagnostics projections; canonical public 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/diagnostics.test.ts src/diagnostics` and the App API schema tests, then regenerate and validate OpenAPI when a public shape changes.
 
 See [NanoCore Bootstrap And Readiness](../../../../docs/specs/20260704-nanocore_bootstrap_readiness.md).
+
+`diagnostics-operations.ts` joins the JSON `diagnostics.app` and `diagnostics.setup` definitions to the existing samples and setup owner. Common admission requires deployment-administrator authority in server mode before sampling. Raw `GET /api/diagnostics` keeps its support-binding authentication and response outside operation discovery.

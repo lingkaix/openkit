@@ -160,13 +160,13 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/diagnostics":
             self._send(200, {"migrations": {"applied": fixture["appliedMigrations"]}})
-        elif path == "/api/app/diagnostics":
-            self._send(200, {"boot": fixture["boot"]})
         else:
             self._send(404)
     def do_POST(self):
         if self.path == "/api/app/operations/token.list":
             self._send(200, {"items": [fixture["token"]]})
+        elif self.path == "/api/app/operations/diagnostics.app":
+            self._send(200, {"boot": fixture["boot"]})
         elif self.path == "/api/app/operations/app-update.status":
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             self._send(200, {"requestId": body["requestId"]})
@@ -238,7 +238,7 @@ def choose_free_port() -> int:
 
 
 def fixture_boot_projection(*, boot_id: str, product_ready: bool) -> Dict[str, Any]:
-    """Closed /api/app/diagnostics boot object. Candidate fail is typed non-ready, not empty subsystems."""
+    """Closed /api/app/operations/diagnostics.app boot object. Candidate fail is typed non-ready, not empty subsystems."""
 
     subsystems = {name: {"state": "ready", "reasons": []} for name in FIXTURE_BOOT_SUBSYSTEM_NAMES}
     if product_ready:
@@ -748,7 +748,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                 self.assertEqual(err_body.get("code"), "nanohost_runtime_target_not_found")
                 self.assertNotEqual(err_body.get("code"), "nanohost_transport_admin_server_mode_required")
                 self.assertEqual(err_body.get("protocolVersion"), "0.5.0")
-            diag_status, diag_body = helper._authorized_json("/api/app/diagnostics")
+            diag_status, diag_body = helper._authorized_json("/api/app/operations/diagnostics.app", method="POST", body={})
             self.assertEqual(diag_status, 200)
             parsed_ready = helper._parse_boot_readiness(diag_body)
             self.assertIsNotNone(parsed_ready)
@@ -805,7 +805,7 @@ class FixtureAdmissionTests(unittest.TestCase):
             if cand_proc.poll() is not None:
                 err = cand_proc.stderr.read() if cand_proc.stderr else ""
                 self.fail("candidate entrypoint exited before listen: rc=%s stderr=%s" % (cand_proc.returncode, err))
-            cand_status, cand_diag = helper._authorized_json("/api/app/diagnostics")
+            cand_status, cand_diag = helper._authorized_json("/api/app/operations/diagnostics.app", method="POST", body={})
             self.assertEqual(cand_status, 200)
             parsed_fail = helper._parse_boot_readiness(cand_diag)
             self.assertIsNotNone(parsed_fail)

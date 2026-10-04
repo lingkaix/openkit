@@ -136,7 +136,7 @@ describe('pi-ai real-provider L3 test policy', () => {
                   { status: 200 }
                 );
               }
-              if (url.endsWith('/api/app/diagnostics')) {
+              if (url.endsWith('/api/app/operations/diagnostics.app')) {
                 return new Response(
                   JSON.stringify({
                     defaultProviders: {
@@ -217,7 +217,7 @@ describe('pi-ai real-provider L3 test policy', () => {
             if (url.endsWith('/health')) {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
-            if (url.endsWith('/api/app/diagnostics')) {
+            if (url.endsWith('/api/app/operations/diagnostics.app')) {
               return new Response(
                 JSON.stringify({
                   defaultProviders: {
@@ -336,7 +336,7 @@ describe('pi-ai real-provider L3 test policy', () => {
             if (url.endsWith('/health')) {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
-            if (url.endsWith('/api/app/diagnostics')) {
+            if (url.endsWith('/api/app/operations/diagnostics.app')) {
               return new Response(
                 JSON.stringify({
                   defaultProviders: {
@@ -416,7 +416,7 @@ describe('pi-ai real-provider L3 test policy', () => {
             if (url.endsWith('/health')) {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
-            if (url.endsWith('/api/app/diagnostics')) {
+            if (url.endsWith('/api/app/operations/diagnostics.app')) {
               return new Response(
                 JSON.stringify({
                   defaultProviders: {
@@ -520,7 +520,7 @@ describe('pi-ai real-provider L3 test policy', () => {
             if (url.endsWith('/health')) {
               return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
             }
-            if (url.endsWith('/api/app/diagnostics')) {
+            if (url.endsWith('/api/app/operations/diagnostics.app')) {
               return new Response(
                 JSON.stringify({
                   defaultProviders: {

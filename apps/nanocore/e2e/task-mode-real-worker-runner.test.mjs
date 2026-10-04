@@ -81,10 +81,8 @@ function createPassingTaskModeFixture(options) {
   return {
     clients: {
       admin: {
-        app: {
-          getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
-        },
         operations: {
+          'diagnostics.app': async () => ({ boot: { acceptingProductWork: true } }),
           'runtime.file-create': async () => ({ diagnostics: [], file: { exists: true } }),
           'runtime.reload': async () => ({
             plan: {
@@ -237,10 +235,10 @@ function createDistinctTaskModeActorClients(options) {
   const refuse = (message) => async () => {
     throw new Error(message);
   };
-  const originalGetDiagnostics = fixture.clients.admin.app.getDiagnostics;
+  const originalGetDiagnostics = fixture.clients.admin.operations['diagnostics.app'];
   const admin = {
-    app: { getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics') },
     operations: {
+      'diagnostics.app': track(originalGetDiagnostics, adminCalls, 'diagnostics.app'),
       'runtime.file-create': track(
         fixture.clients.admin.operations['runtime.file-create'],
         adminCalls,
@@ -261,7 +259,7 @@ function createDistinctTaskModeActorClients(options) {
       'thread.items': refuse('admin client must not list thread items'),
     },
   };
-  product.app.getDiagnostics = refuse('product client must not serve diagnostics');
+  product.operations['diagnostics.app'] = refuse('product client must not serve diagnostics');
   product.operations['usage.read'] = track(
     product.operations['usage.read'],
     productCalls,
@@ -813,7 +811,7 @@ describe('real Task Mode worker L3 test policy', () => {
         stdout: () => {},
       });
       assert.equal(result.status, 'ok');
-      assert.deepEqual(adminCalls, ['configureRuntime', 'getDiagnostics', 'createFile', 'reload']);
+      assert.deepEqual(adminCalls, ['configureRuntime', 'diagnostics.app', 'createFile', 'reload']);
       assert.deepEqual(
         new Set(productCalls),
         new Set([

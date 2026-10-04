@@ -3,9 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppDiagnosticsResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from './auth/identity.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import { openCoreDb } from './storage/db.js';
+import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -78,7 +82,7 @@ function fixture() {
 describe('Gateway settings active diagnostics', () => {
   it('projects active binding, exact catalog key, every leaf source, unknown, false, zero and empty arrays', async () => {
     const { app } = fixture();
-    const response = await app.request('/api/app/diagnostics');
+    const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     const body = AppDiagnosticsResponseSchema.parse(await response.json());
     expect(body.providers.registry[0]).toMatchObject({
@@ -118,7 +122,7 @@ describe('Gateway settings active diagnostics', () => {
     writeFileSync(catalogPath, JSON.stringify(catalog));
     const reload = manager.reload({ mode: 'safe', dryRun: false });
     expect(reload.status).toBe('applied');
-    const body = await (await app.request('/api/app/diagnostics')).json();
+    const body = await (await app.request(...operationRequest('diagnostics.app', {}))).json();
     expect(body.runtimeConfig.pendingRestart.map((entry: { path: string }) => entry.path)).toEqual([
       'modelCatalog',
       'providers',
@@ -146,19 +150,30 @@ describe('Gateway settings active diagnostics', () => {
 
   it('keeps the deployment-admin gate ahead of the new reads', async () => {
     const { manager } = fixture();
+    const coreDb = openCoreDb(roots.at(-1)!);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
     const app = createApp({
+      coreDb,
       runtimeConfigManager: manager,
       mode: 'server',
       auth: {
         api: {
-          getSession: async () => ({ session: { id: 'private-session' }, user: { id: 'member' } }),
+          getSession: async () => ({
+            session: { id: 'private-session' },
+            user: { id: 'user_local' },
+          }),
         },
         handler: async () => new Response(),
       },
     });
-    const response = await app.request('/api/app/diagnostics');
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ code: 'diagnostics_admin_forbidden' });
+    try {
+      const response = await app.request(...operationRequest('diagnostics.app', {}));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
+    } finally {
+      coreDb.sqlite.close();
+    }
   });
 });
 
@@ -172,7 +187,7 @@ it('uses the existing network-free pair check for exact active subscription bind
     runtimeConfigManager: manager,
     providerSubscriptionAccountManager: accountManager,
   });
-  const response = await app.request('/api/app/diagnostics');
+  const response = await app.request(...operationRequest('diagnostics.app', {}));
   expect(response.status).toBe(200);
   const body = await response.json();
   expect(gatewayUnavailableReason).toHaveBeenCalledWith({

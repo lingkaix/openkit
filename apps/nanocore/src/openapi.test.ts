@@ -337,8 +337,8 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/diagnostics']?.get).toMatchObject({
-      operationId: 'getAppDiagnostics',
+    expect(document.paths['/api/app/operations/diagnostics.app']?.post).toMatchObject({
+      operationId: 'diagnostics.app',
       tags: ['diagnostics'],
       security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
@@ -346,15 +346,15 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/AppDiagnosticsResponse',
+                $ref: '#/components/schemas/diagnostics.app.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/setup/diagnostics']?.get).toMatchObject({
-      operationId: 'getSetupDiagnostics',
+    expect(document.paths['/api/app/operations/diagnostics.setup']?.post).toMatchObject({
+      operationId: 'diagnostics.setup',
       tags: ['diagnostics'],
       security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       responses: {
@@ -362,7 +362,7 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/SetupDiagnosticsResponse',
+                $ref: '#/components/schemas/diagnostics.setup.output',
               },
             },
           },
@@ -2028,18 +2028,18 @@ describe('app api openapi projection', () => {
 
   it('preserves the characterized handler registration order', () => {
     expect(getRegisteredAppApiOperationIds(createApp())).toEqual([
-      'getAppDiagnostics',
-      'getSetupDiagnostics',
-      'downloadWorkspaceExportArchive',
-      'dryRunWorkspaceArchiveImport',
-      'importWorkspaceArchive',
-      ...Object.keys(OPERATION_DEFINITIONS),
+      'workspace.archive-download',
+      'workspace.archive-import-dry-run',
+      'workspace.archive-import',
+      ...Object.entries(OPERATION_DEFINITIONS)
+        .filter(([, definition]) => definition.binding === 'json')
+        .map(([id]) => id),
     ]);
   });
 
   it('projects the App Diagnostics process sample including nested process.telemetry', () => {
     const diagnostics = jsonObject(
-      createAppOpenApiDocument().components.schemas.AppDiagnosticsResponse
+      createAppOpenApiDocument().components.schemas['diagnostics.app.output']
     );
     const process = jsonObject(jsonObject(diagnostics?.properties)?.process);
     const processProperties = jsonObject(process?.properties);
@@ -2216,4 +2216,22 @@ describe('automation, scheduler and recovery OpenAPI projection', () => {
     ])
       expect(document.paths).not.toHaveProperty(path);
   });
+});
+
+it('omits support bindings and prevents parallel JSON archive operations', () => {
+  const document = createAppOpenApiDocument();
+  for (const path of [
+    '/api/meta',
+    '/health',
+    '/api/health',
+    '/api/diagnostics',
+    '/api/openapi.json',
+  ])
+    expect(document.paths).not.toHaveProperty(path);
+  for (const id of [
+    'workspace.archive-download',
+    'workspace.archive-import-dry-run',
+    'workspace.archive-import',
+  ])
+    expect(document.paths).not.toHaveProperty(`/api/app/operations/${id}`);
 });

@@ -1286,7 +1286,7 @@ export function registerWorkspaceTransferRoutes({
   readonly dataRoot: string | null;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
-  registerAppApiRoute(app, 'downloadWorkspaceExportArchive', (c) => {
+  registerAppApiRoute(app, 'workspace.archive-download', (c) => {
     if (!dataRoot) {
       return asApiError(
         'Workspace export archive is unavailable.',
@@ -1340,7 +1340,7 @@ export function registerWorkspaceTransferRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'dryRunWorkspaceArchiveImport', async (c) => {
+  registerAppApiRoute(app, 'workspace.archive-import-dry-run', async (c) => {
     if (!dataRoot) {
       return asApiError(
         'Workspace archive import dry-run is unavailable.',
@@ -1381,7 +1381,7 @@ export function registerWorkspaceTransferRoutes({
     }
   });
 
-  registerAppApiRoute(app, 'importWorkspaceArchive', async (c) => {
+  registerAppApiRoute(app, 'workspace.archive-import', async (c) => {
     if (!dataRoot) {
       return asApiError(
         'Workspace archive import is unavailable.',

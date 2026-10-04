@@ -178,8 +178,9 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue({}),
     },
-    app: { getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS), ...overrides.app },
+    app: { ...overrides.app },
     operations: {
+      'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS),
       'runtime.file-read': vi.fn().mockImplementation(() =>
         Promise.resolve({
           file: {
@@ -1440,7 +1441,7 @@ const GATEWAY_DIAGNOSTICS = {
 describe('Unified Gateway acceptance', () => {
   it('composes cards and displays active model sources and ordered unavailable routes without promotion', async () => {
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
+      operations: { 'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
     });
     renderScreen(client);
     expect(await screen.findByRole('heading', { name: 'Gateway', level: 1 })).toBeInTheDocument();
@@ -1464,8 +1465,8 @@ describe('Unified Gateway acceptance', () => {
   it('discovers pending status on mount and leaves Log out and Remove enabled with references', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'provider-subscription.account-status': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
       },
     });
@@ -1510,8 +1511,8 @@ describe('Unified Gateway acceptance', () => {
   it('removes a key profile through its source revision without rewriting routes', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'runtime.file-list': vi.fn().mockResolvedValue({
           files: [{ id: 'providers/provider_demo.provider.jsonc', kind: 'provider' }],
         }),
@@ -1544,8 +1545,8 @@ describe('Unified Gateway acceptance', () => {
   it('validates an exact extension key, saves with the read revision and distinguishes persistence, reload and restart', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'runtime.file-read': vi.fn().mockResolvedValue({
           file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'catalog-read' },
           content: '{\n// preserve\n"schemaVersion":1,"providers":{}}',
@@ -1608,8 +1609,8 @@ describe('Gateway dependency and routing completion', () => {
     };
     const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'routes-saved' } });
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'runtime.file-read': vi.fn().mockResolvedValue({
           file: { id: 'gateway.jsonc', kind: 'gateway', revision: 'routes-read' },
           content: JSON.stringify(original),
@@ -1658,8 +1659,11 @@ describe('Gateway dependency and routing completion', () => {
       .mockRejectedValueOnce(new ApiCallError(409, 'private-conflict'))
       .mockResolvedValue({ file: { revision: 'saved-3' } });
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      operations: { 'runtime.file-read': read, 'runtime.file-update': write },
+      operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
+        'runtime.file-read': read,
+        'runtime.file-update': write,
+      },
     });
     renderScreen(client);
     await user.click(
@@ -1746,7 +1750,7 @@ describe('Gateway dependency and routing completion', () => {
       .fn()
       .mockRejectedValueOnce(new ApiCallError(403, 'private-diagnostics-denial'))
       .mockResolvedValue(GATEWAY_DIAGNOSTICS);
-    const client = makeClient({ app: { getDiagnostics } });
+    const client = makeClient({ operations: { 'diagnostics.app': getDiagnostics } });
     renderScreen(client);
     const denial = await screen.findByText(/Access denied: Gateway diagnostics/);
     await user.click(
@@ -1808,8 +1812,11 @@ it('retries the source observation after a successful save without repeating the
     .mockResolvedValue({ ...source, file: { ...source.file, revision: 'catalog-saved' } });
   const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } });
   const client = makeClient({
-    app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-    operations: { 'runtime.file-read': getFile, 'runtime.file-update': updateFile },
+    operations: {
+      'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
+      'runtime.file-read': getFile,
+      'runtime.file-update': updateFile,
+    },
   });
   renderScreen(client);
   await user.click(await screen.findByRole('button', { name: 'Edit metadata openai / gpt-demo' }));
@@ -1861,8 +1868,8 @@ describe('Round 2 Gateway dependency recovery', () => {
     });
     const createFile = vi.fn().mockRejectedValue(new ApiCallError(403, 'private-profile-create'));
     const client = makeClient({
-      app: { getDiagnostics },
       operations: {
+        'diagnostics.app': getDiagnostics,
         'runtime.file-create': createFile,
         'provider-subscription.account-list': listAccounts,
         'provider-subscription.account-create': createAccount,
@@ -1915,8 +1922,8 @@ describe('Round 2 Gateway dependency recovery', () => {
   it('discloses affected tiers and preserves removal and read retry when the bound slot is initially absent', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'provider-subscription.account-list': vi.fn().mockResolvedValue({ accounts: [] }),
       },
     });
@@ -1952,8 +1959,8 @@ describe('Round 2 Gateway dependency recovery', () => {
       return Promise.resolve(null);
     });
     const client = makeClient({
-      app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
       operations: {
+        'diagnostics.app': vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS),
         'provider-subscription.account-list': listAccounts,
         'provider-subscription.account-delete': deleteAccount,
         'runtime.file-delete': vi.fn(),

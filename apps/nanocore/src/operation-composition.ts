@@ -16,6 +16,7 @@ import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
+import { createDiagnosticsOperationImplementations } from './diagnostics/diagnostics-operations.js';
 import {
   createGenerativeUiOperationImplementations,
   createRemainingKernelOperationImplementations,
@@ -55,6 +56,8 @@ import { createWorkspaceSharingOperationImplementations } from './workspace-shar
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  /** Current process and configuration owners for admitted product diagnostics. */
+  readonly diagnosticsServices?: Parameters<typeof createDiagnosticsOperationImplementations>[0];
   /** Existing deployment configuration family services. */
   readonly runtimeConfigOperations?: Parameters<
     typeof createRuntimeConfigOperationImplementations
@@ -134,6 +137,7 @@ export function createOperationImplementations(dependencies: OperationInvocation
       coreDb: dependencies.coreDb,
       mode: dependencies.mode ?? 'local',
     }),
+    createDiagnosticsOperationImplementations(dependencies.diagnosticsServices),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
     createAgentOperationImplementations(dependencies),

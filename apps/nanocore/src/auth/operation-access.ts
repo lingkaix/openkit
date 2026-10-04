@@ -109,26 +109,6 @@ function registerOperations(
 
 const catalog: Record<string, PublicOperationAccess> = {};
 
-registerOperations(catalog, ['getAppDiagnostics', 'getSetupDiagnostics'], {
-  authentication: 'deployment-admin',
-  mutating: false,
-  policyOperation: 'api.call',
-  scope: 'server',
-});
-
-registerOperations(catalog, ['dryRunWorkspaceArchiveImport'], {
-  authentication: 'canonical-user',
-  mutating: false,
-  policyOperation: 'workspace.write',
-  scope: 'user',
-});
-
-registerOperations(catalog, ['importWorkspaceArchive'], {
-  authentication: 'canonical-user',
-  mutating: true,
-  policyOperation: 'workspace.write',
-  scope: 'user',
-});
 registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'], {
   authentication: 'gateway-actor',
   mutating: true,
@@ -137,12 +117,6 @@ registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'],
   workspaceResolver: 'gateway-metadata-workspace',
 });
 
-registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
-  mutating: false,
-  policyOperation: 'workspace.export',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads/:threadId/events'], {
   mutating: false,
   policyOperation: 'thread.read',
@@ -174,7 +148,7 @@ for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
         : {
             mutating: definition.mutating,
             policyOperation: definition.policyOperation,
-            resolver: definition.scope.kind,
+            resolver: definition.binding === 'streaming' ? 'path-workspace' : definition.scope.kind,
             scope: 'workspace',
           }
   );

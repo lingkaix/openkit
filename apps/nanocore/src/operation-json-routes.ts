@@ -1,4 +1,5 @@
 import {
+  type JsonOperationId,
   OPERATION_DEFINITIONS,
   type OperationDefinition,
   operationUsesBootstrapSecret,
@@ -27,7 +28,7 @@ export function registerOperationJsonRoutes(
   for (const [id, declared] of Object.entries(OPERATION_DEFINITIONS)) {
     const definition: OperationDefinition = declared;
     if (definition.binding !== 'json') continue;
-    registerAppApiRoute(app, id as keyof typeof OPERATION_DEFINITIONS, async (c) => {
+    registerAppApiRoute(app, id as JsonOperationId, async (c) => {
       // Initialize response headers so returned Responses and the HTTP error handler inherit the same cache policy.
       c.res.headers.set('Cache-Control', 'no-store');
       try {
@@ -65,7 +66,7 @@ export function registerOperationJsonRoutes(
           ...dependencies,
           ...(entry.kind === 'bootstrap' ? {} : { store: requestStore(c) }),
         });
-        const output = await invoke(id as keyof typeof OPERATION_DEFINITIONS, input, {
+        const output = await invoke(id as JsonOperationId, input, {
           ...entry,
           observeSuccessStatus: (status) => {
             successStatus = status;

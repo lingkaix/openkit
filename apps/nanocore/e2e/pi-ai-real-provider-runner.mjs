@@ -111,8 +111,13 @@ export async function runPiAiRealProviderTest(options = {}) {
   const health = await fetchJson(fetcher, `${baseUrl}/health`);
   assertNoPublicLeak(health.json, prohibitedPublicValues);
   assert(health.status === 200, `health check failed: ${health.status}`);
-  const diagnostics = await fetchJson(fetcher, `${baseUrl}/api/app/diagnostics`, {
-    headers: prerequisites.config.token ? { authorization: headers.authorization } : {},
+  const diagnostics = await fetchJson(fetcher, `${baseUrl}/api/app/operations/diagnostics.app`, {
+    method: 'POST',
+    body: '{}',
+    headers: {
+      'content-type': 'application/json',
+      ...(prerequisites.config.token ? { authorization: headers.authorization } : {}),
+    },
   });
   assertNoPublicLeak(diagnostics.json, prohibitedPublicValues);
   const preflightFailure =

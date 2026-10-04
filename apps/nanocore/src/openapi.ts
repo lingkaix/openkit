@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import {
   AcceptWorkspaceInvitationRequestSchema,
-  AppDiagnosticsResponseSchema,
   AppUpdateStatusResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   CreateWorkspaceInvitationRequestSchema,
@@ -12,13 +11,13 @@ import {
   DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
+  type JsonOperationId,
   LeaveWorkspaceRequestSchema,
   ListPluginCatalogResponseSchema,
   ListSkillCatalogResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMembersResponseSchema,
   OPERATION_DEFINITIONS,
-  type OperationId,
   operationHttpPath,
   operationModelInput,
   operationUsesBootstrapSecret,
@@ -29,7 +28,6 @@ import {
   RevokeWorkspaceInvitationRequestSchema,
   RotateWorkspaceVaultSecretRequestSchema,
   SetProviderApiKeyRequestSchema,
-  SetupDiagnosticsResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminRebindWorkspaceReferenceRequestSchema,
@@ -329,37 +327,39 @@ function getAppApiRouteDefinition<OperationId extends AppApiRouteDefinition['ope
 /** Derives the migrated JSON bindings and their contract references. */
 function operationPaths() {
   return Object.fromEntries(
-    Object.entries(OPERATION_DEFINITIONS).map(([id, definition]) => [
-      operationHttpPath(id),
-      {
-        post: appJsonOperation({
-          operationId: id,
-          tag: id.split('.')[0]!,
-          summary: definition.description,
-          ...(operationUsesBootstrapSecret(definition)
-            ? { security: [] }
-            : definition.scope.kind === 'server'
-              ? { security: DEPLOYMENT_ADMIN_SECURITY }
+    Object.entries(OPERATION_DEFINITIONS)
+      .filter(([, definition]) => definition.binding === 'json')
+      .map(([id, definition]) => [
+        operationHttpPath(id),
+        {
+          post: appJsonOperation({
+            operationId: id,
+            tag: id.split('.')[0]!,
+            summary: definition.description,
+            ...(operationUsesBootstrapSecret(definition)
+              ? { security: [] }
+              : definition.scope.kind === 'server'
+                ? { security: DEPLOYMENT_ADMIN_SECURITY }
+                : {}),
+            requestSchema: `${id}.input`,
+            responseSchema: `${id}.output`,
+            responseStatus:
+              'successStatus' in definition ? (`${definition.successStatus}` as const) : '200',
+            ...('successStatuses' in definition
+              ? {
+                  responseStatuses: definition.successStatuses.map(
+                    (status) => `${status}` as '200' | '202'
+                  ),
+                }
               : {}),
-          requestSchema: `${id}.input`,
-          responseSchema: `${id}.output`,
-          responseStatus:
-            'successStatus' in definition ? (`${definition.successStatus}` as const) : '200',
-          ...('successStatuses' in definition
-            ? {
-                responseStatuses: definition.successStatuses.map(
-                  (status) => `${status}` as '200' | '202'
-                ),
-              }
-            : {}),
-          ...(definition.mutating && 'requestId' in definition.inputSchema.shape
-            ? { parameters: [REQUEST_ID_HEADER] }
-            : {}),
-        }),
-      },
-    ])
+            ...(definition.mutating && 'requestId' in definition.inputSchema.shape
+              ? { parameters: [REQUEST_ID_HEADER] }
+              : {}),
+          }),
+        },
+      ])
   ) as {
-    [K in OperationId as `/api/app/operations/${K}`]: {
+    [K in JsonOperationId as `/api/app/operations/${K}`]: {
       post: ReturnType<typeof appJsonOperation<K>>;
     };
   };
@@ -382,63 +382,11 @@ export function createAppOpenApiDocument() {
     'x-openkit-protocol-version': PROTOCOL_VERSION,
     paths: {
       ...operationPaths(),
-      '/api/app/diagnostics': {
-        get: {
-          operationId: 'getAppDiagnostics',
-          tags: ['diagnostics'],
-          summary: 'Read NanoCore app diagnostics and readiness.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'App diagnostics and readiness report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AppDiagnosticsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/setup/diagnostics': {
-        get: {
-          operationId: 'getSetupDiagnostics',
-          tags: ['diagnostics'],
-          summary: 'Read NanoCore setup diagnostics.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Setup diagnostics report.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SetupDiagnosticsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
-          operationId: 'downloadWorkspaceExportArchive',
+          operationId: 'workspace.archive-download',
           tags: ['storage'],
-          summary: 'Download one verified workspace export as a Zstandard-compressed tar stream.',
+          summary: OPERATION_DEFINITIONS['workspace.archive-download'].description,
           security: [{ bearerAuth: [] }, { sessionCookie: [] }],
           parameters: [WORKSPACE_ID_PARAMETER, WORKSPACE_EXPORT_ID_PARAMETER],
           responses: {
@@ -463,9 +411,9 @@ export function createAppOpenApiDocument() {
       },
       '/api/app/workspace-archives/import-dry-run': {
         post: {
-          operationId: 'dryRunWorkspaceArchiveImport',
+          operationId: 'workspace.archive-import-dry-run',
           tags: ['storage'],
-          summary: 'Verify one streamed portable Workspace archive without importing it.',
+          summary: OPERATION_DEFINITIONS['workspace.archive-import-dry-run'].description,
           security: SESSION_COOKIE_SECURITY,
           requestBody: {
             required: true,
@@ -497,9 +445,9 @@ export function createAppOpenApiDocument() {
       },
       '/api/app/workspace-archives/import': {
         post: {
-          operationId: 'importWorkspaceArchive',
+          operationId: 'workspace.archive-import',
           tags: ['storage'],
-          summary: 'Import one streamed portable Workspace archive.',
+          summary: OPERATION_DEFINITIONS['workspace.archive-import'].description,
           security: SESSION_COOKIE_SECURITY,
           parameters: [
             {
@@ -553,18 +501,20 @@ export function createAppOpenApiDocument() {
       },
       schemas: {
         ...Object.fromEntries(
-          Object.entries(OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
-            [
-              `${id}.input`,
-              toJsonSchema(
-                operationModelInput(
-                  definition.inputSchema,
-                  definition.mutating ? ['requestId'] : []
-                )
-              ),
-            ],
-            [`${id}.output`, toJsonSchema(definition.outputSchema)],
-          ])
+          Object.entries(OPERATION_DEFINITIONS)
+            .filter(([, definition]) => definition.binding === 'json')
+            .flatMap(([id, definition]) => [
+              [
+                `${id}.input`,
+                toJsonSchema(
+                  operationModelInput(
+                    definition.inputSchema,
+                    definition.mutating ? ['requestId'] : []
+                  )
+                ),
+              ],
+              [`${id}.output`, toJsonSchema(definition.outputSchema)],
+            ])
         ),
         AcceptWorkspaceInvitationRequest: toJsonSchema(AcceptWorkspaceInvitationRequestSchema),
         ChangeWorkspaceMemberAccessRequest: toJsonSchema(ChangeWorkspaceMemberAccessRequestSchema),
@@ -593,7 +543,6 @@ export function createAppOpenApiDocument() {
         ApiError: toJsonSchema(ApiErrorSchema),
         ArtifactId: toJsonSchema(ArtifactIdSchema),
 
-        AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListSkillCatalogResponse: toJsonSchema(ListSkillCatalogResponseSchema),
@@ -603,7 +552,6 @@ export function createAppOpenApiDocument() {
         VaultAdminWorkspaceReference: toJsonSchema(VaultAdminWorkspaceReferenceSchema),
         WorkspaceVaultGrant: toJsonSchema(WorkspaceVaultGrantSchema),
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
-        SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(

@@ -86,3 +86,5 @@ Deleted-Workspace recovery reuses `importVerifiedWorkspace` with a trusted inter
 Data-root administration and Workspace transfer handlers expose inferred exact-key operation joins. Their existing backup verification and staged-publication fallbacks use safe typed operation errors; common framing never identifies storage boundary subclasses. Storage ownership, compensation and retained bytes are unchanged.
 
 AgentSession canonical records retain private `retainedStorage` association and slot provenance beside native proof. Absent facts remain readable. Portable export clears this source-deployment fact and import independently clears it; same-deployment backup retains canonical record bytes. See [AgentSession Continuity](../../../../docs/specs/20260704-agent_session_continuity.md) for the owning lifecycle.
+
+The three `workspace.archive-*` definitions retain the existing streaming routes, archive admission, staging, commitment and recovery owner. Web Portability and the administrator CLI consume these streams without JSON-encoding archive bytes. Remote MCP omits and refuses the definitions before archive processing.

@@ -38,12 +38,14 @@ type ProviderSubscriptionAccount = Awaited<
   ReturnType<CoreClient['operations']['provider-subscription.account-status']>
 >;
 type ProviderRegistryEntry = Awaited<
-  ReturnType<CoreClient['app']['getDiagnostics']>
+  ReturnType<CoreClient['operations']['diagnostics.app']>
 >['providers']['registry'][number];
 type ProviderDiagnostic = Awaited<
-  ReturnType<CoreClient['app']['getDiagnostics']>
+  ReturnType<CoreClient['operations']['diagnostics.app']>
 >['providers']['diagnostics'][number];
-type GatewayDiagnostics = Awaited<ReturnType<CoreClient['app']['getDiagnostics']>>['gateway'];
+type GatewayDiagnostics = Awaited<
+  ReturnType<CoreClient['operations']['diagnostics.app']>
+>['gateway'];
 
 const OAUTH_VENDORS: Record<SubscriptionProviderId, string> = {
   'openai-codex': 'openai_codex',
@@ -135,8 +137,8 @@ export function AiInterfaceScreen() {
   const diagnostics = useQuery({
     queryKey: diagnosticsKey,
     queryFn: async () =>
-      projectSafeValue(await client.app.getDiagnostics()) as Awaited<
-        ReturnType<CoreClient['app']['getDiagnostics']>
+      projectSafeValue(await client.operations['diagnostics.app']({})) as Awaited<
+        ReturnType<CoreClient['operations']['diagnostics.app']>
       >,
     enabled: inventory.isSuccess,
     gcTime: 0,

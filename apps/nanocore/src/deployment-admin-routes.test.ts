@@ -25,8 +25,18 @@ const ACCOUNT_STATUS: ProviderSubscriptionAccountSnapshot = {
 
 const ADMIN_ROUTE_CASES = [
   { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/diagnostics' },
-  { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/app/diagnostics' },
-  { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/setup/diagnostics' },
+  {
+    code: 'deployment_admin_required',
+    method: 'POST',
+    path: '/api/app/operations/diagnostics.app',
+    body: {},
+  },
+  {
+    code: 'deployment_admin_required',
+    method: 'POST',
+    path: '/api/app/operations/diagnostics.setup',
+    body: {},
+  },
   {
     code: 'deployment_admin_required',
     path: '/api/app/operations/runtime.reload',
@@ -304,8 +314,8 @@ describe('deployment-admin routes', () => {
           app === serverApp ? { authorization: `Bearer ${serverAdmin.secret}` } : undefined;
         const responses = await Promise.all([
           app.request('/api/diagnostics', { headers }),
-          app.request('/api/app/diagnostics', { headers }),
-          app.request('/api/setup/diagnostics', { headers }),
+          app.request(...operationRequest('diagnostics.app', {}, { headers })),
+          app.request(...operationRequest('diagnostics.setup', {}, { headers })),
           app.request(...operationRequest('runtime.file-list', {}, { headers })),
           app.request(...operationRequest('provider-subscription.provider-list', {}, { headers })),
           app.request(

@@ -77,3 +77,5 @@ Agent, Worker and resource catalog CLI rows derive from the three shared family 
 The eleven Material CLI rows derive from the shared definitions with `strictShared`. Restricted creation is refused locally; revision read/save preflight metadata through `material.read` before invoking any content operation, including for administrator credentials. Rebuild the bundle with `pnpm build:openkit`.
 
 The seven human token and bootstrap rows derive from the shared operation definitions. One-time-secret facts select the existing preflighted named local sink for issuance/rotation and the endpoint sink for the exclusive bootstrap credential; the CLI returns only redacted records and storage metadata. Bootstrap sends no ordinary bearer or session credential, keeps secret stdin sensitivity, and cannot print its returned credential.
+
+Product diagnostics CLI rows derive from their JSON definitions. The administrator CLI derives archive metadata from the streaming definitions and adds only caller-selected local-file sources and exclusive 0600 sinks. Connection metadata remains an internal Core Client support probe and has no CLI operation row.

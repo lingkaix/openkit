@@ -1,11 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import {
-  AppDiagnosticsResponseSchema,
-  type BootReadinessSnapshot,
-  OPERATION_DEFINITIONS,
-  SetupDiagnosticsResponseSchema,
-} from '@openkit/app-api-schemas';
+import { type BootReadinessSnapshot, OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   type GatewayConfig,
   type InternalRoleProfilesConfig,
@@ -72,21 +67,18 @@ import {
   RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
-import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
-import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
-import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
-import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
+import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
@@ -166,7 +158,7 @@ import {
   SchedulerLeaseHeartbeatRejectedError,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
-import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
+import { registerServiceRoutes } from './service-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -1373,80 +1365,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  registerAppApiRoute(app, 'getAppDiagnostics', async (c) => {
-    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
-    if (adminError) {
-      return adminError;
-    }
-
-    return c.json(
-      AppDiagnosticsResponseSchema.parse({
-        service: 'nanocore',
-        boot: getBootReadiness(),
-        process: createProcessDiagnosticsSample(),
-        gateway: {
-          status: 'ok',
-          endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
-          defaultModelId: runtimeConfig().gatewayConfig.defaultLogicalModelId ?? null,
-          models: resolveLogicalModelCatalog(
-            runtimeConfig().gatewayConfig,
-            runtimeConfig().providerRegistry,
-            providerSubscriptionAccountManager ?? undefined,
-            providerCredentialConfigured
-          ).map(
-            ({
-              id,
-              displayName,
-              capabilities,
-              autoFailover,
-              routes,
-              contract,
-              reasoningEffortLevels,
-              contextManagement,
-            }) => ({
-              id,
-              displayName,
-              capabilities,
-              autoFailover,
-              routes,
-              contract,
-              reasoningEffortLevels,
-              contextManagement,
-            })
-          ),
-          usage: gatewayUsageTracker.snapshot(),
-        },
-        providers: {
-          diagnostics: runtimeConfig().providerDiagnostics.summaries,
-          registry: runtimeConfig().providerRegistry.summarize(),
-        },
-        // Diagnostics mirrors protocol-visible capabilities for one consistent app surface.
-        capabilities: mapRuntimeCapabilitiesToFlags(turnExecutor.capabilities),
-        runtimeConfig: runtimeConfigManager.status(),
-      })
-    );
-  });
-
-  registerAppApiRoute(app, 'getSetupDiagnostics', (c) => {
-    const adminError = requireDiagnosticsAdminActor(c.get('actor'));
-    if (adminError) {
-      return adminError;
-    }
-
-    return c.json(
-      SetupDiagnosticsResponseSchema.parse(
-        createSetupDiagnostics({
-          dataRoot,
-          gatewayConfig: runtimeConfig().gatewayConfig,
-          mode,
-          openKitConfig: runtimeConfig().openKitConfig,
-          providerRegistry: runtimeConfig().providerRegistry,
-          agentManifests: runtimeConfig().agentManifests,
-          runtimeConfig: runtimeConfigManager.status(),
-        })
-      )
-    );
-  });
+  const diagnosticsServices = {
+    runtimeConfig,
+    runtimeConfigManager,
+    getBootReadiness,
+    gatewayUsageTracker,
+    turnExecutor,
+    providerSubscriptionAccountManager: providerSubscriptionAccountManager ?? undefined,
+    providerCredentialConfigured,
+    dataRoot,
+    mode,
+  };
 
   const appUpdateTransport =
     options.appUpdateHostTransport !== undefined
@@ -1793,6 +1722,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerOperationJsonRoutes({
+    diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,
     appUpdateServices,
@@ -1846,6 +1776,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    diagnosticsServices,
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
     administrationServices,
     appUpdateServices,

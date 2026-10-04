@@ -323,7 +323,10 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
   let runError;
 
   try {
-    const diagnostics = await awaitRelayDeadline(clients.admin.app.getDiagnostics(), timeoutMs);
+    const diagnostics = await awaitRelayDeadline(
+      clients.admin.operations['diagnostics.app']({}),
+      timeoutMs
+    );
     assert(
       diagnostics.boot?.acceptingProductWork === true,
       'Target NanoCore is not accepting product work.'

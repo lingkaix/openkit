@@ -1,8 +1,13 @@
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  seedDemoWorkspaceAuthority,
+  seedDemoWorkspaceDataRoot,
+} from '../../../tests/support/demo-data.mjs';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
 
@@ -19,6 +24,96 @@ afterEach(async () => {
 });
 
 describe('nanocore e2e workspace portability', () => {
+  it('round-trips identical archive bytes through Web streams and administrator CLI local sinks', async () => {
+    const sourceDataRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-source-'));
+    const targetDataRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-target-'));
+    const sourceToken = await seedArchiveAdministrator(sourceDataRoot);
+    const targetToken = await seedArchiveAdministrator(targetDataRoot);
+    const source = await startNanoCoreHarness({ coreMode: 'server', dataRoot: sourceDataRoot });
+    harnesses.push(source);
+    const target = await startNanoCoreHarness({ coreMode: 'server', dataRoot: targetDataRoot });
+    harnesses.push(target);
+    const localRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-archive-'));
+    try {
+      const content = 'Exact archive round trip: café, 日本語, and trailing newline.\n';
+      await expectJson(
+        await fetch(`${source.baseUrl}/api/app/operations/knowledge.create`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${sourceToken}`,
+            'content-type': 'application/json',
+            'x-openkit-request-id': randomUUID(),
+          },
+          body: JSON.stringify({
+            workspaceId: 'ws_demo',
+            title: 'Archive bytes',
+            kind: 'project-context',
+            content,
+          }),
+        }),
+        {}
+      );
+      const exported = await expectJson(
+        await fetch(`${source.baseUrl}/api/app/operations/workspace.export`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${sourceToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        }),
+        {}
+      );
+      const web = await fetch(
+        `${source.baseUrl}/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`,
+        { headers: { authorization: `Bearer ${sourceToken}` } }
+      );
+      expect(
+        (
+          await fetch(
+            `${source.baseUrl}/api/app/workspaces/ws_demo/exports/${exported.exportId}/archive`
+          )
+        ).status
+      ).toBe(401);
+      expect(web.status).toBe(200);
+      const bytes = Buffer.from(await web.arrayBuffer());
+      const destinationPath = join(localRoot, 'archive.openkit-workspace.tar.zst');
+      expect(
+        await administratorArchiveCall(source, String(sourceToken), 'workspace.archive-download', {
+          workspaceId: 'ws_demo',
+          exportId: exported.exportId,
+          destinationPath,
+        })
+      ).toEqual({ downloaded: true });
+      expect(await readFile(destinationPath)).toEqual(bytes);
+      expect((await stat(destinationPath)).mode & 0o777).toBe(0o600);
+      expect(
+        await administratorArchiveCall(
+          target,
+          String(targetToken),
+          'workspace.archive-import-dry-run',
+          { sourcePath: destinationPath }
+        )
+      ).toMatchObject({ mode: 'dry-run', collision: { status: 'collides' } });
+      const imported = await administratorArchiveCall(
+        target,
+        String(targetToken),
+        'workspace.archive-import',
+        { sourcePath: destinationPath, requestId: randomUUID() }
+      );
+      expect(imported).toMatchObject({ mode: 'imported' });
+      expect(await readFile(destinationPath)).toEqual(bytes);
+      const knowledge = (await expectJson(
+        await fetch(`${target.baseUrl}/api/app/operations/knowledge.list`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${targetToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: imported.importedWorkspaceId }),
+        }),
+        {}
+      )) as { items: { title: string; content: string }[] };
+      expect(knowledge.items.find((item) => item.title === 'Archive bytes')?.content).toBe(content);
+    } finally {
+      await rm(localRoot, { recursive: true, force: true });
+    }
+  });
+
   it('imports a collision into a second fresh data root with lineage and preserved knowledge', async () => {
     const sourceHarness = await startNanoCoreHarness();
     harnesses.push(sourceHarness);
@@ -248,4 +343,60 @@ async function expectErrorJson(response: Response, code: string): Promise<unknow
   expect(body).toMatchObject({ code });
 
   return body;
+}
+
+/** Executes the shipped CLI against the real local listener with an administrator bearer and local file inputs. */
+function administratorArchiveCall(
+  harness: NanoCoreHarness,
+  token: string,
+  operation: string,
+  input: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(
+      process.execPath,
+      [resolve('../../skills/openkit/scripts/openkit'), 'ops', 'call', operation, '--input', '-'],
+      {
+        env: {
+          ...process.env,
+          OPENKIT_NANOCORE_URL: harness.baseUrl,
+          OPENKIT_NANOCORE_TOKEN: token,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }
+    );
+    let stdout = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.resume();
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Administrator archive CLI failed with exit ${code}: ${stdout}`));
+        return;
+      }
+      resolveResult(JSON.parse(stdout).data);
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+/** Seeds explicit administrator authority before the process starts; transfer assertions use only public bindings. */
+async function seedArchiveAdministrator(dataRoot: string): Promise<string> {
+  seedDemoWorkspaceDataRoot(dataRoot);
+  await seedDemoWorkspaceAuthority(dataRoot);
+  const { openCoreDb } = await import('../dist/storage/db.js');
+  const { createOpenKitAccessTokenRecord } = await import('../dist/auth/access-token-store.js');
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    return createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }).secret;
+  } finally {
+    coreDb.sqlite.close();
+  }
 }

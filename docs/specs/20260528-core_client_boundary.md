@@ -78,12 +78,12 @@ This specification keeps route and client projection detail. That detail is tran
 The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
-- `client.app`: dashboards, Goal reads and the Goal operations, search, quick chat, diagnostics, setup diagnostics, and feedback.
+- `client.app`: dashboards, Goal reads and the Goal operations, search, quick chat and feedback for families awaiting cutover; archive streams retain their owned methods.
 - `client.operations[id]` for the runtime family: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
 - `client.operations[id]` for the provider-subscription family: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
-- `client.operations`: Canonical Agent inventory, detail and health refresh operations.
+- `client.operations`: Canonical Agent inventory, detail and health refresh operations, plus `diagnostics.app` and `diagnostics.setup` with empty logical input objects.
 - `client.operations['attention.list']`: unified Human Attention read-model operation.
 - `client.repositories`: workspace repository resource list, diagnostics, and default repository setup routes.
 
@@ -194,6 +194,8 @@ After `ProtocolValidationError`, the failed subscription exposes no private curs
 Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
 
 ## Current Implementation Projection
+
+`diagnostics.app` and `diagnostics.setup` derive their JSON routes, OpenAPI, Core Client and CLI projections from `diagnostics-operations.ts`, with exact native joins beside the diagnostics owners. Their former routes and named App methods are absent. Connection metadata, health, raw diagnostics and OpenAPI serving remain support bindings outside operation discovery; metadata and the capability helpers retain their existing Core Client plumbing. The three definition-owned archive operations retain only the existing stream methods and routes, with Web and administrator CLI local-file transfer coverage and remote MCP refusal before processing.
 
 The four Automation, three Scheduler and two Recovery operations use the definition-derived `client.operations[id](input)` map. Their former `client.app` members and mappings are absent. The generic transport maps a declared bodyless HTTP 204 to logical `null` through the operation output schema, while retaining normal API-error conversion and JSON response validation. Recovery input contains the exact Workspace, Thread, Turn and request identities; the UI checkpoint identifier remains local.
 

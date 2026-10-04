@@ -820,9 +820,9 @@ function readonlyTokenCannotMutate(
 }
 
 /**
- * Maps retained catalog entries to canonical methods and Hono route paths; all composed definitions use native admission.
+ * Maps retained catalog entries to canonical routes; only JSON definitions use native admission, while streaming bindings retain these guards.
  *
- * @returns Unique legacy non-server operation routes.
+ * @returns Unique retained non-server operation routes.
  * @throws When a catalog operation has no canonical route owner.
  */
 function guardedOperationRoutes(): OperationRoute[] {
@@ -830,7 +830,12 @@ function guardedOperationRoutes(): OperationRoute[] {
   const routes: OperationRoute[] = [];
 
   for (const [operationKey, access] of Object.entries(PUBLIC_OPERATION_ACCESS)) {
-    if (access.scope === 'server' || Object.hasOwn(OPERATION_DEFINITIONS, operationKey)) {
+    if (
+      access.scope === 'server' ||
+      (Object.hasOwn(OPERATION_DEFINITIONS, operationKey) &&
+        OPERATION_DEFINITIONS[operationKey as keyof typeof OPERATION_DEFINITIONS].binding ===
+          'json')
+    ) {
       continue;
     }
     const direct = directOperationRoute(operationKey);

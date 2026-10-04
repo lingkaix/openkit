@@ -128,3 +128,5 @@ The `governance-operations.ts`, `environment-operations.ts`, `app-search-operati
 The eleven Material definitions live in `src/material-operations.ts`, reusing complete Material payload schemas with strict logical Workspace and child selectors. The table supplies success status and admission facts for all projections; executable delivery preflight stays in NanoCore.
 
 `src/access-token-operations.ts` declares the seven human access-token and bootstrap operations. The shared credential vocabulary admits bootstrap only as the exclusive `bootstrap-secret` credential; composition rejects a mixed credential declaration. Issuance, rotation and bootstrap truthfully declare their one-time-secret results, which exclude them from MCP.
+
+`diagnostics-operations.ts` declares the JSON product diagnostics family. `workspace-archive-operations.ts` declares the three streaming-only archive operations, which are ineligible for remote MCP and JSON invocation. Connection metadata, health, raw deployment diagnostics and OpenAPI serving are support bindings outside these declarations.

@@ -525,6 +525,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
+    'core-projection:meta',
     'core-projection:subscribeTurnEvents',
   ]);
   assert.equal(new Set(operationCatalog.map((entry) => entry.id)).size, operationCatalog.length);
@@ -661,7 +662,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     } else {
       assert.equal(typeof resolvePath(client, entry.clientMethod), 'function');
       assert.ok(
-        Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id)
+        appSchemas.OPERATION_DEFINITIONS[entry.id]?.binding === 'json'
           ? entry.clientMethod === `operations.${entry.id}` &&
               String(entry.handler).includes('client.operations[id]')
           : String(entry.handler).includes(`client.${entry.clientMethod}`),
@@ -678,11 +679,18 @@ test('one catalog covers the checked App API and public Core projection', async 
         namedSecretSink,
         `${entry.id} adds a local destination only for named secret delivery`
       );
+      const localFields =
+        definition.binding === 'streaming'
+          ? [entry.id === 'workspace.archive-download' ? 'destinationPath' : 'sourcePath']
+          : [];
       assert.deepEqual(
-        sharedShape,
-        definition.inputSchema.shape,
-        `${entry.id} strict CLI view must preserve shared fields`
+        Object.keys(sharedShape).sort(),
+        [...Object.keys(definition.inputSchema.shape), ...localFields].sort(),
+        `${entry.id} CLI view may add only its retained stream's local-file selector`
       );
+      for (const [field, schema] of Object.entries(definition.inputSchema.shape)) {
+        assert.equal(entry.inputSchema.shape[field], schema, `${entry.id} must preserve ${field}`);
+      }
       assert.equal(
         entry.inputSchema.def.checks,
         appSchemas.OPERATION_DEFINITIONS[entry.id].inputSchema.def.checks,
@@ -844,7 +852,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   ]);
   assert.deepEqual(
     idsWithAccess(
-      'implicit local actor; bundled CLI Workspace archive operations are local-mode only'
+      'canonical user: implicit local actor or server-admin bearer token; secret-safe local archive files'
     ),
     ['workspace.archive-download', 'workspace.archive-import', 'workspace.archive-import-dry-run']
   );
@@ -852,9 +860,8 @@ test('one catalog covers the checked App API and public Core projection', async 
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
     []
   );
-  assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
-    'connection.meta',
-  ]);
+  assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), []);
+  assert.ok(!operationCatalog.some(({ id }) => id === 'connection.meta'));
   assert.deepEqual(
     idsWithAccess('one-time server bootstrap token over HTTPS or loopback; no authenticated actor'),
     ['bootstrap.consume']
@@ -1474,7 +1481,11 @@ test('catalog search is concise and describe returns one machine-readable input 
   const results = searchOperations('workspace');
   assert.ok(results.some((entry) => entry.id === 'workspace.list'));
   assert.ok(results.every((entry) => !('handler' in entry) && !('inputSchema' in entry)));
-  assert.ok(searchOperations('connection').some((entry) => entry.group === 'connection'));
+  assert.equal(
+    searchOperations('connection').some((entry) => entry.id === 'connection.meta'),
+    false
+  );
+  assert.ok(searchOperations('diagnostics').some((entry) => entry.id === 'diagnostics.app'));
   assert.ok(searchOperations('durable').some((entry) => /durable/i.test(entry.summary)));
   assert.deepEqual(searchOperations('   '), []);
 

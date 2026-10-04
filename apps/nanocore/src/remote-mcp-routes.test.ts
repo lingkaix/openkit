@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -161,6 +161,109 @@ async function fixture(
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
+  it('refuses all retained archive streams before processing and omits support discovery', async () => {
+    const f = await fixture();
+    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const before = f.store.listWorkspaces();
+    const registryBefore = f.coreDb.sqlite
+      .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+      .all();
+    const exportDirectories = readdirSync(join(f.dataRoot, 'server', 'exports'), {
+      recursive: true,
+    }).sort();
+    const workspaceDirectories = readdirSync(join(f.dataRoot, 'workspaces')).sort();
+    const native = vi.spyOn(invocation, 'createOperationInvocation');
+    try {
+      for (const operation of [
+        'workspace.archive-download',
+        'workspace.archive-import-dry-run',
+        'workspace.archive-import',
+      ]) {
+        const search = await f.call('search', { query: operation }, admin.secret);
+        expect(
+          JSON.parse(search.content[0].text).items.some(
+            (item: { id: string }) => item.id === operation
+          )
+        ).toBe(false);
+        for (const tool of ['describe', 'call']) {
+          const result = await f.call(
+            tool,
+            {
+              operation,
+              ...(tool === 'call'
+                ? { input: { workspaceId: 'ws_demo', exportId: 'absent', requestId: randomUUID() } }
+                : {}),
+            },
+            admin.secret
+          );
+          expect(result.isError).toBe(true);
+          expect(JSON.parse(result.content[0].text)).toEqual({
+            code: 'mcp_streaming_operation',
+            message:
+              'Streaming operations are unavailable over MCP. Use the retained archive transfer interface.',
+            status: 400,
+          });
+        }
+      }
+      expect(native).not.toHaveBeenCalled();
+      expect(existsSync(join(f.dataRoot, 'server', 'files', 'workspace-archive-requests'))).toBe(
+        false
+      );
+      expect(
+        readdirSync(join(f.dataRoot, 'server', 'exports'), { recursive: true }).sort()
+      ).toEqual(exportDirectories);
+      expect(readdirSync(join(f.dataRoot, 'workspaces')).sort()).toEqual(workspaceDirectories);
+      expect(f.store.listWorkspaces()).toEqual(before);
+      expect(
+        f.coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
+      ).toEqual(registryBefore);
+      for (const operation of ['connection.meta', 'health', 'diagnostics', 'openapi']) {
+        const result = await f.call('describe', { operation }, admin.secret);
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({
+          code: 'unsupported_operation',
+          status: 400,
+        });
+      }
+      const guide = await f.call('guide', {}, admin.secret);
+      expect(guide.content[0].text).toContain('ordinary users use Web Portability');
+      expect(guide.content[0].text).toContain('administrator CLI');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('serves both named diagnostics only to current administrators through real MCP', async () => {
+    const f = await fixture();
+    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const member = f.token();
+    try {
+      for (const operation of ['diagnostics.app', 'diagnostics.setup']) {
+        const permitted = await f.call('call', { operation, input: {} }, admin.secret);
+        expect(permitted.isError).not.toBe(true);
+        expect(JSON.parse(permitted.content[0].text)).toMatchObject({ service: 'nanocore' });
+        const denied = await f.call('call', { operation, input: {} }, member.secret);
+        expect(denied.isError).toBe(true);
+        expect(JSON.parse(denied.content[0].text)).toMatchObject({
+          code: 'deployment_admin_required',
+          status: 403,
+        });
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     ['omitted query', {}],
     ['empty query', { query: '' }],

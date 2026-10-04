@@ -641,7 +641,11 @@ export async function runPublicSequence(fetcher, port, streamFacts) {
     subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
   });
   const initialStatus = await invoke('account-status', pair);
-  const diagnostics = await fetchJson(fetcher, `${base}/api/app/diagnostics`);
+  const diagnostics = await fetchJson(fetcher, `${base}/api/app/operations/diagnostics.app`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
   const inferenceResponse = await fetcher(`${base}/v1/responses`, {
     redirect: 'error',
     ...gatewayInit,

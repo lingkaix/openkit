@@ -11236,6 +11236,104 @@
         }
       }
     },
+    "/api/app/operations/diagnostics.app": {
+      "post": {
+        "operationId": "diagnostics.app",
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Read application runtime diagnostics.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/diagnostics.app.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read application runtime diagnostics.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/diagnostics.app.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/diagnostics.setup": {
+      "post": {
+        "operationId": "diagnostics.setup",
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Read setup diagnostics.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/diagnostics.setup.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read setup diagnostics.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/diagnostics.setup.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/nanohost.enroll": {
       "post": {
         "operationId": "nanohost.enroll",
@@ -12111,91 +12209,13 @@
         }
       }
     },
-    "/api/app/diagnostics": {
-      "get": {
-        "operationId": "getAppDiagnostics",
-        "tags": [
-          "diagnostics"
-        ],
-        "summary": "Read NanoCore app diagnostics and readiness.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "App diagnostics and readiness report.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AppDiagnosticsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/setup/diagnostics": {
-      "get": {
-        "operationId": "getSetupDiagnostics",
-        "tags": [
-          "diagnostics"
-        ],
-        "summary": "Read NanoCore setup diagnostics.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Setup diagnostics report.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SetupDiagnosticsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/workspaces/{workspaceId}/exports/{exportId}/archive": {
       "get": {
-        "operationId": "downloadWorkspaceExportArchive",
+        "operationId": "workspace.archive-download",
         "tags": [
           "storage"
         ],
-        "summary": "Download one verified workspace export as a Zstandard-compressed tar stream.",
+        "summary": "Download one verified portable Workspace archive.",
         "security": [
           {
             "bearerAuth": []
@@ -12250,7 +12270,7 @@
     },
     "/api/app/workspace-archives/import-dry-run": {
       "post": {
-        "operationId": "dryRunWorkspaceArchiveImport",
+        "operationId": "workspace.archive-import-dry-run",
         "tags": [
           "storage"
         ],
@@ -12297,7 +12317,7 @@
     },
     "/api/app/workspace-archives/import": {
       "post": {
-        "operationId": "importWorkspaceArchive",
+        "operationId": "workspace.archive-import",
         "tags": [
           "storage"
         ],
@@ -81882,6 +81902,1980 @@
         ],
         "additionalProperties": false
       },
+      "diagnostics.app.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "diagnostics.app.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "minLength": 1
+          },
+          "boot": {
+            "type": "object",
+            "properties": {
+              "bootId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptingProductWork": {
+                "type": "boolean"
+              },
+              "overall": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "degraded",
+                  "failed"
+                ]
+              },
+              "subsystems": {
+                "type": "object",
+                "properties": {
+                  "config": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "storage": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "policy": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "vault": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "scheduler": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "llmGateway": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "knowledgeIndex": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "degraded",
+                          "failed"
+                        ]
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "message": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "blocks": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message",
+                            "blocks"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "reasons"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "config",
+                  "storage",
+                  "policy",
+                  "vault",
+                  "scheduler",
+                  "llmGateway",
+                  "knowledgeIndex"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "bootId",
+              "acceptingProductWork",
+              "overall",
+              "subsystems"
+            ],
+            "additionalProperties": false
+          },
+          "process": {
+            "type": "object",
+            "properties": {
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "nodeVersion": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uptimeSeconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "memory": {
+                "type": "object",
+                "properties": {
+                  "rssBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "heapUsedBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "heapTotalBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "rssBytes",
+                  "heapUsedBytes",
+                  "heapTotalBytes"
+                ],
+                "additionalProperties": false
+              },
+              "telemetry": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "exportConfigured": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "exportConfigured"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "observedAt",
+              "nodeVersion",
+              "uptimeSeconds",
+              "memory",
+              "telemetry"
+            ],
+            "additionalProperties": false
+          },
+          "gateway": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1
+              },
+              "endpoints": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "defaultModelId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "capabilities": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "autoFailover": {
+                      "type": "boolean"
+                    },
+                    "routes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "providerProfileId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "providerModel": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "available": {
+                            "type": "boolean"
+                          },
+                          "unavailableReason": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "provider_profile_absent",
+                                  "provider_model_delisted",
+                                  "provider_not_dispatchable",
+                                  "provider_api_key_missing",
+                                  "subscription_vault_unavailable",
+                                  "subscription_account_absent",
+                                  "subscription_account_logged_out",
+                                  "subscription_account_integrity_unavailable"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "providerProfileId",
+                          "providerModel",
+                          "available",
+                          "unavailableReason"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "contract": {
+                      "type": "object",
+                      "properties": {
+                        "context": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "output": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "inputModalities": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reasoning": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "context",
+                        "output",
+                        "inputModalities",
+                        "reasoning"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reasoningEffortLevels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "minimal",
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ]
+                      }
+                    },
+                    "contextManagement": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "compaction"
+                        },
+                        "compactThreshold": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "compactThreshold"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "displayName",
+                    "capabilities"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "summaries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "cacheReadTokens": {
+                          "type": "number"
+                        },
+                        "cacheWriteTokens": {
+                          "type": "number"
+                        },
+                        "completionTokens": {
+                          "type": "number"
+                        },
+                        "endpoint": {
+                          "type": "string",
+                          "enum": [
+                            "chat_completions",
+                            "responses",
+                            "quick_chat"
+                          ]
+                        },
+                        "inputTokens": {
+                          "type": "number"
+                        },
+                        "lastObservedAt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "providerId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestCount": {
+                          "type": "number"
+                        },
+                        "totalTokens": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "completionTokens",
+                        "endpoint",
+                        "inputTokens",
+                        "lastObservedAt",
+                        "model",
+                        "providerId",
+                        "requestCount",
+                        "totalTokens"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "summaries"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "status",
+              "endpoints",
+              "defaultModelId",
+              "models"
+            ],
+            "additionalProperties": false
+          },
+          "providers": {
+            "type": "object",
+            "properties": {
+              "diagnostics": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "message": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "profileId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "degraded",
+                        "blocked",
+                        "disabled",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "source",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "registry": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "gatewayCapabilities": {
+                      "type": "object",
+                      "properties": {
+                        "chatCompletions": {
+                          "type": "string",
+                          "enum": [
+                            "native",
+                            "bridged",
+                            "unsupported"
+                          ]
+                        },
+                        "responses": {
+                          "type": "string",
+                          "enum": [
+                            "native",
+                            "bridged",
+                            "unsupported"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "chatCompletions",
+                        "responses"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "metadataKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "subscriptionAccount": {
+                      "type": "object",
+                      "properties": {
+                        "subscriptionProviderId": {
+                          "type": "string",
+                          "enum": [
+                            "openai-codex",
+                            "xai"
+                          ]
+                        },
+                        "accountSlotId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "subscriptionProviderId",
+                        "accountSlotId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "modelDetails": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "context": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "output": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "inputModalities": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "outputModalities": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reasoning": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "reasoningEffortLevels": {
+                            "type": "object",
+                            "properties": {
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "enum": [
+                                        "none",
+                                        "minimal",
+                                        "low",
+                                        "medium",
+                                        "high",
+                                        "xhigh",
+                                        "max"
+                                      ]
+                                    }
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "upstream-snapshot",
+                                      "deployment-extension",
+                                      "profile-override"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "value",
+                              "source"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "cost": {
+                            "type": "object",
+                            "properties": {
+                              "input": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "output": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "cache_read": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              },
+                              "cache_write": {
+                                "type": "object",
+                                "properties": {
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "source": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "upstream-snapshot",
+                                          "deployment-extension",
+                                          "profile-override"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "value",
+                                  "source"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "input",
+                              "output",
+                              "cache_read",
+                              "cache_write"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "context",
+                          "output",
+                          "inputModalities",
+                          "outputModalities",
+                          "reasoning",
+                          "reasoningEffortLevels",
+                          "cost"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "defaultModel": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "readiness": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "checkedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "displayName",
+                    "kind",
+                    "gatewayCapabilities",
+                    "models"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "diagnostics",
+              "registry"
+            ],
+            "additionalProperties": false
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "runtimeConfig": {
+            "type": "object",
+            "properties": {
+              "currentVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "loadedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastReload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "safe",
+                          "strict"
+                        ]
+                      },
+                      "dryRun": {
+                        "type": "boolean"
+                      },
+                      "previousVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "currentVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "dry-run",
+                          "rejected",
+                          "failed"
+                        ]
+                      },
+                      "message": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "at",
+                      "mode",
+                      "dryRun",
+                      "previousVersion",
+                      "currentVersion",
+                      "status",
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastFailedReload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "safe",
+                          "strict"
+                        ]
+                      },
+                      "dryRun": {
+                        "type": "boolean"
+                      },
+                      "previousVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "currentVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "dry-run",
+                          "rejected",
+                          "failed"
+                        ]
+                      },
+                      "message": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "at",
+                      "mode",
+                      "dryRun",
+                      "previousVersion",
+                      "currentVersion",
+                      "status",
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pendingRestart": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "hot-swappable",
+                        "session-scoped",
+                        "restart-required",
+                        "rejected"
+                      ]
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "applied",
+                        "deferred",
+                        "requires-restart",
+                        "rejected"
+                      ]
+                    },
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "category",
+                    "action",
+                    "summary"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "currentVersion",
+              "loadedAt",
+              "lastReload",
+              "lastFailedReload",
+              "pendingRestart"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "service",
+          "boot",
+          "process",
+          "gateway",
+          "providers",
+          "capabilities",
+          "runtimeConfig"
+        ],
+        "additionalProperties": false
+      },
+      "diagnostics.setup.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "diagnostics.setup.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "const": "nanocore"
+          },
+          "server": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "local",
+                  "server"
+                ]
+              },
+              "dataRoot": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "configured"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "config": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "defaultAgentId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "defaultAgentId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "mode",
+              "dataRoot",
+              "config"
+            ],
+            "additionalProperties": false
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "vendor": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "core",
+                    "gateway",
+                    "core+gateway",
+                    "available"
+                  ]
+                },
+                "defaultModel": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "secret": {
+                  "type": "object",
+                  "properties": {
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "marker": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "redacted",
+                        "secret-ref"
+                      ]
+                    },
+                    "ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "configured",
+                    "marker",
+                    "ref"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "displayName",
+                "kind",
+                "vendor",
+                "role",
+                "defaultModel",
+                "secret"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "agents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "readiness": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "degraded",
+                        "blocked",
+                        "disabled"
+                      ]
+                    },
+                    "reasons": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reasons"
+                  ],
+                  "additionalProperties": false
+                },
+                "setup": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "degraded",
+                        "blocked",
+                        "disabled"
+                      ]
+                    },
+                    "deploymentMode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "logicalModelId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "diagnostics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "severity": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "agentId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message",
+                          "severity",
+                          "agentId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "deploymentMode",
+                    "logicalModelId",
+                    "diagnostics"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "displayName",
+                "readiness",
+                "setup"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "runtimeConfig": {
+            "type": "object",
+            "properties": {
+              "currentVersion": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "loadedAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "lastReload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "safe",
+                          "strict"
+                        ]
+                      },
+                      "dryRun": {
+                        "type": "boolean"
+                      },
+                      "previousVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "currentVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "dry-run",
+                          "rejected",
+                          "failed"
+                        ]
+                      },
+                      "message": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "at",
+                      "mode",
+                      "dryRun",
+                      "previousVersion",
+                      "currentVersion",
+                      "status",
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastFailedReload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "at": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "safe",
+                          "strict"
+                        ]
+                      },
+                      "dryRun": {
+                        "type": "boolean"
+                      },
+                      "previousVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "currentVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "dry-run",
+                          "rejected",
+                          "failed"
+                        ]
+                      },
+                      "message": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "at",
+                      "mode",
+                      "dryRun",
+                      "previousVersion",
+                      "currentVersion",
+                      "status",
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pendingRestart": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "hot-swappable",
+                        "session-scoped",
+                        "restart-required",
+                        "rejected"
+                      ]
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "applied",
+                        "deferred",
+                        "requires-restart",
+                        "rejected"
+                      ]
+                    },
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "category",
+                    "action",
+                    "summary"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "currentVersion",
+              "loadedAt",
+              "lastReload",
+              "lastFailedReload",
+              "pendingRestart"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "service",
+          "server",
+          "providers",
+          "agents",
+          "runtimeConfig"
+        ],
+        "additionalProperties": false
+      },
       "nanohost.enroll.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -87871,1513 +89865,6 @@
         "type": "string",
         "minLength": 1
       },
-      "AppDiagnosticsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "service": {
-            "type": "string",
-            "minLength": 1
-          },
-          "boot": {
-            "type": "object",
-            "properties": {
-              "bootId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "acceptingProductWork": {
-                "type": "boolean"
-              },
-              "overall": {
-                "type": "string",
-                "enum": [
-                  "ready",
-                  "degraded",
-                  "failed"
-                ]
-              },
-              "subsystems": {
-                "type": "object",
-                "properties": {
-                  "config": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "storage": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "policy": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "vault": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "scheduler": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "llmGateway": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "knowledgeIndex": {
-                    "type": "object",
-                    "properties": {
-                      "state": {
-                        "type": "string",
-                        "enum": [
-                          "ready",
-                          "degraded",
-                          "failed"
-                        ]
-                      },
-                      "reasons": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "code": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "message": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "blocks": {
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            }
-                          },
-                          "required": [
-                            "code",
-                            "message",
-                            "blocks"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "state",
-                      "reasons"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "required": [
-                  "config",
-                  "storage",
-                  "policy",
-                  "vault",
-                  "scheduler",
-                  "llmGateway",
-                  "knowledgeIndex"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "bootId",
-              "acceptingProductWork",
-              "overall",
-              "subsystems"
-            ],
-            "additionalProperties": false
-          },
-          "process": {
-            "type": "object",
-            "properties": {
-              "observedAt": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "nodeVersion": {
-                "type": "string",
-                "minLength": 1
-              },
-              "uptimeSeconds": {
-                "type": "number",
-                "minimum": 0
-              },
-              "memory": {
-                "type": "object",
-                "properties": {
-                  "rssBytes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "heapUsedBytes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "heapTotalBytes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "rssBytes",
-                  "heapUsedBytes",
-                  "heapTotalBytes"
-                ],
-                "additionalProperties": false
-              },
-              "telemetry": {
-                "type": "object",
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "exportConfigured": {
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "enabled",
-                  "exportConfigured"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "observedAt",
-              "nodeVersion",
-              "uptimeSeconds",
-              "memory",
-              "telemetry"
-            ],
-            "additionalProperties": false
-          },
-          "gateway": {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string",
-                "minLength": 1
-              },
-              "endpoints": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "defaultModelId": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "displayName": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "capabilities": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "autoFailover": {
-                      "type": "boolean"
-                    },
-                    "routes": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "providerProfileId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "providerModel": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "available": {
-                            "type": "boolean"
-                          },
-                          "unavailableReason": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "enum": [
-                                  "provider_profile_absent",
-                                  "provider_model_delisted",
-                                  "provider_not_dispatchable",
-                                  "provider_api_key_missing",
-                                  "subscription_vault_unavailable",
-                                  "subscription_account_absent",
-                                  "subscription_account_logged_out",
-                                  "subscription_account_integrity_unavailable"
-                                ]
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "providerProfileId",
-                          "providerModel",
-                          "available",
-                          "unavailableReason"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "contract": {
-                      "type": "object",
-                      "properties": {
-                        "context": {
-                          "anyOf": [
-                            {
-                              "type": "integer",
-                              "exclusiveMinimum": 0,
-                              "maximum": 9007199254740991
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "output": {
-                          "anyOf": [
-                            {
-                              "type": "integer",
-                              "exclusiveMinimum": 0,
-                              "maximum": 9007199254740991
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "inputModalities": {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "reasoning": {
-                          "type": [
-                            "boolean",
-                            "null"
-                          ]
-                        }
-                      },
-                      "required": [
-                        "context",
-                        "output",
-                        "inputModalities",
-                        "reasoning"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "reasoningEffortLevels": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "none",
-                          "minimal",
-                          "low",
-                          "medium",
-                          "high",
-                          "xhigh",
-                          "max"
-                        ]
-                      }
-                    },
-                    "contextManagement": {
-                      "type": "object",
-                      "properties": {
-                        "type": {
-                          "type": "string",
-                          "const": "compaction"
-                        },
-                        "compactThreshold": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0,
-                          "maximum": 9007199254740991
-                        }
-                      },
-                      "required": [
-                        "type",
-                        "compactThreshold"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "displayName",
-                    "capabilities"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "usage": {
-                "type": "object",
-                "properties": {
-                  "summaries": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "cacheReadTokens": {
-                          "type": "number"
-                        },
-                        "cacheWriteTokens": {
-                          "type": "number"
-                        },
-                        "completionTokens": {
-                          "type": "number"
-                        },
-                        "endpoint": {
-                          "type": "string",
-                          "enum": [
-                            "chat_completions",
-                            "responses",
-                            "quick_chat"
-                          ]
-                        },
-                        "inputTokens": {
-                          "type": "number"
-                        },
-                        "lastObservedAt": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "model": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "providerId": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "requestCount": {
-                          "type": "number"
-                        },
-                        "totalTokens": {
-                          "type": "number"
-                        }
-                      },
-                      "required": [
-                        "completionTokens",
-                        "endpoint",
-                        "inputTokens",
-                        "lastObservedAt",
-                        "model",
-                        "providerId",
-                        "requestCount",
-                        "totalTokens"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
-                },
-                "required": [
-                  "summaries"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "status",
-              "endpoints",
-              "defaultModelId",
-              "models"
-            ],
-            "additionalProperties": false
-          },
-          "providers": {
-            "type": "object",
-            "properties": {
-              "diagnostics": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "message": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "profileId": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "source": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "ready",
-                        "degraded",
-                        "blocked",
-                        "disabled",
-                        "unknown"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message",
-                    "source",
-                    "status"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "registry": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "displayName": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "kind": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "gatewayCapabilities": {
-                      "type": "object",
-                      "properties": {
-                        "chatCompletions": {
-                          "type": "string",
-                          "enum": [
-                            "native",
-                            "bridged",
-                            "unsupported"
-                          ]
-                        },
-                        "responses": {
-                          "type": "string",
-                          "enum": [
-                            "native",
-                            "bridged",
-                            "unsupported"
-                          ]
-                        }
-                      },
-                      "required": [
-                        "chatCompletions",
-                        "responses"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "models": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "metadataKey": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "subscriptionAccount": {
-                      "type": "object",
-                      "properties": {
-                        "subscriptionProviderId": {
-                          "type": "string",
-                          "enum": [
-                            "openai-codex",
-                            "xai"
-                          ]
-                        },
-                        "accountSlotId": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "required": [
-                        "subscriptionProviderId",
-                        "accountSlotId"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "modelDetails": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "context": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "integer",
-                                    "exclusiveMinimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "output": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "integer",
-                                    "exclusiveMinimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "inputModalities": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "outputModalities": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "reasoning": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "type": [
-                                  "boolean",
-                                  "null"
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "reasoningEffortLevels": {
-                            "type": "object",
-                            "properties": {
-                              "value": {
-                                "anyOf": [
-                                  {
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "enum": [
-                                        "none",
-                                        "minimal",
-                                        "low",
-                                        "medium",
-                                        "high",
-                                        "xhigh",
-                                        "max"
-                                      ]
-                                    }
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "source": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "enum": [
-                                      "upstream-snapshot",
-                                      "deployment-extension",
-                                      "profile-override"
-                                    ]
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "value",
-                              "source"
-                            ],
-                            "additionalProperties": false
-                          },
-                          "cost": {
-                            "type": "object",
-                            "properties": {
-                              "input": {
-                                "type": "object",
-                                "properties": {
-                                  "value": {
-                                    "anyOf": [
-                                      {
-                                        "type": "number",
-                                        "minimum": 0
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "source": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "upstream-snapshot",
-                                          "deployment-extension",
-                                          "profile-override"
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "value",
-                                  "source"
-                                ],
-                                "additionalProperties": false
-                              },
-                              "output": {
-                                "type": "object",
-                                "properties": {
-                                  "value": {
-                                    "anyOf": [
-                                      {
-                                        "type": "number",
-                                        "minimum": 0
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "source": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "upstream-snapshot",
-                                          "deployment-extension",
-                                          "profile-override"
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "value",
-                                  "source"
-                                ],
-                                "additionalProperties": false
-                              },
-                              "cache_read": {
-                                "type": "object",
-                                "properties": {
-                                  "value": {
-                                    "anyOf": [
-                                      {
-                                        "type": "number",
-                                        "minimum": 0
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "source": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "upstream-snapshot",
-                                          "deployment-extension",
-                                          "profile-override"
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "value",
-                                  "source"
-                                ],
-                                "additionalProperties": false
-                              },
-                              "cache_write": {
-                                "type": "object",
-                                "properties": {
-                                  "value": {
-                                    "anyOf": [
-                                      {
-                                        "type": "number",
-                                        "minimum": 0
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "source": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "upstream-snapshot",
-                                          "deployment-extension",
-                                          "profile-override"
-                                        ]
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "value",
-                                  "source"
-                                ],
-                                "additionalProperties": false
-                              }
-                            },
-                            "required": [
-                              "input",
-                              "output",
-                              "cache_read",
-                              "cache_write"
-                            ],
-                            "additionalProperties": false
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "context",
-                          "output",
-                          "inputModalities",
-                          "outputModalities",
-                          "reasoning",
-                          "reasoningEffortLevels",
-                          "cost"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "baseUrl": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "defaultModel": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "readiness": {
-                      "type": "object",
-                      "properties": {
-                        "status": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "message": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "checkedAt": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        }
-                      },
-                      "required": [
-                        "status"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "displayName",
-                    "kind",
-                    "gatewayCapabilities",
-                    "models"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "diagnostics",
-              "registry"
-            ],
-            "additionalProperties": false
-          },
-          "capabilities": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "runtimeConfig": {
-            "type": "object",
-            "properties": {
-              "currentVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              },
-              "loadedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastReload": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "at": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "mode": {
-                        "type": "string",
-                        "enum": [
-                          "safe",
-                          "strict"
-                        ]
-                      },
-                      "dryRun": {
-                        "type": "boolean"
-                      },
-                      "previousVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "currentVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "applied",
-                          "dry-run",
-                          "rejected",
-                          "failed"
-                        ]
-                      },
-                      "message": {
-                        "default": null,
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "at",
-                      "mode",
-                      "dryRun",
-                      "previousVersion",
-                      "currentVersion",
-                      "status",
-                      "message"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastFailedReload": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "at": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "mode": {
-                        "type": "string",
-                        "enum": [
-                          "safe",
-                          "strict"
-                        ]
-                      },
-                      "dryRun": {
-                        "type": "boolean"
-                      },
-                      "previousVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "currentVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "applied",
-                          "dry-run",
-                          "rejected",
-                          "failed"
-                        ]
-                      },
-                      "message": {
-                        "default": null,
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "at",
-                      "mode",
-                      "dryRun",
-                      "previousVersion",
-                      "currentVersion",
-                      "status",
-                      "message"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pendingRestart": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "category": {
-                      "type": "string",
-                      "enum": [
-                        "hot-swappable",
-                        "session-scoped",
-                        "restart-required",
-                        "rejected"
-                      ]
-                    },
-                    "action": {
-                      "type": "string",
-                      "enum": [
-                        "applied",
-                        "deferred",
-                        "requires-restart",
-                        "rejected"
-                      ]
-                    },
-                    "summary": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "category",
-                    "action",
-                    "summary"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "currentVersion",
-              "loadedAt",
-              "lastReload",
-              "lastFailedReload",
-              "pendingRestart"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "service",
-          "boot",
-          "process",
-          "gateway",
-          "providers",
-          "capabilities",
-          "runtimeConfig"
-        ],
-        "additionalProperties": false
-      },
       "AppUpdateStatusResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -90126,461 +90613,6 @@
         ],
         "additionalProperties": false
       },
-      "SetupDiagnosticsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "service": {
-            "type": "string",
-            "const": "nanocore"
-          },
-          "server": {
-            "type": "object",
-            "properties": {
-              "mode": {
-                "type": "string",
-                "enum": [
-                  "local",
-                  "server"
-                ]
-              },
-              "dataRoot": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "const": "configured"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "config": {
-                "type": "object",
-                "properties": {
-                  "schemaVersion": {
-                    "type": [
-                      "number",
-                      "null"
-                    ]
-                  },
-                  "defaultAgentId": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "schemaVersion",
-                  "defaultAgentId"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "mode",
-              "dataRoot",
-              "config"
-            ],
-            "additionalProperties": false
-          },
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "displayName": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "kind": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "vendor": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "role": {
-                  "type": "string",
-                  "enum": [
-                    "core",
-                    "gateway",
-                    "core+gateway",
-                    "available"
-                  ]
-                },
-                "defaultModel": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "secret": {
-                  "type": "object",
-                  "properties": {
-                    "configured": {
-                      "type": "boolean"
-                    },
-                    "marker": {
-                      "type": "string",
-                      "enum": [
-                        "none",
-                        "redacted",
-                        "secret-ref"
-                      ]
-                    },
-                    "ref": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "configured",
-                    "marker",
-                    "ref"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "id",
-                "displayName",
-                "kind",
-                "vendor",
-                "role",
-                "defaultModel",
-                "secret"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "agents": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "displayName": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "readiness": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "ready",
-                        "degraded",
-                        "blocked",
-                        "disabled"
-                      ]
-                    },
-                    "reasons": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "required": [
-                    "status",
-                    "reasons"
-                  ],
-                  "additionalProperties": false
-                },
-                "setup": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "ready",
-                        "degraded",
-                        "blocked",
-                        "disabled"
-                      ]
-                    },
-                    "deploymentMode": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "logicalModelId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "diagnostics": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "code": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "message": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "severity": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "agentId": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "code",
-                          "message",
-                          "severity",
-                          "agentId"
-                        ],
-                        "additionalProperties": false
-                      }
-                    }
-                  },
-                  "required": [
-                    "status",
-                    "deploymentMode",
-                    "logicalModelId",
-                    "diagnostics"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "required": [
-                "id",
-                "displayName",
-                "readiness",
-                "setup"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "runtimeConfig": {
-            "type": "object",
-            "properties": {
-              "currentVersion": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
-              },
-              "loadedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "lastReload": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "at": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "mode": {
-                        "type": "string",
-                        "enum": [
-                          "safe",
-                          "strict"
-                        ]
-                      },
-                      "dryRun": {
-                        "type": "boolean"
-                      },
-                      "previousVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "currentVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "applied",
-                          "dry-run",
-                          "rejected",
-                          "failed"
-                        ]
-                      },
-                      "message": {
-                        "default": null,
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "at",
-                      "mode",
-                      "dryRun",
-                      "previousVersion",
-                      "currentVersion",
-                      "status",
-                      "message"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lastFailedReload": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "at": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "mode": {
-                        "type": "string",
-                        "enum": [
-                          "safe",
-                          "strict"
-                        ]
-                      },
-                      "dryRun": {
-                        "type": "boolean"
-                      },
-                      "previousVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "currentVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "applied",
-                          "dry-run",
-                          "rejected",
-                          "failed"
-                        ]
-                      },
-                      "message": {
-                        "default": null,
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "at",
-                      "mode",
-                      "dryRun",
-                      "previousVersion",
-                      "currentVersion",
-                      "status",
-                      "message"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pendingRestart": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "path": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "category": {
-                      "type": "string",
-                      "enum": [
-                        "hot-swappable",
-                        "session-scoped",
-                        "restart-required",
-                        "rejected"
-                      ]
-                    },
-                    "action": {
-                      "type": "string",
-                      "enum": [
-                        "applied",
-                        "deferred",
-                        "requires-restart",
-                        "rejected"
-                      ]
-                    },
-                    "summary": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  },
-                  "required": [
-                    "path",
-                    "category",
-                    "action",
-                    "summary"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "currentVersion",
-              "loadedAt",
-              "lastReload",
-              "lastFailedReload",
-              "pendingRestart"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "service",
-          "server",
-          "providers",
-          "agents",
-          "runtimeConfig"
-        ],
-        "additionalProperties": false
-      },
       "ThreadId": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "string",
@@ -91263,5 +91295,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d8a04bec6744487f5a64d3c43484f96d8cefd2cc8a3cdcf42251a2cdee2041e2"
+  "x-openkit-source-digest": "sha256:b80b682677efb6fc2f9cf43539620fd53fad18fb8a8decf345a4a63297cc8c12"
 }

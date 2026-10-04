@@ -178,7 +178,7 @@ export const SetupSecretMarkerSchema = z.object({
   ref: z.string().nullable(),
 });
 
-/** Setup diagnostics response schema for /api/setup/diagnostics. */
+/** Setup diagnostics response schema for diagnostics.setup. */
 export const SetupDiagnosticsResponseSchema = z
   .object({
     service: z.literal('nanocore'),
@@ -297,7 +297,7 @@ export const ProcessDiagnosticsSampleSchema = z
   })
   .strict();
 
-/** App-facing diagnostics response schema for /api/app/diagnostics. */
+/** App-facing diagnostics response schema for diagnostics.app. */
 export const AppDiagnosticsResponseSchema = z
   .object({
     service: z.string().min(1),

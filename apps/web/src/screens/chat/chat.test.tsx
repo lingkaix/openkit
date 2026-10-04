@@ -2819,7 +2819,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     ['local', 'user_local'],
     ['server', 'user_server'],
   ])('renders the exact %s user-message actor without deployment-mode probing', async (_, actorId) => {
-    const getSetupDiagnostics = vi.fn().mockRejectedValue(new Error('must not be called'));
+    const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
     const client = makeClient(
       {
         'thread.items': vi.fn().mockResolvedValue({
@@ -2827,13 +2827,13 @@ describe('thread lifecycle and attribution (S7)', () => {
           nextCursor: null,
         }),
       },
-      { getSetupDiagnostics }
+      { 'diagnostics.setup': setupDiagnosticsOperation }
     );
 
     renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText(new RegExp(actorId))).toBeInTheDocument();
-    expect(getSetupDiagnostics).not.toHaveBeenCalled();
+    expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
   });
 
   it('renders the exact actors on approval decisions and user-input responses', async () => {
@@ -2882,7 +2882,7 @@ describe('thread lifecycle and attribution (S7)', () => {
   });
 
   it('renders the exact active-turn trigger actor from the typed dashboard projection', async () => {
-    const getSetupDiagnostics = vi.fn().mockRejectedValue(new Error('must not be called'));
+    const setupDiagnosticsOperation = vi.fn().mockRejectedValue(new Error('must not be called'));
     const subscribeTurnEvents = vi.fn().mockReturnValue({
       [Symbol.asyncIterator]() {
         return { next: vi.fn().mockResolvedValue({ value: undefined, done: true }) };
@@ -2906,14 +2906,14 @@ describe('thread lifecycle and attribution (S7)', () => {
             }),
           ],
         }),
-        getSetupDiagnostics,
+        'diagnostics.setup': setupDiagnosticsOperation,
       }
     );
 
     renderApp('/chat/ws1/th1', client);
 
     expect(await screen.findByText(/automation_release/)).toBeInTheDocument();
-    expect(getSetupDiagnostics).not.toHaveBeenCalled();
+    expect(setupDiagnosticsOperation).not.toHaveBeenCalled();
   });
 
   it.each([

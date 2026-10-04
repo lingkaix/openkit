@@ -1,6 +1,6 @@
 import {
+  type JsonOperationId,
   OPERATION_DEFINITIONS,
-  type OperationId,
   type OperationInput,
   type OperationOutput,
 } from '@openkit/app-api-schemas';
@@ -13,7 +13,7 @@ export function createOperationEngine(
   implementations: OperationImplementations,
   dependencies: OperationAdmissionDependencies
 ) {
-  return async <K extends OperationId>(
+  return async <K extends JsonOperationId>(
     id: K,
     value: unknown,
     entry: OperationInvocationContext
@@ -21,6 +21,8 @@ export function createOperationEngine(
     if (!Object.hasOwn(OPERATION_DEFINITIONS, id))
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
     const definition = OPERATION_DEFINITIONS[id];
+    if (definition.binding !== 'json')
+      throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
     const admitted = admitOperation(definition, value, entry, dependencies);
     try {
       const output = await implementations[id](

@@ -1221,7 +1221,7 @@ describe('nanocore server', () => {
       true
     );
 
-    const diagnostics = await app.request('/api/app/diagnostics');
+    const diagnostics = await app.request(...operationRequest('diagnostics.app', {}));
     const read = await canonicalApp.request('/api/app/operations/workspace.list', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1338,7 +1338,7 @@ describe('nanocore server', () => {
     });
     expect(read.status).toBe(200);
 
-    const diagnostics = await app.request('/api/app/diagnostics');
+    const diagnostics = await app.request(...operationRequest('diagnostics.app', {}));
     const write = await app.request(
       ...operationRequest(
         'workspace.create',

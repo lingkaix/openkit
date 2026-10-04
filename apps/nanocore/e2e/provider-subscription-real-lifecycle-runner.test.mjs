@@ -129,7 +129,7 @@ const HAPPY_SCRIPT = () => [
     { accounts: [accountDescriptor('logged_in')] },
   ],
   ['/api/app/operations/provider-subscription.account-status', 200, accountDescriptor('logged_in')],
-  ['/api/app/diagnostics', 200, { gateway: { defaultModelId: MODEL } }],
+  ['/api/app/operations/diagnostics.app', 200, { gateway: { defaultModelId: MODEL } }],
   ['/v1/responses', 200, SSE_OK],
   [
     '/api/app/operations/provider-subscription.account-quota',

@@ -471,8 +471,6 @@ function makeClient(overrides: ClientOverrides = {}) {
     overrides.listAuthorizedWorkspaces ?? vi.fn().mockResolvedValue(PRODUCT_WORKSPACES);
   const client = {
     app: {
-      getDiagnostics: forbidden.diagnostics,
-      getSetupDiagnostics: forbidden.setup,
       ...overrides.app,
     },
     auth: {
@@ -490,6 +488,8 @@ function makeClient(overrides: ClientOverrides = {}) {
     },
     core: { meta: forbidden.meta },
     operations: {
+      'diagnostics.app': forbidden.diagnostics,
+      'diagnostics.setup': forbidden.setup,
       'runtime.file-read': forbidden.runtimeConfig,
       'runtime.file-list': forbidden.runtimeConfig,
       'vault.server-use-list': forbidden.admin,

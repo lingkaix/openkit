@@ -174,7 +174,9 @@ describe('Workspace sharing routes', () => {
     const fixture = createFixture();
 
     expect(getRegisteredAppApiOperationIds(fixture.app)).toEqual(
-      Object.keys(OPERATION_DEFINITIONS)
+      Object.entries(OPERATION_DEFINITIONS)
+        .filter(([, definition]) => definition.binding === 'json')
+        .map(([id]) => id)
     );
     expect(SHARING_OPERATION_IDS.every((id) => Object.hasOwn(OPERATION_DEFINITIONS, id))).toBe(
       true

@@ -13,6 +13,7 @@ import {
   TASK_OPERATION_DEFINITIONS,
 } from './conversation-operations.js';
 import { DATA_ROOT_ADMIN_OPERATION_DEFINITIONS } from './data-root-admin-operations.js';
+import { DIAGNOSTICS_OPERATION_DEFINITIONS } from './diagnostics-operations.js';
 import { ENVIRONMENT_OPERATION_DEFINITIONS } from './environment-operations.js';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
@@ -39,6 +40,7 @@ import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
 import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
 import { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
+import { WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS } from './workspace-archive-operations.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
 import { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from './workspace-transfer.js';
@@ -83,6 +85,7 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
   ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
   APP_UPDATE_OPERATION_DEFINITIONS,
+  DIAGNOSTICS_OPERATION_DEFINITIONS,
   NANOHOST_OPERATION_DEFINITIONS,
   DATA_ROOT_ADMIN_OPERATION_DEFINITIONS
 );
@@ -102,6 +105,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   WORKSPACE_OPERATION_DEFINITIONS,
   WORKSPACE_TRANSFER_OPERATION_DEFINITIONS,
+  WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS,
   WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
   THREAD_OPERATION_DEFINITIONS,
   TURN_OPERATION_DEFINITIONS,
@@ -131,6 +135,10 @@ export const OPERATION_DEFINITIONS = composeOperationTables(
 export type ProductOperationId = keyof typeof PRODUCT_OPERATION_DEFINITIONS;
 /** Exact implemented ids inferred from the definitions. */
 export type OperationId = keyof typeof OPERATION_DEFINITIONS;
+/** Only JSON bindings join transport-free invocation and the generated JSON client. */
+export type JsonOperationId = {
+  [K in OperationId]: (typeof OPERATION_DEFINITIONS)[K]['binding'] extends 'json' ? K : never;
+}[OperationId];
 /** Complete logical input of an implemented operation. */
 export type OperationInput<K extends OperationId> = z.infer<
   (typeof OPERATION_DEFINITIONS)[K]['inputSchema']

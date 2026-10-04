@@ -68,7 +68,7 @@ Acceptance requires a complete archive used from outside the checkout, resolvabl
 
 ## Current Implementation Projection
 
-The connection-probe catalog exclusion, administrator CLI archive coverage, and linked first-release Skill retirement coverage condition are decided and not yet implemented.
+The connection-probe catalog exclusion and administrator CLI archive coverage are implemented. The linked first-release Skill retirement coverage condition is decided and not yet implemented.
 
 The operations Skill entrypoint and six maintained references are present, and current user manuals have moved into that tree. The old manual directory retains discovery pointers for existing and frozen links. The release packager produces the separate archive, and both packaging and post-publication verification use the same extracted-reference check. Local archive verification and a fresh Agent's bounded read-only deployment diagnosis have passed. Release publication and actual offline recovery execution were not demonstrated by that diagnosis. App-triggered host updates follow the separately accepted `20260910-app_update_delivery.md`; this Skill does not independently authorize that effect path.
 

@@ -740,7 +740,7 @@ function makeClient(
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
-    app: { getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS), ...overrides.app },
+    app: { ...overrides.app },
     auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn() } },
     capabilities: {
       refresh: vi.fn(),
@@ -755,6 +755,7 @@ function makeClient(
     },
     repositories: {},
     operations: {
+      'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS),
       'runtime.file-list': vi.fn().mockResolvedValue({
         files: [
           {
@@ -1417,7 +1418,7 @@ describe('Debug settings (board 11)', () => {
       bundles: vi.mocked(client.operations['evidence.bundle-list']).mock.calls,
       runtime: vi.mocked(client.operations['evidence.runtime-list']).mock.calls,
       snapshots: vi.mocked(client.operations['environment.snapshot-list']).mock.calls,
-      diagnostics: vi.mocked(client.app.getDiagnostics).mock.calls,
+      diagnostics: vi.mocked(client.operations['diagnostics.app']).mock.calls,
       serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
       vaultAdmin: vi.mocked(client.operations['vault.status']).mock.calls,
     }).toEqual({
@@ -1827,7 +1828,7 @@ describe('General settings (board 10)', () => {
       screen.queryByRole('heading', { name: 'Diagnostics', level: 2 })
     ).not.toBeInTheDocument();
     expect(client.operations['runtime.file-list']).not.toHaveBeenCalled();
-    expect(client.app.getDiagnostics).not.toHaveBeenCalled();
+    expect(client.operations['diagnostics.app']).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: /Appearance/i })).toHaveAttribute(
       'href',
       '/settings/appearance'
@@ -1962,7 +1963,7 @@ describe('Gateway (board 20)', () => {
     expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
     expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
     expect((await screen.findAllByText('Demo provider')).length).toBeGreaterThan(0);
-    expect(client.app.getDiagnostics).toHaveBeenCalled();
+    expect(client.operations['diagnostics.app']).toHaveBeenCalled();
 
     expect(listProviders).toHaveBeenCalledTimes(1);
     expect(listAccounts).toHaveBeenCalledTimes(2);

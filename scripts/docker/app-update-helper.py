@@ -1434,7 +1434,7 @@ class AppUpdateHelper:
     def _observe_boot(
         self, image_id: Optional[str], source_commit: Optional[str]
     ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
-        status, body = self._authorized_json("/api/app/diagnostics")
+        status, body = self._authorized_json("/api/app/operations/diagnostics.app", method="POST", body={})
         if status != 200:
             return None
         parsed = self._parse_boot_readiness(body)

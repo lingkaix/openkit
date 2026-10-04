@@ -3406,7 +3406,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     expect(res.status).toBe(200);
 
-    const diagnostics = await app.request('/api/app/diagnostics');
+    const diagnostics = await app.request(...operationRequest('diagnostics.app', {}));
 
     expect(diagnostics.status).toBe(200);
     const diagnosticsBody = (await diagnostics.json()) as {
@@ -3808,7 +3808,7 @@ describe('API key member availability', () => {
         : null;
     try {
       const auditBefore = coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get();
-      const response = await app.request('/api/app/diagnostics');
+      const response = await app.request(...operationRequest('diagnostics.app', {}));
       expect(response.status).toBe(200);
       const diagnostics = await response.json();
       expect(diagnostics.gateway.models[0].routes[0]).toMatchObject({
@@ -3912,7 +3912,9 @@ it('the API-key path restores the same member on next resolve without reload', a
     vaultUnlockState.lock();
     const useBefore = listVaultUseRecords(coreDb);
     expect((await (await app.request('/v1/models')).json()).data).toHaveLength(1);
-    const diagnostics = await (await app.request('/api/app/diagnostics')).json();
+    const diagnostics = await (
+      await app.request(...operationRequest('diagnostics.app', {}))
+    ).json();
     expect(diagnostics.gateway.models[0].routes[0]).toMatchObject({
       id: 'primary',
       available: true,

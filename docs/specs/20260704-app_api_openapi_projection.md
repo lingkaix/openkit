@@ -123,6 +123,8 @@ Until a resource family is cut over, the accepted implementation of that family 
 
 ## Current Implementation Projection
 
+`diagnostics.app` and `diagnostics.setup` derive their JSON routes, OpenAPI, Core Client and CLI projections from `diagnostics-operations.ts`, with exact native joins beside the diagnostics owners. Their former routes and named App methods are absent. Connection metadata, health, raw diagnostics and OpenAPI serving remain support bindings outside operation discovery; metadata and the capability helpers retain their existing Core Client plumbing. The three definition-owned archive operations retain only the existing stream methods and routes, with Web and administrator CLI local-file transfer coverage and remote MCP refusal before processing.
+
 The fifteen Workspace synchronization descriptors derive from `packages/app-api-schemas/src/sync-operations.ts` at `POST /api/app/operations/<sync.id>`, with complete selector inputs and request-identity headers on both decisions. The generated document contains their definition input and output components; the former synchronization paths and hand-written components are absent.
 
 The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, opaque Turn feedback and Quick Chat now use definition-derived canonical operation IDs and `client.operations` with complete logical selectors. Native invocation preserves current Workspace and Thread admission, exact command replay and owner outcomes; their former JSON routes and client members are absent. The Thread event stream remains unchanged.

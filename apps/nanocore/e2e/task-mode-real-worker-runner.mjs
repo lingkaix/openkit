@@ -491,7 +491,7 @@ async function executeTaskModeRealWorkerTest({
   prerequisites,
   stdout,
 }) {
-  const diagnostics = await clients.admin.app.getDiagnostics();
+  const diagnostics = await clients.admin.operations['diagnostics.app']({});
   assert(
     diagnostics.boot?.acceptingProductWork === true,
     'Target NanoCore is not accepting product work.'

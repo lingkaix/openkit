@@ -1,6 +1,6 @@
 import type {
+  JsonOperationId,
   OPERATION_DEFINITIONS,
-  OperationId,
   OperationInput,
   OperationOutput,
 } from '@openkit/app-api-schemas';
@@ -59,7 +59,7 @@ export type AdmittedOperationContext = Exclude<
 };
 /** Exact operation signatures preserve the concrete family key join. */
 export type OperationImplementations = {
-  [K in OperationId]: (
+  [K in JsonOperationId]: (
     input: OperationInput<K>,
     context: (typeof OPERATION_DEFINITIONS)[K]['credentials'] extends readonly ['bootstrap-secret']
       ? Extract<OperationInvocationContext, { kind: 'bootstrap' }>
@@ -69,7 +69,7 @@ export type OperationImplementations = {
 /** Family signatures are selected only from the browser-safe table's exact keys. */
 export type FamilyImplementations<T> = Pick<
   OperationImplementations,
-  Extract<keyof T, OperationId>
+  Extract<keyof T, JsonOperationId>
 >;
 /** Requires a human-authenticated entry where the family has no worker projection. */
 export function publicOperationActor(context: OperationInvocationContext): Actor {

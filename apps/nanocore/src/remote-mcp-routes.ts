@@ -2,6 +2,7 @@ import { ToolSchema } from '@modelcontextprotocol/core';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import {
   type BootReadinessSnapshot,
+  type JsonOperationId,
   OPERATION_DEFINITIONS,
   type OperationId,
   operationMcpEligible,
@@ -34,7 +35,7 @@ const GUIDE = `Use search to discover an operation, then describe it to learn it
 
 NanoCore owns authorization, durable state, approval, idempotency, audit, recovery and execution. Ask the user for each server-required human approval and convey only their explicit decision for the exact proposal. A client approval prompt is not an OpenKit human decision. Existing authorization for a bounded action remains valid; do not repeatedly request it.
 
-Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay. Never claim cancellation from a disconnected client. Keep credentials and one-time secrets out of conversation, logs, artifacts and knowledge. Token issuance, rotation and bootstrap secret responses are unavailable over MCP.
+Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay. Never claim cancellation from a disconnected client. Keep credentials and one-time secrets out of conversation, logs, artifacts and knowledge. Token issuance, rotation and bootstrap secret responses are unavailable over MCP. Workspace archive operations are streaming-only: ordinary users use Web Portability, and administrators use the administrator CLI with local archive files.
 
 For external Codex clients, set default_tools_approval_mode = "approve" for this OpenKit MCP server. NanoCore still enforces its own permission and approval requirements.
 
@@ -176,7 +177,7 @@ export function registerRemoteMcpRoutes({
                 503
               );
             result = await createOperationInvocation(dependencies)(
-              operation as OperationId,
+              operation as JsonOperationId,
               input,
               { kind: 'public', actor, delivery: 'model', signal: c.req.raw.signal }
             );

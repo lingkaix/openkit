@@ -5,7 +5,7 @@ import { createCoreClient } from './client.js';
 import { ProtocolValidationError } from './errors.js';
 
 describe('definition-derived client operations', () => {
-  it('uses exactly the definition keys and validates before transport', async () => {
+  it('uses exactly the JSON definition keys and validates before transport', async () => {
     let calls = 0;
     const client = createCoreClient({
       baseUrl: 'http://nanocore.test',
@@ -14,14 +14,29 @@ describe('definition-derived client operations', () => {
         return new Response('{}');
       },
     });
-    expect(Object.keys(client.operations)).toEqual(Object.keys(OPERATION_DEFINITIONS));
-    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+    expect(Object.keys(client.operations)).toEqual(
+      Object.entries(OPERATION_DEFINITIONS)
+        .filter(([, definition]) => definition.binding === 'json')
+        .map(([id]) => id)
+    );
+    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
+      ([, definition]) => definition.binding === 'json'
+    )) {
       if (!definition.inputSchema.safeParse({}).success)
         await expect(
           client.operations[id as keyof typeof client.operations]({} as never)
         ).rejects.toThrow();
     }
     expect(calls).toBe(0);
+    for (const [id] of Object.entries(OPERATION_DEFINITIONS).filter(
+      ([, definition]) => definition.binding === 'streaming'
+    ))
+      expect(client.operations).not.toHaveProperty(id);
+    expect(client.app).toHaveProperty('downloadWorkspaceExportArchive');
+    expect(client.app).toHaveProperty('dryRunWorkspaceArchiveImport');
+    expect(client.app).toHaveProperty('importWorkspaceArchive');
+    expect(client.app).not.toHaveProperty('getDiagnostics');
+    expect(client.app).not.toHaveProperty('getSetupDiagnostics');
     expect(client.app).not.toHaveProperty('getLightApp');
     expect(client.app).not.toHaveProperty('exportWorkspace');
     expect(client.app).not.toHaveProperty('dryRunWorkspaceImport');

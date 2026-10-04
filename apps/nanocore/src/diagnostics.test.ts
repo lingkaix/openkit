@@ -1,7 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import type { BetterAuthServer } from './auth/middleware.js';
@@ -9,6 +8,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { resolveTelemetryConfiguration } from './telemetry.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 /**
  * Creates a minimal Better Auth stub for diagnostics tests.
@@ -57,7 +57,7 @@ describe('Settings diagnostics app API', () => {
       providerRegistry,
     });
 
-    const res = await app.request('/api/app/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -127,7 +127,7 @@ describe('Settings diagnostics app API', () => {
         providerRegistry,
       });
 
-      const res = await app.request('/api/app/diagnostics');
+      const res = await app.request(...operationRequest('diagnostics.app', {}));
       const body = await res.json();
 
       expect(res.status).toBe(200);
@@ -182,7 +182,7 @@ describe('Settings diagnostics app API', () => {
       },
     });
 
-    const res = await app.request('/api/app/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -201,7 +201,7 @@ describe('Settings diagnostics app API', () => {
 
   it('keeps generic internal-agent runtime state out of App Diagnostics', async () => {
     const app = createApp();
-    const res = await app.request('/api/app/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -211,7 +211,7 @@ describe('Settings diagnostics app API', () => {
 
   it('samples the current process and nested process.telemetry flags for authorized callers', async () => {
     const app = createApp();
-    const res = await app.request('/api/app/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -292,7 +292,7 @@ describe('Settings diagnostics app API', () => {
       agentManifests: [createAgentManifest()],
     });
 
-    const res = await app.request('/api/setup/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.setup', {}));
     const body = await res.json();
     const serialized = JSON.stringify(body);
 
@@ -358,7 +358,7 @@ describe('Settings diagnostics app API', () => {
       agentManifests: [createAgentManifest({ requiredFeatures: ['workspace.mount.fuse'] })],
     });
 
-    const res = await app.request('/api/setup/diagnostics');
+    const res = await app.request(...operationRequest('diagnostics.setup', {}));
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -376,5 +376,30 @@ describe('Settings diagnostics app API', () => {
         ],
       },
     });
+  });
+});
+
+describe('product diagnostics cutover and support bindings', () => {
+  it('retires both authorized legacy diagnostics routes while preserving owned results', async () => {
+    const app = createApp();
+    for (const [oldPath, id] of [
+      ['/api/app/diagnostics', 'diagnostics.app'],
+      ['/api/setup/diagnostics', 'diagnostics.setup'],
+    ] as const) {
+      const response = await app.request(...operationRequest(id, {}));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ service: 'nanocore' });
+      expect((await app.request(oldPath)).status).toBe(404);
+    }
+  });
+
+  it('serves unauthenticated metadata and health in server mode without product discovery', async () => {
+    const app = createApp({ mode: 'server' });
+    for (const path of ['/api/meta', '/health', '/api/health']) {
+      const response = await app.request(path);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toBeTypeOf('object');
+    }
+    expect((await app.request('/api/diagnostics')).status).toBe(401);
   });
 });

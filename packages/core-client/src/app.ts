@@ -1,6 +1,4 @@
 import {
-  type AppDiagnosticsResponse,
-  AppDiagnosticsResponseSchema,
   type KnowledgeManagerAnswerRequest,
   type KnowledgeManagerDraftProposalRequest,
   type KnowledgeManagerHealthCheckRequest,
@@ -13,8 +11,6 @@ import {
   type ResolveKnowledgeConflictRequest,
   type RetrieveKnowledgeRequest,
   type ReverseKnowledgeProposalRequest,
-  type SetupDiagnosticsResponse,
-  SetupDiagnosticsResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
   type VaultAdminBootstrapCodexAuthJsonRequest,
   type VaultAdminUnlockRequest,
@@ -86,10 +82,6 @@ export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingErro
 
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
-  /** Reads Settings diagnostics. */
-  getDiagnostics(): Promise<AppDiagnosticsResponse>;
-  /** Reads setup diagnostics. */
-  getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
   /** Downloads one verified Workspace export as a raw archive stream. */
   downloadWorkspaceExportArchive(
     workspaceId: string,
@@ -104,9 +96,6 @@ export interface AppApiClient {
 /** Creates the NanoCore App API client. */
 export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
-    getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
-    getSetupDiagnostics: () =>
-      transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
     downloadWorkspaceExportArchive: (workspaceId, exportId) =>
       transport.getStream(
         `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,
