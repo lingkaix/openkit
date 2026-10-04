@@ -2,10 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import type { AppUpdateStatusResponse } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
 import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -14,6 +12,7 @@ import { PUBLIC_OPERATION_ACCESS } from '../auth/operation-access.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import type { AppUpdateHostCommand } from './host-request.js';
 import type { AppUpdateHostResult, AppUpdateHostTransport } from './host-transport.js';
 
@@ -101,11 +100,17 @@ function createMemoryTransport(now: () => number = Date.now): AppUpdateHostTrans
 describe('app-update routes', () => {
   it('disables prepare when deployment configuration is absent', async () => {
     const app = createApp();
-    const response = await app.request('/api/app/app-update/prepare', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(PREPARE_BODY),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'app-update.prepare',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(PREPARE_BODY),
+        }
+      )
+    );
     const body = (await response.json()) as { code: string };
 
     expect(response.status).toBe(503);
@@ -124,11 +129,17 @@ describe('app-update routes', () => {
         },
       },
     });
-    const response = await app.request('/api/app/app-update/prepare', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(PREPARE_BODY),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'app-update.prepare',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(PREPARE_BODY),
+        }
+      )
+    );
     const body = (await response.json()) as { code: string; message: string };
 
     expect(response.status).toBe(503);
@@ -138,11 +149,17 @@ describe('app-update routes', () => {
 
   it('prepares a published-digest source and starts only that receipt', async () => {
     const app = createApp({ appUpdateHostTransport: createMemoryTransport() });
-    const prepared = await app.request('/api/app/app-update/prepare', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(PREPARE_BODY),
-    });
+    const prepared = await app.request(
+      ...operationRequest(
+        'app-update.prepare',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(PREPARE_BODY),
+        }
+      )
+    );
     const review = (await prepared.json()) as {
       requestId: string;
       source: { appDigest: string; kind: string };
@@ -153,14 +170,20 @@ describe('app-update routes', () => {
     expect(review.stage).toBe('prepared');
     expect(review.source).toEqual(PREPARE_BODY.source);
 
-    const started = await app.request('/api/app/app-update/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        maintenanceConsent: true,
-        requestId: review.requestId,
-      }),
-    });
+    const started = await app.request(
+      ...operationRequest(
+        'app-update.start',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            maintenanceConsent: true,
+            requestId: review.requestId,
+          }),
+        }
+      )
+    );
     const status = (await started.json()) as { jobId: string; requestId: string; stage: string };
 
     expect(started.status).toBe(200);
@@ -171,14 +194,20 @@ describe('app-update routes', () => {
 
   it('refuses start for a missing receipt instead of creating a new execution', async () => {
     const app = createApp({ appUpdateHostTransport: createMemoryTransport() });
-    const response = await app.request('/api/app/app-update/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        maintenanceConsent: true,
-        requestId: '11111111-1111-4111-8111-111111111111',
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'app-update.start',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            maintenanceConsent: true,
+            requestId: '11111111-1111-4111-8111-111111111111',
+          }),
+        }
+      )
+    );
     const body = (await response.json()) as { code: string };
 
     expect(response.status).toBe(409);
@@ -186,14 +215,14 @@ describe('app-update routes', () => {
   });
 
   it('keeps App-update operations off Worker and AEP catalogs', () => {
-    for (const operationId of ['prepareAppUpdate', 'startAppUpdate', 'getAppUpdateStatus']) {
+    for (const operationId of ['app-update.prepare', 'app-update.start', 'app-update.status']) {
       expect(PUBLIC_OPERATION_ACCESS[operationId]).toMatchObject({
         authentication: 'deployment-admin',
         scope: 'server',
       });
     }
     expect(PUBLIC_OPERATION_ACCESS['POST /api/worker-control/app-update']).toBeUndefined();
-    expect(PUBLIC_OPERATION_ACCESS.prepareAppUpdate?.authentication).not.toBe('gateway-actor');
+    expect(PUBLIC_OPERATION_ACCESS['app-update.prepare']?.authentication).not.toBe('gateway-actor');
   });
 
   it('rejects a non-admin session and a workspace-scoped token', async () => {
@@ -229,43 +258,77 @@ describe('app-update routes', () => {
 
     try {
       const sessionDenied = await Promise.all([
-        sessionApp.request('/api/app/app-update/prepare', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(PREPARE_BODY),
-        }),
-        sessionApp.request('/api/app/app-update/start', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: startBody,
-        }),
-        sessionApp.request('/api/app/app-update/11111111-1111-4111-8111-111111111111'),
+        sessionApp.request(
+          ...operationRequest(
+            'app-update.prepare',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(PREPARE_BODY),
+            }
+          )
+        ),
+        sessionApp.request(
+          ...operationRequest(
+            'app-update.start',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: startBody,
+            }
+          )
+        ),
+        sessionApp.request(
+          ...operationRequest('app-update.status', {
+            requestId: '11111111-1111-4111-8111-111111111111',
+          })
+        ),
       ]);
       const workspaceDenied = await Promise.all([
-        tokenApp.request('/api/app/app-update/prepare', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${workspaceToken.secret}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(PREPARE_BODY),
-        }),
-        tokenApp.request('/api/app/app-update/start', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${workspaceToken.secret}`,
-            'content-type': 'application/json',
-          },
-          body: startBody,
-        }),
-        tokenApp.request('/api/app/app-update/11111111-1111-4111-8111-111111111111', {
-          headers: { authorization: `Bearer ${workspaceToken.secret}` },
-        }),
+        tokenApp.request(
+          ...operationRequest(
+            'app-update.prepare',
+            {},
+            {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${workspaceToken.secret}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify(PREPARE_BODY),
+            }
+          )
+        ),
+        tokenApp.request(
+          ...operationRequest(
+            'app-update.start',
+            {},
+            {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${workspaceToken.secret}`,
+                'content-type': 'application/json',
+              },
+              body: startBody,
+            }
+          )
+        ),
+        tokenApp.request(
+          ...operationRequest(
+            'app-update.status',
+            { requestId: '11111111-1111-4111-8111-111111111111' },
+            {
+              headers: { authorization: `Bearer ${workspaceToken.secret}` },
+            }
+          )
+        ),
       ]);
 
       for (const response of [...sessionDenied, ...workspaceDenied]) {
         expect(response.status).toBe(403);
-        await expect(response.json()).resolves.toMatchObject({ code: 'app_update_forbidden' });
+        await expect(response.json()).resolves.toMatchObject({ code: 'deployment_admin_required' });
       }
     } finally {
       coreDb.sqlite.close();
@@ -295,20 +358,32 @@ describe('app-update routes', () => {
     });
 
     try {
-      const prepared = await app.request('/api/app/app-update/prepare', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(PREPARE_BODY),
-      });
+      const prepared = await app.request(
+        ...operationRequest(
+          'app-update.prepare',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(PREPARE_BODY),
+          }
+        )
+      );
       const review = (await prepared.json()) as { requestId: string };
-      const startPromise = app.request('/api/app/app-update/start', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          maintenanceConsent: true,
-          requestId: review.requestId,
-        }),
-      });
+      const startPromise = app.request(
+        ...operationRequest(
+          'app-update.start',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              maintenanceConsent: true,
+              requestId: review.requestId,
+            }),
+          }
+        )
+      );
 
       await expect
         .poll(() => listServerAuditEvents(coreDb).map((event) => event.action))
@@ -350,14 +425,20 @@ describe('app-update routes', () => {
     });
 
     try {
-      const response = await app.request('/api/app/app-update/start', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          maintenanceConsent: true,
-          requestId: '11111111-1111-4111-8111-111111111111',
-        }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'app-update.start',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              maintenanceConsent: true,
+              requestId: '11111111-1111-4111-8111-111111111111',
+            }),
+          }
+        )
+      );
       // Readback order is (createdAt, id); both rows may share one millisecond, so order by action.
       const events = listServerAuditEvents(coreDb).sort((left, right) =>
         left.action.localeCompare(right.action)

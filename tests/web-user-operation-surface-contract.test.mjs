@@ -8,8 +8,8 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 236;
-const EXPECTED_SERVER_SIZE = 55;
+const EXPECTED_CATALOG_SIZE = 237;
+const EXPECTED_SERVER_SIZE = 56;
 const EXPECTED_GATEWAY_SIZE = 2;
 const EXPECTED_INCLUDED_SIZE = 179;
 
@@ -59,11 +59,11 @@ const WEB_OPERATION_GROUPS = {
     'worker.list': { disposition: 'workflow', surface: 'Agents' },
   },
   Administration: {
-    applyAdministrationConfiguration: { disposition: 'workflow', surface: 'Administration' },
-    getWorkerEnvironmentStatus: { disposition: 'live', surface: 'Administration' },
-    listWorkerEnvironments: { disposition: 'live', surface: 'Administration' },
-    purgeWorkerEnvironment: { disposition: 'live', surface: 'Administration' },
-    submitAdministrationConversation: { disposition: 'live', surface: 'Administration' },
+    'administration.configuration-apply': { disposition: 'workflow', surface: 'Administration' },
+    'worker-environment.status': { disposition: 'live', surface: 'Administration' },
+    'worker-environment.list': { disposition: 'live', surface: 'Administration' },
+    'worker-environment.purge': { disposition: 'live', surface: 'Administration' },
+    'administration.conversation-submit': { disposition: 'live', surface: 'Administration' },
   },
   'App utilities': {
     'chat.quick': { disposition: 'workflow', surface: 'Chat' },
@@ -180,7 +180,7 @@ const WEB_OPERATION_GROUPS = {
         { disposition: 'workflow', surface: 'Goal' },
       ])
     ),
-    selectWorkerEnvironment: { disposition: 'live', surface: 'Chat' },
+    'worker-environment.select': { disposition: 'live', surface: 'Chat' },
     'conversation.submit': { disposition: 'live', surface: 'Chat' },
     'task.start': { disposition: 'live', surface: 'Task' },
   },

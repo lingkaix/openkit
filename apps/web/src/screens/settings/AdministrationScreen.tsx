@@ -1,7 +1,7 @@
 import type {
   ApplyAdministrationConfigurationResponse,
   GetWorkerEnvironmentStatusResponse,
-  PrepareWorkerEnvironmentRequest,
+  OperationInput,
   PrepareWorkerEnvironmentResponse,
   WorkerEnvironmentAuthoredCandidateArtifact,
   WorkerEnvironmentCandidateRef,
@@ -11,8 +11,8 @@ import type {
 import {
   ApplyAdministrationConfigurationResponseSchema,
   ConfigurationCandidateArtifactSchema,
-  PrepareWorkerEnvironmentRequestSchema,
   WorkerEnvironmentAuthoredCandidateArtifactSchema,
+  WorkerEnvironmentPrepareInputSchema,
   WorkerEnvironmentResolvedCandidateArtifactSchema,
   workerEnvironmentActivationConfirmation,
   workerEnvironmentPurgeConfirmation,
@@ -81,9 +81,14 @@ interface RecoverableCandidate {
 
 type EnvironmentCandidate = PreparedCandidate | RecoverableCandidate;
 
-type PrepareInput = Extract<PrepareWorkerEnvironmentRequest, { mode: 'prepare' }>;
+type PrepareInput = OperationInput<'worker-environment.prepare'> & { mode: 'prepare' };
+type CandidateInput =
+  | PrepareInput
+  | (OperationInput<'worker-environment.recover'> & { mode: 'recover' });
 
-type ActivationResult = Awaited<ReturnType<CoreClient['app']['activateWorkerEnvironment']>>;
+type ActivationResult = Awaited<
+  ReturnType<CoreClient['operations']['worker-environment.activate']>
+>;
 
 /** Private administrator conversation plus target-Workspace Worker environment status. */
 export function AdministrationScreen() {
@@ -164,7 +169,7 @@ export function AdministrationScreen() {
   });
   const conversation = useMutation({
     mutationFn: (request: { input: string; requestId: string; threadId?: string }) =>
-      client.app.submitAdministrationConversation(request),
+      client.operations['administration.conversation-submit'](request),
     onSuccess: (response) => {
       setSearchParams({ threadId: response.receivingThreadId }, { replace: true });
       setInput('');
@@ -334,20 +339,27 @@ function WorkerEnvironmentSection({
   const queryClient = useQueryClient();
   const environments = useQuery({
     queryKey: administrationKeys.environments(workspaceId ?? ''),
-    queryFn: () => client.app.listWorkerEnvironments(workspaceId as string, { limit: 100 }),
+    queryFn: () =>
+      client.operations['worker-environment.list']({
+        workspaceId: workspaceId as string,
+        ...{ limit: 100 },
+      }),
     enabled: Boolean(workspaceId),
   });
   const purge = useMutation({
     mutationKey: ['settings', 'administration', 'purge-worker-environment', workspaceId],
     mutationFn: (input: { environment: WorkerEnvironmentSummary; requestId: string }) =>
-      client.app.purgeWorkerEnvironment(workspaceId as string, input.environment.storageRef, {
-        confirmation: workerEnvironmentPurgeConfirmation({
+      client.operations['worker-environment.purge']({
+        workspaceId: workspaceId as string,
+        ...{
+          confirmation: workerEnvironmentPurgeConfirmation({
+            expectedRevision: input.environment.revision,
+            storageRef: input.environment.storageRef,
+          }),
           expectedRevision: input.environment.revision,
+          requestId: input.requestId,
           storageRef: input.environment.storageRef,
-        }),
-        expectedRevision: input.environment.revision,
-        requestId: input.requestId,
-        storageRef: input.environment.storageRef,
+        },
       }),
     onSuccess: (response) => {
       if (response.outcome === 'purged') status.reset();
@@ -358,7 +370,10 @@ function WorkerEnvironmentSection({
   });
   const status = useMutation({
     mutationFn: (storageRef: string) =>
-      client.app.getWorkerEnvironmentStatus(workspaceId as string, storageRef),
+      client.operations['worker-environment.status']({
+        workspaceId: workspaceId as string,
+        storageRef: storageRef,
+      }),
     onSuccess: (response, storageRef) => {
       void queryClient.invalidateQueries({
         queryKey: administrationKeys.environments(workspaceId ?? ''),
@@ -379,7 +394,7 @@ function WorkerEnvironmentSection({
     },
     select: (mutation) => ({
       data: mutation.state.data as
-        | Awaited<ReturnType<CoreClient['app']['purgeWorkerEnvironment']>>
+        | Awaited<ReturnType<CoreClient['operations']['worker-environment.purge']>>
         | undefined,
       variables: mutation.state.variables as
         | { environment: WorkerEnvironmentSummary; requestId: string }
@@ -567,8 +582,14 @@ function EnvironmentPreparation({
       : null;
   const prepare = useMutation({
     mutationKey: ['settings', 'administration', 'prepare-worker-environment'],
-    mutationFn: (input: PrepareWorkerEnvironmentRequest) =>
-      client.app.prepareWorkerEnvironment(input),
+    mutationFn: (input: CandidateInput) => {
+      if (input.mode === 'prepare') {
+        const { mode: _mode, ...request } = input;
+        return client.operations['worker-environment.prepare'](request);
+      }
+      const { mode: _mode, ...request } = input;
+      return client.operations['worker-environment.recover'](request);
+    },
     onSettled: () => {
       if (administrationWorkspaceId && administrationThreadId) {
         void queryClient.invalidateQueries({
@@ -582,7 +603,7 @@ function EnvironmentPreparation({
       exact: true,
       mutationKey: ['settings', 'administration', 'prepare-worker-environment'],
     },
-    select: (mutation) => mutation.state.variables as PrepareWorkerEnvironmentRequest | undefined,
+    select: (mutation) => mutation.state.variables as CandidateInput | undefined,
   }).findLast(
     (attempt) =>
       attempt?.mode === 'prepare' &&
@@ -594,7 +615,7 @@ function EnvironmentPreparation({
       exact: true,
       mutationKey: ['settings', 'administration', 'prepare-worker-environment'],
     },
-    select: (mutation) => mutation.state.variables as PrepareWorkerEnvironmentRequest | undefined,
+    select: (mutation) => mutation.state.variables as CandidateInput | undefined,
   });
   const directCandidate = prepare.data ? preparedCandidateFromResponse(prepare.data) : null;
   const displayedCandidate = directCandidate ?? candidate;
@@ -842,7 +863,7 @@ function PreparedCandidateReview({
   const activate = useMutation({
     mutationKey,
     mutationFn: (requestId: string) =>
-      client.app.activateWorkerEnvironment({
+      client.operations['worker-environment.activate']({
         ...binding,
         confirmation: candidate.activationConfirmation,
         requestId,
@@ -1318,8 +1339,8 @@ function readAgentEnvironmentSource(
 function prepareRequest(
   input: Omit<PrepareInput, 'declaration' | 'mode'> & { declaration: unknown }
 ): PrepareInput | null {
-  const parsed = PrepareWorkerEnvironmentRequestSchema.safeParse({ ...input, mode: 'prepare' });
-  return parsed.success && parsed.data.mode === 'prepare' ? parsed.data : null;
+  const parsed = WorkerEnvironmentPrepareInputSchema.safeParse(input);
+  return parsed.success ? { ...parsed.data, mode: 'prepare' } : null;
 }
 
 function candidateMatchesInput(candidate: EnvironmentCandidate, input: PrepareInput): boolean {

@@ -2,6 +2,14 @@ import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { FsStore } from './lib/store.js';
 import type { CoreDb } from './storage/db.js';
 
+/** Raised when owner provisioning encounters retained removal rather than first-use absence. */
+export class WorkspaceOwnerMembershipRemovedError extends Error {
+  public constructor() {
+    super('Workspace owner membership has been removed.');
+    this.name = 'WorkspaceOwnerMembershipRemovedError';
+  }
+}
+
 /** Effective fixed role derived from active Core Workspace membership facts. */
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 
@@ -33,6 +41,7 @@ export interface EnsureUserQuickChatWorkspaceInput {
  * Ensures one active user's built-in Quick Chat Workspace and owner relationship.
  *
  * @param input Canonical user, Core relationship store, and shared Workspace store.
+ * @throws WorkspaceOwnerMembershipRemovedError when the retained owner membership is removed.
  * @throws Error when the user is inactive or the reserved Workspace identity is contradictory.
  */
 export function ensureUserQuickChatWorkspace(input: EnsureUserQuickChatWorkspaceInput): void {
@@ -52,7 +61,8 @@ export function ensureUserQuickChatWorkspace(input: EnsureUserQuickChatWorkspace
  * Membership removal must retain its row with `status = 'removed'`; deleting the row discards the tombstone.
  *
  * @param input Workspace owner membership input.
- * @throws Error when another user already owns the workspace id.
+ * @throws WorkspaceOwnerMembershipRemovedError when the retained owner membership is removed.
+ * @throws Error when the owner identity or active membership is contradictory.
  */
 export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMembershipInput): void {
   const now = (input.now ?? new Date()).toISOString();
@@ -113,6 +123,7 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
       .get(input.workspaceId, input.ownerUserId) as
       | { access_level: string; status: string }
       | undefined;
+    if (ownerMembership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
     if (ownerMembership?.status !== 'active' || ownerMembership.access_level !== 'editor') {
       throw new Error('Workspace owner requires an active editor membership.');
     }

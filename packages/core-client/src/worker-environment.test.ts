@@ -62,7 +62,7 @@ describe('Worker environment App API client', () => {
         const url = new URL(String(request));
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         requests.push({ body, path: url.pathname });
-        if (url.pathname.endsWith('/activate')) {
+        if (url.pathname.endsWith('worker-environment.activate')) {
           return Response.json({
             affected: [{ ...affectedStorage[0], disposition: 'unknown' }],
             configuration: null,
@@ -117,22 +117,20 @@ describe('Worker environment App API client', () => {
       },
     });
 
-    await client.app.prepareWorkerEnvironment({
+    await client.operations['worker-environment.prepare']({
       administrationThreadId: 'thread_admin',
       configuration,
       declaration: { kind: 'reference', pullPolicy: 'never', ref: DIGEST },
-      mode: 'prepare',
       replaceNow,
       requestId: REQUEST_ID,
       target,
     });
-    await client.app.prepareWorkerEnvironment({
+    await client.operations['worker-environment.recover']({
       administrationThreadId: 'thread_admin_recovery',
-      mode: 'recover',
       recoverFrom: authoredCandidate,
       requestId: '22222222-2222-4222-8222-222222222222',
     });
-    await client.app.activateWorkerEnvironment({
+    await client.operations['worker-environment.activate']({
       affectedStorage,
       configuration,
       confirmation: workerEnvironmentActivationConfirmation({
@@ -156,20 +154,18 @@ describe('Worker environment App API client', () => {
     });
 
     expect(requests.map(({ path }) => path)).toEqual([
-      '/api/app/worker-environments/prepare',
-      '/api/app/worker-environments/prepare',
-      '/api/app/worker-environments/activate',
+      '/api/app/operations/worker-environment.prepare',
+      '/api/app/operations/worker-environment.recover',
+      '/api/app/operations/worker-environment.activate',
     ]);
-    expect(requests[0]?.body).toMatchObject({ mode: 'prepare', target, replaceNow });
+    expect(requests[0]?.body).toMatchObject({ target, replaceNow });
     expect(requests[1]?.body).toEqual({
       administrationThreadId: 'thread_admin_recovery',
-      mode: 'recover',
       recoverFrom: authoredCandidate,
-      requestId: '22222222-2222-4222-8222-222222222222',
     });
   });
 
-  it('uses bounded list/status routes and exact purge path and body references', async () => {
+  it('uses logical list/status selectors, purge confirmation and request framing', async () => {
     const requests: Array<{ body: unknown; method: string; path: string }> = [];
     const client = createCoreClient({
       baseUrl: 'https://nanocore.test',
@@ -181,7 +177,7 @@ describe('Worker environment App API client', () => {
           method: init?.method ?? 'GET',
           path: `${url.pathname}${url.search}`,
         });
-        if (url.pathname.endsWith('/status')) {
+        if (url.pathname.endsWith('worker-environment.status')) {
           return Response.json({
             environment,
             storage: {
@@ -195,7 +191,7 @@ describe('Worker environment App API client', () => {
             },
           });
         }
-        if (url.pathname.endsWith('/purge')) {
+        if (url.pathname.endsWith('worker-environment.purge')) {
           return Response.json({
             environment: null,
             outcome: 'purged',
@@ -207,43 +203,52 @@ describe('Worker environment App API client', () => {
       },
     });
 
-    await client.app.listWorkerEnvironments('ws_demo', { limit: 12 });
-    await client.app.getWorkerEnvironmentStatus('ws_demo', STORAGE_REF);
-    await client.app.purgeWorkerEnvironment('ws_demo', STORAGE_REF, {
-      confirmation: workerEnvironmentPurgeConfirmation({
-        expectedRevision: 4,
-        storageRef: STORAGE_REF,
-      }),
-      expectedRevision: 4,
-      requestId: REQUEST_ID,
+    await client.operations['worker-environment.list']({
+      workspaceId: 'ws_demo',
+      ...{ limit: 12 },
+    });
+    await client.operations['worker-environment.status']({
+      workspaceId: 'ws_demo',
       storageRef: STORAGE_REF,
+    });
+    await client.operations['worker-environment.purge']({
+      workspaceId: 'ws_demo',
+      ...{
+        confirmation: workerEnvironmentPurgeConfirmation({
+          expectedRevision: 4,
+          storageRef: STORAGE_REF,
+        }),
+        expectedRevision: 4,
+        requestId: REQUEST_ID,
+        storageRef: STORAGE_REF,
+      },
     });
 
     expect(requests).toEqual([
       {
-        body: null,
-        method: 'GET',
-        path: '/api/app/workspaces/ws_demo/worker-environments?limit=12',
+        body: { workspaceId: 'ws_demo', limit: 12 },
+        method: 'POST',
+        path: '/api/app/operations/worker-environment.list',
       },
       {
-        body: null,
-        method: 'GET',
-        path: `/api/app/workspaces/ws_demo/worker-environments/${STORAGE_REF}/status`,
+        body: { workspaceId: 'ws_demo', storageRef: STORAGE_REF },
+        method: 'POST',
+        path: '/api/app/operations/worker-environment.status',
       },
       {
         body: {
+          workspaceId: 'ws_demo',
           confirmation: `purge-worker-environment:${STORAGE_REF}:4`,
           expectedRevision: 4,
-          requestId: REQUEST_ID,
           storageRef: STORAGE_REF,
         },
         method: 'POST',
-        path: `/api/app/workspaces/ws_demo/worker-environments/${STORAGE_REF}/purge`,
+        path: '/api/app/operations/worker-environment.purge',
       },
     ]);
   });
 
-  it('rejects a purge whose path and body references differ before transport', async () => {
+  it('rejects a purge whose confirmation and logical reference differ before transport', async () => {
     let calls = 0;
     const client = createCoreClient({
       baseUrl: 'https://nanocore.test',
@@ -254,17 +259,20 @@ describe('Worker environment App API client', () => {
     });
     const otherRef = `wst_${'c'.repeat(32)}`;
 
-    expect(() =>
-      client.app.purgeWorkerEnvironment('ws_demo', STORAGE_REF, {
-        confirmation: workerEnvironmentPurgeConfirmation({
+    await expect(
+      client.operations['worker-environment.purge']({
+        workspaceId: 'ws_demo',
+        ...{
+          confirmation: workerEnvironmentPurgeConfirmation({
+            expectedRevision: 4,
+            storageRef: otherRef,
+          }),
           expectedRevision: 4,
-          storageRef: otherRef,
-        }),
-        expectedRevision: 4,
-        requestId: REQUEST_ID,
-        storageRef: otherRef,
+          requestId: REQUEST_ID,
+          storageRef: STORAGE_REF,
+        },
       })
-    ).toThrow(/path and body/i);
+    ).rejects.toThrow(/Confirmation/);
     expect(calls).toBe(0);
   });
 });

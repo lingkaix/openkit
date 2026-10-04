@@ -164,8 +164,8 @@ test('Worker environment discovery preserves admin scope and exact target routin
   const result = await status.handler(
     {
       client: {
-        app: {
-          getWorkerEnvironmentStatus: async (...args) => {
+        operations: {
+          'worker-environment.status': async (...args) => {
             observed = args;
             return { inspected: true };
           },
@@ -174,7 +174,7 @@ test('Worker environment discovery preserves admin scope and exact target routin
     },
     input
   );
-  assert.deepEqual(observed, ['ws_engineering', storageRef]);
+  assert.deepEqual(observed, [{ workspaceId: 'ws_engineering', storageRef }]);
   assert.deepEqual(result, { inspected: true });
   assert.equal(
     status.inputSchema.safeParse({ ...input, hostPath: '/private/other' }).success,
@@ -278,8 +278,8 @@ test('catalog configuration application requires exact human confirmation and fo
   await operation.handler(
     {
       client: {
-        app: {
-          applyAdministrationConfiguration: async (value) => {
+        operations: {
+          'administration.configuration-apply': async (value) => {
             observed = value;
             return { persisted: true };
           },
@@ -294,16 +294,18 @@ test('catalog configuration application requires exact human confirmation and fo
 test('Worker environment preparation and activation use the global Agent contract', async () => {
   const { operationCatalog } = await operations();
   const prepare = operationCatalog.find((entry) => entry.id === 'worker-environment.prepare');
+  const recover = operationCatalog.find((entry) => entry.id === 'worker-environment.recover');
+  assert.ok(recover);
   const activate = operationCatalog.find((entry) => entry.id === 'worker-environment.activate');
   assert.ok(prepare);
   assert.ok(activate);
   assert.match(
     prepare.requiredAccess,
-    /deployment admin.*Agent configuration.*affected Workspace\/source-audience/
+    /deployment admin: implicit local actor or server-admin bearer token/
   );
   assert.match(
     activate.requiredAccess,
-    /deployment admin.*Agent configuration.*affected Workspace\/source-audience/
+    /deployment admin: implicit local actor or server-admin bearer token/
   );
 
   const configuration = {
@@ -316,7 +318,6 @@ test('Worker environment preparation and activation use the global Agent contrac
     administrationThreadId: 'thread_admin',
     configuration,
     declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
-    mode: 'prepare',
     replaceNow: {
       prompt: 'Continue the current work with browser support.',
       threadId: 'thread_work',
@@ -330,8 +331,8 @@ test('Worker environment preparation and activation use the global Agent contrac
     await prepare.handler(
       {
         client: {
-          app: {
-            prepareWorkerEnvironment: async (...args) => {
+          operations: {
+            'worker-environment.prepare': async (...args) => {
               observedPrepare = args;
               return { prepared: true };
             },
@@ -362,9 +363,8 @@ test('Worker environment preparation and activation use the global Agent contrac
     false
   );
 
-  const recoverInput = prepare.inputSchema.parse({
+  const recoverInput = recover.inputSchema.parse({
     administrationThreadId: 'thread_admin_recovery',
-    mode: 'recover',
     recoverFrom: {
       artifactId: 'artifact_authored',
       artifactVersion: 1,
@@ -372,9 +372,9 @@ test('Worker environment preparation and activation use the global Agent contrac
     },
     requestId: '22222222-2222-4222-8222-222222222222',
   });
-  assert.equal(recoverInput.mode, 'recover');
+  assert.equal(Object.hasOwn(recoverInput, 'mode'), false);
   assert.equal(
-    prepare.inputSchema.safeParse({ ...recoverInput, declaration: prepareInput.declaration })
+    recover.inputSchema.safeParse({ ...recoverInput, declaration: prepareInput.declaration })
       .success,
     false
   );
@@ -413,8 +413,8 @@ test('Worker environment preparation and activation use the global Agent contrac
     await activate.handler(
       {
         client: {
-          app: {
-            activateWorkerEnvironment: async (...args) => {
+          operations: {
+            'worker-environment.activate': async (...args) => {
               observedActivate = args;
               return { activated: true };
             },
@@ -819,6 +819,9 @@ test('one catalog covers the checked App API and public Core projection', async 
       'vault.server-use-list',
       'vault.status',
       'vault.unlock',
+      'worker-environment.activate',
+      'worker-environment.prepare',
+      'worker-environment.recover',
       'workspace.access-recover',
       'workspace.access-recovery-read',
     ]
@@ -2428,7 +2431,6 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     administrationThreadId: 'thread_admin',
     configuration,
     declaration: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'d'.repeat(64)}` },
-    mode: 'prepare',
     requestId,
     target,
   };
@@ -2493,10 +2495,10 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     [
       dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (url !== 'http://nanocore.example/api/app/worker-environments/prepare') throw new Error('unexpected URL');
+          if (url !== 'http://nanocore.example/api/app/operations/worker-environment.prepare') throw new Error('unexpected URL');
           if (options.method !== 'POST') throw new Error('unexpected method');
           const body = JSON.parse(options.body);
-          if (body.workspaceId !== undefined || body.mode !== 'prepare' || body.target?.kind !== 'agent') throw new Error('unexpected body');
+          if (body.workspaceId !== undefined || body.mode !== undefined || body.target?.kind !== 'agent') throw new Error('unexpected body');
           return new Response(${JSON.stringify(JSON.stringify(preparedResponse))}, {
             status: 200,
             headers: { 'content-type': 'application/json' },
@@ -2534,7 +2536,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
     [
       dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (url !== 'http://nanocore.example/api/app/worker-environments/activate') throw new Error('unexpected URL');
+          if (url !== 'http://nanocore.example/api/app/operations/worker-environment.activate') throw new Error('unexpected URL');
           if (options.method !== 'POST') throw new Error('unexpected method');
           const body = JSON.parse(options.body);
           if (body.workspaceId !== undefined || body.target?.kind !== 'agent' || !body.confirmation) throw new Error('unexpected body');

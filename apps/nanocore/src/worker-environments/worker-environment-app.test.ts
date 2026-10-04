@@ -567,22 +567,27 @@ describe('Worker environment App composition', () => {
         'content-type': 'application/json',
       };
 
-      const preparedResponse = await app.request('/api/app/worker-environments/prepare', {
-        method: 'POST',
-        headers: adminHeaders,
-        body: JSON.stringify({
-          administrationThreadId: administrationThread.id,
-          configuration: {
-            expectedRevision: initialRevision,
-            fileId: CONFIGURATION_FILE_ID,
-          },
-          declaration: DECLARATION,
-          mode: 'prepare',
-          replaceNow: null,
-          requestId: '11111111-1111-4111-8111-111111111111',
-          target: { agentId: AGENT_ID, kind: 'agent' },
-        }),
-      });
+      const preparedResponse = await app.request(
+        ...operationRequest(
+          'worker-environment.prepare',
+          {},
+          {
+            method: 'POST',
+            headers: adminHeaders,
+            body: JSON.stringify({
+              administrationThreadId: administrationThread.id,
+              configuration: {
+                expectedRevision: initialRevision,
+                fileId: CONFIGURATION_FILE_ID,
+              },
+              declaration: DECLARATION,
+              replaceNow: null,
+              requestId: '11111111-1111-4111-8111-111111111111',
+              target: { agentId: AGENT_ID, kind: 'agent' },
+            }),
+          }
+        )
+      );
       const prepared = (await preparedResponse.json()) as PrepareWorkerEnvironmentResponse;
 
       expect(preparedResponse.status).toBe(200);
@@ -627,6 +632,173 @@ describe('Worker environment App composition', () => {
           expect.objectContaining({ code: 'worker_environment_preparation_required', status: 409 })
         );
       }
+      const prepareRequestId = '11111111-1111-4111-8111-111111111111';
+      const logicalPreparation = {
+        administrationThreadId: administrationThread.id,
+        requestId: prepareRequestId,
+        configuration: prepared.configuration,
+        declaration: DECLARATION,
+        target: prepared.target,
+      };
+      const logicalRecovery = {
+        administrationThreadId: administrationThread.id,
+        requestId: '33333333-3333-4333-8333-333333333333',
+        recoverFrom: prepared.authoredCandidate,
+      };
+      const beforeArtifacts = store.listArtifacts(privateWorkspace.id);
+      const beforeTurns = store.listThreadTurns(privateWorkspace.id, administrationThread.id);
+      const beforeEffects = nanoHostEffect.mock.calls.length;
+      for (const [operation, input] of [
+        ['worker-environment.prepare', logicalPreparation],
+        ['worker-environment.recover', logicalRecovery],
+      ] as const) {
+        const response = await app.request(
+          ...operationRequest(operation, {}, { headers: adminHeaders, body: JSON.stringify(input) })
+        );
+        expect(response.status).toBe(200);
+        const result = await response.json();
+        expect(result).toMatchObject({
+          authoredCandidate: prepared.authoredCandidate,
+          resolvedCandidate: prepared.resolvedCandidate,
+          requestId: input.requestId,
+          replaceNow: null,
+        });
+        const remote = await app.request('/mcp', {
+          method: 'POST',
+          headers: { ...adminHeaders, accept: 'application/json, text/event-stream' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'call', arguments: { operation, input } },
+          }),
+        });
+        expect(remote.status).toBe(200);
+        const remoteBody = await remote.json();
+        expect(remoteBody.result.isError).not.toBe(true);
+        expect(JSON.parse(remoteBody.result.content[0].text)).toEqual(result);
+        const conflict = await app.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: {
+            ...adminHeaders,
+            'x-openkit-request-id': '44444444-4444-4444-8444-444444444444',
+          },
+          body: JSON.stringify(input),
+        });
+        expect(conflict.status).toBe(403);
+        expect(await conflict.json()).toMatchObject({
+          code: 'bound_input_conflict',
+          message: 'Request identity conflicts with its header.',
+        });
+      }
+      for (const operation of [
+        'worker-environment.prepare',
+        'worker-environment.recover',
+      ] as const) {
+        const input =
+          operation === 'worker-environment.prepare'
+            ? { ...logicalPreparation, requestId: logicalRecovery.requestId }
+            : { ...logicalRecovery, requestId: prepareRequestId };
+        const httpConflict = await app.request(
+          ...operationRequest(operation, {}, { headers: adminHeaders, body: JSON.stringify(input) })
+        );
+        expect(httpConflict.status).toBe(409);
+        expect(await httpConflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
+        const remoteConflict = await app.request('/mcp', {
+          method: 'POST',
+          headers: { ...adminHeaders, accept: 'application/json, text/event-stream' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/call',
+            params: { name: 'call', arguments: { operation, input } },
+          }),
+        });
+        const remoteBody = await remoteConflict.json();
+        expect(remoteBody.result.isError).toBe(true);
+        expect(JSON.parse(remoteBody.result.content[0].text)).toMatchObject({
+          code: 'idempotency_key_conflict',
+          status: 409,
+        });
+      }
+      const foreignUserId = 'user_worker_environment_foreign';
+      coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (id, display_name, email, email_verified, image, created_at, updated_at, kind, last_seen_at) VALUES (?, 'Foreign Administrator', 'foreign@example.test', false, NULL, ?, ?, 'human', NULL)`
+        )
+        .run(foreignUserId, Date.now(), Date.now());
+      ensureUserQuickChatWorkspace({ coreDb, store, userId: foreignUserId });
+      const foreignHome = store.ensureQuickChatWorkspace(foreignUserId);
+      const foreignThread = store.createThread(
+        foreignHome.id,
+        'Foreign administration',
+        'thread_foreign_administration',
+        'administration',
+        { visibility: 'private', privateOwnerUserId: foreignUserId }
+      );
+      const foreignAdmin = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: foreignUserId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      for (const [operation, input] of [
+        ['worker-environment.prepare', logicalPreparation],
+        ['worker-environment.recover', logicalRecovery],
+      ] as const) {
+        for (const [secret, refusedInput, status, code] of [
+          [workspaceToken.secret, input, 403, 'deployment_admin_required'],
+          [
+            foreignAdmin.secret,
+            operation === 'worker-environment.recover'
+              ? {
+                  ...input,
+                  administrationThreadId: foreignThread.id,
+                  requestId: '55555555-5555-4555-8555-555555555555',
+                }
+              : { ...input, requestId: '66666666-6666-4666-8666-666666666666' },
+            404,
+            'not_found',
+          ],
+        ] as const) {
+          const refusal = await app.request(
+            ...operationRequest(
+              operation,
+              {},
+              {
+                headers: { ...adminHeaders, authorization: `Bearer ${secret}` },
+                body: JSON.stringify(refusedInput),
+              }
+            )
+          );
+          expect(refusal.status).toBe(status);
+          expect(await refusal.json()).toMatchObject({ code });
+          const remote = await app.request('/mcp', {
+            method: 'POST',
+            headers: {
+              ...adminHeaders,
+              authorization: `Bearer ${secret}`,
+              accept: 'application/json, text/event-stream',
+            },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 3,
+              method: 'tools/call',
+              params: { name: 'call', arguments: { operation, input: refusedInput } },
+            }),
+          });
+          const remoteBody = await remote.json();
+          expect(remoteBody.result.isError).toBe(true);
+          expect(JSON.parse(remoteBody.result.content[0].text)).toMatchObject({ status, code });
+          expect(store.listThreadTurns(foreignHome.id, foreignThread.id)).toEqual([]);
+        }
+      }
+      expect(nanoHostEffect.mock.calls).toHaveLength(beforeEffects);
+      expect(store.listArtifacts(privateWorkspace.id)).toEqual(beforeArtifacts);
+      expect(store.listThreadTurns(privateWorkspace.id, administrationThread.id)).toEqual(
+        beforeTurns
+      );
+
       const activationInput = {
         affectedStorage: prepared.affectedStorage,
         configuration: prepared.configuration,
@@ -636,11 +808,17 @@ describe('Worker environment App composition', () => {
         resolvedCandidate: prepared.resolvedCandidate,
         target: prepared.target,
       };
-      const activatedResponse = await app.request('/api/app/worker-environments/activate', {
-        method: 'POST',
-        headers: adminHeaders,
-        body: JSON.stringify(activationInput),
-      });
+      const activatedResponse = await app.request(
+        ...operationRequest(
+          'worker-environment.activate',
+          {},
+          {
+            method: 'POST',
+            headers: adminHeaders,
+            body: JSON.stringify(activationInput),
+          }
+        )
+      );
       const activated = (await activatedResponse.json()) as ActivateWorkerEnvironmentResponse;
       const activatedAgentContent = readFileSync(agentPath, 'utf8');
 
@@ -682,11 +860,17 @@ describe('Worker environment App composition', () => {
       expect(reload).toHaveReturnedWith(expect.objectContaining({ status: 'applied' }));
       expect(reload).toHaveBeenCalledTimes(1);
       const effectsBeforeReplay = nanoHostEffect.mock.calls.length;
-      const replay = await app.request('/api/app/worker-environments/activate', {
-        method: 'POST',
-        headers: adminHeaders,
-        body: JSON.stringify(activationInput),
-      });
+      const replay = await app.request(
+        ...operationRequest(
+          'worker-environment.activate',
+          {},
+          {
+            method: 'POST',
+            headers: adminHeaders,
+            body: JSON.stringify(activationInput),
+          }
+        )
+      );
       expect(replay.status).toBe(200);
       expect(await replay.json()).toEqual(activated);
       expect(reload).toHaveBeenCalledTimes(1);
@@ -698,18 +882,24 @@ describe('Worker environment App composition', () => {
       expect(resultArtifacts).toHaveLength(1);
       expect(JSON.parse(resultArtifacts[0]!.content.body)).toEqual(activated);
 
-      const denied = await app.request('/api/app/administration/conversation-turns', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${workspaceToken.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          input: 'Prepare another Worker environment.',
-          requestId: '33333333-3333-4333-8333-333333333333',
-          threadId: administrationThread.id,
-        }),
-      });
+      const denied = await app.request(
+        ...operationRequest(
+          'administration.conversation-submit',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${workspaceToken.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              input: 'Prepare another Worker environment.',
+              requestId: '33333333-3333-4333-8333-333333333333',
+              threadId: administrationThread.id,
+            }),
+          }
+        )
+      );
 
       expect(denied.status).toBe(403);
       await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
@@ -857,45 +1047,56 @@ describe('Worker environment App composition', () => {
         storageRef: attached.storageRef,
       });
 
-      const preparedResponse = await app.request('/api/app/worker-environments/prepare', {
-        method: 'POST',
-        headers: { ...sessionHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          administrationThreadId: administrationThread.id,
-          configuration: {
-            expectedRevision: initialRevision,
-            fileId: CONFIGURATION_FILE_ID,
-          },
-          declaration: DECLARATION,
-          mode: 'prepare',
-          replaceNow: {
-            prompt: 'Continue with the resolved Worker image.',
-            threadId: productThread.id,
-            workspaceId: productWorkspace.id,
-          },
-          requestId: '55555555-5555-4555-8555-555555555555',
-          target: { agentId: AGENT_ID, kind: 'agent' },
-        }),
-      });
+      const preparedResponse = await app.request(
+        ...operationRequest(
+          'worker-environment.prepare',
+          {},
+          {
+            method: 'POST',
+            headers: { ...sessionHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              administrationThreadId: administrationThread.id,
+              configuration: {
+                expectedRevision: initialRevision,
+                fileId: CONFIGURATION_FILE_ID,
+              },
+              declaration: DECLARATION,
+              replaceNow: {
+                prompt: 'Continue with the resolved Worker image.',
+                threadId: productThread.id,
+                workspaceId: productWorkspace.id,
+              },
+              requestId: '55555555-5555-4555-8555-555555555555',
+              target: { agentId: AGENT_ID, kind: 'agent' },
+            }),
+          }
+        )
+      );
       const prepared = (await preparedResponse.json()) as PrepareWorkerEnvironmentResponse;
       expect(preparedResponse.status).toBe(200);
       expect(prepared.affectedStorage).toEqual([
         { expectedRevision: attached.revision, storageRef: attached.storageRef },
       ]);
 
-      const activationResponsePromise = app.request('/api/app/worker-environments/activate', {
-        method: 'POST',
-        headers: { ...sessionHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          affectedStorage: prepared.affectedStorage,
-          configuration: prepared.configuration,
-          confirmation: prepared.activationConfirmation,
-          replaceNow: prepared.replaceNow,
-          requestId: '66666666-6666-4666-8666-666666666666',
-          resolvedCandidate: prepared.resolvedCandidate,
-          target: prepared.target,
-        }),
-      });
+      const activationResponsePromise = app.request(
+        ...operationRequest(
+          'worker-environment.activate',
+          {},
+          {
+            method: 'POST',
+            headers: { ...sessionHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              affectedStorage: prepared.affectedStorage,
+              configuration: prepared.configuration,
+              confirmation: prepared.activationConfirmation,
+              replaceNow: prepared.replaceNow,
+              requestId: '66666666-6666-4666-8666-666666666666',
+              resolvedCandidate: prepared.resolvedCandidate,
+              target: prepared.target,
+            }),
+          }
+        )
+      );
       await vi.waitFor(() => expect(executor.interruptCount).toBe(1));
       await new Promise<void>((resolve) => setImmediate(resolve));
       const beforeTerminalTurnIds = store

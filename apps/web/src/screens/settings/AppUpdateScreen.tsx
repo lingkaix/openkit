@@ -44,7 +44,7 @@ export function AppUpdateScreen() {
   });
   const prepare = useMutation({
     mutationFn: () =>
-      client.app.prepareAppUpdate({
+      client.operations['app-update.prepare']({
         expectedCurrentImageId: expectedCurrentImageId.trim(),
         source:
           kind === 'release'
@@ -65,14 +65,15 @@ export function AppUpdateScreen() {
   });
   const start = useMutation({
     mutationFn: (requestId: string) =>
-      client.app.startAppUpdate({ maintenanceConsent: true, requestId }),
+      client.operations['app-update.start']({ maintenanceConsent: true, requestId }),
     onSuccess: (started) => {
       setStatus(started);
       setKnownRequestId(started.requestId);
     },
   });
   const refresh = useMutation({
-    mutationFn: (requestId: string) => client.app.getAppUpdateStatus(requestId),
+    mutationFn: (requestId: string) =>
+      client.operations['app-update.status']({ requestId: requestId }),
     onSuccess: (current) => {
       setStatus(current);
       setKnownRequestId(current.requestId);

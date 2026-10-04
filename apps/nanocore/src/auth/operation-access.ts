@@ -111,7 +111,7 @@ const catalog: Record<string, PublicOperationAccess> = {};
 
 registerOperations(
   catalog,
-  ['getAppDiagnostics', 'getSetupDiagnostics', 'listOpenKitAccessTokens', 'getAppUpdateStatus'],
+  ['getAppDiagnostics', 'getSetupDiagnostics', 'listOpenKitAccessTokens'],
   {
     authentication: 'deployment-admin',
     mutating: false,
@@ -121,15 +121,7 @@ registerOperations(
 );
 registerOperations(
   catalog,
-  [
-    'createOpenKitAccessToken',
-    'revokeOpenKitAccessToken',
-    'rotateOpenKitAccessToken',
-    'prepareAppUpdate',
-    'prepareWorkerEnvironment',
-    'activateWorkerEnvironment',
-    'startAppUpdate',
-  ],
+  ['createOpenKitAccessToken', 'revokeOpenKitAccessToken', 'rotateOpenKitAccessToken'],
   {
     authentication: 'deployment-admin',
     mutating: true,
@@ -177,18 +169,6 @@ registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'],
   workspaceResolver: 'gateway-metadata-workspace',
 });
 
-registerOperations(
-  catalog,
-  ['submitAdministrationConversation', 'applyAdministrationConfiguration'],
-  {
-    authentication: 'deployment-admin',
-    mutating: true,
-    policyOperation: 'turn.run',
-    resolver: 'actor-quick-chat-workspace',
-    scope: 'workspace',
-  }
-);
-
 registerOperations(catalog, ['listWorkspaceMaterials'], {
   mutating: false,
   policyOperation: 'workspace.read',
@@ -205,24 +185,6 @@ registerOperations(catalog, ['createWorkspaceMaterial'], {
 registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
   mutating: false,
   policyOperation: 'workspace.export',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  ['listWorkerEnvironments', 'selectWorkerEnvironment', 'getWorkerEnvironmentStatus'],
-  {
-    authentication: 'deployment-admin',
-    mutating: false,
-    policyOperation: 'workspace.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['purgeWorkerEnvironment'], {
-  authentication: 'deployment-admin',
-  mutating: true,
-  policyOperation: 'workspace.configure',
   resolver: 'path-workspace',
   scope: 'workspace',
 });

@@ -123,7 +123,10 @@ export function useComposerWorkerEnvironments(
     retry: false,
     queryFn: async () => {
       const [environments, threads] = await Promise.all([
-        client.app.listWorkerEnvironments(workspaceId as string, { limit: 100 }),
+        client.operations['worker-environment.list']({
+          workspaceId: workspaceId as string,
+          ...{ limit: 100 },
+        }),
         client.operations['thread.list']({ workspaceId: workspaceId as string }),
       ]);
       return projectWorkerEnvironmentOptions(environments.items, threads.items);
@@ -131,10 +134,10 @@ export function useComposerWorkerEnvironments(
   });
   const check = useMutation({
     mutationFn: async (environment: ComposerWorkerEnvironmentOption) =>
-      client.app.selectWorkerEnvironment(
-        workspaceId as string,
-        workerEnvironmentSelectRequest(threadId as string, environment)
-      ),
+      client.operations['worker-environment.select']({
+        workspaceId: workspaceId as string,
+        ...workerEnvironmentSelectRequest(threadId as string, environment),
+      }),
   });
   return {
     items: query.data ?? [],

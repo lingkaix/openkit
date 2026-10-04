@@ -76,6 +76,8 @@ On preparation failure, leave the running App unchanged. If candidate verificati
 
 ## Current Implementation Projection
 
+`app-update.prepare`, `app-update.start` and `app-update.status` are declared in `packages/app-api-schemas/src/app-update-operations.ts` and joined by `apps/nanocore/src/app-update/app-update-operations.ts`. Their HTTP, client and CLI projections are definition-derived. Common admission owns the HTTP 403 `deployment_admin_required` refusal. Model delivery returns `unsupported_operation` before host calls because no exact OpenKit approval adapter is implemented. Restricted private transport and host audit/receipt ordering remain unchanged.
+
 The first-party administrator App API, Core Client, public Skill operations and Web update screen implement prepare/start/status against the configured restricted SSH transport. Missing deployment configuration disables the capability; unusable identity files fail its operation without taking Core down. The host helper is installed on the selected deployment. A Desktop Agent using the independently packaged public Skill has completed a real migration-free exact-commit update through prepare/start/status, with all nine receipt predicates true. This proves the public update path on that deployment, not release publication, migration-bearing recovery or all product acceptance. The first implementation targets the existing Linux/systemd/Docker deployment; other supported deployment shapes retain their normal operator procedures until a concrete equivalent is implemented. This is not a new hard qualification requirement for all NanoCore installations.
 
 ## Rollout And Acceptance

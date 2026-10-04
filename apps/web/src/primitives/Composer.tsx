@@ -63,7 +63,7 @@ export interface ComposerWorkerEnvironmentOption {
   storageRef: string;
 }
 
-/** Result of the existing selectWorkerEnvironment admission check. */
+/** Result of the existing worker-environment.select admission check. */
 export interface ComposerWorkerEnvironmentCheck {
   message: string;
   status: 'pending' | 'admitted' | 'denied' | 'waiting-for-thread';

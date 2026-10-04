@@ -71,11 +71,11 @@ const SUCCEEDED = {
 
 function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
-    app: {
-      listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
-      prepareAppUpdate: vi.fn().mockResolvedValue(PREPARED),
-      startAppUpdate: vi.fn().mockResolvedValue(STARTED),
-      getAppUpdateStatus: vi.fn().mockResolvedValue(STARTED),
+    app: { listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }), ...app },
+    operations: {
+      'app-update.prepare': vi.fn().mockResolvedValue(PREPARED),
+      'app-update.start': vi.fn().mockResolvedValue(STARTED),
+      'app-update.status': vi.fn().mockResolvedValue(STARTED),
       ...app,
     },
   } as unknown as CoreClient;
@@ -110,7 +110,7 @@ describe('App update administration', () => {
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
 
     expect(await screen.findByText(REQUEST_ID)).toBeInTheDocument();
-    expect(client.app.prepareAppUpdate).toHaveBeenCalledWith({
+    expect(client.operations['app-update.prepare']).toHaveBeenCalledWith({
       expectedCurrentImageId: DIGEST,
       source: PREPARED.source,
     });
@@ -125,7 +125,7 @@ describe('App update administration', () => {
     await user.click(start);
 
     await waitFor(() => {
-      expect(client.app.startAppUpdate).toHaveBeenCalledWith({
+      expect(client.operations['app-update.start']).toHaveBeenCalledWith({
         maintenanceConsent: true,
         requestId: REQUEST_ID,
       });
@@ -144,7 +144,10 @@ describe('App update administration', () => {
       requestId: '22222222-2222-4222-8222-222222222222',
     };
     const client = makeClient({
-      prepareAppUpdate: vi.fn().mockResolvedValueOnce(PREPARED).mockResolvedValueOnce(nextPrepared),
+      'app-update.prepare': vi
+        .fn()
+        .mockResolvedValueOnce(PREPARED)
+        .mockResolvedValueOnce(nextPrepared),
     });
     renderScreen(client);
 
@@ -179,7 +182,9 @@ describe('App update administration', () => {
     await user.click(screen.getByRole('button', { name: 'Refresh status' }));
 
     await waitFor(() => {
-      expect(client.app.getAppUpdateStatus).toHaveBeenCalledWith(REQUEST_ID);
+      expect(client.operations['app-update.status']).toHaveBeenCalledWith({
+        requestId: REQUEST_ID,
+      });
     });
     expect(await screen.findByText('launching')).toBeInTheDocument();
     expect(screen.getByDisplayValue(REQUEST_ID)).toBeInTheDocument();
@@ -188,7 +193,7 @@ describe('App update administration', () => {
   it('lists verification predicates from a succeeded receipt', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      getAppUpdateStatus: vi.fn().mockResolvedValue(SUCCEEDED),
+      'app-update.status': vi.fn().mockResolvedValue(SUCCEEDED),
     });
     renderScreen(client);
 
@@ -219,7 +224,7 @@ describe('App update administration', () => {
   it('states missing deployment configuration without probing a fake receipt', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      prepareAppUpdate: vi.fn().mockRejectedValue(
+      'app-update.prepare': vi.fn().mockRejectedValue(
         new ApiCallError(
           503,
           'App update is disabled because deployment configuration is absent.',
@@ -237,7 +242,7 @@ describe('App update administration', () => {
     expect(await screen.findByText('App update unavailable')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
-    expect(client.app.getAppUpdateStatus).not.toHaveBeenCalled();
+    expect(client.operations['app-update.status']).not.toHaveBeenCalled();
   });
 
   it('keeps the consent review bound to the prepared digest after the form is edited', async () => {

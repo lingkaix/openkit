@@ -164,12 +164,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"boot": fixture["boot"]})
         elif path == "/api/app/auth/tokens":
             self._send(200, {"items": [fixture["token"]]})
-        elif path.startswith("/api/app/app-update/") and path.split("/")[-1]:
-            self._send(200, {"requestId": path.split("/")[-1]})
         else:
             self._send(404)
     def do_POST(self):
-        if self.path == "/api/app/operations/workspace.list":
+        if self.path == "/api/app/operations/app-update.status":
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            self._send(200, {"requestId": body["requestId"]})
+        elif self.path == "/api/app/operations/workspace.list":
             self._send(403)
         elif self.path == "/api/app/operations/nanohost.runtime-target":
             self._send(404, {"protocolVersion": "0.5.0", "code": "nanohost_runtime_target_not_found", "message": "Configured NanoHost RuntimeTarget is unavailable."})

@@ -29,6 +29,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createWorkerEnvironmentOperations } from '../worker-environments/worker-environment-operations.js';
 import {
   createWorkspaceDeletionRequest,
   writeWorkspaceDeletionRequest,
@@ -161,6 +162,56 @@ function createFixture() {
     coreDb,
     store,
     automationStore,
+    workerEnvironmentServices: {
+      operations: createWorkerEnvironmentOperations({
+        coreDb,
+        store,
+        runtimeEffects: {
+          prepareImage: async () => {
+            throw new Error('Not exercised.');
+          },
+          inspectImage: async () => {
+            throw new Error('Not exercised.');
+          },
+          recoverImageEffect: async () => {
+            throw new Error('Not exercised.');
+          },
+          inspectStorage: async () => {
+            throw new Error('Not exercised.');
+          },
+          purgeStorage: async () => {
+            throw new Error('Not exercised.');
+          },
+        },
+      }),
+    },
+    administrationServices: {
+      coreDb,
+      quickChatWorkspaceIdForUser,
+      mode: 'server',
+      inflightCommands: new WeakMap(),
+      runtimeConfig: () => {
+        administrationHandlerReads += 1;
+        return createInMemoryRuntimeConfigSnapshot({ dataRoot });
+      },
+      runtimeConfigFiles: () => {
+        throw new Error('Not exercised.');
+      },
+      reloadRuntimeConfig: () => {
+        throw new Error('Not exercised.');
+      },
+      resolveGatewayProvider: () => {
+        throw new Error('Not exercised.');
+      },
+      llmGatewayDispatcher: {
+        createResponses: async () => {
+          throw new Error('Not exercised.');
+        },
+      },
+      environmentToolsForTurn: () => {
+        throw new Error('Not exercised.');
+      },
+    },
     dataRoot,
     repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
     closeWorkspaceMcpSessions: async () => {
@@ -183,14 +234,15 @@ function createFixture() {
       }),
     } as ReturnType<typeof createConversationService>,
   });
-  app.post('/api/app/administration/conversation-turns', (c) => {
-    administrationHandlerReads += 1;
-    return c.json(c.get('workspaceAccess') ?? null);
+  registerRemoteMcpRoutes({
+    app,
+    coreDb,
+    store,
+    requestStore: () => store,
+    workspaceMutationAdmission,
+    getBootReadiness: createBootReadinessSnapshot,
   });
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.get('/api/app/workspaces/:workspaceId/worker-environments', (c) =>
-    c.json(c.get('workspaceAccess') ?? null)
-  );
   app.get('/api/app/workspaces/:workspaceId/threads/:threadId/material', (c) => {
     threadDashboardHandlerReads += 1;
     const actualWorkspaceId =
@@ -993,8 +1045,11 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('intersects current usable deployment administration with current Workspace access', async () => {
-    const route = `/api/app/workspaces/${fixture.workspace.id}/worker-environments`;
-    const withoutAdmin = await fixture.app.request(route);
+    const send = () =>
+      fixture.app.request(
+        ...operationRequest('worker-environment.list', { workspaceId: fixture.workspace.id })
+      );
+    const withoutAdmin = await send();
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -1002,20 +1057,19 @@ describe('central Workspace operation authorizer', () => {
       tokenId: 'token_current_admin',
       workspaceIds: [],
     });
-    const withAdmin = await fixture.app.request(route);
+    const withAdmin = await send();
     fixture.coreDb.sqlite
       .prepare(
         `UPDATE openkit_access_tokens SET status = 'revoked', revoked_at = ? WHERE token_id = ?`
       )
       .run(new Date().toISOString(), 'token_current_admin');
-    const afterRevocation = await fixture.app.request(route);
+    const afterRevocation = await send();
 
     expect(withoutAdmin.status).toBe(403);
     expect(withAdmin.status).toBe(200);
     await expect(withAdmin.json()).resolves.toMatchObject({
-      kind: 'workspace',
-      workspaceId: fixture.workspace.id,
-      effectiveRole: 'owner',
+      items: [],
+      nextCursor: null,
     });
     expect(afterRevocation.status).toBe(403);
   });
@@ -1036,7 +1090,7 @@ describe('central Workspace operation authorizer', () => {
       userId: 'user_local',
     };
     const allowed = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/worker-environments`
+      ...operationRequest('worker-environment.list', { workspaceId: fixture.workspace.id })
     );
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',
@@ -1053,16 +1107,12 @@ describe('central Workspace operation authorizer', () => {
       userId: 'user_missing',
     };
     const withoutMembership = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/worker-environments`
+      ...operationRequest('worker-environment.list', { workspaceId: fixture.workspace.id })
     );
 
     expect(allowed.status).toBe(200);
     expect(withoutMembership.status).toBe(200);
-    await expect(withoutMembership.json()).resolves.toMatchObject({
-      kind: 'workspace',
-      workspaceId: fixture.workspace.id,
-      effectiveRole: 'owner',
-    });
+    await expect(withoutMembership.json()).resolves.toMatchObject({ items: [], nextCursor: null });
   });
 
   it('intersects Workspace token bindings with current membership', async () => {
@@ -1142,12 +1192,10 @@ describe('central Workspace operation authorizer', () => {
 
     expect(response.status, await response.clone().text()).toBe(200);
     expect(fixture.administrationHandlerReads()).toBe(1);
-    await expect(response.json()).resolves.toEqual({
-      effectiveRole: 'owner',
-      kind: 'workspace',
-      policyOperation: 'turn.run',
-      workspaceId: actorQuickChatId,
+    await expect(response.json()).resolves.toMatchObject({
+      turn: { workspaceId: actorQuickChatId },
     });
+    expect(fixture.store.listThreads(actorQuickChatId)).toHaveLength(1);
     expect(fixture.store.getWorkspace(actorQuickChatId)).toMatchObject({
       id: actorQuickChatId,
       kind: 'quick-chat',
@@ -1208,6 +1256,14 @@ describe('central Workspace operation authorizer', () => {
       .run(actorQuickChatId, now, now, now, now);
     presentServerAdmin('user_missing', 'token_admin_removed_qc');
 
+    const beforeThreads = fixture.store.listThreads(actorQuickChatId);
+    const beforeReceipts = fixture.store.listCommandRequests();
+    const beforeMembership = fixture.coreDb.sqlite
+      .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+      .all(actorQuickChatId);
+    const beforeRegistry = fixture.coreDb.sqlite
+      .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+      .all(actorQuickChatId);
     const response = await submitAdministrationConversation({
       input: 'Prepare a Worker image.',
       requestId: '55555555-5555-4555-8555-555555555555',
@@ -1215,9 +1271,74 @@ describe('central Workspace operation authorizer', () => {
 
     expect(response.status).toBe(403);
     expect(fixture.administrationHandlerReads()).toBe(0);
-    await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+    });
+    expect(
+      await submitAdministrationConversationMcp({
+        input: 'Prepare a Worker image.',
+        requestId: '55555555-5555-4555-8555-555555555555',
+      })
+    ).toEqual({
+      isError: true,
+      status: 403,
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+    });
+    expect(fixture.administrationHandlerReads()).toBe(0);
+    expect(fixture.store.listThreads(actorQuickChatId)).toEqual(beforeThreads);
+    expect(fixture.store.listCommandRequests()).toEqual(beforeReceipts);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+        .all(actorQuickChatId)
+    ).toEqual(beforeMembership);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .all(actorQuickChatId)
+    ).toEqual(beforeRegistry);
     expect(ownerMembershipStatus(actorQuickChatId, 'user_missing')).toBe('removed');
     expect(registeredWorkspaceOwner(actorQuickChatId)).toBe('user_missing');
+  });
+
+  it('lets unexpected actor-home provisioning faults escape unchanged before implementation effects', async () => {
+    presentServerAdmin('user_missing', 'token_admin_home_fault');
+    const failure = new Error('Workspace owner membership has been removed.');
+    failure.name = 'WorkspaceOwnerMembershipRemovedError';
+    const provision = vi.spyOn(fixture.store, 'ensureQuickChatWorkspace').mockImplementation(() => {
+      throw failure;
+    });
+    const errorHandler = vi.fn((error: Error) => error);
+    fixture.app.onError((error, c) => {
+      errorHandler(error);
+      return c.text('Internal Server Error', 500);
+    });
+    const beforeWorkspaces = fixture.store.listWorkspaces();
+    const beforeReceipts = fixture.store.listCommandRequests();
+    try {
+      const input = {
+        input: 'Prepare a Worker image.',
+        requestId: '66666666-6666-4666-8666-666666666666',
+      };
+      const response = await submitAdministrationConversation(input);
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toBe('Internal Server Error');
+      expect(errorHandler).toHaveBeenCalledExactlyOnceWith(failure);
+      expect(await submitAdministrationConversationMcp(input)).toEqual({
+        isError: true,
+        code: 'operation_failed',
+        message: 'Operation failed. Inspect the owner outcome before retrying.',
+      });
+      expect(provision).toHaveBeenCalledTimes(2);
+      expect(fixture.administrationHandlerReads()).toBe(0);
+      expect(fixture.store.listWorkspaces()).toEqual(beforeWorkspaces);
+      expect(fixture.store.listCommandRequests()).toEqual(beforeReceipts);
+      expect(registeredWorkspaceOwner(quickChatWorkspaceIdForUser('user_missing'))).toBeUndefined();
+    } finally {
+      provision.mockRestore();
+    }
   });
 
   it('requires exact workspace.delete truth even for a usable original-owner administrator and denies content', async () => {
@@ -1299,13 +1420,19 @@ function presentServerAdmin(userId: string, tokenId: string): void {
   };
 }
 
-/** Submits one private administration conversation through the guarded stub. */
+/** Submits one private administration conversation through the canonical administration invocation. */
 function submitAdministrationConversation(body: Record<string, unknown>): Promise<Response> {
-  return fixture.app.request('/api/app/administration/conversation-turns', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  return fixture.app.request(
+    ...operationRequest(
+      'administration.conversation-submit',
+      {},
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }
+    )
+  );
 }
 
 /** Marks one existing registry row as deleting without changing its owner. */
@@ -1344,6 +1471,30 @@ function registeredWorkspaceOwner(workspaceId: string): string | undefined {
     .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
     .get(workspaceId) as { owner_user_id: string } | undefined;
   return row?.owner_user_id;
+}
+
+/** Calls the actual remote MCP framer over the fixture's trusted actor; refusal must precede family execution. */
+async function submitAdministrationConversationMcp(input: Record<string, unknown>) {
+  const response = await fixture.app.request('/mcp', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'call',
+        arguments: { operation: 'administration.conversation-submit', input },
+      },
+    }),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.error).toBeUndefined();
+  return { isError: body.result.isError, ...JSON.parse(body.result.content[0].text) };
 }
 
 /** Reads one Workspace membership status. */

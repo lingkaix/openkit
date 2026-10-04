@@ -8,16 +8,20 @@ import type {
   WorkerEnvironmentImageDeclaration,
 } from '@openkit/app-api-schemas';
 import {
+  PrepareWorkerEnvironmentRequestSchema,
+  WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
+import {
   type AuthoredAgentConfig,
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
 } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import type { Actor } from '../auth/identity.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import {
   createWorkerEnvironmentPreparation,
@@ -290,6 +294,79 @@ describe('Worker environment preparation', () => {
         { ...request, declaration: referenceDeclaration('registry.example.com/worker:other') }
       )
     ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
+  });
+
+  it('replays prior-mode receipts through both split operations with byte-identical normalization and cross-operation conflicts', async () => {
+    const fixture = createFixture();
+    const service = fixture.createService();
+    const implementations = createWorkerEnvironmentOperationImplementations({
+      operations: null,
+      prepare: service.prepare,
+    });
+    const context = {
+      kind: 'public',
+      actor,
+      actorRef: { kind: 'user', id: actor.userId },
+      scope: { kind: 'server' },
+    } as const;
+    const priorPrepare = prepareRequest(fixture.thread.id, fixture.configuration);
+    const first = await service.prepare({ actor }, priorPrepare);
+    const priorRecover = {
+      administrationThreadId: fixture.thread.id,
+      mode: 'recover' as const,
+      recoverFrom: first.authoredCandidate,
+      requestId: randomUUID(),
+    };
+    const recovered = await service.prepare({ actor }, priorRecover);
+    const before = fixture.store.listArtifacts(fixture.workspace.id);
+    const beforeTurns = fixture.store.listThreadTurns(fixture.workspace.id, fixture.thread.id);
+    fixture.order.length = 0;
+    for (const [operation, prior, expected] of [
+      ['worker-environment.prepare', priorPrepare, first],
+      ['worker-environment.recover', priorRecover, recovered],
+    ] as const) {
+      const { mode: _mode, ...publicInput } = prior;
+      const parsed =
+        WORKER_ENVIRONMENT_OPERATION_DEFINITIONS[operation].inputSchema.parse(publicInput);
+      const normalized = PrepareWorkerEnvironmentRequestSchema.parse({
+        ...parsed,
+        mode: prior.mode,
+      });
+      expect(JSON.stringify(normalized)).toBe(JSON.stringify(prior));
+      expect(commandInputHash(normalized)).toBe(commandInputHash(prior));
+      const result =
+        operation === 'worker-environment.prepare'
+          ? await implementations[operation](
+              WORKER_ENVIRONMENT_OPERATION_DEFINITIONS[operation].inputSchema.parse(publicInput),
+              context
+            )
+          : await implementations[operation](
+              WORKER_ENVIRONMENT_OPERATION_DEFINITIONS[operation].inputSchema.parse(publicInput),
+              context
+            );
+      expect(result).toEqual(expected);
+    }
+    await expect(
+      implementations['worker-environment.recover'](
+        {
+          administrationThreadId: fixture.thread.id,
+          recoverFrom: first.authoredCandidate,
+          requestId: priorPrepare.requestId,
+        },
+        context
+      )
+    ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
+    await expect(
+      implementations['worker-environment.prepare'](
+        { ...priorPrepare, requestId: priorRecover.requestId },
+        context
+      )
+    ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
+    expect(fixture.order).toEqual([]);
+    expect(fixture.store.listArtifacts(fixture.workspace.id)).toEqual(before);
+    expect(fixture.store.listThreadTurns(fixture.workspace.id, fixture.thread.id)).toEqual(
+      beforeTurns
+    );
   });
 
   it('recovers only the retained result on a fresh causation Turn without rewriting A history', async () => {

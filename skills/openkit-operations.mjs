@@ -439,169 +439,6 @@ export const operationCatalog = [
   },
   {
     ...STANDARD,
-    requiredAccess: 'deployment admin plus current target Workspace and source-audience access',
-    id: 'worker-environment.list',
-    source: 'app-api',
-    appOperationId: 'listWorkerEnvironments',
-    clientMethod: 'app.listWorkerEnvironments',
-    group: 'worker-environment',
-    summary: 'List eligible retained Worker environments for an authorized target Workspace.',
-    mutating: false,
-    inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.app.listWorkerEnvironments(input.workspaceId),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin plus current target Workspace and source-audience access',
-    id: 'worker-environment.select',
-    source: 'app-api',
-    appOperationId: 'selectWorkerEnvironment',
-    clientMethod: 'app.selectWorkerEnvironment',
-    group: 'worker-environment',
-    summary: 'Check exact retained-environment eligibility for related work without attaching it.',
-    mutating: false,
-    inputSchema: flatRequest(appSchemas.SelectWorkerEnvironmentRequestSchema, workspaceScope),
-    handler: ({ client }, input) =>
-      client.app.selectWorkerEnvironment(input.workspaceId, bodyWithout(input, 'workspaceId')),
-  },
-  {
-    ...STANDARD,
-    requiredAccess:
-      'deployment admin plus current Agent configuration and every affected Workspace/source-audience access',
-    id: 'worker-environment.prepare',
-    source: 'app-api',
-    appOperationId: 'prepareWorkerEnvironment',
-    clientMethod: 'app.prepareWorkerEnvironment',
-    group: 'worker-environment',
-    summary:
-      'Build and inspect an exact environment candidate without interrupting the active Worker.',
-    mutating: true,
-    inputSchema: appSchemas.PrepareWorkerEnvironmentRequestSchema,
-    handler: ({ client }, input) => client.app.prepareWorkerEnvironment(input),
-  },
-  {
-    ...STANDARD,
-    requiredAccess:
-      'deployment admin plus current Agent configuration and every affected Workspace/source-audience access',
-    id: 'worker-environment.activate',
-    source: 'app-api',
-    appOperationId: 'activateWorkerEnvironment',
-    clientMethod: 'app.activateWorkerEnvironment',
-    group: 'worker-environment',
-    summary:
-      'Activate the exact reviewed environment after payload-bound administrator confirmation.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.ActivateWorkerEnvironmentRequestSchema),
-    handler: ({ client }, input) => client.app.activateWorkerEnvironment(input),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin plus current target Workspace and source-audience access',
-    id: 'worker-environment.status',
-    source: 'app-api',
-    appOperationId: 'getWorkerEnvironmentStatus',
-    clientMethod: 'app.getWorkerEnvironmentStatus',
-    group: 'worker-environment',
-    summary: 'Inspect exact retained storage and attachment status without mounting it.',
-    mutating: false,
-    inputSchema: strictScope({
-      ...workspaceScope,
-      storageRef: appSchemas.WorkerEnvironmentStorageRefSchema,
-    }),
-    handler: ({ client }, input) =>
-      client.app.getWorkerEnvironmentStatus(input.workspaceId, input.storageRef),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin plus current target Workspace and source-audience access',
-    id: 'worker-environment.purge',
-    source: 'app-api',
-    appOperationId: 'purgeWorkerEnvironment',
-    clientMethod: 'app.purgeWorkerEnvironment',
-    group: 'worker-environment',
-    summary: 'Purge one exact unreferenced storage association after administrator confirmation.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.PurgeWorkerEnvironmentRequestSchema, {
-      ...workspaceScope,
-      storageRef: appSchemas.WorkerEnvironmentStorageRefSchema,
-    }),
-    handler: ({ client }, input) =>
-      client.app.purgeWorkerEnvironment(
-        input.workspaceId,
-        input.storageRef,
-        bodyWithout(input, 'workspaceId', 'storageRef')
-      ),
-  },
-  {
-    ...STANDARD,
-    requiredAccess:
-      'deployment admin plus current user private Quick Chat Workspace access and exact human confirmation',
-    id: 'administration.configuration-apply',
-    source: 'app-api',
-    appOperationId: 'applyAdministrationConfiguration',
-    clientMethod: 'app.applyAdministrationConfiguration',
-    group: 'administration',
-    summary:
-      'Apply the exact catalog candidate after the human reviews its preview and confirms its digest. Never synthesize confirmation from a broad setup request.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.ApplyAdministrationConfigurationRequestSchema),
-    handler: ({ client }, input) => client.app.applyAdministrationConfiguration(input),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin plus current user private Quick Chat Workspace access',
-    id: 'administration.conversation-submit',
-    source: 'app-api',
-    appOperationId: 'submitAdministrationConversation',
-    clientMethod: 'app.submitAdministrationConversation',
-    group: 'administration',
-    summary:
-      'Ask the private administration Assistant to inspect or prepare a technical change; application remains human-confirmed.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.SubmitAdministrationConversationRequestSchema),
-    handler: ({ client }, input) => client.app.submitAdministrationConversation(input),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'app-update.prepare',
-    source: 'app-api',
-    appOperationId: 'prepareAppUpdate',
-    clientMethod: 'app.prepareAppUpdate',
-    group: 'app-update',
-    summary: 'Prepare one closed App-update source without replacing the running App.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.PrepareAppUpdateRequestSchema),
-    handler: ({ client }, input) => client.app.prepareAppUpdate(input),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'app-update.start',
-    source: 'app-api',
-    appOperationId: 'startAppUpdate',
-    clientMethod: 'app.startAppUpdate',
-    group: 'app-update',
-    summary: 'Start one prepared App-update receipt after explicit maintenance consent.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.StartAppUpdateRequestSchema),
-    handler: ({ client }, input) => client.app.startAppUpdate(input),
-  },
-  {
-    ...STANDARD,
-    ...DEPLOYMENT_ADMIN_ACCESS,
-    id: 'app-update.status',
-    source: 'app-api',
-    appOperationId: 'getAppUpdateStatus',
-    clientMethod: 'app.getAppUpdateStatus',
-    group: 'app-update',
-    summary: 'Read one host-owned App-update receipt by id.',
-    mutating: false,
-    inputSchema: strictScope({ requestId: appSchemas.AppUpdateRequestIdSchema }),
-    handler: ({ client }, input) => client.app.getAppUpdateStatus(input.requestId),
-  },
-  {
-    ...STANDARD,
     ...LOCAL_WORKSPACE_ARCHIVE_ACCESS,
     inputSensitivity: 'host-local path',
     id: 'workspace.archive-download',
@@ -928,6 +765,15 @@ export const operationCatalog = [
   ...Object.entries(appSchemas.OPERATION_DEFINITIONS).map(([id, definition]) => ({
     ...STANDARD,
     ...(definition.scope.kind === 'server' ? DEPLOYMENT_ADMIN_ACCESS : {}),
+    ...(Object.hasOwn(appSchemas.ADMINISTRATION_OPERATION_DEFINITIONS, id) &&
+    definition.scope.kind !== 'server'
+      ? {
+          requiredAccess:
+            definition.scope.kind === 'actor-quick-chat-workspace'
+              ? 'deployment admin; private Quick Chat; exact human confirmation when required'
+              : 'deployment admin; current Workspace and source-audience access; exact human confirmation when required',
+        }
+      : {}),
     ...(definition.scope.kind === 'user'
       ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
       : {}),

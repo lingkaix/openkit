@@ -22,7 +22,7 @@ function configurationTools(
 function environmentTools(
   execute = vi.fn(async () => ({ content: [] }))
 ): AdministrationEnvironmentTools {
-  return ADMINISTRATION_TOOL_NAMES.slice(3, 6).map((name) => ({
+  return ADMINISTRATION_TOOL_NAMES.slice(3, 7).map((name) => ({
     name,
     description: `Execute ${name}.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },

@@ -28,7 +28,10 @@ import { readPendingOperationLineage } from './pending-request-operations.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
-import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
+import {
+  ensureUserQuickChatWorkspace,
+  WorkspaceOwnerMembershipRemovedError,
+} from './workspace-membership.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { readInvitationOperationLineage } from './workspace-sharing-operations.js';
 
@@ -219,8 +222,17 @@ export function admitOperation(
         case 'actor-quick-chat-workspace':
           if (entry.kind !== 'public') throw denied();
           // Ordinary principal initialization stays with authentication; the administrator bearer initializes only its own Quick Chat.
-          if (entry.actor.kind === 'token' && isCurrentDeploymentAdministrator(coreDb, entry.actor))
-            ensureUserQuickChatWorkspace({ coreDb, store, userId: entry.actor.userId });
+          if (
+            entry.actor.kind === 'token' &&
+            isCurrentDeploymentAdministrator(coreDb, entry.actor)
+          ) {
+            try {
+              ensureUserQuickChatWorkspace({ coreDb, store, userId: entry.actor.userId });
+            } catch (error) {
+              if (error instanceof WorkspaceOwnerMembershipRemovedError) throw denied();
+              throw error;
+            }
+          }
           workspaceId = quickChatWorkspaceIdForUser(entry.actor.userId);
           break;
         case 'opaque-child-workspace':

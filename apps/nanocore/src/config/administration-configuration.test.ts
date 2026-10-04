@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { registerAdministrationRoutes } from '../administration/administration-routes.js';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -13,9 +12,13 @@ import {
 import { type Actor, ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
@@ -355,24 +358,51 @@ describe('administration catalog configuration', () => {
       context.set('actor', f.actor);
       await next();
     });
-    registerAdministrationRoutes({
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      ownerUserId: f.actor.userId,
+      workspaceId: quickChatWorkspaceIdForUser(f.actor.userId),
+    });
+    registerOperationJsonRoutes({
       app,
       coreDb: f.coreDb,
+      store: f.store,
       requestStore: () => f.store,
-      runtimeConfigFiles: () => f.files,
-      reloadRuntimeConfig: f.reload,
-      inflightCommands: f.inflightCommands,
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
-      runtimeConfig: () => f.manager.current(),
-    } as never);
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb: f.coreDb,
+        runtimeConfigFiles: () => f.files,
+        reloadRuntimeConfig: f.reload,
+        inflightCommands: f.inflightCommands,
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfig: () => f.manager.current(),
+        environmentToolsForTurn: () => {
+          throw new Error('Not exercised.');
+        },
+        resolveGatewayProvider: () => {
+          throw new Error('Not exercised.');
+        },
+        llmGatewayDispatcher: {
+          createResponses: async () => {
+            throw new Error('Not exercised.');
+          },
+        },
+      },
+    });
     const request = f.confirm(f.service.propose(f.request, f.home));
     const send = () =>
-      app.request('/api/app/administration/configuration/apply', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(request),
-      });
+      app.request(
+        ...operationRequest(
+          'administration.configuration-apply',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(request),
+          }
+        )
+      );
     const response = await send();
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ persisted: true });

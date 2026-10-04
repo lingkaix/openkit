@@ -5,9 +5,10 @@ import type {
   ListWorkerEnvironmentsResponse,
 } from '@openkit/app-api-schemas';
 import {
+  operationModelInput,
   type PrepareWorkerEnvironmentRequest,
-  PrepareWorkerEnvironmentRequestSchema,
   type PrepareWorkerEnvironmentResponse,
+  WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 
@@ -31,14 +32,17 @@ export interface AdministrationEnvironmentReadOperations {
 export interface CreateAdministrationEnvironmentToolsInput {
   readonly actor: Actor;
   readonly operations: AdministrationEnvironmentReadOperations;
-  readonly prepareTool: AgentTool;
+  readonly candidateTools: readonly [AgentTool, AgentTool];
 }
 
-/** Creates the exact list, status, and owner-supplied prepare Tool sequence. */
+/** Creates the exact list, status, and owner-supplied preparation and recovery Tool sequence. */
 export function createAdministrationEnvironmentTools(
   input: CreateAdministrationEnvironmentToolsInput
 ): AdministrationEnvironmentTools {
-  if (input.prepareTool.name !== 'worker_environment.prepare') {
+  if (
+    input.candidateTools[0].name !== 'worker_environment.prepare' ||
+    input.candidateTools[1].name !== 'worker_environment.recover'
+  ) {
     throw new Error('Administration prepare Tool identity is invalid.');
   }
   return [
@@ -87,12 +91,12 @@ export function createAdministrationEnvironmentTools(
           );
         }),
     },
-    input.prepareTool,
+    ...input.candidateTools,
   ];
 }
 
-/** Creates a preparation Tool bound to its actual private Turn, with no model-selected authority. */
-export function createAdministrationEnvironmentPrepareTool(input: {
+/** Creates preparation and recovery Tools bound to its actual private Turn, with no model-selected authority. */
+export function createAdministrationEnvironmentCandidateTools(input: {
   readonly actor: Actor;
   readonly administrationThreadId: string;
   readonly administrationTurnId: string;
@@ -100,41 +104,43 @@ export function createAdministrationEnvironmentPrepareTool(input: {
     context: { actor: Actor; administrationTurnId: string },
     request: PrepareWorkerEnvironmentRequest
   ) => Promise<PrepareWorkerEnvironmentResponse>;
-}): AgentTool {
-  const schema = z.discriminatedUnion('mode', [
-    PrepareWorkerEnvironmentRequestSchema.options[0].omit({
-      administrationThreadId: true,
-      requestId: true,
-    }),
-    PrepareWorkerEnvironmentRequestSchema.options[1].omit({
-      administrationThreadId: true,
-      requestId: true,
-    }),
-  ]);
-  return {
-    name: 'worker_environment.prepare',
-    description:
-      'Prepare or recover an immutable Worker environment candidate for human review. This never activates, interrupts, or mounts work.',
-    inputSchema: z.toJSONSchema(schema),
-    execute: async (value, context) =>
-      operationResult(async () => {
-        const parsed = schema.safeParse(value);
-        if (!parsed.success)
-          throw Object.assign(new Error('Invalid preparation input.'), { code: 'invalid_request' });
-        const digest = createHash('sha256')
-          .update(JSON.stringify([input.actor.userId, input.administrationTurnId, context.callId]))
-          .digest('hex');
-        const requestId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-        return input.prepare(
-          { actor: input.actor, administrationTurnId: input.administrationTurnId },
-          {
-            ...parsed.data,
-            administrationThreadId: input.administrationThreadId,
-            requestId,
-          }
-        );
-      }),
-  };
+}): readonly [AgentTool, AgentTool] {
+  function candidateTool(mode: 'prepare' | 'recover'): AgentTool {
+    const definition = WORKER_ENVIRONMENT_OPERATION_DEFINITIONS[`worker-environment.${mode}`];
+    const schema = operationModelInput(definition.inputSchema, [
+      'administrationThreadId',
+      'requestId',
+    ]);
+    return {
+      name: `worker_environment.${mode}`,
+      description: definition.description,
+      inputSchema: z.toJSONSchema(schema),
+      execute: async (value, context) =>
+        operationResult(async () => {
+          const parsed = schema.safeParse(value);
+          if (!parsed.success)
+            throw Object.assign(new Error('Invalid preparation input.'), {
+              code: 'invalid_request',
+            });
+          const digest = createHash('sha256')
+            .update(
+              JSON.stringify([input.actor.userId, input.administrationTurnId, context.callId])
+            )
+            .digest('hex');
+          const requestId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+          return input.prepare(
+            { actor: input.actor, administrationTurnId: input.administrationTurnId },
+            {
+              ...parsed.data,
+              mode,
+              administrationThreadId: input.administrationThreadId,
+              requestId,
+            } as PrepareWorkerEnvironmentRequest
+          );
+        }),
+    };
+  }
+  return [candidateTool('prepare'), candidateTool('recover')];
 }
 
 async function operationResult(

@@ -26,17 +26,20 @@ describe('administration catalog application client', () => {
     };
     const fetch = vi.fn(async () => Response.json(result));
     const client = createCoreClient({ baseUrl: 'https://nanocore.test', fetch });
-    expect(await client.app.applyAdministrationConfiguration(input)).toEqual(result);
+    expect(await client.operations['administration.configuration-apply'](input)).toEqual(result);
     expect(fetch).toHaveBeenCalledWith(
-      'https://nanocore.test/api/app/administration/configuration/apply',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify(input) })
+      'https://nanocore.test/api/app/operations/administration.configuration-apply',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ candidate: input.candidate, confirmation: input.confirmation }),
+      })
     );
-    expect(() =>
-      client.app.applyAdministrationConfiguration({
+    await expect(
+      client.operations['administration.configuration-apply']({
         ...input,
         confirmation: { ...input.confirmation, contentDigest: `sha256:${'b'.repeat(64)}` },
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

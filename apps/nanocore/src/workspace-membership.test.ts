@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
+import { ensureLocalUser } from './auth/identity.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
@@ -11,9 +12,11 @@ import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
+  ensureUserQuickChatWorkspace,
   listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
   resolveWorkspaceRole,
+  WorkspaceOwnerMembershipRemovedError,
 } from './workspace-membership.js';
 
 /**
@@ -143,6 +146,50 @@ describe('workspace membership foundation', () => {
         filesystemOnlyWorkspace.id
       );
       expect(listActiveWorkspaceIdsForActor(coreDb, 'user_disabled')).toEqual([]);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('provisions a first-use Quick Chat home and nominally refuses its retained removed owner membership', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-tombstone-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = new FsStore({ dataRoot });
+      const input = { coreDb, store, userId: 'user_local' };
+      ensureUserQuickChatWorkspace(input);
+      const workspace = store.ensureQuickChatWorkspace('user_local');
+      expect(resolveWorkspaceRole(coreDb, workspace.id, 'user_local')).toBe('owner');
+      // Seed a retained contradiction directly; normal owner-removal commands prohibit this state.
+      coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
+      coreDb.sqlite
+        .prepare(
+          "UPDATE workspace_members SET status = 'removed', removed_at = ?, updated_at = ?, revision = revision + 1 WHERE workspace_id = ?"
+        )
+        .run(new Date().toISOString(), new Date().toISOString(), workspace.id);
+      const membership = coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+        .all(workspace.id);
+      const registry = coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .all(workspace.id);
+      const threads = store.listThreads(workspace.id);
+      expect(() => ensureUserQuickChatWorkspace(input)).toThrowError(
+        WorkspaceOwnerMembershipRemovedError
+      );
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ?')
+          .all(workspace.id)
+      ).toEqual(membership);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+          .all(workspace.id)
+      ).toEqual(registry);
+      expect(store.listThreads(workspace.id)).toEqual(threads);
     } finally {
       coreDb.sqlite.close();
     }

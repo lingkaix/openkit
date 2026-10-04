@@ -252,12 +252,7 @@ function makeClient(
   operations: Partial<CoreClient['operations']> = {}
 ): CoreClient {
   return {
-    app: {
-      applyAdministrationConfiguration: vi.fn(),
-      listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
-      listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
-      ...app,
-    },
+    app: { listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }), ...app },
     core: {
       meta: vi.fn().mockResolvedValue({}),
       ...core,
@@ -315,6 +310,10 @@ function makeClient(
               })),
             })
         ),
+      'administration.configuration-apply': app['administration.configuration-apply'] ?? vi.fn(),
+      'worker-environment.list':
+        app['worker-environment.list'] ??
+        vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     },
   } as unknown as CoreClient;
 }
@@ -435,7 +434,9 @@ describe('Administration', () => {
         targetRef: 'assistant',
         logicalModelId: null,
       });
-    const client = makeClient({ submitAdministrationConversation });
+    const client = makeClient({
+      'administration.conversation-submit': submitAdministrationConversation,
+    });
     renderScreen(client);
 
     expect(await screen.findByText('Target Workspace: Project Atlas')).toBeInTheDocument();
@@ -465,18 +466,20 @@ describe('Administration', () => {
 
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByLabelText('Administration message')).not.toBeInTheDocument();
-    expect(client.app.listWorkerEnvironments).not.toHaveBeenCalled();
+    expect(client.operations['worker-environment.list']).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
   });
 
   it('clears inspected status and reads the newly selected global Workspace', async () => {
     const user = userEvent.setup();
-    const listWorkerEnvironments = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items: workspaceId === PROJECT.id ? [ENVIRONMENT] : [],
-        nextCursor: null,
-      })
-    );
+    const listWorkerEnvironments = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          items: workspaceId === PROJECT.id ? [ENVIRONMENT] : [],
+          nextCursor: null,
+        })
+      );
     const getWorkerEnvironmentStatus = vi.fn().mockResolvedValue({
       environment: ENVIRONMENT,
       storage: {
@@ -493,7 +496,10 @@ describe('Administration', () => {
         })),
       },
     });
-    const client = makeClient({ listWorkerEnvironments, getWorkerEnvironmentStatus });
+    const client = makeClient({
+      'worker-environment.list': listWorkerEnvironments,
+      'worker-environment.status': getWorkerEnvironmentStatus,
+    });
     renderScreen(client);
 
     await user.click(await screen.findByRole('button', { name: 'Refresh status' }));
@@ -503,7 +509,10 @@ describe('Administration', () => {
 
     expect(await screen.findByText('Target Workspace: Project Borealis')).toBeInTheDocument();
     await waitFor(() =>
-      expect(listWorkerEnvironments).toHaveBeenCalledWith(SECOND_PROJECT.id, { limit: 100 })
+      expect(listWorkerEnvironments).toHaveBeenCalledWith({
+        workspaceId: SECOND_PROJECT.id,
+        ...{ limit: 100 },
+      })
     );
     expect(screen.queryByText('No current attachment.')).not.toBeInTheDocument();
   });
@@ -523,8 +532,10 @@ describe('Administration', () => {
       },
     });
     const client = makeClient({
-      listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
-      getWorkerEnvironmentStatus,
+      'worker-environment.list': vi
+        .fn()
+        .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
+      'worker-environment.status': getWorkerEnvironmentStatus,
     });
     renderScreen(client);
 
@@ -562,10 +573,10 @@ describe('Administration', () => {
       },
     });
     const client = makeClient({
-      activateWorkerEnvironment,
-      getWorkerEnvironmentStatus,
-      listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [listed], nextCursor: null }),
-      purgeWorkerEnvironment,
+      'worker-environment.activate': activateWorkerEnvironment,
+      'worker-environment.status': getWorkerEnvironmentStatus,
+      'worker-environment.list': vi.fn().mockResolvedValue({ items: [listed], nextCursor: null }),
+      'worker-environment.purge': purgeWorkerEnvironment,
     });
     renderScreen(client);
 
@@ -583,7 +594,10 @@ describe('Administration', () => {
       screen.getByText('Host availability alone does not authorize reuse.')
     ).toBeInTheDocument();
     expect(getWorkerEnvironmentStatus).toHaveBeenCalledTimes(1);
-    expect(getWorkerEnvironmentStatus).toHaveBeenCalledWith(PROJECT.id, STORAGE_REF);
+    expect(getWorkerEnvironmentStatus).toHaveBeenCalledWith({
+      workspaceId: PROJECT.id,
+      storageRef: STORAGE_REF,
+    });
     expect(purgeWorkerEnvironment).not.toHaveBeenCalled();
     expect(activateWorkerEnvironment).not.toHaveBeenCalled();
   });
@@ -609,9 +623,11 @@ describe('Administration', () => {
       },
     });
     const client = makeClient({
-      getWorkerEnvironmentStatus,
-      listWorkerEnvironments: vi.fn().mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
-      purgeWorkerEnvironment,
+      'worker-environment.status': getWorkerEnvironmentStatus,
+      'worker-environment.list': vi
+        .fn()
+        .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
+      'worker-environment.purge': purgeWorkerEnvironment,
     });
     renderScreen(client);
 
@@ -625,11 +641,14 @@ describe('Administration', () => {
     await user.click(screen.getByRole('button', { name: 'Delete environment' }));
 
     await waitFor(() => expect(purgeWorkerEnvironment).toHaveBeenCalledTimes(1));
-    expect(purgeWorkerEnvironment).toHaveBeenCalledWith(PROJECT.id, STORAGE_REF, {
-      confirmation: `purge-worker-environment:${STORAGE_REF}:2`,
-      expectedRevision: 2,
-      requestId: expect.any(String),
-      storageRef: STORAGE_REF,
+    expect(purgeWorkerEnvironment).toHaveBeenCalledWith({
+      workspaceId: PROJECT.id,
+      ...{
+        confirmation: `purge-worker-environment:${STORAGE_REF}:2`,
+        expectedRevision: 2,
+        requestId: expect.any(String),
+        storageRef: STORAGE_REF,
+      },
     });
     expect(
       await screen.findByText(
@@ -693,9 +712,9 @@ describe('Administration', () => {
     );
     const client = makeClient(
       {
-        activateWorkerEnvironment,
-        getWorkerEnvironmentStatus,
-        listWorkerEnvironments: vi
+        'worker-environment.activate': activateWorkerEnvironment,
+        'worker-environment.status': getWorkerEnvironmentStatus,
+        'worker-environment.list': vi
           .fn()
           .mockResolvedValue({ items: [ENVIRONMENT], nextCursor: null }),
       },
@@ -816,7 +835,7 @@ describe('Administration', () => {
       })
     );
     const client = makeClient(
-      { prepareWorkerEnvironment },
+      { 'worker-environment.prepare': prepareWorkerEnvironment },
       {
         'thread.list': vi.fn().mockImplementation(({ workspaceId }) =>
           Promise.resolve({
@@ -896,7 +915,6 @@ describe('Administration', () => {
         pullPolicy: 'never',
         ref: `sha256:${'f'.repeat(64)}`,
       },
-      mode: 'prepare',
       replaceNow: {
         prompt: 'Continue from the retained files with the prepared environment.',
         threadId: 'thread_project',
@@ -932,7 +950,7 @@ describe('Administration', () => {
       })
     );
     const client = makeClient(
-      { prepareWorkerEnvironment },
+      { 'worker-environment.recover': prepareWorkerEnvironment },
       {
         'artifact.read': vi.fn().mockResolvedValue(AUTHORED_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [AUTHORED_ITEM] }),
@@ -947,7 +965,6 @@ describe('Administration', () => {
     await waitFor(() => expect(prepareWorkerEnvironment).toHaveBeenCalledTimes(1));
     expect(prepareWorkerEnvironment).toHaveBeenCalledWith({
       administrationThreadId: ADMIN_THREAD.id,
-      mode: 'recover',
       recoverFrom: AUTHORED_CANDIDATE,
       requestId: expect.any(String),
     });
@@ -979,7 +996,7 @@ describe('Administration', () => {
   it('does not apply a discovered configuration candidate until the administrator confirms it', async () => {
     const applyAdministrationConfiguration = vi.fn();
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1004,7 +1021,7 @@ describe('Administration', () => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn().mockResolvedValue(CONFIG_OUTCOME);
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1056,7 +1073,7 @@ describe('Administration', () => {
       .fn()
       .mockRejectedValue(new Error('configuration_candidate_conflict'));
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1083,7 +1100,7 @@ describe('Administration', () => {
   it('disables configuration review while disconnected without applying', async () => {
     const applyAdministrationConfiguration = vi.fn();
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1104,7 +1121,7 @@ describe('Administration', () => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn().mockRejectedValue(new Error('unknown result'));
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi.fn().mockResolvedValue(CONFIG_ARTIFACT),
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1138,7 +1155,7 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     let connected = true;
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi
           .fn()
@@ -1178,7 +1195,7 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     let items: Array<typeof CONFIG_ITEM | typeof CONFIG_ITEM_B> = [CONFIG_ITEM];
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': vi
           .fn()
@@ -1238,7 +1255,7 @@ describe('Administration', () => {
           )
       );
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM, CONFIG_OUTCOME_ITEM] }),
@@ -1272,7 +1289,7 @@ describe('Administration', () => {
       origin: { ...CONFIG_ARTIFACT.origin, threadId: 'thread_other' },
     });
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
@@ -1296,7 +1313,7 @@ describe('Administration', () => {
     const applyAdministrationConfiguration = vi.fn();
     const getArtifact = vi.fn().mockResolvedValue({ ...CONFIG_ARTIFACT, version: 2 });
     const client = makeClient(
-      { applyAdministrationConfiguration },
+      { 'administration.configuration-apply': applyAdministrationConfiguration },
       {
         'artifact.read': getArtifact,
         'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),

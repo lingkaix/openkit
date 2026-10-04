@@ -374,7 +374,7 @@ export const WorkerEnvironmentResolvedCandidateArtifactSchema = z
     addWorkerEnvironmentImpactIssues(value, context);
   });
 
-/** Initial preparation or result-only recovery of one immutable authored candidate. */
+/** Canonical internal preparation or recovery command preserving retained receipt normalization. */
 export const PrepareWorkerEnvironmentRequestSchema = z
   .discriminatedUnion('mode', [
     z
@@ -397,6 +397,19 @@ export const PrepareWorkerEnvironmentRequestSchema = z
       })
       .strict(),
   ])
+  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+
+/** Strict public preparation input; outer optional keeps omission valid in JSON Schema while retaining the owned null default. */
+export const WorkerEnvironmentPrepareInputSchema = PrepareWorkerEnvironmentRequestSchema.options[0]
+  .omit({ mode: true })
+  .extend({
+    replaceNow: PrepareWorkerEnvironmentRequestSchema.options[0].shape.replaceNow.optional(),
+  })
+  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+
+/** Strict public result-only recovery input derived from the canonical command branch. */
+export const WorkerEnvironmentRecoverInputSchema = PrepareWorkerEnvironmentRequestSchema.options[1]
+  .omit({ mode: true })
   .superRefine((value, context) => addRawSecretIssues(value, context, []));
 
 /** Prepared candidate and bounded affected-work preview. */

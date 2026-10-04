@@ -19,13 +19,15 @@ export function operationRequest(
   if (body && typeof body === 'object' && !Array.isArray(body)) {
     const { requestId, ...input } = body as Record<string, unknown>;
     if (
+      definition.mutating &&
       'requestId' in definition.inputSchema.shape &&
       requestId !== undefined &&
       !headers.has('x-openkit-request-id')
     )
       headers.set('x-openkit-request-id', String(requestId));
     body = {
-      ...('requestId' in definition.inputSchema.shape &&
+      ...(definition.mutating &&
+      'requestId' in definition.inputSchema.shape &&
       (!headers.has('x-openkit-request-id') ||
         headers.get('x-openkit-request-id') === String(requestId))
         ? input

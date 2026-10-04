@@ -1,6 +1,8 @@
 import type { z } from 'zod';
+import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { APP_SEARCH_OPERATION_DEFINITIONS } from './app-search-operations.js';
+import { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
 import { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
 import { ATTENTION_OPERATION_DEFINITIONS } from './attention-operations.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
@@ -33,6 +35,7 @@ import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
 import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
+import { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
@@ -71,6 +74,9 @@ export { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
 
 /** Statically composed deployment administration; bootstrap retains its separate authentication procedure. */
 export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
+  WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
+  ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
+  APP_UPDATE_OPERATION_DEFINITIONS,
   NANOHOST_OPERATION_DEFINITIONS,
   DATA_ROOT_ADMIN_OPERATION_DEFINITIONS
 );
@@ -145,3 +151,7 @@ export function operationModelInput(
   // Zod omit rejects refined objects; cloning the shape retains each field and the owner's cross-field checks.
   return schema.clone({ ...schema.def, shape });
 }
+
+export { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
+export { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
+export { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';

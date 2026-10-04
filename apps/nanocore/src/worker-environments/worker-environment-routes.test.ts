@@ -1,12 +1,53 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   WorkerEnvironmentOperationError,
   type WorkerEnvironmentOperations,
 } from './worker-environment-operations.js';
-import { registerWorkerEnvironmentRoutes } from './worker-environment-routes.js';
+
+const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
+afterEach(() => {
+  for (const { coreDb, dataRoot } of fixtures.splice(0)) {
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+/** Uses real admission and explicit membership for the isolated family owner. */
+function registerFamilyFixture(input: {
+  app: Hono<{ Variables: AuthVariables }>;
+  operations: WorkerEnvironmentOperations | null;
+  prepare?: NonNullable<
+    Parameters<typeof registerOperationJsonRoutes>[0]['workerEnvironmentServices']
+  >['prepare'];
+}) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b10-routes-'));
+  const coreDb = openCoreDb(dataRoot);
+  fixtures.push({ coreDb, dataRoot });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  registerOperationJsonRoutes({
+    app: input.app,
+    coreDb,
+    store,
+    requestStore: () => store,
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workerEnvironmentServices: { operations: input.operations, prepare: input.prepare },
+  });
+}
 
 const STORAGE_REF = `wst_${'a'.repeat(32)}`;
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
@@ -33,7 +74,7 @@ function fixture() {
       storageRef: input.storageRef,
     })),
   };
-  registerWorkerEnvironmentRoutes({ app, operations });
+  registerFamilyFixture({ app, operations });
   return { app, operations };
 }
 
@@ -44,9 +85,11 @@ describe('Worker environment routes', () => {
       context.set('actor', { kind: 'local', userId: 'user_local' });
       await next();
     });
-    registerWorkerEnvironmentRoutes({ app, operations: null });
+    registerFamilyFixture({ app, operations: null });
 
-    const response = await app.request('/api/app/workspaces/ws_demo/worker-environments');
+    const response = await app.request(
+      ...operationRequest('worker-environment.list', { workspaceId: 'ws_demo' })
+    );
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
@@ -56,7 +99,9 @@ describe('Worker environment routes', () => {
 
   it('parses bounded list pagination before invoking the shared operation', async () => {
     const { app, operations } = fixture();
-    const response = await app.request('/api/app/workspaces/ws_demo/worker-environments?limit=12');
+    const response = await app.request(
+      ...operationRequest('worker-environment.list', { workspaceId: 'ws_demo', limit: 12 })
+    );
 
     expect(response.status).toBe(200);
     expect(operations.list).toHaveBeenCalledWith(
@@ -65,21 +110,24 @@ describe('Worker environment routes', () => {
     );
   });
 
-  it('rejects a purge path/body mismatch before any destructive operation', async () => {
+  it('rejects a purge confirmation/logical reference mismatch before any destructive operation', async () => {
     const { app, operations } = fixture();
     const otherRef = `wst_${'b'.repeat(32)}`;
     const response = await app.request(
-      `/api/app/workspaces/ws_demo/worker-environments/${STORAGE_REF}/purge`,
-      {
-        body: JSON.stringify({
-          confirmation: `purge-worker-environment:${otherRef}:4`,
-          expectedRevision: 4,
-          requestId: REQUEST_ID,
-          storageRef: otherRef,
-        }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      }
+      ...operationRequest(
+        'worker-environment.purge',
+        { workspaceId: 'ws_demo', storageRef: STORAGE_REF },
+        {
+          body: JSON.stringify({
+            confirmation: `purge-worker-environment:${otherRef}:4`,
+            expectedRevision: 4,
+            requestId: REQUEST_ID,
+            storageRef: otherRef,
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
     );
 
     expect(response.status).toBe(400);
@@ -89,7 +137,10 @@ describe('Worker environment routes', () => {
   it('rejects an invalid status reference before invoking the shared operation', async () => {
     const { app, operations } = fixture();
     const response = await app.request(
-      '/api/app/workspaces/ws_demo/worker-environments/not-a-storage-ref/status'
+      ...operationRequest('worker-environment.status', {
+        workspaceId: 'ws_demo',
+        storageRef: 'not-a-storage-ref',
+      })
     );
 
     expect(response.status).toBe(400);
@@ -98,11 +149,25 @@ describe('Worker environment routes', () => {
 
   it('keeps preparation and activation visibly unavailable until their owners are composed', async () => {
     const { app } = fixture();
-    const response = await app.request('/api/app/worker-environments/prepare', {
-      body: '{}',
-      headers: { 'content-type': 'application/json' },
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'worker-environment.recover',
+        {},
+        {
+          body: JSON.stringify({
+            administrationThreadId: 'thread_admin',
+            requestId: REQUEST_ID,
+            recoverFrom: {
+              artifactId: 'artifact_candidate',
+              artifactVersion: 1,
+              contentDigest: `sha256:${'b'.repeat(64)}`,
+            },
+          }),
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+        }
+      )
+    );
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
@@ -121,9 +186,8 @@ describe('Worker environment routes', () => {
         'Image result is unavailable.'
       );
     });
-    registerWorkerEnvironmentRoutes({ app, operations: null, prepare });
+    registerFamilyFixture({ app, operations: null, prepare });
     const input = {
-      mode: 'recover',
       administrationThreadId: 'thread_admin',
       requestId: REQUEST_ID,
       recoverFrom: {
@@ -132,13 +196,22 @@ describe('Worker environment routes', () => {
         contentDigest: `sha256:${'b'.repeat(64)}`,
       },
     };
-    const response = await app.request('/api/app/worker-environments/prepare', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'worker-environment.recover',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
     expect(response.status).toBe(409);
-    expect(prepare).toHaveBeenCalledWith({ actor: { kind: 'local', userId: 'user_local' } }, input);
+    expect(prepare).toHaveBeenCalledWith(
+      { actor: { kind: 'local', userId: 'user_local' } },
+      { ...input, mode: 'recover' }
+    );
     await expect(response.json()).resolves.toMatchObject({ code: 'recovery_required' });
   });
 });

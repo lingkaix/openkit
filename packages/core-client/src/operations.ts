@@ -16,8 +16,10 @@ type OperationArguments<K extends OperationId> = z.input<
 /** Typed operation methods derived solely from the shared definition table. */
 export type OperationClient = {
   readonly [K in OperationId]: (
-    input: OperationArguments<K> extends { requestId: string }
-      ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
+    input: (typeof OPERATION_DEFINITIONS)[K]['mutating'] extends true
+      ? OperationArguments<K> extends { requestId: string }
+        ? Omit<OperationArguments<K>, 'requestId'> & { requestId?: string }
+        : OperationArguments<K>
       : OperationArguments<K>
   ) => Promise<OperationOutput<K>>;
 };
@@ -36,7 +38,7 @@ export function createOperationClient(transport: ClientTransport): OperationClie
         const { requestId, ...body } = parsed as typeof parsed & { requestId?: string };
         return transport.postJson(
           operationHttpPath(id),
-          body,
+          definition.mutating ? body : parsed,
           definition.outputSchema,
           definition.mutating && requestId ? { 'x-openkit-request-id': requestId } : undefined,
           'successStatus' in definition && definition.successStatus === 204

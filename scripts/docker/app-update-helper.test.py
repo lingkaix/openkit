@@ -473,8 +473,8 @@ class RecordingEffects:
                 "predecessorFenced": True,
                 "ready": ready,
             }
-        if "/api/app/app-update/" in url:
-            return 200, self.status_probe or {"requestId": url.rsplit("/", 1)[-1]}
+        if "/api/app/operations/app-update.status" in url:
+            return 200, self.status_probe or {"requestId": body["requestId"]}
         return 200, {"status": "ok"}
 
 

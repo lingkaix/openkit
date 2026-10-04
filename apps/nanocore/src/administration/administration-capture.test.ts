@@ -11,6 +11,7 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { digestLlmSystemPrompt } from '../llm/system-prompt-digest.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -20,7 +21,9 @@ import {
   type WorkObservationRecord,
 } from '../storage/work-observations.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { registerAdministrationRoutes } from './administration-routes.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
   type AdministrationEnvironmentTools,
@@ -32,6 +35,11 @@ it('binds the actual Administration prompt and ordered tools before model access
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -111,46 +119,58 @@ it('binds the actual Administration prompt and ordered tools before model access
       });
       await next();
     });
-    registerAdministrationRoutes({
+    registerOperationJsonRoutes({
       app,
       coreDb,
-      environmentToolsForTurn: () =>
-        ['list', 'status', 'prepare'].map((operation) => ({
-          name: `worker_environment.${operation}`,
-          description: 'PRIVATE_TOOL_DESCRIPTION',
-          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-          execute: async () => ({ content: [] }),
-        })) as unknown as AdministrationEnvironmentTools,
-      inflightCommands: new WeakMap(),
-      llmGatewayDispatcher: { createResponses },
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
+      store,
       requestStore: () => store,
-      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      reloadRuntimeConfig: vi.fn(),
-      resolveGatewayProvider: () => ({
-        adapterId: 'provider',
-        apiKey: 'unused-fixture',
-        backend: 'pi-ai',
-        baseUrl: profile.baseUrl,
-        displayName: profile.displayName,
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-        id: profile.id,
-        models: profile.models,
-        modelMetadata: profile.modelMetadata,
-        requiresApiKey: true,
-      }),
-      runtimeConfig: () => snapshot,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb,
+        environmentToolsForTurn: () =>
+          ['list', 'status', 'prepare', 'recover'].map((operation) => ({
+            name: `worker_environment.${operation}`,
+            description: 'PRIVATE_TOOL_DESCRIPTION',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+            execute: async () => ({ content: [] }),
+          })) as unknown as AdministrationEnvironmentTools,
+        inflightCommands: new WeakMap(),
+        llmGatewayDispatcher: { createResponses },
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfigFiles: () =>
+          ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+        reloadRuntimeConfig: vi.fn(),
+        resolveGatewayProvider: () => ({
+          adapterId: 'provider',
+          apiKey: 'unused-fixture',
+          backend: 'pi-ai',
+          baseUrl: profile.baseUrl,
+          displayName: profile.displayName,
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+          id: profile.id,
+          models: profile.models,
+          modelMetadata: profile.modelMetadata,
+          requiresApiKey: true,
+        }),
+        runtimeConfig: () => snapshot,
+      },
     });
-    const response = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'Describe current administration options.',
-        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        threadId: thread.id,
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Describe current administration options.',
+            requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            threadId: thread.id,
+          }),
+        }
+      )
+    );
     expect(response.status).toBe(200);
     expect((await response.json()).outcome).toBe('answered');
     expect(createResponses).toHaveBeenCalledOnce();

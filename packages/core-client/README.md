@@ -33,7 +33,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, and redacted Agent Environment Package snapshot readback.
 - `client.core`: metadata discovery and the Thread event stream.
 - `client.app`: dashboards, diagnostics, setup diagnostics, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership plus session-user redacted admin Token inventory and default selection, raw portable archive download, dry-run, and import streams, Workspace Material reads and mutations.
-- `client.app` also exposes current-administrator Worker environment list, select, prepare, activate, status, and purge methods plus the private administration conversation entry. The client validates every payload and keeps the path and body storage reference identical for destructive purge.
+- `client.operations` exposes the seven current-administrator Worker environment operations and the private administration conversation entry. Every input carries its complete logical selectors; destructive purge binds confirmation to the same storage reference and revision.
 - `client.operations[id]`: the ten `runtime.*` configuration editor and reload operations.
 - `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
@@ -45,7 +45,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 Deprecated flat aliases are not exported.
 
-`client.app.prepareAppUpdate`, `startAppUpdate` and `getAppUpdateStatus` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
+`client.operations['app-update.prepare']`, `client.operations['app-update.start']` and `client.operations['app-update.status']` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
 
 `client.operations['catalog.mcp-binding']` sends optional Vault credential bindings through the existing Workspace binding operation. A supplied array replaces those bindings, including an empty array to clear them; omission preserves current credentials for policy-only updates. Input and response types remain derived from the shared App API schemas.
 
@@ -56,7 +56,7 @@ Deprecated flat aliases are not exported.
 - `pnpm --filter @openkit/core-client lint`
 - `pnpm --filter @openkit/core-client build`
 
-`client.app.applyAdministrationConfiguration` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.
+`client.operations['administration.configuration-apply']` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.
 
 `client.operations['vault.secret-create']`, `client.operations['vault.secret-rotate']`, `client.operations['vault.secret-revoke']`, `client.operations['vault.grant-create']`, and `client.operations['vault.grant-revoke']` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
 

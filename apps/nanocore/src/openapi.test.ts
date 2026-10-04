@@ -868,13 +868,13 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/app-update/prepare']?.post).toMatchObject({
-      operationId: 'prepareAppUpdate',
+    expect(document.paths['/api/app/operations/app-update.prepare']?.post).toMatchObject({
+      operationId: 'app-update.prepare',
       tags: ['app-update'],
       requestBody: {
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/PrepareAppUpdateRequest' },
+            schema: { $ref: '#/components/schemas/app-update.prepare.input' },
           },
         },
       },
@@ -1480,29 +1480,78 @@ describe('app api openapi projection', () => {
     });
   });
 
+  it('preserves preparation and recovery constraints in runtime JSON Schema and generated OpenAPI', () => {
+    const document = createAppOpenApiDocument();
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const common = { administrationThreadId: 'thread_admin' };
+    const preparation = {
+      ...common,
+      configuration: { fileId: 'agents/codex.agent.jsonc', expectedRevision: digest },
+      declaration: { kind: 'reference', pullPolicy: 'never', ref: digest },
+      target: { kind: 'agent', agentId: 'codex' },
+    };
+    const recovery = {
+      ...common,
+      recoverFrom: { artifactId: 'artifact_authored', artifactVersion: 1, contentDigest: digest },
+    };
+    const ajv = new Ajv2020({ strict: false, validateFormats: false });
+    for (const [operation, body] of [
+      ['worker-environment.prepare', preparation],
+      ['worker-environment.recover', recovery],
+    ] as const) {
+      const definition = OPERATION_DEFINITIONS[operation];
+      for (const schema of [
+        z.toJSONSchema(definition.inputSchema),
+        document.components.schemas[`${operation}.input`],
+      ]) {
+        const validate = ajv.compile(schema);
+        const logical = { ...body, requestId: '11111111-1111-4111-8111-111111111111' };
+        // OpenAPI binds command identity in the header; the complete Zod projection keeps it.
+        const valid = schema === document.components.schemas[`${operation}.input`] ? body : logical;
+        expect(validate(valid), operation).toBe(true);
+        expect(validate({ ...valid, mode: 'prepare' }), operation).toBe(false);
+        if (operation === 'worker-environment.prepare') {
+          for (const field of ['configuration', 'declaration', 'target']) {
+            const incomplete = { ...valid } as Record<string, unknown>;
+            delete incomplete[field];
+            expect(validate(incomplete), field).toBe(false);
+          }
+          expect(validate({ ...valid, recoverFrom: recovery.recoverFrom })).toBe(false);
+        } else {
+          for (const [field, value] of Object.entries({
+            configuration: preparation.configuration,
+            declaration: preparation.declaration,
+            target: preparation.target,
+            replaceNow: null,
+          }))
+            expect(validate({ ...valid, [field]: value }), field).toBe(false);
+        }
+      }
+    }
+    expect(document.components.schemas).not.toHaveProperty('PrepareWorkerEnvironmentRequest');
+    expect(document.components.schemas).not.toHaveProperty('PrepareWorkerEnvironmentResponse');
+  });
+
   it('projects the bounded Worker environment and private administration operations', () => {
     const document = createAppOpenApiDocument();
     const operations = [
-      ['get', '/api/app/workspaces/{workspaceId}/worker-environments', 'listWorkerEnvironments'],
+      ['post', '/api/app/operations/worker-environment.list', 'worker-environment.list'],
+      ['post', '/api/app/operations/worker-environment.select', 'worker-environment.select'],
+      ['post', '/api/app/operations/worker-environment.prepare', 'worker-environment.prepare'],
+      ['post', '/api/app/operations/worker-environment.recover', 'worker-environment.recover'],
+      ['post', '/api/app/operations/worker-environment.activate', 'worker-environment.activate'],
+      ['post', '/api/app/operations/worker-environment.status', 'worker-environment.status'],
+      ['post', '/api/app/operations/worker-environment.purge', 'worker-environment.purge'],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/worker-environments/select',
-        'selectWorkerEnvironment',
-      ],
-      ['post', '/api/app/worker-environments/prepare', 'prepareWorkerEnvironment'],
-      ['post', '/api/app/worker-environments/activate', 'activateWorkerEnvironment'],
-      [
-        'get',
-        '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/status',
-        'getWorkerEnvironmentStatus',
+        '/api/app/operations/administration.configuration-apply',
+        'administration.configuration-apply',
       ],
       [
         'post',
-        '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/purge',
-        'purgeWorkerEnvironment',
+        '/api/app/operations/administration.conversation-submit',
+        'administration.conversation-submit',
       ],
-      ['post', '/api/app/administration/configuration/apply', 'applyAdministrationConfiguration'],
-      ['post', '/api/app/administration/conversation-turns', 'submitAdministrationConversation'],
     ] as const;
 
     for (const [method, path, operationId] of operations) {
@@ -1990,14 +2039,9 @@ describe('app api openapi projection', () => {
       'setMyAdminAccessTokenDefault',
       'getAppDiagnostics',
       'getSetupDiagnostics',
-      'prepareAppUpdate',
-      'startAppUpdate',
-      'getAppUpdateStatus',
       'downloadWorkspaceExportArchive',
       'dryRunWorkspaceArchiveImport',
       'importWorkspaceArchive',
-      'applyAdministrationConfiguration',
-      'submitAdministrationConversation',
       'listWorkspaceMaterials',
       'createWorkspaceMaterial',
       'getWorkspaceMaterial',
@@ -2010,12 +2054,6 @@ describe('app api openapi projection', () => {
       'excludeThreadMaterial',
       'restoreThreadMaterial',
       ...Object.keys(OPERATION_DEFINITIONS),
-      'listWorkerEnvironments',
-      'selectWorkerEnvironment',
-      'getWorkerEnvironmentStatus',
-      'purgeWorkerEnvironment',
-      'prepareWorkerEnvironment',
-      'activateWorkerEnvironment',
     ]);
   });
 

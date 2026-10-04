@@ -54,7 +54,7 @@ export function AdministrationConfigurationReview({
   const apply = useMutation({
     mutationKey,
     mutationFn: async () =>
-      client.app.applyAdministrationConfiguration({
+      client.operations['administration.configuration-apply']({
         candidate: candidate.candidate,
         confirmation: {
           action: 'administration.configuration.apply',

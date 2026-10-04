@@ -10,11 +10,12 @@ export const ADMINISTRATION_TOOL_NAMES = [
   'worker_environment.list',
   'worker_environment.status',
   'worker_environment.prepare',
+  'worker_environment.recover',
   'nanohost.runtime-target',
 ] as const;
 
 /** Environment Tools supplied by the existing Worker environment operation owner. */
-export type AdministrationEnvironmentTools = readonly [AgentTool, AgentTool, AgentTool];
+export type AdministrationEnvironmentTools = readonly [AgentTool, AgentTool, AgentTool, AgentTool];
 
 /** Dependencies used to assemble the fixed private administration Tool set. */
 export interface AdministrationToolAssemblyOptions {
@@ -22,7 +23,7 @@ export interface AdministrationToolAssemblyOptions {
   readonly requireCurrentAdministrator: () => void;
   /** Exact read, schema, and proposal closures from the configuration adapter. */
   readonly configurationTools: AdministrationConfigurationTools;
-  /** Exact list, status, and prepare closures from the Worker environment owner. */
+  /** Exact list, status, prepare, and recover closures from the Worker environment owner. */
   readonly environmentTools: AdministrationEnvironmentTools;
   /** Read-only configured NanoHost RuntimeTarget observation. */
   readonly runtimeTargetTool: AgentTool;
@@ -32,12 +33,12 @@ export interface AdministrationToolAssemblyOptions {
  * Assembles the complete fixed private administration Tool set.
  *
  * @param options Current authority recheck and existing owner closures.
- * @returns Seven Tools in the order owned by the Assistant administration contract.
+ * @returns Eight Tools in the order owned by the Assistant administration contract.
  */
 export function createAdministrationTools(
   options: AdministrationToolAssemblyOptions
 ): readonly AgentTool[] {
-  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(3, 6);
+  const expectedEnvironmentNames = ADMINISTRATION_TOOL_NAMES.slice(3, 7);
   if (
     options.environmentTools.some((tool, index) => tool.name !== expectedEnvironmentNames[index])
   ) {
@@ -49,7 +50,7 @@ export function createAdministrationTools(
   ) {
     throw new Error('Administration configuration Tool assembly is invalid.');
   }
-  if (options.runtimeTargetTool.name !== ADMINISTRATION_TOOL_NAMES[6]) {
+  if (options.runtimeTargetTool.name !== ADMINISTRATION_TOOL_NAMES[7]) {
     throw new Error('Administration NanoHost RuntimeTarget Tool assembly is invalid.');
   }
   return [

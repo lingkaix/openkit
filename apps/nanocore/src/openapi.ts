@@ -2,11 +2,7 @@ import { createHash } from 'node:crypto';
 
 import {
   AcceptWorkspaceInvitationRequestSchema,
-  ActivateWorkerEnvironmentRequestSchema,
-  ActivateWorkerEnvironmentResponseSchema,
   AppDiagnosticsResponseSchema,
-  ApplyAdministrationConfigurationRequestSchema,
-  ApplyAdministrationConfigurationResponseSchema,
   AppUpdateStatusResponseSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
@@ -27,7 +23,6 @@ import {
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
   GetThreadMaterialResponseSchema,
-  GetWorkerEnvironmentStatusResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
   LeaveWorkspaceRequestSchema,
@@ -35,7 +30,6 @@ import {
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
   ListSkillCatalogResponseSchema,
-  ListWorkerEnvironmentsResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMaterialRevisionsResponseSchema,
   ListWorkspaceMaterialsResponseSchema,
@@ -44,12 +38,6 @@ import {
   type OperationId,
   operationHttpPath,
   operationModelInput,
-  PrepareAppUpdateRequestSchema,
-  PrepareAppUpdateResponseSchema,
-  PrepareWorkerEnvironmentRequestSchema,
-  PrepareWorkerEnvironmentResponseSchema,
-  PurgeWorkerEnvironmentRequestSchema,
-  PurgeWorkerEnvironmentResponseSchema,
   RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
@@ -63,15 +51,10 @@ import {
   RotateWorkspaceVaultSecretRequestSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
-  SelectWorkerEnvironmentRequestSchema,
-  SelectWorkerEnvironmentResponseSchema,
   SetMyAdminAccessTokenDefaultRequestSchema,
   SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
   SetupDiagnosticsResponseSchema,
-  StartAppUpdateRequestSchema,
-  SubmitAdministrationConversationRequestSchema,
-  SubmitAdministrationConversationResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
@@ -142,12 +125,6 @@ const WORKSPACE_ID_PARAMETER = {
   in: 'path',
   required: true,
   schema: { $ref: '#/components/schemas/WorkspaceId' },
-} as const;
-const WORKER_ENVIRONMENT_STORAGE_REF_PARAMETER = {
-  name: 'storageRef',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', pattern: '^wst_[a-f0-9]{32}$' },
 } as const;
 const WORKSPACE_EXPORT_ID_PARAMETER = {
   name: 'exportId',
@@ -687,278 +664,6 @@ export function createAppOpenApiDocument() {
           security: SESSION_COOKIE_SECURITY,
         }),
       },
-      '/api/app/administration/configuration/apply': {
-        post: {
-          operationId: 'applyAdministrationConfiguration',
-          tags: ['administration'],
-          summary: 'Apply one exact human-confirmed private configuration candidate.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ApplyAdministrationConfigurationRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Actual persistence and reload outcome.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApplyAdministrationConfigurationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/administration/conversation-turns': {
-        post: {
-          operationId: 'submitAdministrationConversation',
-          tags: ['administration'],
-          summary: 'Submit one turn to the current user private administration entry.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/SubmitAdministrationConversationRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Completed private administration response.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/SubmitAdministrationConversationResponse',
-                  },
-                },
-              },
-            },
-            '202': {
-              description: 'Accepted administration proposal or clarification response.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/SubmitAdministrationConversationResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/worker-environments': {
-        get: {
-          operationId: 'listWorkerEnvironments',
-          tags: ['worker-environments'],
-          summary: 'List retained Worker environments admitted for the current user.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'after',
-              in: 'query',
-              required: false,
-              schema: { type: 'string', pattern: '^wst_[a-f0-9]{32}$' },
-            },
-            {
-              name: 'limit',
-              in: 'query',
-              required: false,
-              schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Bounded authorized retained Worker environments.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkerEnvironmentsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/worker-environments/select': {
-        post: {
-          operationId: 'selectWorkerEnvironment',
-          tags: ['worker-environments'],
-          summary: 'Validate one explicit retained Worker environment selection.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SelectWorkerEnvironmentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Current read-only selection admission result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SelectWorkerEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/worker-environments/prepare': {
-        post: {
-          operationId: 'prepareWorkerEnvironment',
-          tags: ['worker-environments'],
-          summary: 'Prepare and inspect one immutable Worker environment candidate.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/PrepareWorkerEnvironmentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Resolved candidate and bounded affected-work preview.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/PrepareWorkerEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/worker-environments/activate': {
-        post: {
-          operationId: 'activateWorkerEnvironment',
-          tags: ['worker-environments'],
-          summary: 'Activate one approved exact Worker environment candidate.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ActivateWorkerEnvironmentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Truthful activation, retained, or unknown outcome.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ActivateWorkerEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/status': {
-        get: {
-          operationId: 'getWorkerEnvironmentStatus',
-          tags: ['worker-environments'],
-          summary: 'Inspect current Core and host Worker environment facts.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [WORKSPACE_ID_PARAMETER, WORKER_ENVIRONMENT_STORAGE_REF_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Current exact retained Worker environment status.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/GetWorkerEnvironmentStatusResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/worker-environments/{storageRef}/purge': {
-        post: {
-          operationId: 'purgeWorkerEnvironment',
-          tags: ['worker-environments'],
-          summary: 'Purge one approved exact unreferenced retained Worker environment.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [WORKSPACE_ID_PARAMETER, WORKER_ENVIRONMENT_STORAGE_REF_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/PurgeWorkerEnvironmentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Definite purge or truthful retained or unknown result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/PurgeWorkerEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/materials': {
         get: appJsonOperation({
           operationId: 'listWorkspaceMaterials',
@@ -1070,108 +775,6 @@ export function createAppOpenApiDocument() {
           responseStatus: '200',
           responseSchema: 'RestoreThreadMaterialResponse',
         }),
-      },
-      '/api/app/app-update/prepare': {
-        post: {
-          operationId: 'prepareAppUpdate',
-          tags: ['app-update'],
-          summary: 'Prepare one closed App-update source without replacing the running App.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/PrepareAppUpdateRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Prepared review object with a host-issued receipt id.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/PrepareAppUpdateResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/app-update/start': {
-        post: {
-          operationId: 'startAppUpdate',
-          tags: ['app-update'],
-          summary: 'Start one prepared App-update receipt after explicit maintenance consent.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/StartAppUpdateRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Host receipt projection after start handoff.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AppUpdateStatusResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/app-update/{requestId}': {
-        get: {
-          operationId: 'getAppUpdateStatus',
-          tags: ['app-update'],
-          summary: 'Read one host-owned App-update receipt by id.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'requestId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Host receipt projection.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AppUpdateStatusResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
       },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
@@ -1295,7 +898,12 @@ export function createAppOpenApiDocument() {
           Object.entries(OPERATION_DEFINITIONS).flatMap(([id, definition]) => [
             [
               `${id}.input`,
-              toJsonSchema(operationModelInput(definition.inputSchema, ['requestId'])),
+              toJsonSchema(
+                operationModelInput(
+                  definition.inputSchema,
+                  definition.mutating ? ['requestId'] : []
+                )
+              ),
             ],
             [`${id}.output`, toJsonSchema(definition.outputSchema)],
           ])
@@ -1309,7 +917,6 @@ export function createAppOpenApiDocument() {
         DisableUserResponse: toJsonSchema(DisableUserResponseSchema),
         LeaveWorkspaceRequest: toJsonSchema(LeaveWorkspaceRequestSchema),
         ListWorkspaceInvitationsResponse: toJsonSchema(ListWorkspaceInvitationsResponseSchema),
-        ListWorkerEnvironmentsResponse: toJsonSchema(ListWorkerEnvironmentsResponseSchema),
         ListWorkspaceMembersResponse: toJsonSchema(ListWorkspaceMembersResponseSchema),
         RecoverWorkspaceAccessRequest: toJsonSchema(RecoverWorkspaceAccessRequestSchema),
         RecoverDeletedWorkspaceRequest: toJsonSchema(RecoverDeletedWorkspaceRequestSchema),
@@ -1363,22 +970,13 @@ export function createAppOpenApiDocument() {
         ),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        GetWorkerEnvironmentStatusResponse: toJsonSchema(GetWorkerEnvironmentStatusResponseSchema),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
         ListSkillCatalogResponse: toJsonSchema(ListSkillCatalogResponseSchema),
-        PurgeWorkerEnvironmentRequest: toJsonSchema(PurgeWorkerEnvironmentRequestSchema),
-        PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
-        PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
-        PrepareAppUpdateResponse: toJsonSchema(PrepareAppUpdateResponseSchema),
-        PrepareWorkerEnvironmentRequest: toJsonSchema(PrepareWorkerEnvironmentRequestSchema),
-        PrepareWorkerEnvironmentResponse: toJsonSchema(PrepareWorkerEnvironmentResponseSchema),
         RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
         RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),
         RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
-        SelectWorkerEnvironmentRequest: toJsonSchema(SelectWorkerEnvironmentRequestSchema),
-        SelectWorkerEnvironmentResponse: toJsonSchema(SelectWorkerEnvironmentResponseSchema),
         SetMyAdminAccessTokenDefaultRequest: toJsonSchema(
           SetMyAdminAccessTokenDefaultRequestSchema
         ),
@@ -1392,21 +990,6 @@ export function createAppOpenApiDocument() {
         WorkspaceVaultGrant: toJsonSchema(WorkspaceVaultGrantSchema),
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
-        SubmitAdministrationConversationRequest: toJsonSchema(
-          SubmitAdministrationConversationRequestSchema
-        ),
-        SubmitAdministrationConversationResponse: toJsonSchema(
-          SubmitAdministrationConversationResponseSchema
-        ),
-        ApplyAdministrationConfigurationRequest: toJsonSchema(
-          ApplyAdministrationConfigurationRequestSchema
-        ),
-        ApplyAdministrationConfigurationResponse: toJsonSchema(
-          ApplyAdministrationConfigurationResponseSchema
-        ),
-        ActivateWorkerEnvironmentRequest: toJsonSchema(ActivateWorkerEnvironmentRequestSchema),
-        ActivateWorkerEnvironmentResponse: toJsonSchema(ActivateWorkerEnvironmentResponseSchema),
-        StartAppUpdateRequest: toJsonSchema(StartAppUpdateRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(

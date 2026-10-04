@@ -1,9 +1,11 @@
 import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { createAdministrationOperationImplementations } from './administration/administration-operations.js';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
+import { createAppUpdateOperationImplementations } from './app-update/app-update-operations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
@@ -43,6 +45,7 @@ import { createTurnOperationImplementations } from './turn-operation-implementat
 import type { TurnStartDependencies } from './turn-routes.js';
 import { createVaultOperationImplementations } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
+import { createWorkerEnvironmentOperationImplementations } from './worker-environments/worker-environment-operation-implementations.js';
 import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { createWorkspaceOperationImplementations } from './workspace-operation-implementations.js';
@@ -58,6 +61,18 @@ export interface OperationInvocationDependencies {
   readonly providerSubscriptionOperations?: Parameters<
     typeof createProviderSubscriptionOperationImplementations
   >[0];
+  /** Boot-bound owners for public Worker environment commands. */
+  readonly workerEnvironmentServices?: Parameters<
+    typeof createWorkerEnvironmentOperationImplementations
+  >[0];
+  /** Private administration tools and configuration services; invocation supplies its store. */
+  readonly administrationServices?: Omit<
+    Parameters<typeof createAdministrationOperationImplementations>[0],
+    'store'
+  >;
+  /** Restricted App-update host adapter and audit database. */
+  readonly appUpdateServices?: Parameters<typeof createAppUpdateOperationImplementations>[0];
+
   /** Existing process-local automation owner, shared across public projections. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
@@ -116,6 +131,14 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAppSearchOperationImplementations(dependencies),
     createEnvironmentOperationImplementations(dependencies),
     createGovernanceOperationImplementations(dependencies),
+    createWorkerEnvironmentOperationImplementations(
+      dependencies.workerEnvironmentServices ?? { operations: null }
+    ),
+    createAdministrationOperationImplementations({
+      ...dependencies.administrationServices!,
+      store: dependencies.store!,
+    }),
+    createAppUpdateOperationImplementations(dependencies.appUpdateServices ?? { transport: null }),
     createAutomationOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),

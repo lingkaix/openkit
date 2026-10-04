@@ -50,7 +50,7 @@ describe('real administration assembly through invocation', () => {
         threadId: 'th_private_administration',
         turnId: 'turn_private_administration',
       };
-      const unaffected = ADMINISTRATION_TOOL_NAMES.slice(0, 6).map(
+      const unaffected = ADMINISTRATION_TOOL_NAMES.slice(0, 7).map(
         (name): AgentTool => ({
           name,
           description: name,
@@ -70,7 +70,7 @@ describe('real administration assembly through invocation', () => {
           lineage,
         }),
       });
-      const tool = tools[6]!;
+      const tool = tools[7]!;
       const result = await tool.execute(
         {},
         { callId: 'call_real_admin', signal: new AbortController().signal }

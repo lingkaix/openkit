@@ -18,9 +18,8 @@ import { isSealedTurnTerminal } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
-import { registerAdministrationRoutes } from './administration/administration-routes.js';
 import {
-  createAdministrationEnvironmentPrepareTool,
+  createAdministrationEnvironmentCandidateTools,
   createAdministrationEnvironmentTools,
 } from './administration/environment-tools.js';
 import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
@@ -28,7 +27,6 @@ import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import { asApiError } from './api-errors.js';
-import { registerAppUpdateRoutes } from './app-update/app-update-routes.js';
 import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
@@ -185,7 +183,6 @@ import {
 } from './worker-environments/worker-environment-activation.js';
 import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
 import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
-import { registerWorkerEnvironmentRoutes } from './worker-environments/worker-environment-routes.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import {
   isTerminalWorkspaceDeletionRequest,
@@ -1479,11 +1476,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       : startupOpenKitConfig.appUpdate
         ? createSshAppUpdateHostTransport(startupOpenKitConfig.appUpdate, dataRoot)
         : null;
-  registerAppUpdateRoutes({
-    app,
+  const appUpdateServices = {
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     transport: appUpdateTransport,
-  });
+  };
 
   registerWorkspaceTransferRoutes({
     app,
@@ -1533,8 +1529,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfig,
   });
 
-  registerAdministrationRoutes({
-    app,
+  const administrationServices: NonNullable<
+    OperationInvocationDependencies['administrationServices']
+  > = {
     providerCredentialConfigured,
     coreDb: options.coreDb,
     environmentToolsForTurn: (context) => {
@@ -1544,7 +1541,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       return createAdministrationEnvironmentTools({
         actor: context.actor,
         operations: workerEnvironmentOperations,
-        prepareTool: createAdministrationEnvironmentPrepareTool({
+        candidateTools: createAdministrationEnvironmentCandidateTools({
           actor: context.actor,
           administrationThreadId: context.administrationThreadId,
           administrationTurnId: context.administrationTurnId,
@@ -1558,12 +1555,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     quickChatWorkspaceIdForUser,
-    requestStore,
     resolveGatewayProvider,
     runtimeConfig,
     reloadRuntimeConfig: () => runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }),
-    runtimeConfigFiles: runtimeConfigFileService,
-  });
+    runtimeConfigFiles: (actor) => runtimeConfigFileService({ get: () => actor }),
+  };
 
   const goalServices = (): GoalOwnerServices => ({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -1828,6 +1824,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerOperationJsonRoutes({
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
+    administrationServices,
+    appUpdateServices,
+    workerEnvironmentServices: {
+      operations: workerEnvironmentOperations,
+      ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
+      ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
+    },
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     ...(dataRoot
       ? {
@@ -1874,6 +1877,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerRemoteMcpRoutes({
     ...(vaultUnlockState ? { vaultUnlockState } : {}),
+    administrationServices,
+    appUpdateServices,
+    workerEnvironmentServices: {
+      operations: workerEnvironmentOperations,
+      ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
+      ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
+    },
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     ...(dataRoot
       ? {
@@ -1917,13 +1927,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
-  });
-
-  registerWorkerEnvironmentRoutes({
-    app,
-    operations: workerEnvironmentOperations,
-    ...(workerEnvironmentPreparation ? { prepare: workerEnvironmentPreparation.prepare } : {}),
-    ...(workerEnvironmentActivation ? { activate: workerEnvironmentActivation.activate } : {}),
   });
 
   registerTurnEventRoutes({

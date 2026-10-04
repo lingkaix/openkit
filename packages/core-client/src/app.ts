@@ -1,16 +1,6 @@
 import {
-  type ActivateWorkerEnvironmentRequest,
-  ActivateWorkerEnvironmentRequestSchema,
-  type ActivateWorkerEnvironmentResponse,
-  ActivateWorkerEnvironmentResponseSchema,
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
-  type ApplyAdministrationConfigurationRequest,
-  ApplyAdministrationConfigurationRequestSchema,
-  type ApplyAdministrationConfigurationResponse,
-  ApplyAdministrationConfigurationResponseSchema,
-  type AppUpdateStatusResponse,
-  AppUpdateStatusResponseSchema,
   type BindThreadMaterialRequest,
   BindThreadMaterialRequestSchema,
   type BindThreadMaterialResponse,
@@ -33,8 +23,6 @@ import {
   ExcludeThreadMaterialResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
-  type GetWorkerEnvironmentStatusResponse,
-  GetWorkerEnvironmentStatusResponseSchema,
   type GetWorkspaceMaterialResponse,
   GetWorkspaceMaterialResponseSchema,
   type GetWorkspaceMaterialRevisionResponse,
@@ -48,26 +36,10 @@ import {
   ListMyAdminAccessTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
-  type ListWorkerEnvironmentsQuery,
-  ListWorkerEnvironmentsQuerySchema,
-  type ListWorkerEnvironmentsResponse,
-  ListWorkerEnvironmentsResponseSchema,
   type ListWorkspaceMaterialRevisionsResponse,
   ListWorkspaceMaterialRevisionsResponseSchema,
   type ListWorkspaceMaterialsResponse,
   ListWorkspaceMaterialsResponseSchema,
-  type PrepareAppUpdateRequest,
-  PrepareAppUpdateRequestSchema,
-  type PrepareAppUpdateResponse,
-  PrepareAppUpdateResponseSchema,
-  type PrepareWorkerEnvironmentRequest,
-  PrepareWorkerEnvironmentRequestSchema,
-  type PrepareWorkerEnvironmentResponse,
-  PrepareWorkerEnvironmentResponseSchema,
-  type PurgeWorkerEnvironmentRequest,
-  PurgeWorkerEnvironmentRequestSchema,
-  type PurgeWorkerEnvironmentResponse,
-  PurgeWorkerEnvironmentResponseSchema,
   type RecordKnowledgeClaimRequest,
   type RecordKnowledgeConflictRequest,
   type RecordKnowledgeObservationRequest,
@@ -89,22 +61,12 @@ import {
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
   SaveWorkspaceMaterialRevisionResponseSchema,
-  type SelectWorkerEnvironmentRequest,
-  SelectWorkerEnvironmentRequestSchema,
-  type SelectWorkerEnvironmentResponse,
-  SelectWorkerEnvironmentResponseSchema,
   type SetMyAdminAccessTokenDefaultRequest,
   SetMyAdminAccessTokenDefaultRequestSchema,
   type SetMyAdminAccessTokenDefaultResponse,
   SetMyAdminAccessTokenDefaultResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
-  type StartAppUpdateRequest,
-  StartAppUpdateRequestSchema,
-  type SubmitAdministrationConversationRequest,
-  SubmitAdministrationConversationRequestSchema,
-  type SubmitAdministrationConversationResponse,
-  SubmitAdministrationConversationResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
   type UnbindThreadMaterialRequest,
   UnbindThreadMaterialRequestSchema,
@@ -204,43 +166,6 @@ export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingErro
 
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
-  /** Lists one bounded page of currently authorized retained Worker environments. */
-  listWorkerEnvironments(
-    workspaceId: string,
-    query?: Partial<ListWorkerEnvironmentsQuery>
-  ): Promise<ListWorkerEnvironmentsResponse>;
-  /** Rechecks one explicit retained Worker environment selection. */
-  selectWorkerEnvironment(
-    workspaceId: string,
-    input: SelectWorkerEnvironmentRequest
-  ): Promise<SelectWorkerEnvironmentResponse>;
-  /** Prepares one immutable Worker environment candidate without interrupting work. */
-  prepareWorkerEnvironment(
-    input: PrepareWorkerEnvironmentRequest
-  ): Promise<PrepareWorkerEnvironmentResponse>;
-  /** Activates one exact human-confirmed prepared Worker environment candidate. */
-  activateWorkerEnvironment(
-    input: ActivateWorkerEnvironmentRequest
-  ): Promise<ActivateWorkerEnvironmentResponse>;
-  /** Reads current Core and host facts for one exact retained Worker environment. */
-  getWorkerEnvironmentStatus(
-    workspaceId: string,
-    storageRef: string
-  ): Promise<GetWorkerEnvironmentStatusResponse>;
-  /** Purges one exact idle retained Worker environment. */
-  purgeWorkerEnvironment(
-    workspaceId: string,
-    storageRef: string,
-    input: PurgeWorkerEnvironmentRequest
-  ): Promise<PurgeWorkerEnvironmentResponse>;
-  /** Applies an exact human-confirmed catalog candidate after current server authorization. */
-  applyAdministrationConfiguration(
-    input: ApplyAdministrationConfigurationRequest
-  ): Promise<ApplyAdministrationConfigurationResponse>;
-  /** Submits one private system-administration conversation turn. */
-  submitAdministrationConversation(
-    input: SubmitAdministrationConversationRequest
-  ): Promise<SubmitAdministrationConversationResponse>;
   /** Lists Workspace Materials. */
   listWorkspaceMaterials(workspaceId: string): Promise<ListWorkspaceMaterialsResponse>;
   /** Creates one Workspace Material. */
@@ -304,12 +229,6 @@ export interface AppApiClient {
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
   /** Reads setup diagnostics. */
   getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
-  /** Prepares one closed App-update source without replacing the running App. */
-  prepareAppUpdate(input: PrepareAppUpdateRequest): Promise<PrepareAppUpdateResponse>;
-  /** Starts one prepared App-update receipt after explicit maintenance consent. */
-  startAppUpdate(input: StartAppUpdateRequest): Promise<AppUpdateStatusResponse>;
-  /** Reads one host-owned App-update receipt by id. */
-  getAppUpdateStatus(requestId: string): Promise<AppUpdateStatusResponse>;
   /** Consumes the one-time server bootstrap token and returns the first server-admin token. */
   consumeBootstrapToken(
     input: ConsumeOpenKitBootstrapTokenInput
@@ -347,61 +266,6 @@ export interface AppApiClient {
 /** Creates the NanoCore App API client. */
 export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
-    listWorkerEnvironments: (workspaceId, query = {}) => {
-      const parsed = ListWorkerEnvironmentsQuerySchema.parse(query);
-      const parameters = new URLSearchParams({ limit: String(parsed.limit) });
-      if (parsed.after) parameters.set('after', parsed.after);
-      return transport.getJson(
-        `/api/app/workspaces/${workspaceId}/worker-environments?${parameters.toString()}`,
-        ListWorkerEnvironmentsResponseSchema
-      );
-    },
-    selectWorkerEnvironment: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/worker-environments/select`,
-        SelectWorkerEnvironmentRequestSchema.parse(input),
-        SelectWorkerEnvironmentResponseSchema
-      ),
-    prepareWorkerEnvironment: (input) =>
-      transport.postJson(
-        '/api/app/worker-environments/prepare',
-        PrepareWorkerEnvironmentRequestSchema.parse(input),
-        PrepareWorkerEnvironmentResponseSchema
-      ),
-    activateWorkerEnvironment: (input) =>
-      transport.postJson(
-        '/api/app/worker-environments/activate',
-        ActivateWorkerEnvironmentRequestSchema.parse(input),
-        ActivateWorkerEnvironmentResponseSchema
-      ),
-    getWorkerEnvironmentStatus: (workspaceId, storageRef) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/worker-environments/${storageRef}/status`,
-        GetWorkerEnvironmentStatusResponseSchema
-      ),
-    purgeWorkerEnvironment: (workspaceId, storageRef, input) => {
-      const parsed = PurgeWorkerEnvironmentRequestSchema.parse(input);
-      if (parsed.storageRef !== storageRef) {
-        throw new TypeError('Worker environment purge path and body references must match.');
-      }
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/worker-environments/${storageRef}/purge`,
-        parsed,
-        PurgeWorkerEnvironmentResponseSchema
-      );
-    },
-    applyAdministrationConfiguration: (input) =>
-      transport.postJson(
-        '/api/app/administration/configuration/apply',
-        ApplyAdministrationConfigurationRequestSchema.parse(input),
-        ApplyAdministrationConfigurationResponseSchema
-      ),
-    submitAdministrationConversation: (input) =>
-      transport.postJson(
-        '/api/app/administration/conversation-turns',
-        SubmitAdministrationConversationRequestSchema.parse(input),
-        SubmitAdministrationConversationResponseSchema
-      ),
     listWorkspaceMaterials: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/materials`,
@@ -484,23 +348,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
-    prepareAppUpdate: (input) =>
-      transport.postJson(
-        '/api/app/app-update/prepare',
-        PrepareAppUpdateRequestSchema.parse(input),
-        PrepareAppUpdateResponseSchema
-      ),
-    startAppUpdate: (input) =>
-      transport.postJson(
-        '/api/app/app-update/start',
-        StartAppUpdateRequestSchema.parse(input),
-        AppUpdateStatusResponseSchema
-      ),
-    getAppUpdateStatus: (requestId) =>
-      transport.getJson(
-        `/api/app/app-update/${encodeURIComponent(requestId)}`,
-        AppUpdateStatusResponseSchema
-      ),
     consumeBootstrapToken: (input) =>
       transport.postJson(
         '/api/app/auth/bootstrap/consume',

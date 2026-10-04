@@ -1559,7 +1559,7 @@ describe('createCoreClient', () => {
           } as never),
         }),
     ],
-  ])('rejects caller provider or model authority before %s transport', async (name, invoke) => {
+  ])('rejects caller provider or model authority before %s transport', async (_name, invoke) => {
     const { client, requests } = createFakeClient({});
 
     await expect(invoke(client)).rejects.toThrow();
@@ -2711,9 +2711,9 @@ describe('createCoreClient', () => {
       'GET /api/app/diagnostics': { body: appDiagnostics() },
       'POST /api/app/operations/storage.layout-report': { body: storageLayoutReport() },
       'POST /api/app/operations/backup.create': { body: dataRootBackupResponse() },
-      'POST /api/app/app-update/prepare': { body: appUpdatePrepared() },
-      'POST /api/app/app-update/start': { body: appUpdateStatus() },
-      'GET /api/app/app-update/11111111-1111-4111-8111-111111111111': { body: appUpdateStatus() },
+      'POST /api/app/operations/app-update.prepare': { body: appUpdatePrepared() },
+      'POST /api/app/operations/app-update.start': { body: appUpdateStatus() },
+      'POST /api/app/operations/app-update.status': { body: appUpdateStatus() },
       'POST /api/app/auth/bootstrap/consume': {
         body: {
           token: 'okt_owner_secret',
@@ -3331,7 +3331,7 @@ describe('createCoreClient', () => {
     );
     await expect(client.operations['backup.create']({})).resolves.toEqual(dataRootBackupResponse());
     await expect(
-      client.app.prepareAppUpdate({
+      client.operations['app-update.prepare']({
         expectedCurrentImageId: `sha256:${'b'.repeat(64)}`,
         source: {
           appDigest: `sha256:${'b'.repeat(64)}`,
@@ -3342,13 +3342,13 @@ describe('createCoreClient', () => {
       })
     ).resolves.toEqual(appUpdatePrepared());
     await expect(
-      client.app.startAppUpdate({
+      client.operations['app-update.start']({
         maintenanceConsent: true,
         requestId: '11111111-1111-4111-8111-111111111111',
       })
     ).resolves.toEqual(appUpdateStatus());
     await expect(
-      client.app.getAppUpdateStatus('11111111-1111-4111-8111-111111111111')
+      client.operations['app-update.status']({ requestId: '11111111-1111-4111-8111-111111111111' })
     ).resolves.toEqual(appUpdateStatus());
     await expect(
       client.app.consumeBootstrapToken({
@@ -3768,9 +3768,9 @@ describe('createCoreClient', () => {
       'GET /api/app/diagnostics',
       'POST /api/app/operations/storage.layout-report',
       'POST /api/app/operations/backup.create',
-      'POST /api/app/app-update/prepare',
-      'POST /api/app/app-update/start',
-      'GET /api/app/app-update/11111111-1111-4111-8111-111111111111',
+      'POST /api/app/operations/app-update.prepare',
+      'POST /api/app/operations/app-update.start',
+      'POST /api/app/operations/app-update.status',
       'POST /api/app/auth/bootstrap/consume',
       'POST /api/app/operations/backup.verify',
       'POST /api/app/operations/workspace.export',

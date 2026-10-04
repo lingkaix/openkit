@@ -1,10 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -15,13 +13,16 @@ import type { AuthVariables } from '../auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { ResolvedInternalRoleProfile } from '../internal-agents/profile-resolver.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
-import { registerAdministrationRoutes } from './administration-routes.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
   type AdministrationEnvironmentTools,
@@ -69,6 +70,11 @@ describe('administration conversation route', () => {
     openDatabases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -116,7 +122,7 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
+            // 10000 stays inside the 20000 physical context and leaves headroom for eight Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: restorePrimary
               ? [
@@ -169,6 +175,7 @@ describe('administration conversation route', () => {
       },
       inertTools[1],
       inertTools[2],
+      inertTools[3],
     ] as const satisfies AdministrationEnvironmentTools;
     const createResponses = vi
       .fn()
@@ -224,46 +231,61 @@ describe('administration conversation route', () => {
       context.set('actor', actor);
       await next();
     });
-    registerAdministrationRoutes({
+    registerOperationJsonRoutes({
       app,
       coreDb,
-      environmentToolsForTurn: () => environmentTools,
-      inflightCommands: new WeakMap(),
-      llmGatewayDispatcher: { createResponses },
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
+      store,
       requestStore: () => store,
-      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      providerCredentialConfigured: createProviderCredentialConfigured({
-        fallback: (ref) =>
-          ref === 'test:admin-backup' || (primaryConfigured && ref === 'test:admin-primary')
-            ? 'synthetic-key'
-            : null,
-      }),
-      resolveGatewayProvider: (id) =>
-        ({
-          adapterId: 'provider',
-          apiKey: !restorePrimary || id === 'backup' || primaryConfigured ? 'synthetic-key' : null,
-          baseUrl: providerProfile.baseUrl,
-          displayName: providerProfile.displayName,
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id,
-          models: providerProfile.models,
-          modelMetadata: providerProfile.modelMetadata,
-          requiresApiKey: true,
-        }) satisfies ResolvedLLMProviderConfig,
-      runtimeConfig: () => snapshot,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb,
+        environmentToolsForTurn: () => environmentTools,
+        inflightCommands: new WeakMap(),
+        llmGatewayDispatcher: { createResponses },
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfigFiles: () =>
+          ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+        providerCredentialConfigured: createProviderCredentialConfigured({
+          fallback: (ref) =>
+            ref === 'test:admin-backup' || (primaryConfigured && ref === 'test:admin-primary')
+              ? 'synthetic-key'
+              : null,
+        }),
+        resolveGatewayProvider: (id) =>
+          ({
+            adapterId: 'provider',
+            apiKey:
+              !restorePrimary || id === 'backup' || primaryConfigured ? 'synthetic-key' : null,
+            baseUrl: providerProfile.baseUrl,
+            displayName: providerProfile.displayName,
+            gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+            id,
+            models: providerProfile.models,
+            modelMetadata: providerProfile.modelMetadata,
+            requiresApiKey: true,
+          }) satisfies ResolvedLLMProviderConfig,
+        runtimeConfig: () => snapshot,
+
+        reloadRuntimeConfig: vi.fn(),
+      },
     });
 
-    const response = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'List retained Worker environments in my current Quick Chat Workspace.',
-        requestId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        threadId: thread.id,
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'List retained Worker environments in my current Quick Chat Workspace.',
+            requestId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+            threadId: thread.id,
+          }),
+        }
+      )
+    );
     const body = (await response.json()) as { outcome: string; turn: { status: string } };
 
     expect(response.status).toBe(200);
@@ -287,6 +309,11 @@ describe('administration conversation route', () => {
     openDatabases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -327,7 +354,7 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
+            // 10000 stays inside the 20000 physical context and leaves headroom for eight Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
@@ -375,51 +402,71 @@ describe('administration conversation route', () => {
       context.set('actor', actor);
       await next();
     });
-    registerAdministrationRoutes({
+    registerOperationJsonRoutes({
       app,
       coreDb,
-      environmentToolsForTurn: () => inertEnvironmentTools(),
-      inflightCommands: new WeakMap(),
-      llmGatewayDispatcher: { createResponses },
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
+      store,
       requestStore: () => store,
-      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      resolveGatewayProvider: () =>
-        ({
-          adapterId: 'provider',
-          apiKey: 'unused',
-          baseUrl: providerProfile.baseUrl,
-          displayName: providerProfile.displayName,
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id: providerProfile.id,
-          models: providerProfile.models,
-          modelMetadata: providerProfile.modelMetadata,
-          requiresApiKey: true,
-        }) satisfies ResolvedLLMProviderConfig,
-      runtimeConfig: () => snapshot,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb,
+        environmentToolsForTurn: () => inertEnvironmentTools(),
+        inflightCommands: new WeakMap(),
+        llmGatewayDispatcher: { createResponses },
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfigFiles: () =>
+          ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+        resolveGatewayProvider: () =>
+          ({
+            adapterId: 'provider',
+            apiKey: 'unused',
+            baseUrl: providerProfile.baseUrl,
+            displayName: providerProfile.displayName,
+            gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+            id: providerProfile.id,
+            models: providerProfile.models,
+            modelMetadata: providerProfile.modelMetadata,
+            requiresApiKey: true,
+          }) satisfies ResolvedLLMProviderConfig,
+        runtimeConfig: () => snapshot,
+
+        reloadRuntimeConfig: vi.fn(),
+      },
     });
 
-    const first = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'Give the first answer.',
-        requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      }),
-    });
+    const first = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Give the first answer.',
+            requestId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          }),
+        }
+      )
+    );
     const firstBody = (await first.json()) as { receivingThreadId: string };
     expect(first.status).toBe(200);
 
-    const second = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'Give the second answer.',
-        requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-        threadId: firstBody.receivingThreadId,
-      }),
-    });
+    const second = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Give the second answer.',
+            requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            threadId: firstBody.receivingThreadId,
+          }),
+        }
+      )
+    );
     const secondBody = (await second.json()) as {
       outcome: string;
       turn: { error: { code: string } | null; items: { text?: string }[]; status: string };
@@ -440,6 +487,11 @@ describe('administration conversation route', () => {
     openDatabases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    });
     const firstToken = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -482,7 +534,7 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for seven Tool schemas plus instructions.
+            // 10000 stays inside the 20000 physical context and leaves headroom for eight Tool schemas plus instructions.
             contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
@@ -518,40 +570,54 @@ describe('administration conversation route', () => {
       context.set('actor', actorState.current);
       await next();
     });
-    registerAdministrationRoutes({
+    registerOperationJsonRoutes({
       app,
       coreDb,
-      environmentToolsForTurn: () => inertEnvironmentTools(),
-      inflightCommands: new WeakMap(),
-      llmGatewayDispatcher: { createResponses },
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
+      store,
       requestStore: () => store,
-      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      resolveGatewayProvider: () =>
-        ({
-          adapterId: 'provider',
-          apiKey: 'unused',
-          baseUrl: providerProfile.baseUrl,
-          displayName: providerProfile.displayName,
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id: providerProfile.id,
-          models: providerProfile.models,
-          modelMetadata: providerProfile.modelMetadata,
-          requiresApiKey: true,
-        }) satisfies ResolvedLLMProviderConfig,
-      runtimeConfig: () => snapshot,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb,
+        environmentToolsForTurn: () => inertEnvironmentTools(),
+        inflightCommands: new WeakMap(),
+        llmGatewayDispatcher: { createResponses },
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfigFiles: () =>
+          ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+        resolveGatewayProvider: () =>
+          ({
+            adapterId: 'provider',
+            apiKey: 'unused',
+            baseUrl: providerProfile.baseUrl,
+            displayName: providerProfile.displayName,
+            gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+            id: providerProfile.id,
+            models: providerProfile.models,
+            modelMetadata: providerProfile.modelMetadata,
+            requiresApiKey: true,
+          }) satisfies ResolvedLLMProviderConfig,
+        runtimeConfig: () => snapshot,
+
+        reloadRuntimeConfig: vi.fn(),
+      },
     });
     const request = {
       input: 'Inspect the Worker environment.',
       requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     };
 
-    const first = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const first = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        }
+      )
+    );
     const firstBody = (await first.json()) as {
       outcome: string;
       turn: { id: string; status: string };
@@ -574,11 +640,17 @@ describe('administration conversation route', () => {
       tokenWorkspaceIds: [],
       userId: 'user_local',
     };
-    const replay = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const replay = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        }
+      )
+    );
     const replayBody = (await replay.json()) as typeof firstBody;
 
     expect(replay.status).toBe(200);
@@ -594,11 +666,17 @@ describe('administration conversation route', () => {
         items: turn.items.filter((item) => item.id !== `it_administration_user_${turn.id}`),
       };
     });
-    const missingUserReplay = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const missingUserReplay = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request),
+        }
+      )
+    );
     expect(missingUserReplay.status).toBe(409);
     await expect(missingUserReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
@@ -613,18 +691,30 @@ describe('administration conversation route', () => {
       input: 'Inspect another Worker environment.',
       requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     };
-    const partial = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(partialRequest),
-    });
+    const partial = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(partialRequest),
+        }
+      )
+    );
     expect(partial.status).toBe(409);
     await expect(partial.json()).resolves.toMatchObject({ code: 'recovery_required' });
-    const partialReplay = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(partialRequest),
-    });
+    const partialReplay = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(partialRequest),
+        }
+      )
+    );
     expect(partialReplay.status).toBe(409);
     await expect(partialReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
     expect(createResponses).toHaveBeenCalledTimes(2);
@@ -636,6 +726,11 @@ describe('administration conversation route', () => {
     openDatabases.push(coreDb);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: quickChatWorkspaceIdForUser('user_local'),
+    });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'user_local',
@@ -711,40 +806,54 @@ describe('administration conversation route', () => {
       context.set('actor', actor);
       await next();
     });
-    registerAdministrationRoutes({
+    registerOperationJsonRoutes({
       app,
       coreDb,
-      environmentToolsForTurn: () => inertEnvironmentTools(),
-      inflightCommands: new WeakMap(),
-      llmGatewayDispatcher: { createResponses },
-      mode: 'server',
-      quickChatWorkspaceIdForUser,
+      store,
       requestStore: () => store,
-      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-      resolveGatewayProvider: () =>
-        ({
-          adapterId: 'provider',
-          apiKey: 'unused',
-          baseUrl: providerProfile.baseUrl,
-          displayName: providerProfile.displayName,
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-          id: providerProfile.id,
-          models: providerProfile.models,
-          modelMetadata: providerProfile.modelMetadata,
-          requiresApiKey: true,
-        }) satisfies ResolvedLLMProviderConfig,
-      runtimeConfig: () => snapshot,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      administrationServices: {
+        coreDb,
+        environmentToolsForTurn: () => inertEnvironmentTools(),
+        inflightCommands: new WeakMap(),
+        llmGatewayDispatcher: { createResponses },
+        mode: 'server',
+        quickChatWorkspaceIdForUser,
+        runtimeConfigFiles: () =>
+          ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+        resolveGatewayProvider: () =>
+          ({
+            adapterId: 'provider',
+            apiKey: 'unused',
+            baseUrl: providerProfile.baseUrl,
+            displayName: providerProfile.displayName,
+            gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+            id: providerProfile.id,
+            models: providerProfile.models,
+            modelMetadata: providerProfile.modelMetadata,
+            requiresApiKey: true,
+          }) satisfies ResolvedLLMProviderConfig,
+        runtimeConfig: () => snapshot,
+
+        reloadRuntimeConfig: vi.fn(),
+      },
     });
 
-    const response = await app.request('/api/app/administration/conversation-turns', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        input: 'Continue the other private administration thread.',
-        requestId: '22222222-2222-4222-8222-222222222222',
-        threadId: foreignPrivateThread.id,
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            input: 'Continue the other private administration thread.',
+            requestId: '22222222-2222-4222-8222-222222222222',
+            threadId: foreignPrivateThread.id,
+          }),
+        }
+      )
+    );
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
@@ -814,7 +923,7 @@ describe('administration conversation route', () => {
 });
 
 function inertEnvironmentTools(): AdministrationEnvironmentTools {
-  return ['list', 'status', 'prepare'].map((operation) => ({
+  return ['list', 'status', 'prepare', 'recover'].map((operation) => ({
     name: `worker_environment.${operation}`,
     description: `Inert ${operation} Tool.`,
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
@@ -842,6 +951,11 @@ async function postAdministrationAdmissionTurn(options: {
   openDatabases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'user_local',
+    workspaceId: quickChatWorkspaceIdForUser('user_local'),
+  });
   const token = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: '2999-01-01T00:00:00.000Z',
     ownerUserId: 'user_local',
@@ -922,40 +1036,53 @@ async function postAdministrationAdmissionTurn(options: {
     context.set('actor', actor);
     await next();
   });
-  registerAdministrationRoutes({
+  registerOperationJsonRoutes({
     app,
     coreDb,
-    environmentToolsForTurn: () => inertEnvironmentTools(),
-    inflightCommands: new WeakMap(),
-    llmGatewayDispatcher: { createResponses },
-    mode: 'server',
-    quickChatWorkspaceIdForUser,
+    store,
     requestStore: () => store,
-    runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
-    resolveGatewayProvider: () =>
-      ({
-        adapterId: 'provider',
-        apiKey: 'unused',
-        baseUrl: providerProfile.baseUrl,
-        displayName: providerProfile.displayName,
-        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
-        id: providerProfile.id,
-        models: providerProfile.models,
-        modelMetadata: providerProfile.modelMetadata,
-        requiresApiKey: true,
-      }) satisfies ResolvedLLMProviderConfig,
-    runtimeConfig: () => snapshot,
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    administrationServices: {
+      coreDb,
+      environmentToolsForTurn: () => inertEnvironmentTools(),
+      inflightCommands: new WeakMap(),
+      llmGatewayDispatcher: { createResponses },
+      mode: 'server',
+      quickChatWorkspaceIdForUser,
+      runtimeConfigFiles: () => ({ listFiles: () => ({ files: [] }), readFile: vi.fn() }) as never,
+      resolveGatewayProvider: () =>
+        ({
+          adapterId: 'provider',
+          apiKey: 'unused',
+          baseUrl: providerProfile.baseUrl,
+          displayName: providerProfile.displayName,
+          gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+          id: providerProfile.id,
+          models: providerProfile.models,
+          modelMetadata: providerProfile.modelMetadata,
+          requiresApiKey: true,
+        }) satisfies ResolvedLLMProviderConfig,
+      runtimeConfig: () => snapshot,
+
+      reloadRuntimeConfig: vi.fn(),
+    },
   });
 
-  const response = await app.request('/api/app/administration/conversation-turns', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      input: 'List retained Worker environments in my current Quick Chat Workspace.',
-      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      threadId: thread.id,
-    }),
-  });
+  const response = await app.request(
+    ...operationRequest(
+      'administration.conversation-submit',
+      {},
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          input: 'List retained Worker environments in my current Quick Chat Workspace.',
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          threadId: thread.id,
+        }),
+      }
+    )
+  );
   return {
     status: response.status,
     body: (await response.json()) as {

@@ -1656,7 +1656,7 @@ class AppUpdateHelper:
             nanohost_ok = self._nanohost_successor_ready(previous_nanohost, status, body)
         else:
             nanohost_ok = None
-        helper_status, helper_body = self._authorized_json("/api/app/app-update/%s" % receipt["requestId"])
+        helper_status, helper_body = self._authorized_json("/api/app/operations/app-update.status", method="POST", body={"requestId": receipt["requestId"]})
         helper_ok = (
             helper_status == 200
             and isinstance(helper_body, dict)

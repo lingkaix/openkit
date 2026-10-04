@@ -5614,7 +5614,11 @@ describe('Worker environment Advanced choice', () => {
     });
     const client = makeClient(
       { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
-      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
+      {
+        'worker-environment.list': listWorkerEnvironments,
+        'worker-environment.select': selectWorkerEnvironment,
+        'conversation.submit': submitConversation,
+      }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -5671,7 +5675,10 @@ describe('Worker environment Advanced choice', () => {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
           'thread.list': vi.fn().mockResolvedValue({ items: [THREAD, attachedThread] }),
         },
-        { listWorkerEnvironments, selectWorkerEnvironment }
+        {
+          'worker-environment.list': listWorkerEnvironments,
+          'worker-environment.select': selectWorkerEnvironment,
+        }
       )
     );
     await chooseNewTaskWorker(user);
@@ -5697,10 +5704,10 @@ describe('Worker environment Advanced choice', () => {
     );
     expect(screen.getByText('Independent review from Goal closeout')).toBeInTheDocument();
     await waitFor(() =>
-      expect(selectWorkerEnvironment).toHaveBeenCalledWith(
-        'ws1',
-        workerSelectRequest('th1', attached)
-      )
+      expect(selectWorkerEnvironment).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...workerSelectRequest('th1', attached),
+      })
     );
     expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent(WORKER_LAYOUT_DIGEST);
@@ -5724,14 +5731,21 @@ describe('Worker environment Advanced choice', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
+      {
+        'worker-environment.list': listWorkerEnvironments,
+        'worker-environment.select': selectWorkerEnvironment,
+        'conversation.submit': submitConversation,
+      }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
     await chooseRetainedEnvironment(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await waitFor(() =>
-      expect(selectWorkerEnvironment).toHaveBeenCalledWith('ws1', workerSelectRequest('th1'))
+      expect(selectWorkerEnvironment).toHaveBeenCalledWith({
+        workspaceId: 'ws1',
+        ...workerSelectRequest('th1'),
+      })
     );
     expect(screen.getByRole('combobox', { name: 'Worker environment' })).toHaveDisplayValue(
       workerEnvironmentOptionName('Competitive teardown', 'Idle', WORKER_ENVIRONMENT.createdAt)
@@ -5790,7 +5804,11 @@ describe('Worker environment Advanced choice', () => {
         'thread.read': vi.fn().mockResolvedValue({ ...THREAD, id: 'th-new' }),
         'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
+      {
+        'worker-environment.list': listWorkerEnvironments,
+        'worker-environment.select': selectWorkerEnvironment,
+        'conversation.submit': submitConversation,
+      }
     );
     renderApp('/chat', client);
     await chooseNewTaskWorker(user);
@@ -5887,10 +5905,10 @@ describe('Worker environment Advanced choice', () => {
               ],
             })),
           }),
-          listWorkerEnvironments: vi
+          'worker-environment.list': vi
             .fn()
             .mockResolvedValue({ items: [WORKER_ENVIRONMENT], nextCursor: null }),
-          selectWorkerEnvironment: vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT }),
+          'worker-environment.select': vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT }),
         }
       )
     );
@@ -5971,7 +5989,11 @@ describe('Worker environment Advanced choice', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment, 'conversation.submit': submitConversation }
+      {
+        'worker-environment.list': listWorkerEnvironments,
+        'worker-environment.select': selectWorkerEnvironment,
+        'conversation.submit': submitConversation,
+      }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -6014,7 +6036,10 @@ describe('Worker environment Advanced choice', () => {
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
       },
-      { listWorkerEnvironments, selectWorkerEnvironment }
+      {
+        'worker-environment.list': listWorkerEnvironments,
+        'worker-environment.select': selectWorkerEnvironment,
+      }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
@@ -6027,7 +6052,10 @@ describe('Worker environment Advanced choice', () => {
     expect(screen.queryByText('Eligible')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('deployment_admin_required');
     expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
-    expect(selectWorkerEnvironment).toHaveBeenCalledWith('ws1', workerSelectRequest('th1'));
+    expect(selectWorkerEnvironment).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      ...workerSelectRequest('th1'),
+    });
   });
 
   it('preserves the selected retained environment when inventory order changes', async () => {
@@ -6061,7 +6089,10 @@ describe('Worker environment Advanced choice', () => {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
           'thread.list': vi.fn().mockResolvedValue({ items: [THREAD, otherThread] }),
         },
-        { listWorkerEnvironments, selectWorkerEnvironment }
+        {
+          'worker-environment.list': listWorkerEnvironments,
+          'worker-environment.select': selectWorkerEnvironment,
+        }
       )
     );
     await chooseNewTaskWorker(user);
@@ -6116,7 +6147,7 @@ describe('Worker environment Advanced choice', () => {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
           'thread.list': vi.fn().mockResolvedValue({ items: [THREAD] }),
         },
-        { listWorkerEnvironments }
+        { 'worker-environment.list': listWorkerEnvironments }
       )
     );
     await chooseNewTaskWorker(user);
@@ -6154,14 +6185,14 @@ describe('Worker environment Advanced choice', () => {
     );
     const client = makeClient(
       { 'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }) },
-      { listWorkerEnvironments }
+      { 'worker-environment.list': listWorkerEnvironments }
     );
     renderApp('/chat/ws1/th1', client);
     await chooseNewTaskWorker(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(listWorkerEnvironments).toHaveBeenCalledWith('ws1', { limit: 100 });
+    expect(listWorkerEnvironments).toHaveBeenCalledWith({ workspaceId: 'ws1', ...{ limit: 100 } });
     expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('deployment_admin_required');
   });
