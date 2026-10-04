@@ -4795,6 +4795,7 @@ describe('nanocore server', () => {
         .find((item) => item.id === `it_user_${parsed.turn.id}`);
       expect(workerInput?.type).toBe('user-message');
       const expectedWorkerRequest = workerCoordinator.createWorkerCoordinatorDecision({
+        entryIntent: 'explicit_task',
         prompt: input,
         readiness: [
           {
@@ -7122,112 +7123,208 @@ describe('nanocore server', () => {
     }
   });
 
-  it('does not silently run Task Mode when the coordinator selects quick chat', async () => {
+  it.each([
+    { input: 'Read the supplied paragraph and reply with its title.', clarifies: false },
+    { input: 'Summarize the supplied paragraph.', clarifies: false },
+    { input: 'What is OpenKit?', clarifies: false },
+    { input: 'Help.', clarifies: true },
+    { input: 'Do it.', clarifies: true },
+    { input: 'Read it.', clarifies: false },
+    { input: 'Do not read issue 110 of lingkaix/openkit.', clarifies: false },
+    { input: 'I read issue 110 yesterday.', clarifies: false },
+    { input: 'The word read appears in the supplied paragraph.', clarifies: false },
+    { input: 'Explain what read means.', clarifies: false },
+    { input: 'What does fetch mean?', clarifies: false },
+    { input: 'Can you read?', clarifies: false },
+    {
+      input:
+        'The example instruction is "Read issue 110 of lingkaix/openkit and reply with its title."',
+      clarifies: false,
+    },
+  ])('preserves ordinary project Chat without worker effects: $input', async ({
+    input,
+    clarifies,
+  }) => {
     const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-    const res = await app.request(
-      ...operationRequest(
-        'task.start',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000302',
-            input: 'What is OpenKit?',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      )
-    );
-
+    const prompts: string[] = [];
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      ...chatAnsweringProvider(prompts),
+    });
     try {
-      expect(res.status).toBe(409);
-      await expect(res.json()).resolves.toMatchObject({
-        code: 'task_mode_not_delegated',
+      const response = await app.request(
+        ...operationRequest(
+          'conversation.submit',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: conversationRequest({
+              requestId: '0190f4c8-0000-7000-8000-000000000602',
+              input,
+            }),
+          }
+        )
+      );
+      expect(response.status, await response.clone().text()).toBe(clarifies ? 202 : 200);
+      expect(SubmitConversationResponseSchema.parse(await response.json())).toMatchObject({
+        outcome: clarifies ? 'clarification-needed' : 'answered',
+        handoff: null,
       });
       expect(executor.startContexts).toHaveLength(0);
+      expect(prompts).toHaveLength(clarifies ? 0 : 1);
+      expect(
+        store
+          .listCommandRequests()
+          .filter((record) => record.command === 'task.start' || record.command === 'goal.create')
+      ).toHaveLength(0);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('does not silently run Task Mode when the coordinator asks to clarify', async () => {
+  it('refuses explicit Task when no worker is ready without worker effects', async () => {
     const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, turnExecutor: executor });
-    const res = await app.request(
-      ...operationRequest(
-        'task.start',
-        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+    const app = createApp({
+      coreDb,
+      store,
+      turnExecutor: executor,
+      agentManifests: [
         {
-          method: 'POST',
-          body: JSON.stringify({
-            requestId: '0190f4c8-0000-7000-8000-000000000318',
-            input: 'Help.',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      )
-    );
-
+          ...createTestAgentSetup({ provider: null }).manifest,
+          readiness: { status: 'blocked', message: 'Blocked for this test.' },
+        },
+      ],
+    });
     try {
-      expect(res.status).toBe(409);
-      await expect(res.json()).resolves.toMatchObject({
+      const response = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000603',
+              input:
+                'Read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title.',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
         code: 'task_mode_not_delegated',
-        message: 'The request needs clarification before routing.',
+        message: 'No ready worker candidate is available.',
       });
       expect(executor.startContexts).toHaveLength(0);
+      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(0);
+      expect(store.listCommandRequests()).toHaveLength(0);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()
+      ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('hands Goal planning from Task entry to one Goal without worker execution', async () => {
+  it('replays an existing Task-to-Goal receipt without creating a Goal or worker', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const app = createApp({ coreDb, store, turnExecutor: executor });
-    const requestId = '0190f4c8-0000-7000-8000-000000000307';
+    const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
-
+    // Reconstruct the exact retained tuple produced by the removed keyword escalation branch.
+    const turn = store.createTurn('ws_demo', 'th_demo', input, { kind: 'user', id: 'user_local' });
+    const at = new Date().toISOString();
+    store.createItem({
+      id: `it_task_goal_goal_retained_${turn.id}`,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: turn.id,
+      type: 'status',
+      status: 'completed',
+      level: 'info',
+      title: 'Goal created',
+      summary: 'The request needs explicit Goal Mode planning before worker execution.',
+      createdAt: at,
+      completedAt: at,
+    });
+    store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+    store.recordCommandRequest({
+      command: 'task.start',
+      requestId,
+      scope: { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' },
+      inputHash: commandInputHash({ input }),
+      response: { kind: 'turn', id: turn.id },
+    });
     try {
-      const res = await app.request(
+      const response = await app.request(
         ...operationRequest(
           'task.start',
           { workspaceId: 'ws_demo', threadId: 'th_demo' },
           {
             method: 'POST',
-            body: JSON.stringify({ requestId, input }),
             headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId, input }),
           }
         )
       );
-
-      expect(res.status).toBe(202);
-      const accepted = await res.json();
-      expect(accepted).toMatchObject({
+      expect(response.status, await response.clone().text()).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await response.json())).toMatchObject({
         state: 'escalated-to-goal',
-        escalation: { targetMode: 'goal' },
+        turn: { id: turn.id },
+        escalation: { targetMode: 'goal', goalId: 'goal_retained' },
       });
       expect(executor.startContexts).toHaveLength(0);
-      const replayRes = await app.request(
+      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(1);
+      expect(store.listCommandRequests()).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'What is OpenKit?',
+    'Help.',
+    'Plan a multi-step release goal for NanoCore.',
+  ])('admits one explicit Task attempt for "%s" without keyword Goal creation', async (input) => {
+    const coreDb = createCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new FakeTurnExecutor();
+    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const requestId = '0190f4c8-0000-7000-8000-000000000302';
+    const submit = () =>
+      app.request(
         ...operationRequest(
           'task.start',
           { workspaceId: 'ws_demo', threadId: 'th_demo' },
           {
             method: 'POST',
-            body: JSON.stringify({ requestId, input }),
             headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ requestId, input }),
           }
         )
       );
-
-      expect(replayRes.status).toBe(202);
-      expect(await replayRes.json()).toEqual(accepted);
-
+    try {
+      const res = await submit();
+      expect(res.status).toBe(202);
+      const accepted = StartTaskModeResponseSchema.parse(await res.json());
+      expect(accepted.escalation ?? null).toBeNull();
+      expect(executor.startContexts).toHaveLength(1);
+      const replay = await submit();
+      expect(replay.status).toBe(202);
+      expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(accepted.turn.id);
+      expect(executor.startContexts).toHaveLength(1);
       expect(store.listCommandRequests().some((record) => record.command === 'goal.create')).toBe(
-        true
+        false
       );
     } finally {
       coreDb.sqlite.close();

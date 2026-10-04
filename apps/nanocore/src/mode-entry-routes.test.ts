@@ -122,6 +122,8 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
 class HoldingTurnExecutor extends CompletingTurnExecutor {
   /** Number of actual executor entries, including unresolved launches. */
   public launches = 0;
+  /** Exact request bytes received by the held executor before completion. */
+  public readonly inputs: string[] = [];
   /** Controlled closeout failure after canonical completion. */
   public failCloseout = false;
   /** Resolves once the route has invoked `startTurn`. */
@@ -146,6 +148,7 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
     this.launches += 1;
+    this.inputs.push(input);
     this.launched.resolve();
     try {
       await this.completion.promise;
@@ -1428,12 +1431,113 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
 });
 
 describe('Task durable admission response', () => {
+  it('refuses a denied Task capability before worker or scheduler effects', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-denied-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const executor = new CompletingTurnExecutor();
+    const setup = createTestAgentSetup();
+    const app = createApp({
+      mode: 'server',
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: executor,
+      agentManifests: [setup.manifest],
+    });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const token = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace-readonly',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    try {
+      const response = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${token.secret}`,
+            },
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000605',
+              input:
+                'Read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title.',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
+      expect(executor.startContexts).toHaveLength(0);
+      expect(store.listThreadTurns('ws_demo', 'th_demo')).toHaveLength(0);
+      expect(store.listCommandRequests()).toHaveLength(0);
+      expect(
+        listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+          workspaceId: 'ws_demo',
+          statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
+        })
+      ).toHaveLength(0);
+    } finally {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
-    'direct',
-    'assistant',
-    'remote-mcp',
-    'closeout-failure',
-  ] as const)('returns %s admission and its receipt before the held worker finishes', async (entry) => {
+    ...(['direct', 'assistant', 'remote-mcp', 'closeout-failure'] as const).map((entry) => ({
+      entry,
+      input: 'Implement a focused change and run its tests.',
+    })),
+    {
+      entry: 'direct',
+      input:
+        'Read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title.',
+    },
+    {
+      entry: 'direct',
+      input:
+        'Please read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title.',
+    },
+    {
+      entry: 'direct',
+      input:
+        'Could you read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title?',
+    },
+    { entry: 'direct', input: 'Fetch issue 110 of lingkaix/openkit and return its title.' },
+    { entry: 'direct', input: 'Retrieve issue 110 of lingkaix/openkit and return its title.' },
+    { entry: 'direct', input: 'Get issue 110 of lingkaix/openkit and reply with its title.' },
+    { entry: 'direct', input: 'Look up issue 110 of lingkaix/openkit and reply with its title.' },
+    {
+      entry: 'direct',
+      input: 'Using the github MCP tools, report the title of issue 110 of lingkaix/openkit.',
+    },
+    {
+      entry: 'direct',
+      input: 'Issue 110 of lingkaix/openkit: reply with its title using the github MCP tools.',
+    },
+    {
+      entry: 'direct',
+      input: 'Find the title of issue 110 of lingkaix/openkit using the github MCP tools.',
+    },
+    { entry: 'direct', input: 'Help.' },
+    { entry: 'direct', input: 'What is OpenKit?' },
+    { entry: 'direct', input: 'Plan a multi-step release goal for NanoCore.' },
+    {
+      entry: 'direct',
+      input:
+        '  Read issue 110 of lingkaix/openkit. Do not deploy to production.\nReply with its title.  ',
+    },
+  ])('returns $entry admission for "$input" before the held worker finishes', async ({
+    entry,
+    input,
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-admission-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -1453,7 +1557,6 @@ describe('Task durable admission response', () => {
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const requestId = '0190f4c8-0000-7000-8000-000000000601';
     const command = entry === 'assistant' ? 'conversation.submit' : 'task.start';
-    const input = 'Implement a focused change and run its tests.';
     const scope = { actorId: 'user_local', workspaceId: 'ws_demo', threadId: 'th_demo' };
     const token =
       entry === 'remote-mcp'
@@ -1592,6 +1695,11 @@ describe('Task durable admission response', () => {
         });
       }
       expect(executor.launches).toBe(1);
+      expect(JSON.parse(executor.inputs[0]!).objective).toBe(input);
+      expect(JSON.parse(executor.inputs[0]!).constraints.maxWorkerIterations).toBe(1);
+      expect(store.listCommandRequests().some((record) => record.command === 'goal.create')).toBe(
+        false
+      );
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {
           workspaceId: 'ws_demo',

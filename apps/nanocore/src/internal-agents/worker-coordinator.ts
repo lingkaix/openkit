@@ -85,6 +85,8 @@ export interface WorkerCoordinatorFailureContext {
  * Input read model for WorkerCoordinatorAgent.
  */
 export interface WorkerCoordinatorInput {
+  /** Trusted mode-service intent from the operation or accepted handoff, never prompt prose. */
+  readonly entryIntent: 'explicit_task' | 'conversation';
   /** User prompt to route. */
   readonly prompt: string;
   /** Available worker readiness summaries. */
@@ -125,7 +127,7 @@ export interface WorkerCoordinatorDecision {
 }
 
 /**
- * Creates a deterministic worker routing decision from bounded Core read models.
+ * Classifies conversational input or composes explicit Task delegation from trusted entry intent.
  *
  * @param input Worker coordinator input read model.
  * @returns Structured routing decision.
@@ -133,99 +135,105 @@ export interface WorkerCoordinatorDecision {
 export function createWorkerCoordinatorDecision(
   input: WorkerCoordinatorInput
 ): WorkerCoordinatorDecision {
+  if (input.entryIntent !== 'explicit_task' && input.entryIntent !== 'conversation') {
+    throw new Error('Invalid Workflow Coordinator entry intent.');
+  }
   const prompt = input.prompt;
-  const normalizedPrompt = prompt.trim().toLowerCase();
+  if (input.entryIntent === 'conversation') {
+    const normalizedPrompt = prompt.trim().toLowerCase();
 
-  if (isUnsupportedPrompt(normalizedPrompt)) {
-    return unsupportedDecision('The request asks for sensitive external side effects.');
-  }
-  if (isClarifyPrompt(normalizedPrompt)) {
-    return {
-      decision: 'clarify',
-      confidence: 0.72,
-      explanation: 'The request needs clarification before routing.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'refine_request',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isGoalPrompt(normalizedPrompt)) {
-    return {
-      decision: 'goal',
-      confidence: 0.8,
-      explanation: 'The request needs explicit Goal Mode planning before worker execution.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'review_ready',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isReviewPrompt(normalizedPrompt)) {
-    return {
-      decision: 'review',
-      confidence: 0.76,
-      explanation: 'The request is asking to evaluate recent work rather than start new execution.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'review_ready',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isRefinementPrompt(normalizedPrompt)) {
-    return {
-      decision: 'refinement',
-      confidence: 0.72,
-      explanation: 'The request appears to refine prior output in the current thread.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'confirm_worker_turn',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isRetryPrompt(normalizedPrompt)) {
-    return {
-      decision: 'retry',
-      confidence: 0.72,
-      explanation: 'The request asks to retry prior worker execution.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'confirm_worker_turn',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isHandoffPrompt(normalizedPrompt)) {
-    return {
-      decision: 'handoff',
-      confidence: 0.72,
-      explanation: 'The request asks to hand work to another worker or phase.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'choose_worker',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (isQuickChatPrompt(normalizedPrompt)) {
-    return {
-      decision: 'quick_chat',
-      confidence: 0.82,
-      explanation: 'The request is a simple question that does not require worker execution.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'none',
-      delegationDraft: null,
-      workerRequest: null,
-    };
-  }
-  if (!requiresWorker(normalizedPrompt)) {
-    return {
-      decision: 'quick_chat',
-      confidence: 0.62,
-      explanation: 'The request lacks an execution verb or concrete worker deliverable.',
-      selectedWorkerCandidate: null,
-      requiredUserAction: 'none',
-      delegationDraft: null,
-      workerRequest: null,
-    };
+    if (isUnsupportedPrompt(normalizedPrompt)) {
+      return unsupportedDecision('The request asks for sensitive external side effects.');
+    }
+    if (isClarifyPrompt(normalizedPrompt)) {
+      return {
+        decision: 'clarify',
+        confidence: 0.72,
+        explanation: 'The request needs clarification before routing.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'refine_request',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isGoalPrompt(normalizedPrompt)) {
+      return {
+        decision: 'goal',
+        confidence: 0.8,
+        explanation: 'The request needs explicit Goal Mode planning before worker execution.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'review_ready',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isReviewPrompt(normalizedPrompt)) {
+      return {
+        decision: 'review',
+        confidence: 0.76,
+        explanation:
+          'The request is asking to evaluate recent work rather than start new execution.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'review_ready',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isRefinementPrompt(normalizedPrompt)) {
+      return {
+        decision: 'refinement',
+        confidence: 0.72,
+        explanation: 'The request appears to refine prior output in the current thread.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'confirm_worker_turn',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isRetryPrompt(normalizedPrompt)) {
+      return {
+        decision: 'retry',
+        confidence: 0.72,
+        explanation: 'The request asks to retry prior worker execution.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'confirm_worker_turn',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isHandoffPrompt(normalizedPrompt)) {
+      return {
+        decision: 'handoff',
+        confidence: 0.72,
+        explanation: 'The request asks to hand work to another worker or phase.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'choose_worker',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (isQuickChatPrompt(normalizedPrompt)) {
+      return {
+        decision: 'quick_chat',
+        confidence: 0.82,
+        explanation: 'The request is a simple question that does not require worker execution.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'none',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
+    if (!requiresWorker(normalizedPrompt)) {
+      return {
+        decision: 'quick_chat',
+        confidence: 0.62,
+        explanation: 'The request lacks an execution verb or concrete worker deliverable.',
+        selectedWorkerCandidate: null,
+        requiredUserAction: 'none',
+        delegationDraft: null,
+        workerRequest: null,
+      };
+    }
   }
 
   const selected = selectWorkerCandidate(input.readiness);

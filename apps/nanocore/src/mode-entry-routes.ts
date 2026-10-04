@@ -1535,6 +1535,8 @@ function directTaskKnowledgeRetrievalTraceId(
  * @returns Coordinator decision plus the public Task Mode projection when launchable.
  */
 function createTaskModeDelegation(input: {
+  /** Trusted selection made by the owning mode entry, never inferred from the prompt. */
+  readonly entryIntent: 'explicit_task' | 'conversation';
   /** Store that owns workspace resources. */
   readonly store: FsStore;
   /** Workspace id for the task. */
@@ -1544,13 +1546,13 @@ function createTaskModeDelegation(input: {
   /** User task prompt. */
   readonly prompt: string;
   /** Resolves ready worker candidates for the workspace. */
-  readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string
   ) => WorkerCoordinatorCandidate[];
 }): { coordinator: WorkerCoordinatorDecision; taskDecision: TaskDelegationDecision | null } {
   const coordinatorInput = {
+    entryIntent: input.entryIntent,
     prompt: input.prompt,
     readiness: input.workerCoordinatorCandidates(input.store, input.workspaceId),
     threadState: { status: 'idle', threadId: input.threadId },
@@ -3186,6 +3188,7 @@ export function createConversationService({
       const delegation = isQuickChatWorkspace
         ? null
         : createTaskModeDelegation({
+            entryIntent: 'conversation',
             store,
             workspaceId,
             threadId,
@@ -3712,6 +3715,7 @@ export function createConversationService({
       }
       try {
         const delegation = createTaskModeDelegation({
+          entryIntent: 'conversation',
           store,
           workspaceId: turn.workspaceId,
           threadId: turn.threadId,
@@ -3916,7 +3920,6 @@ export function createTaskStartOperation({
   repositoryWorkspaceDb,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
-  goalServices,
 }: {
   readonly assertProjectWorkspace: (
     workspace: ReturnType<FsStore['getWorkspace']>,
@@ -3940,7 +3943,6 @@ export function createTaskStartOperation({
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
     readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
-  readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
     workspaceId: string
@@ -4086,58 +4088,13 @@ export function createTaskStartOperation({
       }
 
       const delegation = createTaskModeDelegation({
+        entryIntent: 'explicit_task',
         store,
         workspaceId,
         threadId,
         prompt: taskInput.input,
         workerCoordinatorCandidates,
       });
-
-      if (delegation.coordinator.decision === 'goal') {
-        const db = repositoryWorkspaceDb(workspaceId);
-        try {
-          const created = await executeGoalOperation(
-            'goal.create',
-            {
-              workspaceId,
-              requestId: goalHandoffRequestId(actorId, workspaceId, threadId, taskInput.requestId),
-              intent: taskInput.input,
-            },
-            { actor: actor },
-            store,
-            db,
-            goalServices?.()
-          );
-          const turn = store.createTurn(workspaceId, threadId, taskInput.input, triggerActor);
-          const at = new Date().toISOString();
-          store.createItem({
-            id: `it_task_goal_${created.goal!.goalId}_${turn.id}`,
-            workspaceId,
-            threadId,
-            turnId: turn.id,
-            type: 'status',
-            status: 'completed',
-            level: 'info',
-            title: 'Goal created',
-            summary: delegation.coordinator.explanation,
-            createdAt: at,
-            completedAt: at,
-          });
-          const ended = store.updateTurn(turn.id, { status: 'completed', completedAt: at });
-          return StartTaskModeResponseSchema.parse({
-            state: 'escalated-to-goal',
-            turn: ended,
-            evidence: { itemIds: ended.items.map((item) => item.id), artifactIds: [] },
-            escalation: {
-              targetMode: 'goal',
-              goalId: created.goal!.goalId,
-              reason: delegation.coordinator.explanation,
-            },
-          });
-        } finally {
-          db.sqlite.close();
-        }
-      }
 
       const taskDecision = delegation.taskDecision;
       const workerRequest = delegation.coordinator.workerRequest;

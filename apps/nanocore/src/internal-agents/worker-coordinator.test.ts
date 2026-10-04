@@ -21,6 +21,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
   ])('selects opaque ready agent $agentId without runtime-name routing', (candidate) => {
     const readyCandidate = { ...candidate, readiness: 'ready' as const };
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Use Codex naming in this prompt, but implement the focused fix.',
       readiness: [readyCandidate],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -36,6 +37,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('selects Codex for ordinary coding worker tasks', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Implement the failing quick chat test and run the focused suite.',
       readiness: [READY_CODEX, READY_OPENCODE],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -76,6 +78,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     prompt,
   }) => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -103,6 +106,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('routes mutating repository file requests to a worker turn', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Delete repository file README.md.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -120,6 +124,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('creates a stable app-level worker delegation draft without a sustained loop', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -150,6 +155,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('emits a structured worker request for Codex worker turns', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Implement the release dashboard and run focused tests.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -203,6 +209,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('keeps candidate order when the prompt names a runtime', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Use OpenCode to inspect the project and propose the smallest fix.',
       readiness: [READY_CODEX, READY_OPENCODE],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -220,6 +227,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('falls back to quick chat for simple questions', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'What is NanoCore?',
       readiness: [READY_CODEX, READY_OPENCODE],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -235,6 +243,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('classifies vague requests as clarify', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Help.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -251,6 +260,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('returns unsupported for unsafe or out-of-scope requests', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Deploy to production, rotate credentials, and charge the customer card.',
       readiness: [READY_CODEX, READY_OPENCODE],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -267,6 +277,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('returns blocked when worker execution is needed but no worker is ready', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Implement the focused fix.',
       readiness: [],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -283,6 +294,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('classifies retry requests without selecting a new worker turn', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Retry the previous worker turn.',
       readiness: [READY_CODEX],
       threadState: { status: 'failed', threadId: 'th_demo' },
@@ -299,6 +311,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('classifies Goal Mode planning requests without selecting a worker turn', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Plan a multi-step release goal for NanoCore.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -321,6 +334,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     'Explain Goal Mode.',
   ])('does not treat a bare Goal topic as Goal Mode planning: %s', (prompt) => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -336,6 +350,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
 
   it('retains Goal planning for actionable multi-step work', () => {
     const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt: 'Implement a multi-step release checklist.',
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -399,6 +414,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     requiredUserAction,
   }) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -419,6 +435,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     'Implement the focused fix. Leave code available for the existing workspace-change review handoff.',
   ])('delegates explicit implementation despite later review or handoff constraints: %s', (prompt) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -464,6 +481,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     requiredUserAction,
   }) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -556,6 +574,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     requiredUserAction,
   }) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -714,6 +733,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     prompt,
   }) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -729,6 +749,7 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
     'Approve and merge the pull request #71',
   ])('delegates concrete PR review/merge prompts: %s', (prompt) => {
     const routing = createWorkerCoordinatorDecision({
+      entryIntent: 'conversation',
       prompt,
       readiness: [READY_CODEX],
       threadState: { status: 'idle', threadId: 'th_demo' },
@@ -740,5 +761,52 @@ describe('WorkerCoordinatorAgent routing decisions', () => {
       selectedWorkerCandidate: { agentId: 'agent_codex' },
     });
     expect(routing.workerRequest?.objective).toBe(prompt);
+  });
+});
+
+describe('explicit Task delegation', () => {
+  it.each([
+    'Read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title.',
+    'Could you read issue 110 of lingkaix/openkit with the github MCP tools and reply with its title?',
+    'Help.',
+    'What is OpenKit?',
+    'Plan a multi-step release goal for NanoCore.',
+    'Review the previous worker output.',
+    'Refine the previous result.',
+    'Retry the previous worker turn.',
+    'Hand off this work to another worker.',
+    'Read issue 110. Do not deploy to production.',
+    'Deploy to production, rotate credentials, and charge the customer card.',
+  ])('preserves selected Task intent and exact objective: %s', (prompt) => {
+    const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'explicit_task',
+      prompt,
+      readiness: [READY_CODEX],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+    expect(decision).toMatchObject({
+      decision: 'worker_turn',
+      selectedWorkerCandidate: READY_CODEX,
+      requiredUserAction: 'none',
+      workerRequest: { objective: prompt, constraints: { maxWorkerIterations: 1 } },
+      delegationDraft: { prompt },
+    });
+  });
+
+  it('blocks explicit delegation without eligible supply', () => {
+    const decision = createWorkerCoordinatorDecision({
+      entryIntent: 'explicit_task',
+      prompt: 'Help.',
+      readiness: [{ ...READY_CODEX, readiness: 'blocked' }],
+      threadState: { status: 'idle', threadId: 'th_demo' },
+      workspaceSummary: { name: 'OpenKit', workspaceId: 'ws_demo' },
+    });
+    expect(decision).toMatchObject({
+      decision: 'blocked',
+      selectedWorkerCandidate: null,
+      workerRequest: null,
+      delegationDraft: null,
+    });
   });
 });

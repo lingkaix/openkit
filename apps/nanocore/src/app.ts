@@ -1668,7 +1668,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
-    goalServices,
   });
 
   const pendingWorkerDelivery = {
