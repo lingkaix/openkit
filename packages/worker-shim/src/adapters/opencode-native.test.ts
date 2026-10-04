@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -408,13 +408,49 @@ it('does not overwrite a destination published during image copying', async () =
 });
 
 it('refuses a managed Skill id outside its projection root before provider work', async () => {
-  const f = await fixture();
+  const events: Array<{ event: string; elapsedMs: number }> = [];
+  const started = performance.now();
+  const record = (event: string) => {
+    events.push({ event, elapsedMs: Math.round(performance.now() - started) });
+  };
+  // Keep production deadlines and pipes; record which close proof failed under full-suite scheduling.
+  const f = await fixture(
+    createOpenCodeAdapter({
+      spawnServer(binary, args, options) {
+        const child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin!.once('finish', () => record('stdin EOF flushed'));
+        child.once('exit', (code, signal) => record(`exit code=${code} signal=${signal}`));
+        child.once('close', () => record('stdio closed'));
+        const kill = child.kill.bind(child);
+        vi.spyOn(child, 'kill').mockImplementation((signal) => {
+          record(`signal requested=${signal}`);
+          return kill(signal);
+        });
+        return child;
+      },
+    })
+  );
   const turn = f.turn();
-  await expect(
-    f.session.startTurn({ ...turn, skillTargetPaths: [{ id: '../escape', targetPath: work }] })
-  ).rejects.toThrow(/Skill id escapes/);
+  const admission = f.session.startTurn({
+    ...turn,
+    skillTargetPaths: [{ id: '../escape', targetPath: work }],
+  });
+  // Observe a returned cleanup attempt for diagnostics while still requiring admission to reject.
+  const cleanupFailure = await admission.then(
+    async (attempt) =>
+      attempt.settled.then(
+        () => 'Unexpected resolved settlement after invalid Skill setup.',
+        (error: unknown) => (error instanceof Error ? error.message : String(error))
+      ),
+    () => undefined
+  );
+  const diagnostic = JSON.stringify({ cleanupFailure, events });
+  process.stdout.write(`# OpenCode setup refusal close evidence: ${diagnostic}\n`);
+  await expect(admission, diagnostic).rejects.toThrow(/Skill id escapes/);
   expect(f.inference.requests).toHaveLength(0);
   expect(existsSync(join(control, 'escape'))).toBe(false);
+  await expect(f.session.close(), diagnostic).resolves.toBeUndefined();
+  expect(f.session.childState()).toBe('absent');
 }, 60000);
 
 it('requires an exact successor to clear managed Skills while preserving native Skills', async () => {
