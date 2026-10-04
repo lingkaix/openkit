@@ -13,6 +13,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
+  getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
   resolveWorkerControlFinalStatusTokenBinding,
@@ -322,6 +323,56 @@ describe('worker control accepted event records', () => {
         .prepare('UPDATE worker_control_records SET record_json = ?')
         .run(JSON.stringify(record));
       expect(() => listWorkerControlAcceptedEvents(coreDb, lineage)).toThrow();
+      coreDb.sqlite.close();
+    }
+  });
+});
+
+describe('durable failure diagnostics', () => {
+  it('retains admitted cause diagnostics online and after database reopen', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-failure-cause-'));
+    let coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const diagnostics = {
+      failureCause: 'DeepSeek model returned a completed response with no content.',
+      cleanup: 'host stopped',
+    };
+    recordWorkerControlAcceptedRecord(coreDb, {
+      acceptedAt: '2026-07-15T00:01:01.000Z',
+      lineage,
+      operation: 'final_status',
+      record: { sequence: 9, status: 'failed', stopReason: 'error', diagnostics },
+      recordKey: '9',
+      sequence: 9,
+    });
+    try {
+      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    null,
+    { failureCause: 7 },
+    ['native failure'],
+  ])('refuses malformed durable diagnostics: %j', (diagnostics) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-invalid-failure-cause-')));
+    applyMigrations(coreDb);
+    recordWorkerControlAcceptedRecord(coreDb, {
+      acceptedAt: '2026-07-15T00:01:01.000Z',
+      lineage,
+      operation: 'final_status',
+      record: { sequence: 9, status: 'failed', stopReason: 'error', diagnostics },
+      recordKey: '9',
+      sequence: 9,
+    });
+    try {
+      expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow();
+    } finally {
       coreDb.sqlite.close();
     }
   });

@@ -2834,8 +2834,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       });
       return;
     }
+    // Both live and reopened closeout consume the same admitted, product-safe cause.
+    const cause =
+      accepted.diagnostics?.failureCause?.trim() || accepted.diagnostics?.native?.trim();
     const failure = new Error(
-      `Worker reported terminal status: ${accepted.status}.${inferenceDetail}`
+      cause || `Worker reported terminal status: ${accepted.status}.${inferenceDetail}`
     );
     this.failTurn(
       store,

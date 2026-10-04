@@ -5,7 +5,7 @@ import { type StopReason, StopReasonSchema, type TurnStatus } from '@openkit/pro
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
-  WorkerCanonicalTerminalStatusSchema,
+  WorkerCanonicalTerminalEventDataSchema,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
 import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
@@ -45,7 +45,7 @@ export interface WaitForWorkerControlFinalStatusInput {
 /** Durable final-status fields required by online and restart closeout. */
 export type AcceptedWorkerFinalStatus = Pick<
   WorkerControlFinalStatus,
-  'acceptedAt' | 'status' | 'stopReason'
+  'acceptedAt' | 'diagnostics' | 'status' | 'stopReason'
 >;
 
 /**
@@ -405,15 +405,19 @@ export function getWorkerControlAcceptedFinalStatus(
   if (!row) {
     return null;
   }
-  const record = JSON.parse(row.recordJson) as {
-    readonly status?: unknown;
-    readonly stopReason?: unknown;
+  const raw = JSON.parse(row.recordJson) as Record<string, unknown>;
+  // Reuse terminal admission's schema while leaving unrelated durable record fields alone.
+  const record = WorkerCanonicalTerminalEventDataSchema.parse({
+    ...(raw.diagnostics !== undefined ? { diagnostics: raw.diagnostics } : {}),
+    status: raw.status,
+    stopReason: raw.stopReason,
+  });
+  return {
+    acceptedAt: row.acceptedAt,
+    ...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
+    status: record.status,
+    stopReason: record.stopReason,
   };
-  const status = WorkerCanonicalTerminalStatusSchema.parse(record.status);
-  if (typeof record.stopReason !== 'string') {
-    throw new Error('Durable worker final status has no stop reason.');
-  }
-  return { acceptedAt: row.acceptedAt, status, stopReason: record.stopReason };
 }
 
 /**

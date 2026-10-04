@@ -70,6 +70,11 @@ const CONTROL = 'worker-control-token-deepseek-w5';
 const LIVE = 180_000;
 /** Two bounded 2 s signals plus exit delivery; measured fault-to-stop completion exceeded 2 s. */
 const NATIVE_STOP_MS = 5_000;
+const CAUSE_CANARIES = [
+  'sk-reviewerSyntheticToken123',
+  '/private/customer/project/payroll.txt',
+  'CONFIDENTIAL_PROMPT_CANARY',
+];
 
 const sessions: WorkerResidentSession[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -80,6 +85,66 @@ afterEach(async () => {
 });
 
 describe('deepseek permission and bounds', () => {
+  it.each([
+    {
+      code: -32603,
+      message: `Internal error: no content ${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}`,
+      expected: 'DeepSeek prompt failed with ACP error -32603.',
+    },
+    {
+      code: -32603,
+      message: `Internal error: turn failed: model "${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}" returned a completed response with no content`,
+      expected: 'DeepSeek model returned a completed response with no content.',
+    },
+    {
+      code: -32001,
+      message: `Internal error: turn failed: model "${CAUSE_CANARIES.join(' ')}" returned a completed response with no content`,
+      expected: 'DeepSeek prompt failed with ACP error -32001.',
+    },
+  ])('publishes a controlled prompt cause for ACP $code without native canaries', async ({
+    code,
+    message,
+    expected,
+  }) => {
+    const roots = tempRoots();
+    const session = await deepseekResidentAdapter.openSession({
+      agentSessionId: 'as-cause-boundary',
+      controlRoot: roots.control,
+      stateRoot: roots.state,
+      environment: {},
+      loopback: {
+        inferenceBaseUrl: 'http://127.0.0.1:9',
+        inferenceCredential: INFERENCE,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
+        capabilityCredential: CAPABILITY,
+      },
+      resumeReference: null,
+    });
+    sessions.push(session);
+    // Exercise production admission and normalization without claiming native settlement.
+    const native = session as unknown as {
+      promptRequestId: number;
+      classifyNativeLine(line: string): string | null;
+      beginTurn(): {
+        promptFailed: boolean;
+        settled: Promise<{ stopReason: string; diagnostics?: Readonly<Record<string, string>> }>;
+        finish(stopReason: undefined, promptFailed: boolean): void;
+      };
+    };
+    const active = native.beginTurn();
+    native.promptRequestId = 7;
+    native.classifyNativeLine(JSON.stringify({ jsonrpc: '2.0', id: 7, error: { code, message } }));
+    active.finish(undefined, active.promptFailed);
+    const result = await active.settled;
+    expect(result.stopReason).toBe('prompt_failed');
+    for (const canary of CAUSE_CANARIES)
+      expect(result.diagnostics?.failureCause).not.toContain(canary);
+    expect(result.diagnostics?.failureCause).toBe(expected);
+    expect(Buffer.byteLength(result.diagnostics?.failureCause ?? '')).toBeLessThanOrEqual(
+      DEEPSEEK_DIAGNOSTIC_LIMIT_BYTES
+    );
+  });
+
   it('selects allow_once by default and retains reject_once when no allow_once is offered', () => {
     expect(
       deepseekPermissionOutcome([
@@ -159,7 +224,7 @@ describe('deepseek permission and bounds', () => {
     ).toMatchObject({
       assistantText: null,
       status: 'failed',
-      stopReason: 'missing_terminal_outcome',
+      stopReason: 'prompt_failed',
     });
     expect(
       classifyDeepSeekStop({
@@ -209,7 +274,7 @@ describe('deepseek permission and bounds', () => {
     ).toMatchObject({
       assistantText: null,
       status: 'failed',
-      stopReason: 'missing_terminal_outcome',
+      stopReason: 'prompt_failed',
     });
   });
 
@@ -1096,7 +1161,7 @@ describe('deepseek resident adapter', () => {
       }
       const result = await active.settled;
       await interrupting;
-      expect(result).toMatchObject({ status: 'failed', stopReason: 'host_ended' });
+      expect(result).toMatchObject({ status: 'failed', stopReason: 'prompt_failed' });
       expect(session.childState()).toBe('absent');
     },
     LIVE
@@ -1120,8 +1185,140 @@ describe('deepseek resident adapter', () => {
         })
       );
       const result = await active.settled;
-      expect(result).toMatchObject({ status: 'failed', stopReason: 'host_ended' });
+      expect(result).toMatchObject({ status: 'failed', stopReason: 'prompt_failed' });
       expect(session.childState()).toBe('absent');
+    },
+    LIVE
+  );
+
+  it(
+    'retains a bounded redacted correlated prompt cause without stderr after induced stop',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ hang: true }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const active = await session.startTurn(turn(roots, inference, 'drop', [], 'turn-1'));
+      await waitFor(() => inference.requests.length > 0);
+      const native = session as unknown as {
+        stderr: Buffer;
+        agent: ClientSideConnection;
+        sessionId: string;
+      };
+      native.stderr = Buffer.alloc(0);
+      // A failed drain must remain a close failure alongside the primary prompt cause.
+      native.agent.closeSession = async () => {
+        throw new Error('flush failed');
+      };
+      deliver(
+        session,
+        JSON.stringify({
+          error: {
+            code: -32603,
+            message: `Internal error: turn failed: no content ${INFERENCE} ${native.sessionId} ${roots.control} ${roots.state} Bearer unknown-secret ${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}`,
+          },
+          id: nativePromptId(session),
+          jsonrpc: '2.0',
+        })
+      );
+      const result = await active.settled;
+      expect(result).toMatchObject({ status: 'failed', stopReason: 'prompt_failed' });
+      expect(result.diagnostics?.stderr).toBeUndefined();
+      expect(result.diagnostics?.failureCause).toBe(
+        'DeepSeek prompt failed with ACP error -32603.'
+      );
+      expect(Buffer.byteLength(result.diagnostics?.failureCause ?? '')).toBeLessThanOrEqual(
+        DEEPSEEK_DIAGNOSTIC_LIMIT_BYTES
+      );
+      expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE);
+      expect(JSON.stringify(result.diagnostics)).not.toContain('unknown-secret');
+      expect(JSON.stringify(result.diagnostics)).not.toContain(native.sessionId);
+      expect(JSON.stringify(result.diagnostics)).not.toContain(roots.control);
+      expect(JSON.stringify(result.diagnostics)).not.toContain(roots.state);
+      for (const canary of CAUSE_CANARIES)
+        expect(JSON.stringify(result.diagnostics)).not.toContain(canary);
+      expect(result.diagnostics?.cleanup).toBe('host stopped; native close unproved');
+      expect(session.childState()).toBe('absent');
+      await expect(session.close()).rejects.toThrow('DeepSeek close did not drain.');
+    },
+    LIVE
+  );
+
+  it(
+    'drains a real correlated empty-content prompt failure before stopping the host',
+    async () => {
+      const inference = await startSyntheticInference((_request, n) => ({
+        text: n === 1 ? 'seed' : [],
+      }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
+      const result = await (await session.startTurn(turn(roots, inference, 'empty', [], 'failed')))
+        .settled;
+      expect(result).toMatchObject({
+        assistantText: null,
+        status: 'failed',
+        stopReason: 'prompt_failed',
+      });
+      expect(result.diagnostics?.failureCause).toBe(
+        'DeepSeek model returned a completed response with no content.'
+      );
+      expect(result.diagnostics?.cleanup).toBe('native close drained; host stopped');
+      expect(session.childState()).toBe('absent');
+      await expect(session.close()).resolves.toBeUndefined();
+    },
+    LIVE
+  );
+
+  it(
+    'rejects close when output follows a failed-prompt native drain acknowledgement',
+    async () => {
+      const inference = await startSyntheticInference((_request, n) => ({
+        text: n === 1 ? 'seed' : [],
+      }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
+      const native = session as unknown as {
+        agent: ClientSideConnection;
+        sessionId: string;
+        stopProcess(): Promise<boolean>;
+      };
+      const nativeClose = native.agent.closeSession.bind(native.agent);
+      native.agent.closeSession = async (input) => {
+        const result = await nativeClose(input);
+        setTimeout(
+          () =>
+            deliver(
+              session,
+              JSON.stringify({
+                jsonrpc: '2.0',
+                method: 'session/update',
+                params: {
+                  sessionId: native.sessionId,
+                  update: { sessionUpdate: 'usage_update', used: 1 },
+                },
+              })
+            ),
+          5
+        );
+        return result;
+      };
+      const nativeStop = native.stopProcess.bind(native);
+      native.stopProcess = async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return nativeStop();
+      };
+      const result = await (await session.startTurn(turn(roots, inference, 'empty', [], 'failed')))
+        .settled;
+      expect(result.diagnostics?.failureCause).toBe(
+        'DeepSeek model returned a completed response with no content.'
+      );
+      expect(result.diagnostics?.cleanup).toBe('host stopped; native close unproved');
+      expect(session.childState()).toBe('absent');
+      await expect(session.close()).rejects.toThrow('DeepSeek close did not drain.');
     },
     LIVE
   );
@@ -1201,6 +1398,7 @@ describe('deepseek resident adapter', () => {
         stopReason: 'host_ended',
       });
       expect(session.childState()).toBe('absent');
+      await expect(session.close()).rejects.toThrow('DeepSeek close did not drain.');
     },
     LIVE
   );

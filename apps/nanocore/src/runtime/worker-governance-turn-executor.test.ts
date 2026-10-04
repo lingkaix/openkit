@@ -2238,6 +2238,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it.each([
     'none',
+    'native-cause',
+    'native-summary',
     'stream-failed',
     'truncated',
     'provider-stream-failed',
@@ -2266,7 +2268,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       awaitWorkerCompletion: async () => {
         backend.calls.push('awaitWorkerCompletion');
-        if (inference !== 'none') {
+        if (
+          inference !== 'none' &&
+          inference !== 'native-cause' &&
+          inference !== 'native-summary'
+        ) {
           const workspaceDb = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
           try {
             const call = startCapabilityCall({
@@ -2319,6 +2325,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
           acceptedAt: '2026-07-15T00:00:03.000Z',
           status: 'failed' as const,
           stopReason: 'error',
+          ...(inference === 'native-cause'
+            ? {
+                diagnostics: {
+                  failureCause: 'DeepSeek model returned a completed response with no content.',
+                },
+              }
+            : inference === 'native-summary'
+              ? { diagnostics: { native: 'Native setup failed' } }
+              : {}),
         };
       },
       backend,
@@ -2358,14 +2373,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
       message:
         inference === 'unsupported-feature'
           ? 'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.'
-          : 'Worker reported terminal status: failed.' +
-            (inference === 'stream-failed' ||
-            inference === 'truncated' ||
-            inference === 'provider-stream-failed'
-              ? ' Last worker inference stream failed before completion.'
-              : ''),
+          : inference === 'native-cause'
+            ? 'DeepSeek model returned a completed response with no content.'
+            : inference === 'native-summary'
+              ? 'Native setup failed'
+              : 'Worker reported terminal status: failed.' +
+                (inference === 'stream-failed' ||
+                inference === 'truncated' ||
+                inference === 'provider-stream-failed'
+                  ? ' Last worker inference stream failed before completion.'
+                  : ''),
     };
     expect(store.getTurnById(turn.id).error).toEqual(expectedError);
+    if (inference === 'native-cause') {
+      for (const canary of [
+        'sk-reviewerSyntheticToken123',
+        '/private/customer/project/payroll.txt',
+        'CONFIDENTIAL_PROMPT_CANARY',
+      ])
+        expect(store.getTurnById(turn.id).error?.message).not.toContain(canary);
+    }
     expect(store.getTurnEvents(turn.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2862,13 +2889,27 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceId: turn.workspaceId,
       },
       operation: 'final_status',
-      record: { sequence: 1, status: finalStatus, stopReason },
+      record: {
+        sequence: 1,
+        status: finalStatus,
+        stopReason,
+        ...(finalStatus === 'failed'
+          ? {
+              diagnostics: {
+                failureCause: 'DeepSeek model returned a completed response with no content.',
+              },
+            }
+          : {}),
+      },
       recordKey: '1',
       sequence: 1,
     });
+    const reopenedCoreDb = finalStatus === 'failed' ? openCoreDb(coreDb.dataRoot) : coreDb;
+    const reopenedStore =
+      finalStatus === 'failed' ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
     const restartedExecutor = new WorkerGovernanceTurnExecutor({
       backend,
-      coreDb,
+      coreDb: reopenedCoreDb,
       environmentBackend: {
         kind: 'openshell',
       },
@@ -2971,7 +3012,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
 
     const recovery = restartedExecutor.resumeAcceptedFinalStatus(
-      store,
+      reopenedStore,
       awaitedEnvironmentPackage,
       session
     );
@@ -2987,15 +3028,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'collectWorkspaceChanges',
       'cleanupSession',
     ]);
-    expect(store.getTurnById(turn.id)).toMatchObject({
+    if (reopenedCoreDb !== coreDb) reopenedCoreDb.sqlite.close();
+    const durableStore =
+      finalStatus === 'failed' ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    expect(durableStore.getTurnById(turn.id)).toMatchObject({
       agentSessionId,
       status: turnStatus,
     });
+    if (finalStatus === 'failed') {
+      expect(durableStore.getTurnById(turn.id).error).toEqual({
+        code: 'worker_governance_turn_failed',
+        message: 'DeepSeek model returned a completed response with no content.',
+      });
+      for (const canary of [
+        'sk-reviewerSyntheticToken123',
+        '/private/customer/project/payroll.txt',
+        'CONFIDENTIAL_PROMPT_CANARY',
+      ])
+        expect(durableStore.getTurnById(turn.id).error?.message).not.toContain(canary);
+    }
     if (stopReason === 'aborted') {
-      expect(store.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
+      expect(durableStore.getAgentSession(agentSessionId)).toMatchObject({ status: 'interrupted' });
     }
     expect(
-      store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
+      durableStore.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
     ).toMatchObject({ data: { stopReason } });
     expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({ state: 'cleaned' });
     coreDb.sqlite.close();

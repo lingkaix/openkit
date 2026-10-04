@@ -54,6 +54,8 @@ const SIDECAR_NAME = 'openkit-deepseek-binding.json';
 const PATCH_NAME = 'deepseek-loopback.patch.yml';
 const CLOSE_DRAIN_MS = 10_000;
 const INTERRUPT_CANCEL_MS = 2_000;
+/** Reserves the rest of the shared ten-second stop budget for confirmed host exit. */
+const FAILED_PROMPT_DRAIN_MS = 2_000;
 const INTERRUPT_SETTLE_MS = 4_000;
 const STOP_SIGNAL_MS = 2_000;
 const STDERR_CAPTURE_BYTES = 64 * 1024;
@@ -106,6 +108,8 @@ interface ActiveTurn {
   /** Fixed decision label retained in diagnostics, never the untrusted option id. */
   permissionOption: string | null;
   promptFailed: boolean;
+  /** Safe summary of the addressed prompt RPC error, independent of cleanup evidence. */
+  failureCause: string | null;
   sawCompaction: boolean;
   readonly settled: Promise<WorkerAdapterResult>;
   text: string;
@@ -213,6 +217,7 @@ export function classifyDeepSeekStop(input: {
   readonly stopReason: string | undefined;
   readonly text: string;
 }): Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason'> {
+  if (input.promptFailed) return failed('prompt_failed');
   if (input.hostEnded) return failed('host_ended');
   if (input.overLimit) return failed('output_limit');
   if (input.badContent) return failed('unsupported_content');
@@ -370,7 +375,8 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.closeProof?.kind === 'never-launched' && this.generation === 0) return;
     if (this.unknownIdentity) throw new Error('DeepSeek close did not drain.');
     if (
-      this.closeProof?.kind === 'native-resume-refused' &&
+      (this.closeProof?.kind === 'native-drained' ||
+        this.closeProof?.kind === 'native-resume-refused') &&
       this.closeProof.generation === this.generation &&
       !this.processIsLive()
     )
@@ -381,6 +387,13 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.turn) {
       void this.agent.cancel({ sessionId: this.sessionId }).catch(() => undefined);
       await this.turn.settled.catch(() => undefined);
+      if (
+        this.closeProof?.kind === 'native-drained' &&
+        this.closeProof.generation === this.generation &&
+        !this.unknownIdentity &&
+        !this.processIsLive()
+      )
+        return;
     }
     if (this.unknownIdentity || !this.processIsLive()) {
       throw new Error('DeepSeek close did not drain.');
@@ -720,19 +733,60 @@ class DeepSeekSession implements WorkerResidentSession {
     this.record = await this.storeRecord(next);
   }
 
-  /** A failed prompt RPC alone is never settlement proof, whether or not cancel was requested. */
+  /** A correlated prompt failure may drain natively; every other lost outcome keeps the cleanup fence. Settlement still waits for confirmed host stop. */
   private async proveStopAfterPromptLoss(turn: ActiveTurn): Promise<void> {
-    this.unknownIdentity = true;
+    if (
+      turn.promptFailed &&
+      !turn.terminalPoisoned &&
+      !this.unknownIdentity &&
+      this.closeProof?.kind !== 'native-drained' &&
+      this.agent &&
+      this.sessionId
+    ) {
+      try {
+        // The native close owns persistence drain. Process absence alone cannot replace it.
+        await withTimeout(
+          this.agent.closeSession({ sessionId: this.sessionId }),
+          FAILED_PROMPT_DRAIN_MS,
+          'DeepSeek close did not drain.'
+        );
+        if (!this.unknownIdentity) {
+          this.closeProof = { kind: 'native-drained', generation: this.generation };
+          // Classify already-queued output, then enforce the same late-output boundary as close.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          this.drainBoundary = true;
+        }
+      } catch {
+        this.closeProof = null;
+      }
+    }
+    const nativeDrained = this.closeProof?.kind === 'native-drained' && !this.unknownIdentity;
+    if (!nativeDrained) this.unknownIdentity = true;
     const stopped = await this.stopProcess();
+    const drained = nativeDrained && !this.unknownIdentity && this.updatesAfterClose === 0;
+    if (!drained) this.unknownIdentity = true;
+    if (turn.promptFailed)
+      turn.deliveryDiagnostics.cleanup = stopped
+        ? drained
+          ? 'native close drained; host stopped'
+          : 'host stopped; native close unproved'
+        : 'host stop unproved';
     if (stopped) {
+      if (turn.promptFailed) this.ended = true;
       turn.hostEnded = !turn.badContent && !turn.overLimit;
-      turn.finish(undefined, false);
+      turn.finish(undefined, turn.promptFailed);
       this.resolveExited?.();
       this.resolveExited = null;
       return;
     }
     this.exitUnproved = true;
-    turn.failUnproved(new Error('DeepSeek runtime is unavailable.'));
+    turn.failUnproved(
+      new Error(
+        turn.failureCause
+          ? `${turn.failureCause} (DeepSeek runtime is unavailable.)`
+          : 'DeepSeek runtime is unavailable.'
+      )
+    );
   }
 
   /** Starts a collector before the prompt so the first update cannot be missed. */
@@ -787,6 +841,7 @@ class DeepSeekSession implements WorkerResidentSession {
       permissionCancelled: 0,
       permissionOption: null,
       promptFailed: false,
+      failureCause: null,
       sawCompaction: false,
       settled,
       text: '',
@@ -1259,6 +1314,21 @@ class DeepSeekSession implements WorkerResidentSession {
       }
       if (this.promptRequestId !== null && id === this.promptRequestId) {
         this.promptTerminalIds.add(id);
+        if ('error' in message && this.turn && isRecord(message.error)) {
+          this.turn.promptFailed = true;
+          // The pin exposes empty content only in this error signature; native prose is never published as the cause.
+          const emptyContent =
+            message.error.code === -32603 &&
+            typeof message.error.message === 'string' &&
+            message.error.message.startsWith('Internal error: turn failed: model ') &&
+            message.error.message.endsWith(' returned a completed response with no content');
+          this.turn.failureCause = boundDeepSeekDiagnostic(
+            emptyContent
+              ? 'DeepSeek model returned a completed response with no content.'
+              : `DeepSeek prompt failed with ACP error ${message.error.code}.`,
+            secretValues(this.input)
+          );
+        }
         if (
           'result' in message &&
           (!isRecord(message.result) ||
@@ -1327,6 +1397,7 @@ class DeepSeekSession implements WorkerResidentSession {
       ...turn.deliveryDiagnostics,
       compaction: turn.sawCompaction ? 'observed' : 'unavailable',
     };
+    if (turn.failureCause) diagnostics.failureCause = turn.failureCause;
     if (this.nativeConfigurationConflict)
       diagnostics.nativeConfiguration =
         'Warning: native protected bindings are overridden by OpenKit.';

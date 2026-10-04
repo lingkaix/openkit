@@ -398,6 +398,13 @@ async function runResidentTurnImplementation(
       adapterResult.diagnostics,
       credentialValues
     );
+    if (status === 'failed') {
+      // Adapter summaries are already normalized; shared code never reads native protocol fields.
+      adapterDiagnostics.failureCause = assistantOutputRejected
+        ? 'Assistant output contained a credential value.'
+        : (adapterDiagnostics.failureCause ??
+          summarizeProcessOutput(adapterResult.stopReason, credentialValues));
+    }
     const terminalInput: WorkerTerminalOutcomeInput = {
       ...(status === 'failed' && Object.keys(adapterDiagnostics).length > 0
         ? { diagnostics: adapterDiagnostics }
