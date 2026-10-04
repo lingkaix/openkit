@@ -32,14 +32,14 @@ const workerImageContracts = [
     id: 'worker-runtimes',
     manifest: 'codex.agent.jsonc',
     nativeBinary: '/usr/local/bin/codex',
-    nativeVersion: '0.159.2',
+    nativeVersion: '0.160.0',
     runtime: 'codex',
   },
   {
     id: 'worker-runtimes',
     manifest: 'opencode-server.agent.jsonc',
     nativeBinary: '/usr/local/bin/opencode',
-    nativeVersion: '2.0.20',
+    nativeVersion: '2.0.22',
     runtime: 'opencode',
   },
   {
@@ -262,6 +262,7 @@ describe('governed worker image contracts', () => {
       expect(versions[runtime].version).toBe(shim.devDependencies[versions[runtime].package]);
     }
     expect(versions.opencode.client.version).toBe(shim.devDependencies['@opencode/client']);
+    expect(versions.deepseek.acpClient.version).toBe(shim.dependencies['@agentclientprotocol/sdk']);
     expect(versions.pi.version).toBe(host.dependencies['@earendil-works/pi-coding-agent']);
     for (const contract of workerImageContracts) {
       expect(

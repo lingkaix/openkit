@@ -1347,7 +1347,7 @@ class DeepSeekSession implements WorkerResidentSession {
 
 /**
  * Admits the closed JSON-RPC envelope core before SDK routing can discard invalid frames.
- * SDK 1.4.0 keeps its envelope guards private to jsonrpc.js; its public ACP API exposes no
+ * SDK 1.7.0 keeps its envelope guards private to jsonrpc.js; its public ACP API exposes no
  * suitable guard. Method payload validation and dispatch remain the SDK's responsibility.
  */
 function validNativeEnvelope(value: unknown): value is Record<string, unknown> {

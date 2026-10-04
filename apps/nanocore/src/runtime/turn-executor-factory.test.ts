@@ -9639,7 +9639,7 @@ describe('createConfiguredTurnExecutor', () => {
         83, 1, 1, 1, '${'a'.repeat(64)}', '2026-10-02T10:09:16.893Z', 1)`);
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.159.2',
+        adapterVersion: '0.160.0',
         harnessBindingRef: 'harness-binding-capacity-guard',
         harnessCompatibilityKey: 'c'.repeat(64),
         harnessInstanceId: 'harness-capacity-guard',

@@ -431,7 +431,7 @@ describe('runtime config file API', () => {
     expect(agentTemplate).toContain('"kind": "reference"');
     expect(JSON.parse(agentTemplate).runtime).toMatchObject({
       adapter: 'codex',
-      version: '0.159.2',
+      version: '0.160.0',
       image: { kind: 'reference', ref: 'openkit/worker-runtimes:dev' },
     });
     expect(agentTemplate).toContain('"path": "/opt/openkit/venv/bin/python"');

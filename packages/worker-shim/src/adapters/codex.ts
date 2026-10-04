@@ -56,7 +56,7 @@ async function controlDeadline<T>(
 }
 
 /** Deployment pin selected from the npm `latest` dist-tag and proved as App Server v2. */
-export const CODEX_ADAPTER_VERSION = '0.159.2';
+export const CODEX_ADAPTER_VERSION = '0.160.0';
 /** Fixed provider id. An AEP provider id is never copied into Codex. */
 export const CODEX_PROVIDER_ID = 'openkit-worker-inference';
 /** Native assistant text bound. Larger UTF-8 results fail the Turn. */

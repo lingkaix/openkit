@@ -19,7 +19,7 @@
     "profileId": "coder",
     "displayName": "Image Smoke",
     "runtimeKind": "codex",
-    "runtimeVersion": "0.159.2",
+    "runtimeVersion": "0.160.0",
     "profileKind": "coder",
     "instructions": [],
     "capabilityRequests": ["llm", "shell", "filesystem", "network", "artifacts"]

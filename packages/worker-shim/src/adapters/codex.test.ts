@@ -275,7 +275,7 @@ describe('Codex App Server adapter', () => {
       true
     );
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
-    expect(version.stdout).toContain('codex-cli 0.159.2');
+    expect(version.stdout).toContain('codex-cli 0.160.0');
     expect(codexLaunchArguments()[0]).toBe('app-server');
     for (const restriction of [
       '--strict-config',

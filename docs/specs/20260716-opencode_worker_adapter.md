@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-10-01
+updated: 2026-10-05
 ---
 # OpenCode Worker Adapter
 
@@ -180,7 +180,9 @@ Required image smoke covers the selected OpenCode version, the generic shim entr
 
 ## Implementation Evidence And Limit
 
-The removed OpenCode `1.18.1` run adapter is historical evidence only. The resident adapter pins `@opencode/cli@2.0.20` and `@opencode/client@2.0.20`. The darwin-arm64 package binary is `bin/opencode.exe`, a 179948336-byte Bun standalone. Tests resolve the installed package and use synthetic loopback services. No pin or dependency changes were made in round five.
+The [2026-10-05 runtime upgrade decision](../decisions/20261005-worker_runtimes_upgrade_to_latest.md) selects CLI/client npm latest `2.0.22`. Optional session parent and form-cancellation fields, partial capability overlays, native transport timeouts, and bounded MCP shutdown changes preserve the consumed HTTP and promise-client boundary. Session storage, the protected plugin hooks, and stdio EOF shutdown retain their existing shapes; no data migration or adapter compatibility path is introduced. Prior-pin observations below retain their original version attribution.
+
+The removed OpenCode `1.18.1` run adapter is historical evidence only. The resident adapter pins `@opencode/cli@2.0.22` and `@opencode/client@2.0.22`. The darwin-arm64 package binary is `bin/opencode.exe`, a 180293072-byte Bun standalone; the prior `2.0.20` binary was 179948336 bytes. Tests resolve the installed package and use synthetic loopback services. No pin or dependency changes were made in round five.
 
 Generated configuration, the final managed Skill source, the explicit host plugin, and bearer carriers live under the ephemeral private control root. Native configuration stays in retained `stateRoot/config`, home `.agents` and `.claude` discovery uses retained `stateRoot/home`, and native XDG data stays under the retained state root. The pin's own loader reads home configuration, Workspace ancestry, native instructions, Skills, plugins and local MCP with native precedence. A genuinely absent configuration home is initialized once from the shim image user's `HOME/.config/opencode`, outside the retained root; absence is valid, while unreadable entries, escaping links, an escaping destination and leftover staging fail before launch. Existing homes are reused without reading or merging image defaults. The adapter supplies the exact admitted available model catalog and retains the model/Gateway route through its final protected overlay. It supplies selected Skills through a separate final native source and selected MCP through native session-local operations. Native parsed configuration supplies credential-free collision warnings; the final managed layer replaces protected provider and MCP entries before prompt work. The tested `-openkit-loopback` declaration does not displace the host plugin: the final inline host declaration restores it, and the actual request retains the managed bearer. No static plugin-displacement path was established on this pin; this is not runtime hook inspection. The host plugin lends the capability bearer only to an adapter-created id whose draft URL exactly matches the admitted loopback URL. Independently configured native MCP drafts receive no OpenKit credential. Runtime plugin code that changes protected bindings is outside supported supply under the linked plugin support boundary; no runtime redirect regression pins that behavior. `/etc/opencode` absence remains an image smoke obligation; a binary literal search is supporting evidence only.
 

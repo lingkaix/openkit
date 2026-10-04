@@ -29,15 +29,15 @@ export const OPENCODE_PROVIDER_ID = 'openkit-worker-inference';
 /**
  * This adapter does not re-list tools at Turn start. A changed MCP server set or working
  * directory is a successor AgentSession. The resident contract has no declaration field, so
- * callers read this constant. `@opencode/cli@2.0.20` calls MCP `tools/list` when a server connects.
+ * callers read this constant. `@opencode/cli@2.0.22` calls MCP `tools/list` when a server connects.
  */
 export const OPENCODE_LISTS_TOOLS_AT_TURN_START = false;
 
 /** Native permission reply used when an ask still arrives. The shortest-lived grant is `once`. */
 export const OPENCODE_PERMISSION_REPLY = 'once';
 
-const CLIENT_PACKAGE = '@opencode/client@2.0.20';
-const CLI_PACKAGE = '@opencode/cli@2.0.20';
+const CLIENT_PACKAGE = '@opencode/client@2.0.22';
+const CLI_PACKAGE = '@opencode/cli@2.0.22';
 const CLI_NAME = '@opencode/cli';
 const RESULT_BYTE_LIMIT = 16 * 1024 * 1024;
 const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;
@@ -331,7 +331,7 @@ async function supervise(
       closing = true;
       const activeAtClose = turnActive;
       closePromise = (async () => {
-        // On 2.0.20 --stdio EOF returns normally from serve and runs scoped finalizers,
+        // On 2.0.22 --stdio EOF returns normally from serve and runs scoped finalizers,
         // including SQLite.close. Signals interrupt that scope and do not prove this path.
         if (!activeAtClose && !exitObserved && child.stdin) {
           gracefulRequested = true;
@@ -1065,7 +1065,7 @@ async function proveConversation(
 /**
  * Reports whether a new process can read this conversation.
  *
- * `@opencode/cli@2.0.20` commits the id into `session_v2` of `$XDG_DATA_HOME/opencode/opencode.db`
+ * `@opencode/cli@2.0.22` commits the id into `session_v2` of `$XDG_DATA_HOME/opencode/opencode.db`
  * before `session.create` returns. A read-only select saw that row while the server was alive,
  * and after SIGKILL a second `opencode serve` on the same directory resumed it. The handle stays
  * pending until this select matches, and a later inspect keeps the first successful proof.

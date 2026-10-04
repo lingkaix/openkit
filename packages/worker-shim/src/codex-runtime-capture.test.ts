@@ -693,7 +693,7 @@ it('trusts an App Server rollout only when create is given that cli_version', as
   const f = await fixture('on');
   const mismatched = await CodexRuntimeCapture.create(f.input, f.home, '0.153.4');
   try {
-    await writeFile(f.path('root'), lines(meta('root', undefined, '0.159.2')));
+    await writeFile(f.path('root'), lines(meta('root', undefined, '0.160.0')));
     await mismatched.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
     await mismatched.finalize();
     expect(
@@ -705,7 +705,7 @@ it('trusts an App Server rollout only when create is given that cli_version', as
     await mismatched.invalidate();
   }
   f.received.length = 0;
-  const matched = await CodexRuntimeCapture.create(f.input, f.home, '0.159.2');
+  const matched = await CodexRuntimeCapture.create(f.input, f.home, '0.160.0');
   try {
     await matched.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
     await matched.finalize();

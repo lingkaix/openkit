@@ -15,7 +15,7 @@ It is intentionally separate from `@openkit/protocol`.
 ## Refresh Procedure
 
 1. Confirm the intended Codex CLI version from the official npm `latest` dist-tag, never from a local installed CLI or a development branch.
-2. Record that npm package in `metadata.json`. The 0.159.2 packument has no `gitHead`, so `sourceCommit` records `packument-has-no-gitHead` instead of an invented revision.
+2. Record that npm package in `metadata.json`. The 0.160.0 packument has no `gitHead`, so `sourceCommit` records `packument-has-no-gitHead` instead of an invented revision.
 3. Generate the schema with the pinned package's vendor binary, `codex app-server generate-json-schema`, into a clean temporary directory, then synchronize the generated JSON tree into this package while preserving `generated-schema/README.md`.
 4. Update `metadata.json` with the generator version, upstream package, release, the recorded `sourceCommit`, `refreshedAt`, individual SHA-256 checksums for every generated JSON file, consumed implementation values, consumed-surface dispositions, and any maintenance note.
 5. Review the generated schema diff before committing.
