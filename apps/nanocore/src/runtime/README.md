@@ -87,6 +87,8 @@ The MCP concurrent credential-rejection regression holds the real upstream delay
 
 The MCP Gateway's existing teardown-required fence refuses late tool and listing results and prevents health probes from restoring ready state while cleanup owns the cached session. A separate regression holds HTTP termination pending while another real response completes, proving typed rejection with known upstream contact and degraded health; failed cleanup retains its existing exact-retry ownership.
 
+The stdio group-refusal regression reads the detached supervisor PID from the descendant's Node fixture receipt and checks real group addressability before exercising teardown under injected signal refusals. It requires no Python or external process lookup and runs with ordinary user authority in the test image.
+
 ## Related Design
 
 - [AgentSession](../../../../docs/core/agent-session.md)

@@ -15,11 +15,13 @@ if (process.env.OPENKIT_MCP_INIT_HANG) {
   await new Promise(() => undefined);
 }
 if (process.env.OPENKIT_MCP_DESCENDANT_PID_FILE) {
+  // The gateway's detached supervisor is this server's parent and owns the inherited group.
   const child = spawn(
     process.execPath,
     [
       '-e',
-      "const fs=require('node:fs');const{createHash}=require('node:crypto');const path=process.env.OPENKIT_MCP_DESCENDANT_PID_FILE;process.on('SIGTERM',()=>{});fs.writeFileSync(path+'.partial',JSON.stringify({pid:process.pid,credentialDigest:createHash('sha256').update(process.env.OPENKIT_MCP_DESCENDANT_SECRET??'').digest('hex')}));fs.renameSync(path+'.partial',path);setInterval(()=>{},1000)",
+      "const fs=require('node:fs');const{createHash}=require('node:crypto');const path=process.env.OPENKIT_MCP_DESCENDANT_PID_FILE;process.on('SIGTERM',()=>{});fs.writeFileSync(path+'.partial',JSON.stringify({pid:process.pid,supervisorPid:Number(process.argv[1]),credentialDigest:createHash('sha256').update(process.env.OPENKIT_MCP_DESCENDANT_SECRET??'').digest('hex')}));fs.renameSync(path+'.partial',path);setInterval(()=>{},1000)",
+      String(process.ppid),
     ],
     { env: process.env, stdio: 'ignore' }
   );

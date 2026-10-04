@@ -940,8 +940,11 @@ describe('worker MCP gateway', () => {
         (error: unknown) => error
       );
       await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
-      const descendantPid = JSON.parse(readFileSync(pidFile, 'utf8')).pid as number;
-      leaderPid = processGroupLeader(descendantPid);
+      const descendant = JSON.parse(readFileSync(pidFile, 'utf8'));
+      const descendantPid = descendant.pid as number;
+      leaderPid = descendant.supervisorPid;
+      expect(leaderPid).toBeGreaterThan(0);
+      expect(kill(-leaderPid, 0)).toBe(true);
       await expect(gateway.closeWorkspace('ws_demo')).rejects.toThrow(
         'MCP stdio process group remained addressable after SIGKILL.'
       );
@@ -1588,19 +1591,6 @@ async function waitForProcessExit(pid: number): Promise<boolean> {
   return false;
 }
 
-/** Reads the process-group leader of one live pid. */
-function processGroupLeader(pid: number): number {
-  const result = spawnSync(
-    'python3',
-    ['-c', 'import os,sys; print(os.getpgid(int(sys.argv[1])))', String(pid)],
-    { encoding: 'utf8' }
-  );
-  if (result.status !== 0) {
-    throw new Error(result.stderr || 'process group lookup failed');
-  }
-  return Number(result.stdout.trim());
-}
-
 /** Resolves one stdio fixture server with a caller-selected request bound. */
 function stdioTestServer(timeoutMs: number) {
   return resolveWorkspaceMcpServer({
@@ -1654,5 +1644,5 @@ function httpTestServer(endpoint: string, timeoutMs: number) {
   });
 }
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
