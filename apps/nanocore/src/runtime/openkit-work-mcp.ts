@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './pending-request-flow.js';
@@ -271,7 +272,7 @@ export async function dispatchOpenkitWorkTool(
     raised = raiseRecordedPendingRequest(input.store, input.workspaceDb.sqlite, raiseInput);
   } catch (error) {
     if (error instanceof PendingRequestCommandError) {
-      throw new WorkerControlGatewayError(error.code, error.message, error.status);
+      throw new OperationError(error.code, error.message, error.status, { cause: error });
     }
     throw error;
   }
@@ -341,7 +342,7 @@ export function preflightWorkRequestInput(
     return existing ? pendingToolResult('pending-input', existing.requestId) : null;
   } catch (error) {
     if (error instanceof PendingRequestCommandError)
-      throw new WorkerControlGatewayError(error.code, error.message, error.status);
+      throw new OperationError(error.code, error.message, error.status, { cause: error });
     throw error;
   }
 }

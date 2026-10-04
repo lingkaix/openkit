@@ -9,7 +9,6 @@ import type { z } from 'zod';
 import { asApiError } from './api-errors.js';
 import type { Actor } from './auth/identity.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
-import { throwCoreCommandError } from './core-command-errors.js';
 import type { FsStore } from './lib/store.js';
 import {
   type InflightIdempotentCommand,
@@ -31,33 +30,27 @@ export async function updateThread(
   dependencies: ThreadCommandDependencies
 ) {
   const { store, inflightCommands } = dependencies;
-  try {
-    const updates: { name?: string | null; status?: 'active' | 'archived' } = {};
-    if (input.name !== undefined) {
-      updates.name = input.name;
-    }
-    if (input.status !== undefined) {
-      updates.status = input.status;
-    }
-    const thread = await runIdempotentCommand({
-      store,
-      inflightCommands,
-      command: 'thread.update',
-      requestId: input.requestId,
-      scope: { workspaceId: input.workspaceId, threadId: input.threadId },
-      input,
-      responseKind: 'thread',
-      execute: () =>
-        ThreadSchema.parse(store.updateThread(input.workspaceId, input.threadId, updates)),
-      replay: (record) =>
-        ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
-      responseId: (result) => result.id,
-    });
-
-    return thread;
-  } catch (error) {
-    throwCoreCommandError(error, 'thread_update_failed');
+  const updates: { name?: string | null; status?: 'active' | 'archived' } = {};
+  if (input.name !== undefined) {
+    updates.name = input.name;
   }
+  if (input.status !== undefined) {
+    updates.status = input.status;
+  }
+  const thread = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'thread.update',
+    requestId: input.requestId,
+    scope: { workspaceId: input.workspaceId, threadId: input.threadId },
+    input,
+    responseKind: 'thread',
+    execute: () =>
+      ThreadSchema.parse(store.updateThread(input.workspaceId, input.threadId, updates)),
+    replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
+    responseId: (result) => result.id,
+  });
+  return thread;
 }
 
 /** Archives the admitted Thread and closes existing Pending Requests through their owner. */
@@ -67,42 +60,36 @@ export async function archiveThread(
   actor: Actor
 ) {
   const { store, inflightCommands, repositoryWorkspaceDb } = dependencies;
-  try {
-    const thread = await runIdempotentCommand({
-      store,
-      inflightCommands,
-      command: 'thread.archive',
-      requestId: input.requestId,
-      scope: { workspaceId: input.workspaceId, threadId: input.threadId },
-      input,
-      responseKind: 'thread',
-      execute: () => {
-        const actorId = actor.userId;
-        if (!actorId) {
-          throw new Error('Thread archive requires an authenticated actor.');
-        }
-        if (repositoryWorkspaceDb) {
-          archiveThreadWithCloseout(
-            store,
-            { openWorkspace: repositoryWorkspaceDb },
-            input.workspaceId,
-            input.threadId,
-            { kind: 'user', id: actorId }
-          );
-        } else {
-          store.archiveThread(input.workspaceId, input.threadId);
-        }
-        return ThreadSchema.parse(store.getThread(input.workspaceId, input.threadId));
-      },
-      replay: (record) =>
-        ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
-      responseId: (result) => result.id,
-    });
-
-    return thread;
-  } catch (error) {
-    throwCoreCommandError(error, 'thread_archive_failed');
-  }
+  const thread = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'thread.archive',
+    requestId: input.requestId,
+    scope: { workspaceId: input.workspaceId, threadId: input.threadId },
+    input,
+    responseKind: 'thread',
+    execute: () => {
+      const actorId = actor.userId;
+      if (!actorId) {
+        throw new Error('Thread archive requires an authenticated actor.');
+      }
+      if (repositoryWorkspaceDb) {
+        archiveThreadWithCloseout(
+          store,
+          { openWorkspace: repositoryWorkspaceDb },
+          input.workspaceId,
+          input.threadId,
+          { kind: 'user', id: actorId }
+        );
+      } else {
+        store.archiveThread(input.workspaceId, input.threadId);
+      }
+      return ThreadSchema.parse(store.getThread(input.workspaceId, input.threadId));
+    },
+    replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
+    responseId: (result) => result.id,
+  });
+  return thread;
 }
 
 /** Creates or replays the same actor-bound Thread without admitting Task work or changing visibility. */

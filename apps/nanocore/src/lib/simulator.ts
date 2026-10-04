@@ -876,7 +876,11 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   ): Promise<void> {
     const turnRecord = store.getTurnById(turnId);
     if (!turnRecord.agentSessionId) {
-      throw new Error(`Simulator turn has no assigned AgentSession: ${turnId}`);
+      throw new TurnStartValidationError(
+        'turn_interrupt_failed',
+        `Simulator turn has no assigned AgentSession: ${turnId}`,
+        404
+      );
     }
     const state = {
       workspaceId: turnRecord.workspaceId,

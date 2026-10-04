@@ -19,7 +19,7 @@ import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { createLightApp, getLightApp, listRecords } from './generative-kernel/commands.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import { AutomationStore } from './lib/automation-store.js';
-import * as invocation from './operation-invocation.js';
+import * as invocation from './operation-composition.js';
 import { feedbackFilePath } from './runtime/feedback.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
 import {
@@ -198,7 +198,11 @@ describe('remote MCP App endpoint', () => {
           body: JSON.stringify(input),
         });
         expect(http.status).toBe(404);
-        expect(await http.text()).toBe('Thread not found.');
+        expect(await http.json()).toEqual({
+          protocolVersion: '0.5.0',
+          code: 'not_found',
+          message: 'Thread not found.',
+        });
         expect(
           ['queue_private', 'queue_foreign'].map((id) =>
             requireSchedulerAdmissionEntry(f.coreDb, id)
@@ -209,6 +213,7 @@ describe('remote MCP App endpoint', () => {
         expect(JSON.parse(mcp.content[0].text)).toEqual({
           code: 'not_found',
           message: 'Thread not found.',
+          status: 404,
         });
         expect(
           ['queue_private', 'queue_foreign'].map((id) =>
@@ -289,6 +294,7 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(mutation.content[0].text)).toEqual({
       code: 'product_work_unavailable',
       message: 'NanoCore is not accepting product work during the current boot readiness state.',
+      status: 503,
     });
     const read = await f.call('call', { operation: 'workspace.list', input: {} }, token.secret);
     expect(read.isError).not.toBe(true);
@@ -493,6 +499,7 @@ describe('remote MCP App endpoint', () => {
       expect(JSON.parse(result.content[0].text), operation).toEqual({
         code: 'product_work_unavailable',
         message: 'NanoCore is not accepting product work during the current boot readiness state.',
+        status: 503,
       });
       expect(f.store.listWorkspaces()).toEqual(workspaces);
       expect(f.store.listThreads('ws_demo')).toEqual(threads);
@@ -559,6 +566,7 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(result.content[0].text)).toEqual({
       code: 'invalid_request',
       message: 'Knowledge Page validation failed.',
+      status: 400,
     });
     expect(f.store.getWorkspace('ws_demo')).toEqual(workspace);
     expect(f.store.listCommandRequests()).toEqual(receipts);
@@ -825,7 +833,11 @@ describe('remote MCP App endpoint', () => {
         {},
         { kind: 'public', actor }
       )
-      .catch((error: Error & { code: string }) => ({ code: error.code, message: error.message }));
+      .catch((error: Error & { code: string; status: number }) => ({
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      }));
     const result = await f.call(
       'call',
       { operation: 'nanohost.runtime-target', input: {} },
@@ -835,7 +847,7 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(result.content[0].text)).toEqual(expected);
   });
 
-  it('refuses current one-time-secret response schemas before dispatch when a credential definition is added', async () => {
+  it('refuses declared one-time-secret results before dispatch when a credential definition is added', async () => {
     const f = await fixture();
     const token = f.token();
     const invoke = vi.spyOn(invocation, 'createOperationInvocation');
@@ -844,7 +856,11 @@ describe('remote MCP App endpoint', () => {
       RotateOpenKitAccessTokenResponseSchema,
     ]) {
       Object.assign(OPERATION_DEFINITIONS, {
-        'test.secret': { ...OPERATION_DEFINITIONS['kernel.apps.get'], outputSchema },
+        'test.secret': {
+          ...OPERATION_DEFINITIONS['kernel.apps.get'],
+          outputSchema,
+          returnsOneTimeSecret: true,
+        },
       });
       try {
         const result = await f.call('call', { operation: 'test.secret', input: {} }, token.secret);

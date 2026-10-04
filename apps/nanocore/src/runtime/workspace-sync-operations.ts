@@ -18,13 +18,16 @@ import {
   type WorkspaceApplyResult,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
+import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { listArtifactReviews } from '../artifact-reviews.js';
 import type { Actor } from '../auth/identity.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { KnowledgePageValidationError } from '../knowledge/okf.js';
 import type { FsStore } from '../lib/store.js';
-import type { OperationImplementations } from '../operation-invocation.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import type { OperationImplementations } from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   IdempotencyKeyConflictError,
@@ -58,32 +61,18 @@ import {
   listWorkspaceSyncReviews,
 } from './workspace-sync-records.js';
 
-/** Transport-neutral preservation of the synchronization owner's published refusal. */
-export class WorkspaceSyncOperationError extends Error {
-  constructor(
-    message: string,
-    readonly code = 'not_found',
-    readonly status = 404
-  ) {
-    super(message);
-  }
-}
-
 /** Child content is resolved only inside the admitted Workspace; missing and foreign children fail identically. */
 function requireSelectedWorkspaceLineage(
   workspaceId: string,
   childWorkspaceId: string | null
 ): void {
   if (childWorkspaceId !== workspaceId)
-    throw new WorkspaceSyncOperationError(
-      'Workspace access denied.',
-      'workspace_access_denied',
-      403
-    );
+    throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
 }
 
-/** Preserve the old decision handler's typed errors and owner-specific unexpected-error fallback. */
+/** Projects definite native synchronization refusals; arbitrary execution failures remain unclassified. */
 function commandFailure(error: unknown, code: string): Error {
+  if (error instanceof OperationError) return error;
   if (
     error instanceof IdempotencyKeyConflictError ||
     error instanceof KernelCommandError ||
@@ -91,8 +80,14 @@ function commandFailure(error: unknown, code: string): Error {
     error instanceof KnowledgePageValidationError ||
     error instanceof PendingRequestCommandError
   )
-    return new WorkspaceSyncOperationError(error.message, error.code, error.status);
-  return new WorkspaceSyncOperationError(publishedErrorMessage(error), code);
+    return new OperationError(error.code, error.message, error.status);
+  if (
+    error instanceof StoreRecordNotFoundError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError
+  )
+    return new OperationError(code, publishedErrorMessage(error), 404, { cause: error });
+  throw error;
 }
 
 /** Joins synchronization definitions to existing review, apply, recovery and receipt owners. Logical selectors stay outside receipt inputs to preserve retained command replay. */
@@ -106,7 +101,7 @@ export function createWorkspaceSyncOperationImplementations({
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly store: FsStore;
-}): Pick<OperationImplementations, keyof typeof SYNC_OPERATION_DEFINITIONS> {
+}) {
   return {
     'sync.review-list': (logicalInput) => {
       try {
@@ -124,7 +119,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.review-read': (logicalInput) => {
@@ -147,11 +142,12 @@ export function createWorkspaceSyncOperationImplementations({
 
         return GetWorkspaceSyncReviewResponseSchema.parse(review);
       } catch (error) {
-        if (error instanceof WorkspaceSyncOperationError) throw error;
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        if (error instanceof OperationError) throw error;
+        throw commandFailure(error, 'not_found');
       }
     },
-    'sync.review-decide': async (logicalInput, actor, context) => {
+    'sync.review-decide': async (logicalInput, context) => {
+      const actor = context.actorRef;
       try {
         const { workspaceId, reviewId, ...input } = logicalInput;
 
@@ -206,7 +202,9 @@ export function createWorkspaceSyncOperationImplementations({
               const review = getWorkspaceSyncReview(workspaceDb, workspaceId, record.response.id);
 
               if (!review) {
-                throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+                throw new StoreRecordNotFoundError(
+                  `Workspace synchronization review not found: ${reviewId}`
+                );
               }
               if (
                 listArtifactReviews(workspaceDb).some(
@@ -240,7 +238,7 @@ export function createWorkspaceSyncOperationImplementations({
 
         return SubmitWorkspaceSyncReviewDecisionResponseSchema.parse(response);
       } catch (error) {
-        if (error instanceof WorkspaceSyncOperationError) throw error;
+        if (error instanceof OperationError) throw error;
         throw commandFailure(error, 'workspace_sync_review_failed');
       }
     },
@@ -256,7 +254,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.materialization-list': (logicalInput) => {
@@ -271,7 +269,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.backend-handle-list': (logicalInput) => {
@@ -286,7 +284,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.output-manifest-list': (logicalInput) => {
@@ -301,7 +299,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.change-set-list': (logicalInput) => {
@@ -316,7 +314,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.staged-review-list': (logicalInput) => {
@@ -333,7 +331,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.apply-result-list': (logicalInput) => {
@@ -348,7 +346,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.apply-plan-list': (logicalInput) => {
@@ -363,7 +361,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.reconciliation-list': (logicalInput) => {
@@ -378,7 +376,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.recovery-decide': async (logicalInput) => {
@@ -430,7 +428,7 @@ export function createWorkspaceSyncOperationImplementations({
               ).find((candidate) => candidate.id === record.response.id);
 
               if (!reconciliationRecord) {
-                throw new Error(
+                throw new StoreRecordNotFoundError(
                   `Workspace reconciliation record not found: ${reconciliationRecordId}`
                 );
               }
@@ -445,7 +443,7 @@ export function createWorkspaceSyncOperationImplementations({
 
         return SubmitWorkspaceRecoveryDecisionResponseSchema.parse(response);
       } catch (error) {
-        if (error instanceof WorkspaceSyncOperationError) throw error;
+        if (error instanceof OperationError) throw error;
         throw commandFailure(error, 'workspace_recovery_decision_failed');
       }
     },
@@ -461,7 +459,7 @@ export function createWorkspaceSyncOperationImplementations({
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
     'sync.apply-result-read': (logicalInput) => {
@@ -479,9 +477,9 @@ export function createWorkspaceSyncOperationImplementations({
 
         return GetWorkspaceApplyResultResponseSchema.parse(result);
       } catch (error) {
-        if (error instanceof WorkspaceSyncOperationError) throw error;
-        throw new WorkspaceSyncOperationError(publishedErrorMessage(error));
+        if (error instanceof OperationError) throw error;
+        throw commandFailure(error, 'not_found');
       }
     },
-  };
+  } satisfies Pick<OperationImplementations, keyof typeof SYNC_OPERATION_DEFINITIONS>;
 }

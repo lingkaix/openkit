@@ -55,6 +55,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { OperationError } from '../operation-error.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
@@ -822,6 +823,9 @@ export interface IntroduceArtifactInput {
   readonly triggerActor: ActorRef;
 }
 
+/** Native absence of an addressed record, distinct from unexpected storage or implementation failure. */
+export class StoreRecordNotFoundError extends Error {}
+
 /** Closed S16 failures owned by the Artifact authority boundary. */
 export type ArtifactAuthorityErrorCode =
   | 'invalid_request'
@@ -877,12 +881,19 @@ export type KnowledgeProposalAuthorityErrorCode =
  * @param code Stable public failure code.
  * @returns Error carrying the corresponding HTTP status.
  */
+/** Native Knowledge Proposal refusal; only its owning family projects it. */
+export class KnowledgeProposalAuthorityError extends Error {
+  readonly status: 400 | 404 | 409;
+  constructor(readonly code: KnowledgeProposalAuthorityErrorCode) {
+    super('Knowledge Proposal authority check failed.');
+    this.status = code === 'invalid_request' ? 400 : code === 'not_found' ? 404 : 409;
+  }
+}
+
 export function knowledgeProposalAuthorityError(
   code: KnowledgeProposalAuthorityErrorCode
 ): Error & { code: KnowledgeProposalAuthorityErrorCode; status: 400 | 404 | 409 } {
-  const status: 400 | 404 | 409 =
-    code === 'invalid_request' ? 400 : code === 'not_found' ? 404 : 409;
-  return Object.assign(new Error('Knowledge Proposal authority check failed.'), { code, status });
+  return new KnowledgeProposalAuthorityError(code);
 }
 
 /**
@@ -2272,7 +2283,7 @@ export class FsStore {
     const workspace = this.workspaces.get(workspaceId);
 
     if (!workspace) {
-      throw new Error(`Workspace not found: ${workspaceId}`);
+      throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
     }
 
     return workspace;
@@ -2300,7 +2311,7 @@ export class FsStore {
     const resources = this.workspaceResources.get(workspaceId);
 
     if (!resources) {
-      throw new Error(`Workspace resources not found: ${workspaceId}`);
+      throw new StoreRecordNotFoundError(`Workspace resources not found: ${workspaceId}`);
     }
 
     return resources;
@@ -2367,7 +2378,7 @@ export class FsStore {
     const entry = this.listKnowledge(workspaceId).find((item) => item.id === knowledgeEntryId);
 
     if (!entry) {
-      throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
+      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
     return entry;
@@ -2456,7 +2467,7 @@ export class FsStore {
     });
 
     if (!updatedAgent) {
-      throw new Error(`Agent not found: ${agentId}`);
+      throw new StoreRecordNotFoundError(`Agent not found: ${agentId}`);
     }
 
     this.workspaceResources.set(workspaceId, {
@@ -2501,7 +2512,7 @@ export class FsStore {
     const knowledge = resources.knowledge.filter((entry) => entry.id !== knowledgeEntryId);
 
     if (knowledge.length === resources.knowledge.length) {
-      throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
+      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
     if (this.dataRoot) {
@@ -2527,7 +2538,7 @@ export class FsStore {
     const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
 
     if (!existing) {
-      throw new Error(`Knowledge entry not found: ${knowledgeEntryId}`);
+      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
     }
 
     const updated: KnowledgeEntry = {
@@ -2639,7 +2650,7 @@ export class FsStore {
     const thread = this.threads.get(threadId);
 
     if (!thread || thread.workspaceId !== workspaceId) {
-      throw new Error(`Thread not found: ${threadId}`);
+      throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
     }
 
     return thread;
@@ -2762,7 +2773,7 @@ export class FsStore {
     const turn = this.turns.get(turnId);
 
     if (!turn || turn.workspaceId !== workspaceId || turn.threadId !== threadId) {
-      throw new Error(`Turn not found: ${turnId}`);
+      throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
 
     return turn;
@@ -2778,7 +2789,7 @@ export class FsStore {
     const turn = this.turns.get(turnId);
 
     if (!turn) {
-      throw new Error(`Turn not found: ${turnId}`);
+      throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
 
     return turn;
@@ -2828,7 +2839,7 @@ export class FsStore {
     const turn = this.turns.get(turnId);
 
     if (!turn) {
-      throw new Error(`Turn not found: ${turnId}`);
+      throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
 
     const unsupportedField = Object.keys(input).find(
@@ -3003,7 +3014,7 @@ export class FsStore {
     const item = this.items.get(itemId);
 
     if (!item) {
-      throw new Error(`Item not found: ${itemId}`);
+      throw new StoreRecordNotFoundError(`Item not found: ${itemId}`);
     }
 
     const turn = this.getTurnById(item.turnId);
@@ -3132,7 +3143,7 @@ export class FsStore {
     const approval = this.approvals.get(approvalRequestId);
 
     if (!approval) {
-      throw new Error(`Approval request not found: ${approvalRequestId}`);
+      throw new StoreRecordNotFoundError(`Approval request not found: ${approvalRequestId}`);
     }
 
     return approval;
@@ -3197,7 +3208,7 @@ export class FsStore {
     const agentSession = this.agentSessions.get(agentSessionId);
 
     if (!agentSession) {
-      throw new Error(`AgentSession not found: ${agentSessionId}`);
+      throw new StoreRecordNotFoundError(`AgentSession not found: ${agentSessionId}`);
     }
 
     return agentSession;
@@ -3529,7 +3540,7 @@ export class FsStore {
     const artifact = this.artifacts.get(artifactId);
 
     if (!artifact || artifact.workspaceId !== workspaceId) {
-      throw new Error(`Artifact not found: ${artifactId}`);
+      throw new StoreRecordNotFoundError(`Artifact not found: ${artifactId}`);
     }
 
     return artifact;
@@ -4075,6 +4086,7 @@ export class FsStore {
    * @param input Source identity record to store.
    * @param materialContent Optional captured source text to write beside the registry record.
    * @returns Stored source identity record.
+   * @throws OperationError for invalid source lineage or an id owned by another Workspace.
    */
   public createKnowledgeSource(
     input: KnowledgeSourceRecord,
@@ -4086,14 +4098,22 @@ export class FsStore {
     }
     if (input.originatingTurnId !== null) {
       if (input.originatingThreadId === null) {
-        throw new Error(`Knowledge source turn requires a thread: ${input.id}`);
+        throw new OperationError(
+          'knowledge_source_register_failed',
+          `Knowledge source turn requires a thread: ${input.id}`,
+          404
+        );
       }
       this.getTurn(input.workspaceId, input.originatingThreadId, input.originatingTurnId);
     }
 
     const previous = this.knowledgeSources.get(input.id);
     if (previous && previous.workspaceId !== input.workspaceId) {
-      throw new Error(`Knowledge source id belongs to another workspace: ${input.id}`);
+      throw new OperationError(
+        'knowledge_source_register_failed',
+        `Knowledge source id belongs to another workspace: ${input.id}`,
+        404
+      );
     }
 
     try {
@@ -4145,7 +4165,7 @@ export class FsStore {
     );
 
     if (!observation) {
-      throw new Error(`Knowledge observation not found: ${observationId}`);
+      throw new StoreRecordNotFoundError(`Knowledge observation not found: ${observationId}`);
     }
 
     return observation;
@@ -4200,7 +4220,7 @@ export class FsStore {
     );
 
     if (!claim) {
-      throw new Error(`Knowledge claim not found: ${claimId}`);
+      throw new StoreRecordNotFoundError(`Knowledge claim not found: ${claimId}`);
     }
 
     return claim;
@@ -4281,7 +4301,7 @@ export class FsStore {
     );
 
     if (!conflict) {
-      throw new Error(`Knowledge conflict not found: ${conflictId}`);
+      throw new StoreRecordNotFoundError(`Knowledge conflict not found: ${conflictId}`);
     }
 
     return conflict;
@@ -4325,7 +4345,7 @@ export class FsStore {
     const source = this.knowledgeSources.get(sourceId);
 
     if (!source || source.workspaceId !== workspaceId) {
-      throw new Error(`Knowledge source not found: ${sourceId}`);
+      throw new StoreRecordNotFoundError(`Knowledge source not found: ${sourceId}`);
     }
 
     return source;
@@ -4536,7 +4556,7 @@ export class FsStore {
     const stream = this.streams.get(turnId);
 
     if (!stream) {
-      throw new Error(`Turn stream not found: ${turnId}`);
+      throw new StoreRecordNotFoundError(`Turn stream not found: ${turnId}`);
     }
 
     const turn = this.getTurnById(turnId);
@@ -4609,7 +4629,7 @@ export class FsStore {
     const stream = this.streams.get(turnId);
 
     if (!stream) {
-      throw new Error(`Turn stream not found: ${turnId}`);
+      throw new StoreRecordNotFoundError(`Turn stream not found: ${turnId}`);
     }
 
     stream.listeners.add(listener);

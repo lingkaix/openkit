@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
+import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 
@@ -200,6 +201,7 @@ function canonicalFilesystemRoot(path: string): {
  *
  * @param json Stored manifest JSON.
  * @returns Filesystem snapshot plus root identities.
+ * @throws SyntaxError or ZodError for invalid retained payload bytes or known fields.
  */
 function createFilesystemStagingPayloadFromJson(json: string): {
   readonly before: FilesystemSnapshotManifest;
@@ -217,7 +219,9 @@ function createFilesystemStagingPayloadFromJson(json: string): {
     typeof payload.stagingRootIdentity !== 'string' ||
     typeof payload.targetRootIdentity !== 'string'
   ) {
-    throw new Error('Stored filesystem staging payload is invalid.');
+    throw new z.ZodError([
+      { code: 'custom', message: 'Stored filesystem staging payload is invalid.', path: [] },
+    ]);
   }
   return {
     before: payload.before as FilesystemSnapshotManifest,

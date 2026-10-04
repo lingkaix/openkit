@@ -94,6 +94,7 @@ it.each([
       expect(JSON.parse(body.result.content[0].text)).toEqual({
         code: 'conflict',
         message: 'Owned conflict sentinel.',
+        status: 409,
       });
     }
     expect(errors).toEqual([]);

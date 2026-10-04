@@ -118,7 +118,12 @@ describe('automation app API', () => {
     });
     const first = { kind: 'user', id: 'user_first' } as const;
     const second = { kind: 'user', id: 'user_second' } as const;
-    const context = { kind: 'public', actor: { kind: 'session', userId: 'user_first' } } as const;
+    const context = {
+      kind: 'public',
+      actor: { kind: 'session', userId: 'user_first' },
+      actorRef: first,
+      scope: { kind: 'authorized-workspace-set', workspaceIds: ['ws_demo'] },
+    } as const;
     const created = await operations['automation.create'](
       {
         cron: '0 9 * * *',
@@ -126,15 +131,18 @@ describe('automation app API', () => {
         prompt: 'Summarize active threads',
         workspaceId: 'ws_demo',
       },
-      first,
-      context,
-      ['ws_demo']
+      context
     );
     expect(created.status).toBe('paused');
-    expect(await operations['automation.list']({}, first, context, ['ws_demo'])).toMatchObject({
+    expect(await operations['automation.list']({}, context)).toMatchObject({
       items: [{ name: 'Morning status' }],
     });
-    expect(await operations['automation.list']({}, second, context, ['ws_demo'])).toEqual({
+    expect(
+      await operations['automation.list'](
+        {},
+        { ...context, actor: { ...context.actor, userId: second.id }, actorRef: second }
+      )
+    ).toEqual({
       items: [],
     });
     expect(listWorkspaces).not.toHaveBeenCalled();

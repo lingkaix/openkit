@@ -1,8 +1,4 @@
-import type {
-  NANOHOST_OPERATION_DEFINITIONS,
-  OperationInput,
-  OperationOutput,
-} from '@openkit/app-api-schemas';
+import type { NANOHOST_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   AbortNanoHostTransportRotationResponseSchema,
   DecommissionNanoHostResponseSchema,
@@ -13,11 +9,10 @@ import {
   RotateNanoHostTransportTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
-
-import { publishedErrorMessage } from '../api-errors.js';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
+import type { FamilyImplementations } from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import { readConfiguredNanoHostRuntimeTargetStatus } from '../runtime/nanohost-runtime-target.js';
 import { generateUuidV7 } from '../runtime/session-id.js';
 import type { CoreDb } from '../storage/db.js';
@@ -46,12 +41,7 @@ import {
 } from './nanohost-transport-token-store.js';
 
 /** Exact native NanoHost handler signatures; facts remain in the browser-safe family table. */
-type NanoHostImplementations = {
-  [K in keyof typeof NANOHOST_OPERATION_DEFINITIONS]: (
-    input: OperationInput<K>,
-    actor: ActorRef
-  ) => OperationOutput<K> | Promise<OperationOutput<K>>;
-};
+type NanoHostImplementations = FamilyImplementations<typeof NANOHOST_OPERATION_DEFINITIONS>;
 
 /** Joins enrollment, named-slot delivery, lifecycle fencing and RuntimeTarget observation to their existing owners. */
 export function createNanoHostOperationImplementations({
@@ -65,7 +55,7 @@ export function createNanoHostOperationImplementations({
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'> &
     Partial<OpenKitNanoHostConfig>;
   readonly sessionAuthority?: NanoHostTransportSessionAuthority;
-}): NanoHostImplementations {
+}) {
   /** Preserves the domain's server-mode and storage availability boundary after primary admission. */
   function requireNanoHostEnvironment(): void {
     if (mode !== 'server')
@@ -221,7 +211,8 @@ export function createNanoHostOperationImplementations({
   }
 
   return {
-    'nanohost.enroll': (input, actor) => {
+    'nanohost.enroll': (input, context) => {
+      const actor = context.actorRef;
       requireNanoHostEnvironment();
 
       const config = requireNanoHostConfig();
@@ -278,8 +269,8 @@ export function createNanoHostOperationImplementations({
           slotResult,
           targetSlot: input.targetSlot,
         });
-      } catch (error) {
-        return failure(publishedErrorMessage(error), 'nanohost_enroll_failed', 400);
+      } catch (_error) {
+        return failure('NanoHost enrollment failed.', 'nanohost_enroll_failed', 400);
       }
     },
 
@@ -305,7 +296,8 @@ export function createNanoHostOperationImplementations({
       });
     },
 
-    'nanohost.token-issue': (input, actor) => {
+    'nanohost.token-issue': (input, context) => {
+      const actor = context.actorRef;
       requireNanoHostEnvironment();
 
       const config = requireNanoHostConfig();
@@ -337,12 +329,17 @@ export function createNanoHostOperationImplementations({
           slotResult,
           targetSlot: input.targetSlot,
         });
-      } catch (error) {
-        return failure(publishedErrorMessage(error), 'nanohost_transport_issue_failed', 400);
+      } catch (_error) {
+        return failure(
+          'NanoHost transport token issuance failed.',
+          'nanohost_transport_issue_failed',
+          400
+        );
       }
     },
 
-    'nanohost.token-revoke': (input, actor) => {
+    'nanohost.token-revoke': (input, context) => {
+      const actor = context.actorRef;
       requireNanoHostEnvironment();
 
       const record = sessionAuthority
@@ -368,7 +365,8 @@ export function createNanoHostOperationImplementations({
       return RevokeNanoHostTransportTokenResponseSchema.parse({ record });
     },
 
-    'nanohost.token-rotate': (input, actor) => {
+    'nanohost.token-rotate': (input, context) => {
+      const actor = context.actorRef;
       requireNanoHostEnvironment();
 
       const config = requireNanoHostConfig();
@@ -436,8 +434,12 @@ export function createNanoHostOperationImplementations({
           targetSlot,
         });
       } catch (error) {
-        if (error instanceof NanoHostOperationError) throw error;
-        return failure(publishedErrorMessage(error), 'nanohost_transport_rotate_failed', 400);
+        if (error instanceof OperationError) throw error;
+        return failure(
+          'NanoHost transport token rotation failed.',
+          'nanohost_transport_rotate_failed',
+          400
+        );
       }
     },
 
@@ -475,7 +477,8 @@ export function createNanoHostOperationImplementations({
       return AbortNanoHostTransportRotationResponseSchema.parse(aborted);
     },
 
-    'nanohost.decommission': (_input, actor) => {
+    'nanohost.decommission': (_input, context) => {
+      const actor = context.actorRef;
       requireNanoHostEnvironment();
       const config = requireNanoHostConfig();
       if (!sessionAuthority) {
@@ -515,22 +518,10 @@ export function createNanoHostOperationImplementations({
         status: 'decommissioned',
       });
     },
-  };
-}
-
-/** Domain failure preserved by invocation and its transport projections. */
-export class NanoHostOperationError extends Error {
-  public constructor(
-    public readonly code: string,
-    message: string,
-    public readonly status: number
-  ) {
-    super(message);
-    this.name = 'NanoHostOperationError';
-  }
+  } satisfies NanoHostImplementations;
 }
 
 /** Throws the same owned failure without an HTTP response or a transport dependency. */
 function failure(message: string, code: string, status: number): never {
-  throw new NanoHostOperationError(code, message, status);
+  throw new OperationError(code, message, status);
 }

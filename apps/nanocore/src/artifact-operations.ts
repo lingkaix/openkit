@@ -12,10 +12,11 @@ import {
   ListArtifactsResponseSchema,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
-import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
+  ArtifactReviewError,
   type ArtifactReviewMediaType,
   decideArtifactReview,
   deriveArtifactReviewFollowUpTurnId,
@@ -29,12 +30,20 @@ import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
-import { ArtifactAuthorityError, type CommandRequestRecord, type FsStore } from './lib/store.js';
-import type {
-  OperationImplementations,
-  OperationInvocationDependencies,
-} from './operation-invocation.js';
-import { commandInputHash, runIdempotentCommand } from './runtime/idempotent-command.js';
+import {
+  ArtifactAuthorityError,
+  type CommandRequestRecord,
+  type FsStore,
+  StoreRecordNotFoundError,
+} from './lib/store.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
+import type { OperationImplementations } from './operation-contract.js';
+import { OperationError } from './operation-error.js';
+import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
@@ -57,26 +66,30 @@ type ArtifactImplementations = Pick<
 
 /** Joins the existing Artifact, command and version-owned Review lifecycles without HTTP context. */
 export function createArtifactOperationImplementations(
-  dependencies: OperationInvocationDependencies
-): ArtifactImplementations {
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'store' | 'coreDb' | 'inflightCommands' | 'repositoryWorkspaceDb' | 'startModeWorkerTurn'
+  >
+) {
   const store = dependencies.store!;
   const coreDb = dependencies.coreDb;
   const inflightCommands = dependencies.inflightCommands!;
   const openWorkspaceDb = dependencies.repositoryWorkspaceDb!;
   const startModeWorkerTurn = dependencies.startModeWorkerTurn!;
-  /** Preserves the former commands' plain 500 when opening their receipt owner fails before the command fallback. */
+  /** Preserves the commands' safe storage-availability 500 when opening their receipt owner fails before the command fallback. */
   const openReceiptDb = (workspaceId: string): WorkspaceDb => {
     try {
       return openWorkspaceDb(workspaceId);
     } catch {
-      throw new HTTPException(500, { message: 'Internal Server Error' });
+      throw new OperationError('internal_error', 'Internal Server Error', 500);
     }
   };
   const administratorEligible = (
-    context: Parameters<ArtifactImplementations['artifact.read']>[2]
+    context: Parameters<ArtifactImplementations['artifact.read']>[1]
   ) => context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb!, context.actor);
   return {
-    'artifact.list': (input, actor, context) => {
+    'artifact.list': (input, context) => {
+      const actor = context.actorRef;
       try {
         return ListArtifactsResponseSchema.parse({
           items: listOutputArtifacts(
@@ -88,10 +101,11 @@ export function createArtifactOperationImplementations(
           ),
         });
       } catch (error) {
-        throw new ArtifactOperationError(publishedErrorMessage(error));
+        artifactOperationFailure(error);
       }
     },
-    'artifact.read': (input, actor, context) => {
+    'artifact.read': (input, context) => {
+      const actor = context.actorRef;
       assertArtifactWorkspaceLineage(
         responsibleUserIdForActor(actor)!,
         administratorEligible(context),
@@ -102,16 +116,17 @@ export function createArtifactOperationImplementations(
       try {
         return store.getArtifact(input.workspaceId, input.artifactId);
       } catch (error) {
-        throw new ArtifactOperationError(publishedErrorMessage(error));
+        artifactOperationFailure(error);
       }
     },
-    'artifact.import': async (input, actor) => {
+    'artifact.import': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId } = input;
       const actorId = responsibleUserIdForActor(actor)!;
       try {
         store.getWorkspace(workspaceId);
       } catch (error) {
-        throw new ArtifactOperationError(publishedErrorMessage(error));
+        artifactOperationFailure(error);
       }
       try {
         assertArtifactContentDigest(input.content, input.contentDigest);
@@ -193,13 +208,14 @@ export function createArtifactOperationImplementations(
         workspaceDb.sqlite.close();
       }
     },
-    'artifact.introduce': async (input, actor, context) => {
+    'artifact.introduce': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, threadId, artifactId } = input;
       const actorId = responsibleUserIdForActor(actor)!;
       try {
         store.getWorkspace(workspaceId);
       } catch (error) {
-        throw new ArtifactOperationError(publishedErrorMessage(error));
+        artifactOperationFailure(error);
       }
       const turnId = deterministicArtifactCommandId('tu_artifact', [
         actorId,
@@ -265,7 +281,8 @@ export function createArtifactOperationImplementations(
         workspaceDb.sqlite.close();
       }
     },
-    'artifact.review-list': (input, actor, context) => {
+    'artifact.review-list': (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, artifactId } = input;
       assertArtifactWorkspaceLineage(
         responsibleUserIdForActor(actor)!,
@@ -289,13 +306,14 @@ export function createArtifactOperationImplementations(
         workspaceDb?.sqlite.close();
       }
     },
-    'artifact.review.decide': async (input, actor, context) => {
+    'artifact.review.decide': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, artifactId, artifactVersion } = input;
       const actorId = responsibleUserIdForActor(actor)!;
       try {
         store.getWorkspace(workspaceId);
       } catch (error) {
-        throw new ArtifactOperationError(publishedErrorMessage(error));
+        artifactOperationFailure(error);
       }
       assertArtifactWorkspaceLineage(
         actorId,
@@ -551,7 +569,7 @@ export function createArtifactOperationImplementations(
         workspaceDb.sqlite.close();
       }
     },
-  };
+  } satisfies ArtifactImplementations;
 }
 
 /**
@@ -573,11 +591,19 @@ function assertArtifactWorkspaceLineage(
   let artifact: ReturnType<FsStore['getArtifact']>;
   try {
     artifact = store.getArtifact(workspaceId, artifactId);
-  } catch {
-    throw new HTTPException(404, { message: 'Artifact not found.' });
+  } catch (error) {
+    if (
+      !(
+        error instanceof StoreRecordNotFoundError ||
+        error instanceof SyntaxError ||
+        error instanceof z.ZodError
+      )
+    )
+      throw error;
+    throw new OperationError('not_found', 'Artifact not found.', 404);
   }
   if (!isArtifactVisible(store, artifact, userId, administratorEligible)) {
-    throw new HTTPException(404, { message: 'Artifact not found.' });
+    throw new OperationError('not_found', 'Artifact not found.', 404);
   }
 }
 
@@ -971,35 +997,21 @@ function recoveryRequired(message: string): ArtifactAuthorityError {
   return new ArtifactAuthorityError('recovery_required', message);
 }
 
-/** Domain-owned Artifact failure; projections retain the owner code, message and status. */
-export class ArtifactOperationError extends Error {
-  public constructor(
-    message: string,
-    public readonly code = 'not_found',
-    public readonly status = 404
-  ) {
-    super(message);
-    this.name = 'ArtifactOperationError';
-  }
-}
-
 /** Preserves the Artifact authority and command owners' exact refusal classes and fallback. */
 function artifactOperationFailure(error: unknown): never {
-  if (error instanceof HTTPException || error instanceof ArtifactOperationError) throw error;
-  const candidate = error as { readonly code?: unknown; readonly message?: unknown };
-  const message =
-    typeof candidate.message === 'string' ? candidate.message : 'Artifact request failed.';
-  if (candidate.code === 'invalid_request' || candidate.code === 'source_digest_mismatch')
-    throw new ArtifactOperationError(message, candidate.code, 400);
+  if (error instanceof OperationError) throw error;
   if (
-    candidate.code === 'conflict' ||
-    candidate.code === 'idempotency_key_conflict' ||
-    candidate.code === 'recovery_required' ||
-    candidate.code === 'stale' ||
-    candidate.code === 'thread_busy'
+    error instanceof ArtifactAuthorityError ||
+    error instanceof ArtifactReviewError ||
+    error instanceof IdempotencyKeyConflictError ||
+    error instanceof TurnStartValidationError
   )
-    throw new ArtifactOperationError(message, candidate.code, 409);
-  if (error instanceof TurnStartValidationError)
-    throw new ArtifactOperationError(error.message, error.code, error.status);
-  throw new ArtifactOperationError(publishedErrorMessage(error), 'artifact_request_failed', 500);
+    throw new OperationError(error.code, error.message, error.status, { cause: error });
+  if (
+    error instanceof StoreRecordNotFoundError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError
+  )
+    throw new OperationError('not_found', publishedErrorMessage(error), 404, { cause: error });
+  throw error;
 }

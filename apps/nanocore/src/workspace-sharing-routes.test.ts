@@ -677,7 +677,7 @@ describe('Workspace sharing routes', () => {
   });
 });
 
-it('keeps sharing request parse detail at its excluded validation publisher', async () => {
+it('keeps safe sharing request field detail in the common validation projection', async () => {
   const fixture = createFixture();
   const response = await fixture.app.request(
     ...operationRequest(
@@ -697,6 +697,7 @@ it('keeps sharing request parse detail at its excluded validation publisher', as
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({
     code: 'invalid_request',
-    message: expect.stringContaining('inviteeEmail'),
+    message: 'Invalid operation input.',
+    details: { fields: ['inviteeEmail'] },
   });
 });

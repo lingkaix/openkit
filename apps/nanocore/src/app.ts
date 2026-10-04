@@ -97,7 +97,7 @@ import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-
 import { registerMaterialRoutes } from './material-routes.js';
 import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
-import type { OperationInvocationDependencies } from './operation-invocation.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {

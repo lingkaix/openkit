@@ -4,6 +4,8 @@ import {
   WorkspaceReconciliationRecordSchema,
   type WorkspaceRecoveryDecision,
 } from '@openkit/app-api-schemas';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 
 interface WorkspaceReconciliationRecordRow {
@@ -93,6 +95,7 @@ export function listWorkspaceReconciliationRecords(
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Recovery decision input.
  * @returns Updated reconciliation record.
+ * @throws StoreRecordNotFoundError for a missing record or OperationError for a known decision refusal.
  */
 export function resolveWorkspaceReconciliationRecord(
   input: {
@@ -113,11 +116,15 @@ export function resolveWorkspaceReconciliationRecord(
   );
 
   if (!record) {
-    throw new Error(`Workspace reconciliation record not found: ${input.reconciliationRecordId}`);
+    throw new StoreRecordNotFoundError(
+      `Workspace reconciliation record not found: ${input.reconciliationRecordId}`
+    );
   }
   if (record.stateAfter !== 'requires-human') {
-    throw new Error(
-      `Workspace reconciliation record is already terminal: ${input.reconciliationRecordId}`
+    throw new OperationError(
+      'workspace_recovery_decision_failed',
+      `Workspace reconciliation record is already terminal: ${input.reconciliationRecordId}`,
+      404
     );
   }
 
@@ -174,8 +181,10 @@ function resolveResumeCollection(input: {
   ]);
 
   if (matchingOutputManifestIds.length === 0) {
-    throw new Error(
-      `Workspace recovery collection has no durable output manifest: ${input.record.id}`
+    throw new OperationError(
+      'workspace_recovery_decision_failed',
+      `Workspace recovery collection has no durable output manifest: ${input.record.id}`,
+      404
     );
   }
 

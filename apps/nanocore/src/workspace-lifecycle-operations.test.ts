@@ -18,7 +18,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
-import { createOperationInvocation } from './operation-invocation.js';
+import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';

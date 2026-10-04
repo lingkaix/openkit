@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { OperationDefinition } from './operation-contract.js';
 import {
   DataRootBackupCreateResponseSchema,
   DataRootBackupVerifyRequestSchema,
@@ -9,6 +10,9 @@ import {
 /** Release-authored data root admin contracts; execution and current administrator authority stay in NanoCore. */
 export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
   'backup.create': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description:
       'Create a hot data-root backup with server-managed local handles and declared coverage.',
     inputSchema: z.object({}).strict(),
@@ -20,6 +24,9 @@ export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'backup.verify': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Verify a server-managed data-root backup and its exact inventory.',
     inputSchema: DataRootBackupVerifyRequestSchema.strict(),
     outputSchema: DataRootBackupVerifyResponseSchema,
@@ -30,6 +37,9 @@ export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'storage.layout-report': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Read the deployment storage layout report.',
     inputSchema: z.object({}).strict(),
     outputSchema: StorageLayoutReportResponseSchema,
@@ -39,4 +49,4 @@ export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
     policyOperation: 'api.call',
     mutating: false,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

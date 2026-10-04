@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
-import { createOperationInvocation } from './operation-invocation.js';
+import { createTaskKnowledgePreparation } from './knowledge-operations.js';
+import { createOperationInvocation } from './operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -534,8 +535,7 @@ describe('Knowledge operation definition cutover', () => {
       });
       expect(retrieve).toHaveBeenCalledTimes(1);
       const traceId = `krt_${randomUUID()}`;
-      const taskResult = await invoke('knowledge.context.prepare', input, {
-        kind: 'task',
+      const taskResult = await createTaskKnowledgePreparation(f.dependencies)(input, {
         actor: { kind: 'local', userId: 'user_local' },
         traceId,
       });
@@ -573,8 +573,7 @@ describe('Knowledge operation definition cutover', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       await expect(
-        invoke('knowledge.context.prepare', input, {
-          kind: 'task',
+        createTaskKnowledgePreparation(f.dependencies)(input, {
           actor: {
             kind: 'token',
             userId: 'user_local',
@@ -611,4 +610,91 @@ describe('Knowledge operation definition cutover', () => {
       f.close();
     }
   });
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('preserves invalid source lineage refusal through %s without changes', async (projection) => {
+  const f = fixture();
+  try {
+    const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const app = createApp({
+      mode: 'server',
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+    });
+    const headers = {
+      'content-type': 'application/json',
+      authorization: `Bearer ${issued.secret}`,
+    };
+    const input = {
+      workspaceId: 'ws_demo',
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Invalid lineage',
+      content: 'Example',
+      originatingTurnId: 'tu_missing',
+    };
+    const owner = vi.spyOn(f.store, 'createKnowledgeSource');
+    const before = structuredClone({
+      sources: f.store.listKnowledgeSources('ws_demo'),
+      receipts: f.store.listCommandRequests(),
+    });
+    const response = await app.request(
+      projection === 'HTTP' ? '/api/app/operations/knowledge.source.register' : '/mcp',
+      {
+        method: 'POST',
+        headers: {
+          ...headers,
+          ...(projection === 'HTTP'
+            ? { 'x-openkit-request-id': input.requestId }
+            : { accept: 'application/json, text/event-stream' }),
+        },
+        body: JSON.stringify(
+          projection === 'HTTP'
+            ? input
+            : {
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'tools/call',
+                params: {
+                  name: 'call',
+                  arguments: { operation: 'knowledge.source.register', input },
+                },
+              }
+        ),
+      }
+    );
+    expect({
+      sources: f.store.listKnowledgeSources('ws_demo'),
+      receipts: f.store.listCommandRequests(),
+    }).toEqual(before);
+    expect(owner).toHaveBeenCalledTimes(1);
+    expect(owner.mock.calls[0]![0]).toMatchObject({
+      originatingTurnId: 'tu_missing',
+      originatingThreadId: null,
+    });
+    const code = 'knowledge_source_register_failed';
+    const message = `Knowledge source turn requires a thread: ${owner.mock.calls[0]![0].id}`;
+    if (projection === 'HTTP') {
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    } else {
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.isError).toBe(true);
+      expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
+    }
+  } finally {
+    vi.restoreAllMocks();
+    f.close();
+  }
 });

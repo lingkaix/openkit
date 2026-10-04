@@ -4,7 +4,8 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import type { CoreMode } from '../config/mode.js';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
-import { createOperationInvocation, OperationInvocationError } from '../operation-invocation.js';
+import { createOperationInvocation } from '../operation-composition.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 
 /** Trusted dependencies for the configured RuntimeTarget read. */
@@ -45,7 +46,7 @@ export function createAdministrationNanoHostRuntimeTargetTool(
           },
         };
       } catch (error) {
-        if (!(error instanceof OperationInvocationError)) throw error;
+        if (!(error instanceof OperationError)) throw error;
         const code =
           error.code === 'invalid_request' || error.code === 'bound_input_conflict'
             ? 'nanohost_runtime_target_scope_rejected'

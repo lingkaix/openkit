@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
@@ -2467,4 +2468,48 @@ describe('scheduler records', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+it.each([
+  'null',
+  '{"kind":"selected"}',
+])('classifies invalid retained scheduler storage choice %s without writes', (choice) => {
+  const coreDb = createMigratedCoreDb();
+  try {
+    createSchedulerAdmissionEntry(coreDb, {
+      triggerActor: { kind: 'user', id: 'user_local' },
+      queueEntryId: 'queue_bad_choice',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_demo',
+      turnInput: 'Inspect retained scheduler decoding.',
+      requestedAgentId: 'agent_codex_host',
+      profileRef: 'agent_codex_host',
+      priorityClass: 'interactive',
+      requiredPoolConstraints: [],
+    });
+    coreDb.sqlite
+      .prepare(
+        'UPDATE scheduler_admission_entries SET worker_storage_choice_json = ? WHERE queue_entry_id = ?'
+      )
+      .run(choice, 'queue_bad_choice');
+    const observed = () =>
+      coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_admission_entries ORDER BY queue_entry_id')
+        .all();
+    const before = observed();
+    let failure: unknown;
+    try {
+      listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_demo',
+        statuses: ['queued'],
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(observed()).toEqual(before);
+    expect(failure).toBeInstanceOf(z.ZodError);
+  } finally {
+    coreDb.sqlite.close();
+  }
 });

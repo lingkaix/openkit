@@ -9,7 +9,6 @@ export * from './automation.js';
 export { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
 export * from './capability-usage.js';
 export * from './chat-mode.js';
-export * from './core-commands.js';
 export * from './dashboard.js';
 export * from './data-root-admin-operations.js';
 export * from './diagnostics.js';

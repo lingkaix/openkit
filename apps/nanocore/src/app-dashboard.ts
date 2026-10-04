@@ -24,9 +24,10 @@ import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import { projectThreadTaskInputs } from './context/worker-context-projection.js';
-import { CoreCommandError } from './core-command-errors.js';
 import type { FsStore } from './lib/store.js';
+import { StoreRecordNotFoundError } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
+import { OperationError } from './operation-error.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { listThreadPendingRequests, validateCanonicalLoad } from './runtime/pending-requests.js';
@@ -536,7 +537,9 @@ export function readWorkspaceDashboard(input: {
       attentionNeeded: workSections.attentionNeeded,
     });
   } catch (error) {
-    throw new CoreCommandError('not_found', publishedErrorMessage(error), 404);
+    if (error instanceof StoreRecordNotFoundError)
+      throw new OperationError('not_found', error.message, 404, { cause: error });
+    throw error;
   }
 }
 

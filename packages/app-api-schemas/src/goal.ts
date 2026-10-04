@@ -1,5 +1,6 @@
 import { RequestIdSchema, ThreadIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import type { OperationDefinition } from './operation-contract.js';
 
 /** Shared Goal identities and compare-and-set revisions. */
 const id = z.string().min(1).max(160);
@@ -150,6 +151,9 @@ const write = {
 /** Sole declarative contract for the ten Goal operations; all executable behavior stays with NanoCore. */
 export const GOAL_OPERATION_DEFINITIONS = {
   'goal.create': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     credentials: publicCredentials.filter((credential) => credential !== 'coordinator'),
     description: 'Create one continuous Goal and its Coordinator Thread; authorize no worker.',
@@ -164,11 +168,17 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.intent.revise': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description: 'Revise current intent, preserving its history and approved commitment.',
     inputSchema: z.object({ ...command, expectedRevision: revision, intent: text }).strict(),
   },
   'goal.card.create': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description: 'Create a desired contribution without starting work.',
     inputSchema: z
@@ -176,6 +186,9 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.card.edit': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description: 'Edit a card at its current revision without rewriting admitted Task input.',
     inputSchema: z
@@ -189,6 +202,9 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.card.cancel': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description: 'Cancel a card and ask its linked Task owner to interrupt running work.',
     inputSchema: z
@@ -196,6 +212,9 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.plan.propose': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description: 'Propose exact immutable Plan bytes and raise their Pending Request.',
     inputSchema: z
@@ -203,6 +222,9 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.plan.approve': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description:
       'Resolve the exact Plan Pending Request; activate only when its owner consumes the grant.',
@@ -211,12 +233,18 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.cancel': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     credentials: publicCredentials.filter((credential) => credential !== 'coordinator'),
     description: 'Cancel a Goal and invalidate all its open Plan and completion requests.',
     inputSchema: z.object({ ...command, expectedRevision: revision, reason: text }).strict(),
   },
   'goal.completion.accept': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...write,
     description:
       'Capture a Coordinator completion candidate, or resolve its exact human acceptance request.',
@@ -230,6 +258,9 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     credentials: publicCredentials,
     scope,
     target,
@@ -239,7 +270,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
     inputSchema: z.object({ ...scoped, goalId: id.optional() }).strict(),
     outputSchema: GoalViewSchema,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;
 /** Types are inferred from the browser-safe owning shapes. */
 export type GoalRecord = z.infer<typeof GoalRecordSchema>;
 export type GoalCard = z.infer<typeof GoalCardSchema>;

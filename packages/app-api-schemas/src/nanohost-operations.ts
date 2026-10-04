@@ -12,10 +12,13 @@ import {
   RotateNanoHostTransportTokenRequestSchema,
   RotateNanoHostTransportTokenResponseSchema,
 } from './nanohost.js';
+import type { OperationDefinition } from './operation-contract.js';
 
 /** Release-authored nanohost contracts; execution and current administrator authority stay in NanoCore. */
 export const NANOHOST_OPERATION_DEFINITIONS = {
   'nanohost.enroll': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
     description: 'Enroll the configured NanoHost through an exclusive named-slot credential write.',
     inputSchema: EnrollNanoHostRequestSchema.strict(),
     outputSchema: EnrollNanoHostResponseSchema,
@@ -27,6 +30,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'nanohost.runtime-target': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description:
       "Read the configured NanoHost execution-host RuntimeTarget readiness. NanoHost is not an LLM Provider. Input must be an empty object; this Tool cannot select a host, deployment, or scope. The result is Core's stored projection at observedAt, not a live host probe.",
     inputSchema: z.object({}).strict(),
@@ -38,6 +44,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'nanohost.token-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List redacted NanoHost transport Token records.',
     inputSchema: z.object({}).strict(),
     outputSchema: ListNanoHostTransportTokensResponseSchema,
@@ -48,6 +57,8 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'nanohost.token-issue': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
     description: 'Issue a NanoHost transport Token through a proved configured-slot write.',
     inputSchema: IssueNanoHostTransportTokenRequestSchema.strict(),
     outputSchema: IssueNanoHostTransportTokenResponseSchema,
@@ -59,6 +70,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'nanohost.token-revoke': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Revoke a NanoHost transport Token and fence its authority.',
     inputSchema: z.object({ tokenId: z.string().min(1) }).strict(),
     outputSchema: RevokeNanoHostTransportTokenResponseSchema,
@@ -69,6 +83,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.token-rotate': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Rotate a NanoHost transport Token into the opposite configured slot.',
     inputSchema: RotateNanoHostTransportTokenRequestSchema.extend({
       tokenId: z.string().min(1),
@@ -81,6 +98,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.token-rotation-abort': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Abort a NanoHost transport Token rotation and clear the successor slot.',
     inputSchema: z.object({ tokenId: z.string().min(1) }).strict(),
     outputSchema: AbortNanoHostTransportRotationResponseSchema,
@@ -91,6 +111,9 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.decommission': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Decommission the configured NanoHost identity and clear both credential slots.',
     inputSchema: z.object({}).strict(),
     outputSchema: DecommissionNanoHostResponseSchema,
@@ -100,4 +123,4 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     policyOperation: 'api.call',
     mutating: true,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

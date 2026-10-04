@@ -22,8 +22,11 @@ import {
   workspaceSyncReviewPatchBytes,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordMaterializationRuntimeEvidence } from './runtime-evidence.js';
 import {
@@ -112,7 +115,7 @@ interface RecordWorkspaceMaterializationRecordOptions {
  * @param item Candidate joined review item.
  * @param pendingOnly Whether the caller accepts only newly staged pending reviews.
  * @returns Parsed review item with verified lineage and patch bytes.
- * @throws Error when status, lineage, or patch integrity is invalid.
+ * @throws ZodError when retained status, lineage, or patch integrity is invalid.
  */
 export function parseWorkspaceSyncReviewItem(
   item: WorkspaceSyncReviewItem,
@@ -121,13 +124,31 @@ export function parseWorkspaceSyncReviewItem(
   const parsed = WorkspaceSyncReviewItemSchema.parse(item);
   const { changeSet, patchPayload, review } = parsed;
   if (pendingOnly && review.status !== 'pending') {
-    throw new Error(`Workspace synchronization review is not pending: ${review.id}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Workspace synchronization review is not pending: ${review.id}`,
+        path: [],
+      },
+    ]);
   }
   if (review.workspaceId !== changeSet.workspaceId || review.changeSetId !== changeSet.id) {
-    throw new Error(`Workspace synchronization review lineage mismatch: ${review.id}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Workspace synchronization review lineage mismatch: ${review.id}`,
+        path: [],
+      },
+    ]);
   }
   if (Boolean(changeSet.patch) !== Boolean(patchPayload)) {
-    throw new Error(`Workspace synchronization review patch conflict: ${review.id}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Workspace synchronization review patch conflict: ${review.id}`,
+        path: [],
+      },
+    ]);
   }
   if (changeSet.patch && patchPayload) {
     const raw = workspaceSyncReviewPatchBytes(patchPayload);
@@ -139,7 +160,13 @@ export function parseWorkspaceSyncReviewItem(
       patchPayload.digest !== digest ||
       patchPayload.bytes !== bytes
     ) {
-      throw new Error(`Workspace synchronization review patch integrity conflict: ${review.id}`);
+      throw new z.ZodError([
+        {
+          code: 'custom',
+          message: `Workspace synchronization review patch integrity conflict: ${review.id}`,
+          path: [],
+        },
+      ]);
     }
   }
   return parsed;
@@ -420,7 +447,7 @@ export function getWorkspaceSyncReview(
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Review decision persistence input.
  * @returns Updated public workspace review item.
- * @throws Error when the review does not exist or is no longer pending.
+ * @throws StoreRecordNotFoundError for a missing review or OperationError for a terminal review.
  */
 export function updateWorkspaceSyncReviewDecision(
   workspaceDb: WorkspaceDb,
@@ -429,7 +456,11 @@ export function updateWorkspaceSyncReviewDecision(
   const item = requireWorkspaceSyncReview(workspaceDb, input.workspaceId, input.reviewId);
 
   if (item.review.status !== 'pending') {
-    throw new Error(`Workspace synchronization review is already resolved: ${input.reviewId}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      `Workspace synchronization review is already resolved: ${input.reviewId}`,
+      404
+    );
   }
 
   const review = StagedWorkspaceReviewSchema.parse({
@@ -1376,7 +1407,9 @@ function requireWorkspaceSyncReview(
   const item = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
 
   if (!item) {
-    throw new Error(`Workspace synchronization review not found: ${workspaceId}/${reviewId}`);
+    throw new StoreRecordNotFoundError(
+      `Workspace synchronization review not found: ${workspaceId}/${reviewId}`
+    );
   }
 
   return item;
@@ -1439,7 +1472,9 @@ function requireWorkspaceChangeSet(
     .get(workspaceId, changeSetId) as WorkspaceChangeSetRow | undefined;
 
   if (!row) {
-    throw new Error(`Workspace change set not found: ${workspaceId}/${changeSetId}`);
+    throw new StoreRecordNotFoundError(
+      `Workspace change set not found: ${workspaceId}/${changeSetId}`
+    );
   }
 
   return WorkspaceChangeSetSchema.parse(JSON.parse(row.payload_json) as unknown);

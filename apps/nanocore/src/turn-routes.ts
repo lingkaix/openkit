@@ -10,7 +10,6 @@ import type { z } from 'zod';
 import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
-import { throwCoreCommandError } from './core-command-errors.js';
 import type { FsStore } from './lib/store.js';
 import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
@@ -123,125 +122,121 @@ export async function startTurn(
     turnExecutor,
     workerPlacement,
   } = dependencies;
-  try {
-    if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
-      throw new TurnStartValidationError(
-        'workspace_kind_not_supported',
-        'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
-      );
-    }
-    store.getThread(input.workspaceId, input.threadId);
-    const turn = await runIdempotentCommand({
-      store,
-      inflightCommands,
-      command: 'turn.start',
-      requestId: input.requestId,
-      scope: { workspaceId: input.workspaceId, threadId: input.threadId },
-      input,
-      responseKind: 'turn',
-      execute: async () => {
-        const threadBusy = store
-          .listThreadTurns(input.workspaceId, input.threadId)
-          .some((turn) => !isSealedTurnTerminal(turn.status));
-        if (threadBusy) {
-          throw new TurnStartValidationError(
-            'thread_busy',
-            'Thread already has an active worker turn.',
-            409
-          );
-        }
-
-        const closeouts = coreDb
-          ? (activeTurnCloseouts.get(coreDb) ?? new Map<string, Promise<void>>())
-          : new Map<string, Promise<void>>();
-        if (coreDb) activeTurnCloseouts.set(coreDb, closeouts);
-        let admittedTurnId: string | undefined;
-        const observed = observeTurnAdmission({
-          execute: (admit) =>
-            startProductTurn({
-              input,
-              requestActor: actor,
-              providerCredentialResolver,
-              schedulerEpoch,
-              snapshot: runtimeConfig(),
-              store,
-              triggerActor: { kind: 'user', id: actor.userId },
-              turnExecutor,
-              workerPlacement,
-              ...(coreDb ? { coreDb } : {}),
-              onTurnCreated: (created) => {
-                validateCoreTurnAdmission(coreDb, store, input, actor.userId, created.id);
-                admittedTurnId = created.id;
-                closeouts.set(created.id, observed.closeout);
-                admit(created);
-              },
-            }),
-          closeout: (handle) => completeSchedulerLeaseForTerminalTurn(coreDb, handle.turn),
-          settled: () => {
-            if (admittedTurnId) closeouts.delete(admittedTurnId);
-          },
-          failed: () => console.error('turn_worker_closeout_failed_after_admission'),
-        });
-        const admitted = await observed.accepted;
-        // Terminal publication can precede cleanup; only replay joins that closeout.
-        return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, admitted.id));
-      },
-      replay: async (record) => {
-        try {
-          // The receipt kind and exact owner must agree before either replay branch is selected.
-          if (record.response.kind !== 'turn') throw new Error('Turn receipt kind contradiction.');
-          const current = TurnSchema.parse(
-            store.getTurn(input.workspaceId, input.threadId, record.response.id)
-          );
-          if (current.status === 'pending' || current.status === 'running') {
-            validateCoreTurnAdmission(coreDb, store, input, current.triggerActor.id, current.id);
-          } else {
-            const closeout = coreDb ? activeTurnCloseouts.get(coreDb)?.get(current.id) : undefined;
-            if (closeout) {
-              try {
-                await closeout;
-              } catch {
-                // A durable failed Turn remains readable; a successful Turn cannot hide failed closeout.
-                if (current.status !== 'failed')
-                  throw new TurnStartValidationError(
-                    'recovery_required',
-                    'The original Turn worker closeout failed.',
-                    409
-                  );
-              }
-            }
-            if (
-              coreDb &&
-              current.status === 'completed' &&
-              listSchedulerSessionLeasesForTurn(coreDb, {
-                workspaceId: input.workspaceId,
-                threadId: input.threadId,
-                turnId: current.id,
-              }).some((lease) => lease.status !== 'released')
-            )
-              throw new TurnStartValidationError(
-                'recovery_required',
-                'The terminal Turn lease requires recovery.',
-                409
-              );
-          }
-          return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, current.id));
-        } catch (error) {
-          if (error instanceof TurnStartValidationError) throw error;
-          throw new TurnStartValidationError(
-            'recovery_required',
-            'The original Turn receipt owner is missing or contradictory.',
-            409
-          );
-        }
-      },
-      responseId: (result) => result.id,
-    });
-
-    return projectOrdinaryTurn(turn);
-  } catch (error) {
-    throwCoreCommandError(error, 'turn_start_failed');
+  if (store.getWorkspace(input.workspaceId).kind === 'quick-chat') {
+    throw new TurnStartValidationError(
+      'workspace_kind_not_supported',
+      'Quick Chat workspace cannot start worker turns. Create or select a project workspace.'
+    );
   }
+  store.getThread(input.workspaceId, input.threadId);
+  const turn = await runIdempotentCommand({
+    store,
+    inflightCommands,
+    command: 'turn.start',
+    requestId: input.requestId,
+    scope: { workspaceId: input.workspaceId, threadId: input.threadId },
+    input,
+    responseKind: 'turn',
+    execute: async () => {
+      const threadBusy = store
+        .listThreadTurns(input.workspaceId, input.threadId)
+        .some((turn) => !isSealedTurnTerminal(turn.status));
+      if (threadBusy) {
+        throw new TurnStartValidationError(
+          'thread_busy',
+          'Thread already has an active worker turn.',
+          409
+        );
+      }
+
+      const closeouts = coreDb
+        ? (activeTurnCloseouts.get(coreDb) ?? new Map<string, Promise<void>>())
+        : new Map<string, Promise<void>>();
+      if (coreDb) activeTurnCloseouts.set(coreDb, closeouts);
+      let admittedTurnId: string | undefined;
+      const observed = observeTurnAdmission({
+        execute: (admit) =>
+          startProductTurn({
+            input,
+            requestActor: actor,
+            providerCredentialResolver,
+            schedulerEpoch,
+            snapshot: runtimeConfig(),
+            store,
+            triggerActor: { kind: 'user', id: actor.userId },
+            turnExecutor,
+            workerPlacement,
+            ...(coreDb ? { coreDb } : {}),
+            onTurnCreated: (created) => {
+              validateCoreTurnAdmission(coreDb, store, input, actor.userId, created.id);
+              admittedTurnId = created.id;
+              closeouts.set(created.id, observed.closeout);
+              admit(created);
+            },
+          }),
+        closeout: (handle) => completeSchedulerLeaseForTerminalTurn(coreDb, handle.turn),
+        settled: () => {
+          if (admittedTurnId) closeouts.delete(admittedTurnId);
+        },
+        failed: () => console.error('turn_worker_closeout_failed_after_admission'),
+      });
+      const admitted = await observed.accepted;
+      // Terminal publication can precede cleanup; only replay joins that closeout.
+      return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, admitted.id));
+    },
+    replay: async (record) => {
+      try {
+        // The receipt kind and exact owner must agree before either replay branch is selected.
+        if (record.response.kind !== 'turn') throw new Error('Turn receipt kind contradiction.');
+        const current = TurnSchema.parse(
+          store.getTurn(input.workspaceId, input.threadId, record.response.id)
+        );
+        if (current.status === 'pending' || current.status === 'running') {
+          validateCoreTurnAdmission(coreDb, store, input, current.triggerActor.id, current.id);
+        } else {
+          const closeout = coreDb ? activeTurnCloseouts.get(coreDb)?.get(current.id) : undefined;
+          if (closeout) {
+            try {
+              await closeout;
+            } catch {
+              // A durable failed Turn remains readable; a successful Turn cannot hide failed closeout.
+              if (current.status !== 'failed')
+                throw new TurnStartValidationError(
+                  'recovery_required',
+                  'The original Turn worker closeout failed.',
+                  409
+                );
+            }
+          }
+          if (
+            coreDb &&
+            current.status === 'completed' &&
+            listSchedulerSessionLeasesForTurn(coreDb, {
+              workspaceId: input.workspaceId,
+              threadId: input.threadId,
+              turnId: current.id,
+            }).some((lease) => lease.status !== 'released')
+          )
+            throw new TurnStartValidationError(
+              'recovery_required',
+              'The terminal Turn lease requires recovery.',
+              409
+            );
+        }
+        return TurnSchema.parse(store.getTurn(input.workspaceId, input.threadId, current.id));
+      } catch (error) {
+        if (error instanceof TurnStartValidationError) throw error;
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The original Turn receipt owner is missing or contradictory.',
+          409
+        );
+      }
+    },
+    responseId: (result) => result.id,
+  });
+
+  return projectOrdinaryTurn(turn);
 }
 
 /** Interrupts one exact Turn through its existing command receipt and scheduler lease owner. */

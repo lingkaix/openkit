@@ -7,6 +7,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { TurnSchema } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 
 type Turn = import('zod').infer<typeof TurnSchema>;
 
@@ -25,7 +26,7 @@ export function feedbackFilePath(store: FsStore, turn: Turn): string {
   const dataRoot = store.getDataRoot();
 
   if (!dataRoot) {
-    throw new Error('Turn feedback requires a file-backed data root.');
+    throw new OperationError('not_found', 'Turn feedback requires a file-backed data root.', 404);
   }
 
   return join(
@@ -106,7 +107,7 @@ export function updateTurnFeedback(
       : ensureTurnFeedback(store, turn, turn.agentId ?? null);
 
   if (!existing) {
-    throw new Error('Turn feedback requires a file-backed data root.');
+    throw new OperationError('not_found', 'Turn feedback requires a file-backed data root.', 404);
   }
 
   const updated: TurnFeedbackResponse = {

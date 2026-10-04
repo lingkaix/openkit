@@ -1153,7 +1153,7 @@ describe('nanocore server', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns protocol JSON when workspace listing fails', async () => {
+  it('delegates an unclassified workspace listing failure to the safe HTTP error handler', async () => {
     const broken = new BrokenWorkspaceListStore();
     const canonicalApp = createApp(
       {
@@ -1170,11 +1170,7 @@ describe('nanocore server', () => {
     });
 
     expect(res.status).toBe(500);
-    expect(res.headers.get('content-type')).toContain('application/json');
-    await expect(res.json()).resolves.toMatchObject({
-      code: 'workspace_sharing_failed',
-      message: 'Workspace storage failed.',
-    });
+    expect(await res.text()).toBe('Internal Server Error');
   });
 
   it('rejects product work when boot readiness closes product admission', async () => {
@@ -8015,10 +8011,10 @@ describe('nanocore server', () => {
       const response = await responsePromise;
 
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({
-        code: 'invalid_request',
-        message: expect.stringContaining('requestId'),
-      });
+      const body = await response.json();
+      expect(body.code).toBe('invalid_request');
+      expect(body.message).toBe('Invalid operation input.');
+      expect(body.details.fields).toContain('requestId');
     }
   });
 
@@ -8067,7 +8063,8 @@ describe('nanocore server', () => {
     expect(missingRequestId.status).toBe(400);
     await expect(missingRequestId.json()).resolves.toMatchObject({
       code: 'invalid_request',
-      message: expect.stringContaining('requestId'),
+      message: 'Invalid operation input.',
+      details: { fields: ['requestId'] },
     });
     expect(ThreadSchema.parse(await updateRes.json())).toMatchObject({
       name: 'Protocol hardening',
@@ -10618,7 +10615,8 @@ describe('nanocore server', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
       code: 'invalid_request',
-      message: expect.stringContaining('requestId'),
+      message: 'Invalid operation input.',
+      details: { fields: ['requestId'] },
     });
   });
 

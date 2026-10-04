@@ -8,8 +8,8 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
+import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import type { FsStore } from '../lib/store.js';
-import { createOperationInvocation } from '../operation-invocation.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { goalActor, readGoalView } from './goal-owner.js';
@@ -129,16 +129,14 @@ export function createCoordinatorTaskTool(options: {
               requestInputHash: commandInputHash({ input: prompt }),
               reviewRequired: false,
               prepare: async () => {
-                const knowledgeSelectionInput = await createOperationInvocation({
+                const knowledgeSelectionInput = await createTaskKnowledgePreparation({
                   coreDb: options.coreDb,
                   store: options.store,
                   repositoryWorkspaceDb: options.openWorkspace,
-                  inflightCommands: options.inflightCommands,
                   workspaceMutationAdmission: options.workspaceMutationAdmission,
                 })(
-                  'knowledge.context.prepare',
                   { workspaceId: goal.workspaceId, query: input.request.objective },
-                  { kind: 'task', actor, traceId: `krt_${requestId}` }
+                  { actor, traceId: `krt_${requestId}` }
                 );
                 return {
                   delegationRequest: input.request,

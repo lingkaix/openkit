@@ -1,3 +1,6 @@
+/** Native record absence, distinguished from unexpected storage failures. */
+export class AutomationRecordNotFoundError extends Error {}
+
 import { randomUUID } from 'node:crypto';
 
 import type {
@@ -62,7 +65,7 @@ export class AutomationStore {
     const automation = this.automationsByUserId.get(userId)?.get(automationId);
 
     if (!automation) {
-      throw new Error(`Automation not found: ${automationId}`);
+      throw new AutomationRecordNotFoundError(`Automation not found: ${automationId}`);
     }
 
     return automation;
@@ -127,7 +130,7 @@ export class AutomationStore {
     const automations = this.automationsByUserId.get(userId);
 
     if (!automations?.delete(automationId)) {
-      throw new Error(`Automation not found: ${automationId}`);
+      throw new AutomationRecordNotFoundError(`Automation not found: ${automationId}`);
     }
 
     if (automations.size === 0) {

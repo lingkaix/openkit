@@ -49,6 +49,7 @@ import {
   type WorkerCoordinatorCandidate,
   type WorkerCoordinatorDecision,
 } from './internal-agents/worker-coordinator.js';
+import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import {
   type CommandRequestRecord,
   type ConversationCommandReceiptMetadata,
@@ -69,7 +70,7 @@ import {
 } from './llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { createOperationInvocation } from './operation-invocation.js';
+import { createOperationInvocation } from './operation-composition.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import {
@@ -2903,17 +2904,14 @@ export function createConversationService({
                 }
                 let knowledgeSelectionInput: { readonly retrievalTraceId: string };
                 try {
-                  knowledgeSelectionInput = await createOperationInvocation({
+                  knowledgeSelectionInput = await createTaskKnowledgePreparation({
                     coreDb,
                     store,
-                    inflightCommands,
                     repositoryWorkspaceDb,
                     workspaceMutationAdmission,
                   })(
-                    'knowledge.context.prepare',
                     { workspaceId, query: chatInput.input },
                     {
-                      kind: 'task',
                       actor: actor,
                       traceId: directTaskKnowledgeRetrievalTraceId(
                         actorId,
@@ -4175,17 +4173,14 @@ export function createTaskStartOperation({
 
               let knowledgeSelectionInput: { readonly retrievalTraceId: string };
               try {
-                knowledgeSelectionInput = await createOperationInvocation({
+                knowledgeSelectionInput = await createTaskKnowledgePreparation({
                   coreDb,
                   store,
-                  inflightCommands,
                   repositoryWorkspaceDb,
                   workspaceMutationAdmission,
                 })(
-                  'knowledge.context.prepare',
                   { workspaceId, query: taskInput.input },
                   {
-                    kind: 'task',
                     actor: actor,
                     traceId: directTaskKnowledgeRetrievalTraceId(
                       actorId,

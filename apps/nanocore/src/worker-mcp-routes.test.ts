@@ -286,8 +286,16 @@ describe('worker MCP routes', () => {
           data: { code: 'not_found' },
         });
         expect(rpcErrors.slice(errorsBefore)).toEqual([
-          { code: -32600, message: 'App authority is missing.', data: { code: 'unavailable' } },
-          { code: -32600, message: 'Presentation was not found.', data: { code: 'not_found' } },
+          {
+            code: -32600,
+            message: 'App authority is missing.',
+            data: { code: 'unavailable', message: 'App authority is missing.', status: 503 },
+          },
+          {
+            code: -32600,
+            message: 'Presentation was not found.',
+            data: { code: 'not_found', message: 'Presentation was not found.', status: 404 },
+          },
         ]);
         expect(
           refusalDb.sqlite

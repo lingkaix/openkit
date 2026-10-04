@@ -99,7 +99,7 @@ After successful verification, the Token's last-used summary records the channel
 
 An admitted request invokes the operation through [Operation Definition](20261002-operation_definition.md), with the actor above.
 
-Remote MCP is a model-facing delivery channel and applies the restricted-Material preflight owned by [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#public-material-read-models) before content invocation; authenticating as the Token's human owner does not convert the delivery into a human-facing App API read.
+Remote MCP is a model-facing delivery channel and applies the restricted-Material preflight owned by [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#public-material-read-models) before content invocation; authenticating as the Token's human owner does not convert the delivery into a human-facing App API read. The rationale is recorded in [a decision record](../decisions/20261003-restricted_material_channel_boundary.md).
 
 A credential limit stays in force. A `workspace-readonly` Token that calls a mutating operation receives the existing typed authorization refusal as a tool result. The protected effect does not run.
 
@@ -113,7 +113,7 @@ A missing or unusable credential is the authentication failure defined above. It
 
 A malformed MCP message, an unknown MCP method, or a protocol-version failure is a protocol error. It carries no product effect.
 
-A request that has authenticated, and then fails a product rule, returns that failure as a tool result. Examples are a read-only Token calling a mutation, a secret-returning operation, and an owner that still refuses a bearer actor. That result is not HTTP 401, and it is not a transport close.
+A request that has authenticated, and then fails a product rule, returns that failure as a tool result. Classified operation failures follow the shared error rule in [Operation Definition](20261002-operation_definition.md#invocation); authentication and MCP protocol failures retain this transport boundary. Examples are a read-only Token calling a mutation, a secret-returning operation, and an owner that still refuses a bearer actor. That result is not HTTP 401, and it is not a transport close.
 
 A client's own approval prompt is not an OpenKit decision. [Operation Definition](20261002-operation_definition.md) owns that rule.
 

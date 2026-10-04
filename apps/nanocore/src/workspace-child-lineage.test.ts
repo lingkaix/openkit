@@ -265,7 +265,11 @@ describe('Workspace child lineage', () => {
         )
       );
       expect(response.status).toBe(404);
-      expect(await response.text()).toBe('Artifact not found.');
+      expect(await response.json()).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'not_found',
+        message: 'Artifact not found.',
+      });
     }
   });
 

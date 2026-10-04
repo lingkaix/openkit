@@ -5,6 +5,7 @@ import {
   RetryInterruptedWorkerCheckpointRequestSchema,
   RetryInterruptedWorkerCheckpointResponseSchema,
 } from './dashboard.js';
+import type { OperationDefinition } from './operation-contract.js';
 
 const credentials = [
   'local-user',
@@ -15,6 +16,9 @@ const credentials = [
 /** Recovery projection retains the original attempt and exact request identity. */
 export const RECOVERY_OPERATION_DEFINITIONS = {
   'recovery.worker-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List interrupted worker states in authorized Workspaces.',
     credentials,
     scope: { kind: 'authorized-workspace-set' },
@@ -25,10 +29,18 @@ export const RECOVERY_OPERATION_DEFINITIONS = {
     outputSchema: ListInterruptedWorkerStatesResponseSchema,
   },
   'recovery.checkpoint-retry': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Release one interrupted worker attempt for a later fresh start.',
     credentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
-    target: { kind: 'addressed-turn', threadField: 'threadId', turnField: 'turnId' },
+    target: {
+      kind: 'addressed-turn',
+      lineage: 'recovery-checkpoint',
+      threadField: 'threadId',
+      turnField: 'turnId',
+    },
     policyOperation: 'turn.run',
     mutating: true,
     inputSchema: RetryInterruptedWorkerCheckpointRequestSchema.extend({
@@ -38,4 +50,4 @@ export const RECOVERY_OPERATION_DEFINITIONS = {
     }),
     outputSchema: RetryInterruptedWorkerCheckpointResponseSchema,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

@@ -24,6 +24,7 @@ import {
   UpdateLightAppSchemaRequestSchema,
   UpdateLightAppSchemaResponseSchema,
 } from './light-apps.js';
+import type { OperationDefinition } from './operation-contract.js';
 
 const credentials = [
   'local-user',
@@ -43,6 +44,9 @@ const paging = { page: revision.optional(), perPage: revision.max(100).optional(
 /** Release-authored definitions for the existing remaining Kernel operations; effects remain with NanoCore owners. */
 export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
   'kernel.apps.list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List Light Apps in the current Workspace.',
     inputSchema: z.object({ ...workspace, ...paging }).strict(),
     outputSchema: ListLightAppsResponseSchema,
@@ -53,6 +57,8 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.apps.create': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
     description: 'Create one Light App from a file-authored schema.',
     inputSchema: CreateLightAppRequestSchema.safeExtend({
       ...workspace,
@@ -67,6 +73,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'kernel.schema.update': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Update one Light App schema within the initial evolution ceiling.',
     inputSchema: UpdateLightAppSchemaRequestSchema.extend({ ...app, requestId: RequestIdSchema }),
     outputSchema: UpdateLightAppSchemaResponseSchema,
@@ -77,6 +86,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.apps.retire': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Retire one Light App and disable writes.',
     inputSchema: RetireLightAppRequestSchema.extend({ ...app, requestId: RequestIdSchema }),
     outputSchema: RetireLightAppResponseSchema,
@@ -87,6 +99,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.records.list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List records in one Light App collection.',
     inputSchema: z
       .object({
@@ -106,6 +121,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.records.get': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Read one Light App record.',
     inputSchema: z
       .object({ ...record, schemaRevision: revision, fields: z.string().optional() })
@@ -118,6 +136,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.records.update': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Update one Light App record.',
     inputSchema: UpdateLightAppRecordRequestSchema.extend({
       ...record,
@@ -131,6 +152,9 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.records.batch': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Apply one atomic Light App record batch.',
     inputSchema: LightAppBatchRequestSchema.extend({ ...app, requestId: RequestIdSchema }),
     outputSchema: LightAppBatchResponseSchema,
@@ -140,11 +164,13 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.write',
     mutating: true,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;
 
 /** Release-authored definitions for the existing Generative UI operations; effects remain with NanoCore owners. */
 export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
   'generative-ui.publish': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
     description: 'Publish one admitted native Generative UI presentation.',
     inputSchema: PublishGenerativePresentationRequestSchema.extend({
       ...workspace,
@@ -159,6 +185,9 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'generative-ui.get': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Read one retained Generative UI presentation.',
     inputSchema: z.object(presentation).strict(),
     outputSchema: GetGenerativePresentationResponseSchema,
@@ -169,6 +198,9 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.resource': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Read the retained native A2UI resource for one presentation.',
     inputSchema: z.object(presentation).strict(),
     outputSchema: GenerativePresentationResourceResponseSchema,
@@ -179,6 +211,9 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.refresh': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Refresh one presentation from its current authorized source.',
     inputSchema: RefreshGenerativePresentationRequestSchema.extend(presentation),
     outputSchema: GenerativePresentationDataModelResponseSchema,
@@ -189,6 +224,9 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.action': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Submit one admitted Kernel record-update action.',
     inputSchema: SubmitGenerativePresentationActionRequestSchema.extend({
       ...presentation,
@@ -201,4 +239,4 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.write',
     mutating: true,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

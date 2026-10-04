@@ -14,11 +14,14 @@ import {
 } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import { ensureLocalUser } from './auth/identity.js';
+import type { AuthVariables } from './auth/middleware.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import * as commands from './generative-kernel/commands.js';
 import { createLightApp, listRecords, updateRecord } from './generative-kernel/commands.js';
-import * as invocation from './operation-invocation.js';
-import { createOperationInvocation } from './operation-invocation.js';
+import { KernelCommandError } from './generative-kernel/errors.js';
+import * as invocation from './operation-composition.js';
+import { createOperationInvocation } from './operation-composition.js';
+import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
@@ -36,6 +39,271 @@ import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-en
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+
+describe('shared family contract', () => {
+  it.each([
+    'success',
+    'typed refusal',
+  ] as const)('marks a JSON operation %s response as not cacheable', async (outcome) => {
+    const f = await operationFixture();
+    try {
+      const response = await f.app.request('/api/app/operations/workspace.read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(outcome === 'success' ? { workspaceId: 'ws_demo' } : {}),
+      });
+      expect(response.status).toBe(outcome === 'success' ? 200 : 400);
+      expect(await response.json()).toMatchObject(
+        outcome === 'success' ? { id: 'ws_demo' } : { code: 'invalid_request' }
+      );
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps overlapping dynamic success statuses local to each request', async () => {
+    const f = await operationFixture();
+    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Dynamic response', f.command.actor);
+    const body = {
+      outcome: 'answered',
+      explanation: 'Done.',
+      turn,
+      item: f.store.createItem({
+        id: 'it_dynamic',
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: 'Done.',
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt!,
+      }),
+      handoff: null,
+      originatingWorkspaceId: 'ws_demo',
+      originatingThreadId: 'th_demo',
+      receivingWorkspaceId: 'ws_demo',
+      receivingThreadId: 'th_demo',
+      targetRef: 'internal-role:assistant',
+      logicalModelId: null,
+    };
+    let releaseFirst!: () => void;
+    let enteredFirst!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredFirst = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use('*', async (c, next) => {
+      c.set('actor', { kind: 'local', userId: 'user_local' });
+      await next();
+    });
+    registerOperationJsonRoutes({
+      app,
+      requestStore: () => f.store,
+      coreDb: f.coreDb,
+      store: f.store,
+      inflightCommands: new WeakMap(),
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      conversationService: {
+        submit: async (_store, input) => {
+          if (input.input === 'first') {
+            enteredFirst();
+            await gate;
+            return { body, status: 200 };
+          }
+          return { body, status: 202 };
+        },
+      } as unknown as NonNullable<
+        invocation.OperationInvocationDependencies['conversationService']
+      >,
+    });
+    const call = (input: string) =>
+      app.request('/api/app/operations/conversation.submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          targetRef: 'internal-role:assistant',
+          input,
+        }),
+      });
+    try {
+      const first = call('first');
+      await entered;
+      const second = await call('second');
+      releaseFirst();
+      expect(second.status).toBe(202);
+      expect((await first).status).toBe(200);
+    } finally {
+      releaseFirst();
+      f.coreDb.sqlite.close();
+    }
+  });
+  it.each([
+    'handler',
+    'resolver',
+  ] as const)('lets an unclassified %s failure reach the HTTP error boundary', async (subject) => {
+    const f = await operationFixture();
+    const sentinel = new Error(`private-${subject}-sentinel`);
+    const observed = vi.fn();
+    f.app.onError((error, c) => {
+      observed(error);
+      return c.text('Internal Server Error', 500);
+    });
+    const turn = f.store.createTurn('ws_demo', 'th_demo', 'Resolver subject', f.command.actor);
+    const failure =
+      subject === 'handler'
+        ? vi.spyOn(f.store, 'getWorkspaceResources').mockImplementation(() => {
+            throw sentinel;
+          })
+        : vi.spyOn(f.store, 'getTurnLineage').mockImplementation(() => {
+            throw sentinel;
+          });
+    try {
+      const response = await f.app.request(
+        `/api/app/operations/${subject === 'handler' ? 'workspace.resources' : 'turn.read'}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            subject === 'handler'
+              ? { workspaceId: 'ws_demo' }
+              : { workspaceId: 'ws_demo', threadId: 'th_demo', turnId: turn.id }
+          ),
+        }
+      );
+      expect(failure).toHaveBeenCalledOnce();
+      expect(observed).toHaveBeenCalledWith(sentinel);
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe('Internal Server Error');
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    } finally {
+      failure.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves literal safe Kernel failure fields through HTTP, remote MCP and supplied worker MCP', async () => {
+    const f = await operationFixture();
+    const error = new KernelCommandError('limit_exceeded', 'Record limit exceeded.', {
+      limit: 'records',
+      maximum: 2,
+      path: '/data',
+    });
+    Object.defineProperty(error, 'cause', {
+      value: new Error('private-secret-sentinel', { cause: new Error('nested-private-secret') }),
+    });
+    const failure = vi.spyOn(commands, 'createRecord').mockRejectedValue(error);
+    try {
+      const { projections } = await operationProjections(f);
+      const input = {
+        workspaceId: 'ws_demo',
+        appId: f.appRecord.appId,
+        collection: 'entries',
+        schemaRevision: 1,
+        data: { note: 'safe' },
+        requestId: randomUUID(),
+      };
+      for (const name of ['http', 'worker']) {
+        await expect(projections[name]!('kernel.records.create', input)).rejects.toEqual({
+          ...(name === 'http' ? { protocolVersion: '0.5.0' } : {}),
+          code: 'limit_exceeded',
+          message: 'Record limit exceeded.',
+          details: { limit: 'records', maximum: 2 },
+          ...(name === 'worker' ? { status: 400 } : {}),
+          path: ['/data'],
+        });
+      }
+      const httpFailure = await f.app.request('/api/app/operations/kernel.records.create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': input.requestId },
+        body: JSON.stringify(input),
+      });
+      expect(httpFailure.status).toBe(400);
+      expect(await httpFailure.json()).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'limit_exceeded',
+        message: 'Record limit exceeded.',
+        details: { limit: 'records', maximum: 2 },
+        path: ['/data'],
+      });
+      const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      const remote = await f.app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token.secret}`,
+          accept: 'application/json, text/event-stream',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'call', arguments: { operation: 'kernel.records.create', input } },
+        }),
+      });
+      const envelope = (await remote.json()) as {
+        result: { isError: boolean; content: { text: string }[] };
+      };
+      expect(envelope.result.isError).toBe(true);
+      expect(JSON.parse(envelope.result.content[0]!.text)).toEqual({
+        code: 'limit_exceeded',
+        message: 'Record limit exceeded.',
+        status: 400,
+        details: { limit: 'records', maximum: 2 },
+        path: ['/data'],
+      });
+      expect(JSON.stringify(envelope)).not.toContain('private-secret');
+      expect(JSON.stringify(envelope)).not.toContain('stack');
+      expect(
+        listRecords(f.command.dataRoot, 'ws_demo', f.appRecord.appId, 'entries', {
+          schemaRevision: 1,
+        }).totalItems
+      ).toBe(0);
+    } finally {
+      failure.mockRestore();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('redacts invalid submitted input at the native parse boundary', async () => {
+    const f = await operationFixture();
+    try {
+      const response = await f.app.request('/api/app/operations/kernel.records.create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+        body: JSON.stringify({
+          workspaceId: 'ws_demo',
+          appId: 'private-secret-sentinel',
+          collection: 'entries',
+          schemaRevision: 1,
+          data: {},
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'invalid_request',
+        message: 'Invalid operation input.',
+        details: { fields: ['appId'] },
+      });
+      expect(JSON.stringify(body)).not.toContain('private-secret-sentinel');
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+});
 
 /** Isolated domain authority shared by every projection in this invariant. */
 async function operationFixture() {
@@ -332,6 +600,8 @@ describe('operation projection cutover', () => {
         code: 'invalid_operation_output',
         message: expect.stringContaining('does not undo committed effects'),
       });
+      await owners.workspaceMutationAdmission.close('ws_demo');
+      owners.workspaceMutationAdmission.reopen('ws_demo');
       const corrupt = await f.app.request('/api/app/operations/kernel.records.create', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
@@ -530,6 +800,7 @@ describe('operation projection cutover', () => {
         kind: 'worker' as const,
         actor: f.command.actor,
         requestId: randomUUID(),
+        bindings: { workspaceId: 'ws_demo', requestId: randomUUID() },
         lineage: {
           workspaceId: 'ws_demo',
           threadId: 'th_demo',

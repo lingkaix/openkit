@@ -818,13 +818,22 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return error instanceof Error && 'code' in error && error.code === code;
 }
 
+/** Nominal native Review refusal; only the Artifact family supplies operation framing. */
+export class ArtifactReviewError extends Error {
+  readonly status: 400 | 409;
+  constructor(
+    readonly code: ArtifactReviewErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.status = code === 'invalid_request' ? 400 : 409;
+  }
+}
+
 /** Creates a typed failure. @param code Stable code. @param message Safe summary. @returns Authority error. */
 function reviewError(
   code: ArtifactReviewErrorCode,
   message: string
 ): Error & { readonly code: ArtifactReviewErrorCode; readonly status: 400 | 409 } {
-  return Object.assign(new Error(message), {
-    code,
-    status: code === 'invalid_request' ? (400 as const) : (409 as const),
-  });
+  return new ArtifactReviewError(code, message);
 }

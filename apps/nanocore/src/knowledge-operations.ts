@@ -1,10 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type {
-  KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
-  KNOWLEDGE_OPERATION_DEFINITIONS,
-  OperationId,
-} from '@openkit/app-api-schemas';
+import type { KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS, OperationId } from '@openkit/app-api-schemas';
 import {
+  KNOWLEDGE_OPERATION_DEFINITIONS,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerResponseSchema,
   KnowledgeManagerDraftProposalResponseSchema,
@@ -30,6 +27,7 @@ import {
   KnowledgeEntrySchema,
   ListKnowledgeEntriesResponseSchema,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
 import {
@@ -51,13 +49,15 @@ import {
 } from './knowledge-manager.js';
 import {
   type FsStore,
+  KnowledgeProposalAuthorityError,
   knowledgeAuthorityId,
   knowledgeProposalAuthorityError as knowledgeProposalAuthorityFailure,
+  StoreRecordNotFoundError,
 } from './lib/store.js';
-import type {
-  OperationImplementations,
-  OperationInvocationDependencies,
-} from './operation-invocation.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
+import type { OperationImplementations } from './operation-contract.js';
+import { OperationError } from './operation-error.js';
+import { admitOperation } from './operation-resolvers.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { openWorkspaceDb } from './storage/db.js';
@@ -66,24 +66,19 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-/** Domain-owned Knowledge failure; native projections preserve this exact code, message and status. */
-export class KnowledgeOperationError extends Error {
-  public constructor(
-    message: string,
-    public readonly code = 'not_found',
-    public readonly status = 404
-  ) {
-    super(message);
-    this.name = 'KnowledgeOperationError';
-  }
-}
 
-/** Preserves existing command refusal classes and the existing bounded fallback at the Knowledge owner. */
-function commandFailure(error: unknown, code: string, status = 404): KnowledgeOperationError {
-  if (error instanceof KnowledgeOperationError) return error;
+/** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
+function commandFailure(error: unknown, code: string, status = 404): OperationError {
+  if (error instanceof OperationError) return error;
   if (error instanceof IdempotencyKeyConflictError || error instanceof KnowledgePageValidationError)
-    return new KnowledgeOperationError(error.message, error.code, error.status);
-  return new KnowledgeOperationError(publishedErrorMessage(error), code, status);
+    return new OperationError(error.code, error.message, error.status);
+  if (
+    error instanceof StoreRecordNotFoundError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError
+  )
+    return new OperationError(code, publishedErrorMessage(error), status, { cause: error });
+  throw error;
 }
 
 /** Requires a scoped child from its current owner after native Workspace admission; no foreign Workspace is scanned. */
@@ -93,10 +88,20 @@ function readAuthorizedKnowledgeOwner<T extends { readonly workspaceId: string }
 ): T {
   try {
     const owner = readOwner();
-    if (owner.workspaceId !== workspaceId) throw new Error('Inconsistent Knowledge lineage.');
+    if (owner.workspaceId !== workspaceId)
+      throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
     return owner;
-  } catch {
-    throw new KnowledgeOperationError('Workspace access denied.', 'workspace_access_denied', 403);
+  } catch (error) {
+    if (
+      !(
+        error instanceof StoreRecordNotFoundError ||
+        error instanceof OperationError ||
+        error instanceof SyntaxError ||
+        error instanceof z.ZodError
+      )
+    )
+      throw error;
+    throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
 }
 
@@ -113,26 +118,14 @@ function knowledgeProposalDraftFailure(error: unknown): never {
   ) {
     throw commandFailure(error, 'knowledge_manager_proposal_draft_failed');
   }
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    'status' in error &&
-    ['invalid_request', 'not_found', 'conflict', 'recovery_required'].includes(
-      String(error.code)
-    ) &&
-    [400, 404, 409].includes(Number(error.status))
-  ) {
-    throw new KnowledgeOperationError(
-      'Knowledge Proposal authority check failed.',
-      String(error.code),
-      Number(error.status)
-    );
-  }
-  throw new KnowledgeOperationError(
-    'Knowledge Manager proposal draft failed.',
+  if (error instanceof KnowledgeProposalAuthorityError)
+    throw new OperationError(error.code, error.message, error.status, { cause: error });
+  // The proposal owner retains a fixed, safe failure for preparation; this catch cannot include shared admission or output validation.
+  throw new OperationError(
     'knowledge_manager_proposal_draft_failed',
-    500
+    'Knowledge Manager proposal draft failed.',
+    500,
+    { cause: error }
   );
 }
 
@@ -213,23 +206,12 @@ function knowledgeProposalCommandFailure(error: unknown, fallbackCode: string): 
   if (error instanceof IdempotencyKeyConflictError) {
     throw commandFailure(error, fallbackCode);
   }
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    'status' in error &&
-    ['invalid_request', 'not_found', 'conflict', 'recovery_required'].includes(
-      String(error.code)
-    ) &&
-    [400, 404, 409].includes(Number(error.status))
-  ) {
-    throw new KnowledgeOperationError(
-      'Knowledge Proposal authority check failed.',
-      String(error.code),
-      Number(error.status)
-    );
-  }
-  throw new KnowledgeOperationError('Knowledge Proposal command failed.', fallbackCode, 500);
+  if (error instanceof KnowledgeProposalAuthorityError)
+    throw new OperationError(error.code, error.message, error.status, { cause: error });
+  // This owner fallback reports an unproved command outcome without publishing native storage details or claiming rollback.
+  throw new OperationError(fallbackCode, 'Knowledge Proposal command failed.', 500, {
+    cause: error,
+  });
 }
 
 /**
@@ -284,7 +266,7 @@ function requireAuthorizedKnowledgeProposal(
 ): NonNullable<ReturnType<FsStore['getKnowledgeProposal']>> {
   const proposal = store.getKnowledgeProposal(proposalId);
   if (!proposal || proposal.workspaceId !== workspaceId) {
-    throw new KnowledgeOperationError('Workspace access denied.', 'workspace_access_denied', 403);
+    throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
   }
   return proposal;
 }
@@ -301,47 +283,19 @@ type KnowledgeImplementations = Pick<
 
 /** Binds the current Knowledge Store, command, trace and proposal owners without a transport or second authorizer. */
 export function createKnowledgeOperationImplementations(
-  dependencies: OperationInvocationDependencies
-): KnowledgeImplementations {
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'inflightCommands' | 'repositoryWorkspaceDb'
+  >
+) {
   const store = dependencies.store!;
   const coreDb = dependencies.coreDb;
   const inflightCommands = dependencies.inflightCommands!;
   const repositoryWorkspaceDb = dependencies.repositoryWorkspaceDb!;
-  /**
-   * Resolves current Page-bound source authority for one retrieval request.
-   *
-   * @param store Product Knowledge and work-history owner.
-   * @param workspaceId Workspace that owns the retrieval.
-   * @returns Exact Page and digest keyed proofs whose owners remain coherent.
-   */
-  function knowledgeReferenceProofs(
-    store: FsStore,
-    workspaceId: string
-  ): ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> {
-    if (!coreDb) {
-      return resolveWorkspaceKnowledgeReferenceProofs({
-        coreDb: undefined,
-        store,
-        workspaceDb: undefined,
-        workspaceId,
-      });
-    }
-
-    const workspaceDb = repositoryWorkspaceDb(workspaceId);
-    try {
-      return resolveWorkspaceKnowledgeReferenceProofs({
-        coreDb,
-        store,
-        workspaceDb,
-        workspaceId,
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  }
 
   return {
-    'knowledge.answer': async (input, actor) => {
+    'knowledge.answer': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -358,7 +312,7 @@ export function createKnowledgeOperationImplementations(
           caller: 'app-api',
           query: commandInput.query,
           limit: commandInput.limit,
-          referenceProofs: knowledgeReferenceProofs(store, workspaceId),
+          referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
@@ -373,14 +327,14 @@ export function createKnowledgeOperationImplementations(
 
         return KnowledgeManagerAnswerResponseSchema.parse(response);
       } catch {
-        throw new KnowledgeOperationError(
-          'Knowledge Manager answer failed.',
+        throw new OperationError(
           'knowledge_manager_answer_failed',
+          'Knowledge Manager answer failed.',
           500
         );
       }
     },
-    'knowledge.source.list': async (input, _actor) => {
+    'knowledge.source.list': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
@@ -388,14 +342,11 @@ export function createKnowledgeOperationImplementations(
           items: store.listKnowledgeSources(workspaceId),
         });
       } catch (error) {
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_source_list_failed',
-          404
-        );
+        throw commandFailure(error, 'knowledge_source_list_failed', 404);
       }
     },
-    'knowledge.source.register': async (input, actor) => {
+    'knowledge.source.register': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -454,7 +405,8 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_source_register_failed');
       }
     },
-    'knowledge.source.read': async (input, actor) => {
+    'knowledge.source.read': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, sourceId } = input;
 
       try {
@@ -481,15 +433,11 @@ export function createKnowledgeOperationImplementations(
 
         return response;
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_source_not_found',
-          404
-        );
+        if (error instanceof OperationError) throw error;
+        throw commandFailure(error, 'knowledge_source_not_found', 404);
       }
     },
-    'knowledge.observation.list': async (input, _actor) => {
+    'knowledge.observation.list': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
@@ -497,14 +445,11 @@ export function createKnowledgeOperationImplementations(
           items: store.listKnowledgeObservations(workspaceId),
         });
       } catch (error) {
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_observation_list_failed',
-          404
-        );
+        throw commandFailure(error, 'knowledge_observation_list_failed', 404);
       }
     },
-    'knowledge.observation.record': async (input, actor) => {
+    'knowledge.observation.record': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -553,7 +498,7 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_observation_record_failed');
       }
     },
-    'knowledge.claim.list': async (input, _actor) => {
+    'knowledge.claim.list': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
@@ -561,14 +506,11 @@ export function createKnowledgeOperationImplementations(
           items: store.listKnowledgeClaims(workspaceId),
         });
       } catch (error) {
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_claim_list_failed',
-          404
-        );
+        throw commandFailure(error, 'knowledge_claim_list_failed', 404);
       }
     },
-    'knowledge.claim.record': async (input, actor) => {
+    'knowledge.claim.record': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -616,7 +558,7 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_claim_record_failed');
       }
     },
-    'knowledge.conflict.list': async (input, _actor) => {
+    'knowledge.conflict.list': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
@@ -624,14 +566,11 @@ export function createKnowledgeOperationImplementations(
           items: store.listKnowledgeConflicts(workspaceId),
         });
       } catch (error) {
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_conflict_list_failed',
-          404
-        );
+        throw commandFailure(error, 'knowledge_conflict_list_failed', 404);
       }
     },
-    'knowledge.conflict.record': async (input, actor) => {
+    'knowledge.conflict.record': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -677,7 +616,8 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_conflict_record_failed');
       }
     },
-    'knowledge.conflict.resolve': async (input, actor) => {
+    'knowledge.conflict.resolve': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, conflictId, ...commandInput } = input;
 
       try {
@@ -719,20 +659,20 @@ export function createKnowledgeOperationImplementations(
 
         return ResolveKnowledgeConflictResponseSchema.parse({ conflict });
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
+        if (error instanceof OperationError) throw error;
         throw commandFailure(error, 'knowledge_conflict_resolve_failed');
       }
     },
-    'knowledge.indexes': async (input, _actor) => {
+    'knowledge.indexes': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
         const dataRoot = store.getDataRoot();
 
         if (!dataRoot) {
-          throw new KnowledgeOperationError(
-            'Knowledge indexes require a file-backed data root.',
+          throw new OperationError(
             'data_root_required',
+            'Knowledge indexes require a file-backed data root.',
             409
           );
         }
@@ -744,24 +684,21 @@ export function createKnowledgeOperationImplementations(
           })
         );
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
-        throw new KnowledgeOperationError(
-          publishedErrorMessage(error),
-          'knowledge_indexes_read_failed',
-          404
-        );
+        if (error instanceof OperationError) throw error;
+        throw commandFailure(error, 'knowledge_indexes_read_failed', 404);
       }
     },
-    'knowledge.retrieval': async (input, actor) => {
+    'knowledge.retrieval': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
         const dataRoot = store.getDataRoot();
 
         if (!dataRoot) {
-          throw new KnowledgeOperationError(
-            'Knowledge retrieval requires a file-backed data root.',
+          throw new OperationError(
             'data_root_required',
+            'Knowledge retrieval requires a file-backed data root.',
             409
           );
         }
@@ -774,7 +711,7 @@ export function createKnowledgeOperationImplementations(
             query: commandInput.query,
             limit: commandInput.limit,
             pinnedConceptIds: commandInput.pinnedConceptIds,
-            referenceProofs: knowledgeReferenceProofs(store, workspaceId),
+            referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
             traceId: `krt_${randomUUID()}`,
           })
         );
@@ -791,28 +728,13 @@ export function createKnowledgeOperationImplementations(
 
         return response;
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
-        throw new KnowledgeOperationError(
-          'Knowledge retrieval failed.',
-          'knowledge_retrieval_failed',
-          500
-        );
+        if (error instanceof OperationError) throw error;
+        throw new OperationError('knowledge_retrieval_failed', 'Knowledge retrieval failed.', 500);
       }
     },
-    'knowledge.context.prepare': async (input, actor, context) => {
+    'knowledge.context.prepare': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
-      if (context.kind === 'task') {
-        const dataRoot = store.getDataRoot();
-        if (!dataRoot)
-          throw new Error('Task Knowledge retrieval requires a file-backed data root.');
-        return prepareTaskKnowledgeContext({
-          dataRoot,
-          workspaceId,
-          query: commandInput.query,
-          traceId: context.traceId,
-          referenceProofs: knowledgeReferenceProofs(store, workspaceId),
-        });
-      }
 
       try {
         const dataRoot = store.getDataRoot();
@@ -828,7 +750,7 @@ export function createKnowledgeOperationImplementations(
           caller: 'app-api',
           query: commandInput.query,
           limit: commandInput.limit,
-          referenceProofs: knowledgeReferenceProofs(store, workspaceId),
+          referenceProofs: knowledgeReferenceProofs(dependencies, workspaceId),
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
@@ -843,14 +765,15 @@ export function createKnowledgeOperationImplementations(
 
         return KnowledgeManagerPrepareContextResponseSchema.parse(response);
       } catch {
-        throw new KnowledgeOperationError(
-          'Knowledge Manager context preparation failed.',
+        throw new OperationError(
           'knowledge_manager_context_failed',
+          'Knowledge Manager context preparation failed.',
           500
         );
       }
     },
-    'knowledge.proposal.draft': async (input, actor) => {
+    'knowledge.proposal.draft': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -963,7 +886,8 @@ export function createKnowledgeOperationImplementations(
         return knowledgeProposalDraftFailure(error);
       }
     },
-    'knowledge.repair.suggest': async (input, actor) => {
+    'knowledge.repair.suggest': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -987,14 +911,15 @@ export function createKnowledgeOperationImplementations(
 
         return KnowledgeManagerSuggestRepairResponseSchema.parse(response);
       } catch {
-        throw new KnowledgeOperationError(
-          'Knowledge Manager repair suggestion failed.',
+        throw new OperationError(
           'knowledge_manager_repair_suggest_failed',
+          'Knowledge Manager repair suggestion failed.',
           500
         );
       }
     },
-    'knowledge.health.check': async (input, actor) => {
+    'knowledge.health.check': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -1018,22 +943,23 @@ export function createKnowledgeOperationImplementations(
 
         return KnowledgeManagerHealthCheckResponseSchema.parse(response);
       } catch {
-        throw new KnowledgeOperationError(
-          'Knowledge Manager health check failed.',
+        throw new OperationError(
           'knowledge_manager_health_check_failed',
+          'Knowledge Manager health check failed.',
           500
         );
       }
     },
-    'knowledge.proposal.decide': async (input, actor) => {
+    'knowledge.proposal.decide': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, proposalId, ...commandInput } = input;
 
       try {
         const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
         if (!coreDb) {
-          throw new KnowledgeOperationError(
-            'Knowledge Proposal command storage is unavailable.',
+          throw new OperationError(
             'knowledge_proposal_storage_unavailable',
+            'Knowledge Proposal command storage is unavailable.',
             503
           );
         }
@@ -1188,19 +1114,20 @@ export function createKnowledgeOperationImplementations(
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
+        if (error instanceof OperationError) throw error;
         return knowledgeProposalCommandFailure(error, 'knowledge_proposal_review_failed');
       }
     },
-    'knowledge.proposal.reverse': async (input, actor) => {
+    'knowledge.proposal.reverse': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, proposalId, ...commandInput } = input;
 
       try {
         const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
         if (!coreDb) {
-          throw new KnowledgeOperationError(
-            'Knowledge Proposal command storage is unavailable.',
+          throw new OperationError(
             'knowledge_proposal_storage_unavailable',
+            'Knowledge Proposal command storage is unavailable.',
             503
           );
         }
@@ -1290,11 +1217,11 @@ export function createKnowledgeOperationImplementations(
           workspaceDb.sqlite.close();
         }
       } catch (error) {
-        if (error instanceof KnowledgeOperationError) throw error;
+        if (error instanceof OperationError) throw error;
         return knowledgeProposalCommandFailure(error, 'knowledge_proposal_reversal_failed');
       }
     },
-    'knowledge.list': async (input, _actor) => {
+    'knowledge.list': async (input, _context) => {
       const { workspaceId } = input;
 
       try {
@@ -1302,10 +1229,11 @@ export function createKnowledgeOperationImplementations(
           items: store.listKnowledge(workspaceId),
         });
       } catch (error) {
-        throw new KnowledgeOperationError(publishedErrorMessage(error));
+        throw commandFailure(error, 'not_found');
       }
     },
-    'knowledge.create': async (input, actor) => {
+    'knowledge.create': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, ...commandInput } = input;
 
       try {
@@ -1340,7 +1268,8 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_create_failed');
       }
     },
-    'knowledge.update': async (input, actor) => {
+    'knowledge.update': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, knowledgeEntryId, ...commandInput } = input;
 
       readAuthorizedKnowledgeOwner(workspaceId, () => {
@@ -1382,7 +1311,8 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_update_failed');
       }
     },
-    'knowledge.delete': async (input, actor) => {
+    'knowledge.delete': async (input, context) => {
+      const actor = context.actorRef;
       const { workspaceId, knowledgeEntryId, ...commandInput } = input;
 
       try {
@@ -1422,5 +1352,90 @@ export function createKnowledgeOperationImplementations(
         throw commandFailure(error, 'knowledge_delete_failed');
       }
     },
+  } satisfies KnowledgeImplementations;
+}
+
+/**
+ * Resolves current Page-bound source authority for one retrieval request.
+ *
+ * @param store Product Knowledge and work-history owner.
+ * @param workspaceId Workspace that owns the retrieval.
+ * @returns Exact Page and digest keyed proofs whose owners remain coherent.
+ */
+function knowledgeReferenceProofs(
+  dependencies: Pick<OperationInvocationDependencies, 'store' | 'coreDb' | 'repositoryWorkspaceDb'>,
+  workspaceId: string
+): ReturnType<typeof resolveWorkspaceKnowledgeReferenceProofs> {
+  const { store: selectedStore, coreDb, repositoryWorkspaceDb } = dependencies;
+  const store = selectedStore!;
+  if (!coreDb) {
+    return resolveWorkspaceKnowledgeReferenceProofs({
+      coreDb: undefined,
+      store,
+      workspaceDb: undefined,
+      workspaceId,
+    });
+  }
+
+  const workspaceDb = repositoryWorkspaceDb!(workspaceId);
+  try {
+    return resolveWorkspaceKnowledgeReferenceProofs({
+      coreDb,
+      store,
+      workspaceDb,
+      workspaceId,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Knowledge-owned private Task entry shares public preparation's parsing, knowledge.read admission and retrieval owner. */
+export function createTaskKnowledgePreparation(
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'store' | 'coreDb' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
+  >
+) {
+  return async (
+    value: unknown,
+    context: { readonly actor: import('./auth/identity.js').Actor; readonly traceId: string }
+  ): Promise<import('./knowledge-manager.js').PreparedTaskKnowledgeContext> => {
+    const admitted = admitOperation(
+      KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'],
+      value,
+      { kind: 'public', actor: context.actor, delivery: 'model' },
+      dependencies
+    );
+    try {
+      const dataRoot = dependencies.store?.getDataRoot();
+      if (!dataRoot)
+        throw new OperationError(
+          'knowledge_context_unavailable',
+          'Task Knowledge retrieval requires file-backed storage.',
+          503
+        );
+      const input =
+        admitted.input as import('@openkit/app-api-schemas').OperationInput<'knowledge.context.prepare'>;
+      const output = prepareTaskKnowledgeContext({
+        dataRoot,
+        workspaceId: input.workspaceId,
+        query: input.query,
+        traceId: context.traceId,
+        referenceProofs: knowledgeReferenceProofs(dependencies, input.workspaceId),
+      });
+      const validated = KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'].outputSchema
+        .pick({ retrievalTraceId: true })
+        .safeParse(output);
+      if (!validated.success)
+        throw new OperationError(
+          'invalid_operation_output',
+          'Task Knowledge preparation output is invalid. Inspect the effect outcome; output validation does not undo committed effects.',
+          500
+        );
+      return validated.data;
+    } finally {
+      admitted.release?.();
+    }
   };
 }

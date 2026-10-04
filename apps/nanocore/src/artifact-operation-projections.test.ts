@@ -358,7 +358,11 @@ describe('Artifact definition projections', () => {
         body: JSON.stringify({ workspaceId: 'ws_demo', ...body }),
       });
       expect(response.status).toBe(500);
-      expect(await response.text()).toBe('Internal Server Error');
+      expect(await response.json()).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'internal_error',
+        message: 'Internal Server Error',
+      });
     } finally {
       f.close();
     }

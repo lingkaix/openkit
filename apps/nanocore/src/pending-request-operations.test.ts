@@ -312,11 +312,8 @@ describe('Pending Request operations', () => {
       });
 
       const failed = await respondToApproval(fixture, requestId);
-      expect(failed.status).toBe(404);
-      await expect(failed.json()).resolves.toMatchObject({
-        code: 'approval_respond_failed',
-        message: 'Injected approval response receipt failure.',
-      });
+      expect(failed.status).toBe(500);
+      expect(await failed.text()).toBe('Internal Server Error');
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
       expect(fixture.store.listCommandRequests()).toEqual([]);
 

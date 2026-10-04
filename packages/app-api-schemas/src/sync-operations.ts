@@ -1,5 +1,6 @@
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import type { OperationDefinition } from './operation-contract.js';
 import {
   GetWorkspaceApplyResultResponseSchema,
   GetWorkspaceSyncReviewResponseSchema,
@@ -30,6 +31,9 @@ const credentials = [
 /** Sole public contract for the existing non-Git synchronization operations. Decision identities keep the owner's nonempty string schema so retained non-UUID receipts remain replayable. */
 export const SYNC_OPERATION_DEFINITIONS = {
   'sync.review-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Review list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceSyncReviewsResponseSchema,
@@ -40,6 +44,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.review-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Review read for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema, reviewId: z.string().min(1) }).strict(),
     outputSchema: GetWorkspaceSyncReviewResponseSchema,
@@ -50,6 +57,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.review-decide': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Review decide for one Workspace.',
     inputSchema: SubmitWorkspaceSyncReviewDecisionRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -64,6 +74,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'sync.input-snapshot-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Input snapshot list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceInputSnapshotsResponseSchema,
@@ -74,6 +87,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.materialization-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Materialization list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceMaterializationRecordsResponseSchema,
@@ -84,6 +100,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.backend-handle-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Backend handle list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListBackendWorkspaceHandlesResponseSchema,
@@ -94,6 +113,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.output-manifest-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Output manifest list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkerOutputManifestsResponseSchema,
@@ -104,6 +126,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.change-set-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Change set list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceChangeSetsResponseSchema,
@@ -114,6 +139,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.staged-review-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Staged review list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListStagedWorkspaceReviewsResponseSchema,
@@ -124,6 +152,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-result-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Apply result list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceApplyResultsResponseSchema,
@@ -134,6 +165,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-plan-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Apply plan list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceApplyPlansResponseSchema,
@@ -144,6 +178,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.reconciliation-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Reconciliation list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceReconciliationRecordsResponseSchema,
@@ -154,6 +191,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.recovery-decide': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Recovery decide for one Workspace.',
     inputSchema: SubmitWorkspaceRecoveryDecisionRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -168,6 +208,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'sync.quarantine-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Quarantine list for one Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceQuarantineRecordsResponseSchema,
@@ -178,6 +221,9 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-result-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Apply result read for one Workspace.',
     inputSchema: z
       .object({ workspaceId: WorkspaceIdSchema, applyResultId: z.string().min(1) })
@@ -189,4 +235,4 @@ export const SYNC_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.read',
     mutating: false,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

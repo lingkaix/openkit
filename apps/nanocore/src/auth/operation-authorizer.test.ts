@@ -1,8 +1,16 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  ADMINISTRATION_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
+  type OperationDefinition,
+  PRODUCT_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -11,6 +19,7 @@ import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import {
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
@@ -32,7 +41,9 @@ import {
 } from './access-token-store.js';
 import { type Actor, ensureLocalUser } from './identity.js';
 import type { AuthVariables } from './middleware.js';
+import * as nanoHostOperations from './nanohost-operations.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
+import * as operationAuthorizer from './operation-authorizer.js';
 import {
   assertAuthorizedWorkspaceLineage,
   currentScheduledTurnWorkspaceAuthority,
@@ -42,6 +53,12 @@ import {
   isCanonicalUserOperationAuthorized,
   registerOperationAccessGuards,
 } from './operation-authorizer.js';
+
+// Clone the immutable projection only in this test module so a definition fixture can replace its matching access row.
+vi.mock('./operation-access.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./operation-access.js')>();
+  return { ...actual, PUBLIC_OPERATION_ACCESS: { ...actual.PUBLIC_OPERATION_ACCESS } };
+});
 
 /** Creates one real Core membership fixture behind a tiny guarded Hono app. */
 function createFixture() {
@@ -1336,3 +1353,147 @@ function ownerMembershipStatus(workspaceId: string, userId: string): string | un
     .get(workspaceId, userId) as { status: string } | undefined;
   return row?.status;
 }
+
+/** Fixtures keep a real administration key and native invocation while varying its closed Workspace selector. */
+describe('canonical administration Workspace admission', () => {
+  it.each([
+    ['body-workspace', 'administrator'],
+    ['opaque-child-workspace', 'administrator'],
+    ['body-workspace', 'non-administrator'],
+    ['opaque-child-workspace', 'non-administrator'],
+  ] as const)('uses one primary admission for %s and %s on HTTP and MCP', async (strategy, authority) => {
+    const id = 'nanohost.runtime-target';
+    expect(Object.hasOwn(ADMINISTRATION_OPERATION_DEFINITIONS, id)).toBe(true);
+    expect(Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, id)).toBe(false);
+    const definition: OperationDefinition = {
+      ...OPERATION_DEFINITIONS[id],
+      credentials: ['deployment-administrator'],
+      inputSchema: z.object({ workspaceId: z.string(), turnId: z.string() }).strict(),
+      scope:
+        strategy === 'body-workspace'
+          ? { kind: 'body-workspace', field: 'workspaceId' }
+          : {
+              kind: 'opaque-child-workspace',
+              field: 'workspaceId',
+              childField: 'turnId',
+              childOwner: 'turn',
+            },
+      target: { kind: 'workspace' },
+    };
+    const patches = [
+      [OPERATION_DEFINITIONS, definition],
+      [ADMINISTRATION_OPERATION_DEFINITIONS, definition],
+      [
+        PUBLIC_OPERATION_ACCESS,
+        {
+          scope: 'workspace',
+          resolver: strategy,
+          authentication: 'deployment-admin',
+          policyOperation: 'api.call',
+          mutating: false,
+        },
+      ],
+    ] as const;
+    const originals = patches.map(([table]) => Object.getOwnPropertyDescriptor(table, id)!);
+    const expected = {
+      identityId: 'fixture-host',
+      deploymentId: 'fixture-deployment',
+      connectionGeneration: 1,
+      predecessorFenced: true,
+      ready: true,
+      freshEmpty: true,
+      observedAt: '2026-10-05T00:00:00.000Z',
+    };
+    const execute = vi.fn(() => expected);
+    const factory = nanoHostOperations.createNanoHostOperationImplementations;
+    vi.spyOn(nanoHostOperations, 'createNanoHostOperationImplementations').mockImplementation(
+      (dependencies) => ({ ...factory(dependencies), [id]: execute })
+    );
+    const admission = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
+    try {
+      for (const [table, value] of patches)
+        Object.defineProperty(table, id, { ...Object.getOwnPropertyDescriptor(table, id), value });
+      createOpenKitAccessTokenRecord(fixture.coreDb, {
+        ownerUserId: authority === 'administrator' ? 'user_missing' : 'user_viewer',
+        scope: authority === 'administrator' ? 'server-admin' : 'workspace',
+        workspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
+        tokenId: 'token_administration_fixture',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      fixture.actorState.current = {
+        kind: 'token',
+        userId: authority === 'administrator' ? 'user_missing' : 'user_viewer',
+        tokenId: 'token_administration_fixture',
+        tokenScope: authority === 'administrator' ? 'server-admin' : 'workspace',
+        tokenWorkspaceIds: authority === 'administrator' ? [] : [fixture.workspace.id],
+      };
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (c, next) => {
+        c.set('actor', fixture.actorState.current);
+        await next();
+      });
+      registerOperationAccessGuards({
+        app,
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        quickChatWorkspaceIdForUser,
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+      });
+      const dependencies = {
+        app,
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        requestStore: () => fixture.store,
+        inflightCommands: new WeakMap(),
+        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
+      };
+      registerOperationJsonRoutes(dependencies);
+      registerRemoteMcpRoutes({ ...dependencies, getBootReadiness: createBootReadinessSnapshot });
+      const input = { workspaceId: fixture.workspace.id, turnId: fixture.turn.id };
+      // MCP first establishes the same native result before HTTP exercises the legacy-guard exclusion.
+      for (const transport of ['MCP', 'HTTP'] as const) {
+        admission.mockClear();
+        execute.mockClear();
+        const response = await app.request(
+          transport === 'HTTP' ? `/api/app/operations/${id}` : '/mcp',
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json, text/event-stream',
+            },
+            body: JSON.stringify(
+              transport === 'HTTP'
+                ? input
+                : {
+                    jsonrpc: '2.0',
+                    id: 1,
+                    method: 'tools/call',
+                    params: { name: 'call', arguments: { operation: id, input } },
+                  }
+            ),
+          }
+        );
+        const json = await response.json();
+        const value = transport === 'HTTP' ? json : JSON.parse(json.result.content[0].text);
+        if (authority === 'administrator') {
+          expect(response.status, transport).toBe(200);
+          expect(value, transport).toEqual(expected);
+          expect(admission, transport).toHaveBeenCalledTimes(1);
+          expect(execute, transport).toHaveBeenCalledTimes(1);
+        } else {
+          expect(response.status, transport).toBe(transport === 'HTTP' ? 403 : 200);
+          expect(value, transport).toMatchObject({ code: 'workspace_access_denied' });
+          if (transport === 'MCP') expect(json.result.isError).toBe(true);
+          expect(admission, transport).not.toHaveBeenCalled();
+          expect(execute, transport).not.toHaveBeenCalled();
+        }
+      }
+    } finally {
+      patches.forEach(([table], index) => {
+        Object.defineProperty(table, id, originals[index]!);
+      });
+      vi.restoreAllMocks();
+    }
+  });
+});

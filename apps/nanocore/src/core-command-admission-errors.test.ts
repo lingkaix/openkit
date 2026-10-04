@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CORE_COMMAND_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -122,7 +122,8 @@ it.each(
       'chat.quick': { input: 'Must not dispatch', stream: false },
     };
     expect(
-      Object.keys(CORE_COMMAND_OPERATION_DEFINITIONS)
+      Object.keys(OPERATION_DEFINITIONS)
+        .filter((key) => key === 'workspace.create' || Object.hasOwn(inputs, key))
         .filter((key) => key !== 'workspace.create')
         .sort()
     ).toEqual([...operations].sort());

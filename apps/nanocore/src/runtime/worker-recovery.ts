@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { StopReason } from '@openkit/protocol';
 
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import {
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
@@ -624,6 +625,7 @@ export function resolveInterruptedWorkerRetryDecision(
  * @param workspaceDb Open workspace-scope database handle.
  * @param input Cleanup input identifying the stored checkpoint.
  * @returns True when a checkpoint row was deleted.
+ * @throws OperationError when required retained provenance is missing or fails the existing bounded verification; other cleanup failures remain unclassified.
  */
 export async function clearWorkerCheckpointAfterTerminalState(
   workspaceDb: WorkspaceDb,
@@ -667,7 +669,11 @@ export async function clearWorkerCheckpointAfterTerminalState(
       | { evidence_bundle_id: string; backend_type: string | null; created_at: string }
       | undefined;
     if (!rawBundle) {
-      throw new Error('Required retained runtime provenance is missing.');
+      throw new OperationError(
+        'recovery_retry_failed',
+        'Required retained runtime provenance is missing.',
+        400
+      );
     }
     const runtime = workspaceDb.sqlite
       .prepare(
@@ -699,11 +705,20 @@ export async function clearWorkerCheckpointAfterTerminalState(
       environmentPackage,
       workspaceDb,
       workspaceRoot,
-    }).catch(() => {
-      throw new Error('Required retained runtime provenance verification failed.');
+    }).catch((cause) => {
+      throw new OperationError(
+        'recovery_retry_failed',
+        'Required retained runtime provenance verification failed.',
+        400,
+        { cause }
+      );
     });
     if (!verified.complete) {
-      throw new Error('Required retained runtime provenance verification failed.');
+      throw new OperationError(
+        'recovery_retry_failed',
+        'Required retained runtime provenance verification failed.',
+        400
+      );
     }
   }
 

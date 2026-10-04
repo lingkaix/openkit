@@ -8,7 +8,7 @@ import {
 } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
-import * as invocation from '../operation-invocation.js';
+import * as invocation from '../operation-composition.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from '../runtime/nanohost-runtime-target.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';

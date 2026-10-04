@@ -5,6 +5,7 @@ import {
 } from './generative-operations.js';
 import {
   ARTIFACT_OPERATION_DEFINITIONS,
+  composeOperationTables,
   KERNEL_OPERATION_DEFINITIONS,
   operationHttpPath,
   operationModelInput,
@@ -12,6 +13,12 @@ import {
   PRODUCT_OPERATION_DEFINITIONS,
 } from './operation-definitions.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
+
+it('rejects duplicate operation ids instead of silently overwriting an included family', () => {
+  expect(() =>
+    composeOperationTables(KERNEL_OPERATION_DEFINITIONS, KERNEL_OPERATION_DEFINITIONS)
+  ).toThrow('Duplicate operation id: kernel.apps.get');
+});
 
 describe('operation definitions', () => {
   it('derives model views from complete schemas without bound identities', () => {

@@ -5,14 +5,15 @@ import {
   RetryInterruptedWorkerCheckpointResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
+import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
-import type {
-  OperationImplementations,
-  OperationInvocationDependencies,
-} from '../operation-invocation.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
+import type { OperationImplementations } from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -22,27 +23,19 @@ import {
   materializeInterruptedWorkerStates,
   resolveInterruptedWorkerRetryDecision,
 } from './worker-recovery.js';
-
-/** Recovery projection failure preserves the command owner's published status and code. */
-export class RecoveryOperationError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status = 400
-  ) {
-    super(message);
-  }
-}
 /** Joins recovery listing and release to the unchanged checkpoint, receipt and cleanup owners. */
 export function createRecoveryOperationImplementations(
-  dependencies: OperationInvocationDependencies
-): Pick<OperationImplementations, keyof typeof RECOVERY_OPERATION_DEFINITIONS> {
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
+) {
   const { repositoryWorkspaceDb } = dependencies;
   // Native invocation admits Core storage before entering this family.
   const coreDb = dependencies.coreDb!;
   const store = dependencies.store!;
   return {
-    'recovery.worker-list': (_input, actor, context, workspaceIds) => {
+    'recovery.worker-list': (_input, context) => {
+      const actor = context.actorRef;
+      const workspaceIds =
+        context.scope.kind === 'authorized-workspace-set' ? context.scope.workspaceIds : [];
       try {
         return ListInterruptedWorkerStatesResponseSchema.parse({
           items: workspaceIds.flatMap((workspaceId) => {
@@ -64,7 +57,15 @@ export function createRecoveryOperationImplementations(
           }),
         });
       } catch (error) {
-        throw new RecoveryOperationError('recovery_list_failed', publishedErrorMessage(error));
+        if (
+          error instanceof StoreRecordNotFoundError ||
+          error instanceof SyntaxError ||
+          error instanceof z.ZodError
+        )
+          throw new OperationError('recovery_list_failed', publishedErrorMessage(error), 400, {
+            cause: error,
+          });
+        throw error;
       }
     },
     'recovery.checkpoint-retry': async (input) => {
@@ -88,15 +89,22 @@ export function createRecoveryOperationImplementations(
         }
       } catch (error) {
         if (
-          error instanceof RecoveryOperationError ||
           error instanceof TurnStartValidationError ||
           error instanceof IdempotencyKeyConflictError
         )
-          throw error;
-        throw new RecoveryOperationError('recovery_retry_failed', publishedErrorMessage(error));
+          throw new OperationError(error.code, error.message, error.status, { cause: error });
+        if (
+          error instanceof StoreRecordNotFoundError ||
+          error instanceof SyntaxError ||
+          error instanceof z.ZodError
+        )
+          throw new OperationError('recovery_retry_failed', publishedErrorMessage(error), 400, {
+            cause: error,
+          });
+        throw error;
       }
     },
-  };
+  } satisfies Pick<OperationImplementations, keyof typeof RECOVERY_OPERATION_DEFINITIONS>;
 }
 
 /**
@@ -234,4 +242,20 @@ function assertInterruptedTurn(
 /** Creates the stable fail-closed error for incomplete retry authority. */
 function retryRecoveryRequired(message: string): TurnStartValidationError {
   return new TurnStartValidationError('recovery_required', message, 409);
+}
+
+/** Recovery owns its original Turn lineage and missing-checkpoint refusal, independent of operation spelling. */
+export function readRecoveryOperationLineage(
+  store: import('../lib/store.js').FsStore,
+  turnId: string
+) {
+  try {
+    const lineage = store.getTurnLineage(turnId);
+    if (!lineage) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    return lineage;
+  } catch (error) {
+    if (error instanceof StoreRecordNotFoundError)
+      throw new OperationError('recovery_retry_failed', error.message, 400, { cause: error });
+    throw error;
+  }
 }

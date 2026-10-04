@@ -1,6 +1,27 @@
-import type { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import type {
+  AUTOMATION_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
-import type { OperationImplementations } from './operation-invocation.js';
+import type { createAutomationOperationImplementations } from './automation-operations.js';
+import type { createOperationImplementations } from './operation-composition.js';
+import type { OperationImplementations } from './operation-contract.js';
+
+/** Actual family factory keys, rather than a restated generic alias, must remain exact. */
+export type ActualAutomationJoin = AssertTrue<
+  Identical<
+    keyof ReturnType<typeof createAutomationOperationImplementations>,
+    keyof typeof AUTOMATION_OPERATION_DEFINITIONS
+  >
+>;
+
+/** The concrete composition must retain every family key, including accidental extras. */
+export type ActualComposedJoin = AssertTrue<
+  Identical<
+    keyof ReturnType<typeof createOperationImplementations>,
+    keyof typeof OPERATION_DEFINITIONS
+  >
+>;
 
 /** Compile-time equality oracle for the exact definition/implementation key join. */
 type Identical<A, B> =

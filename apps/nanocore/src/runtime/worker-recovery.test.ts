@@ -11,6 +11,7 @@ import {
 } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 
+import { OperationError } from '../operation-error.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -432,6 +433,13 @@ describe('worker recovery materialization', () => {
           workspaceId: 'ws_demo',
         })
       ).rejects.toThrow('Required retained runtime provenance is missing.');
+      await expect(
+        clearWorkerCheckpointAfterTerminalState(workspaceDb, {
+          threadId: 'th_demo',
+          turnId: turn.id,
+          workspaceId: 'ws_demo',
+        })
+      ).rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turn.id)).toEqual(checkpoint);
     } finally {
       workspaceDb.sqlite.close();
@@ -472,6 +480,10 @@ describe('worker recovery materialization', () => {
         Buffer.concat([retained.stableStreamBytes, Buffer.from('tampered')])
       );
       await expect.soft(clear()).rejects.toThrow(/provenance/i);
+      await expect.soft(clear()).rejects.toBeInstanceOf(OperationError);
+      await expect
+        .soft(clear())
+        .rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
       expect
         .soft(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', retained.turnId))
         .not.toBeNull();
@@ -480,6 +492,10 @@ describe('worker recovery materialization', () => {
       writeFileSync(retained.stableStreamPath, retained.stableStreamBytes);
       unlinkSync(retained.stableStreamPath);
       await expect.soft(clear()).rejects.toThrow(/provenance/i);
+      await expect.soft(clear()).rejects.toBeInstanceOf(OperationError);
+      await expect
+        .soft(clear())
+        .rejects.toMatchObject({ code: 'recovery_retry_failed', status: 400 });
       expect
         .soft(getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', retained.turnId))
         .not.toBeNull();

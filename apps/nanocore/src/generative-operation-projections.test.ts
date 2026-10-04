@@ -6,6 +6,7 @@ import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
+import { StoreRecordNotFoundError } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -531,7 +532,7 @@ it('retains Workspace availability failures and refuses before any app or presen
   const f = fixture();
   const available = f.store.getWorkspace.bind(f.store);
   const lookup = vi.spyOn(f.store, 'getWorkspace').mockImplementation(() => {
-    throw new Error('Workspace record is missing.');
+    throw new StoreRecordNotFoundError('Workspace record is missing.');
   });
   try {
     for (const [id, input, status] of [
@@ -549,7 +550,12 @@ it('retains Workspace availability failures and refuses before any app or presen
           code: 'invalid_request',
           message: 'Workspace record is missing.',
         });
-      else expect(await response.text()).toBe('Internal Server Error');
+      else
+        expect(await response.json()).toEqual({
+          protocolVersion: '0.5.0',
+          code: 'internal_error',
+          message: 'Internal Server Error',
+        });
     }
     expect(lookup).toHaveBeenCalledWith('ws_demo');
     lookup.mockImplementation(available);

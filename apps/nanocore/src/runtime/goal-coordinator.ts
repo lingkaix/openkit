@@ -18,7 +18,7 @@ import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
-import { createOperationInvocation } from '../operation-invocation.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';

@@ -2,23 +2,19 @@ import { ToolSchema } from '@modelcontextprotocol/core';
 import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
 import {
   type BootReadinessSnapshot,
-  CreateOpenKitAccessTokenResponseSchema,
   OPERATION_DEFINITIONS,
   type OperationId,
-  RotateOpenKitAccessTokenResponseSchema,
+  operationMcpEligible,
 } from '@openkit/app-api-schemas';
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { KernelCommandError } from './generative-kernel/errors.js';
 import {
   createOperationInvocation,
   type OperationInvocationDependencies,
-  OperationInvocationError,
-} from './operation-invocation.js';
-import { WorkspaceDeletionOperationError } from './workspace-deletion-operations.js';
-import { WorkspaceSharingOperationError } from './workspace-sharing-operations.js';
+} from './operation-composition.js';
+import { OperationError, projectOperationError } from './operation-error.js';
 
 const SEARCH_LIMIT = 20;
 const querySchema = z.object({ query: z.string().max(500) }).strict();
@@ -57,16 +53,6 @@ function descriptor(id: string, definition: (typeof OPERATION_DEFINITIONS)[Opera
   };
 }
 
-/** Excludes the credential owner's actual one-time-secret result contracts before any invocation. */
-function returnsOneTimeSecret(definition: { readonly outputSchema: z.ZodType }): boolean {
-  // Bootstrap aliases issuance's schema. Future credential cutover reuses these existing contracts.
-  // This is a schema boundary, not an operation-id denylist or an inference from result values.
-  return (
-    definition.outputSchema === CreateOpenKitAccessTokenResponseSchema ||
-    definition.outputSchema === RotateOpenKitAccessTokenResponseSchema
-  );
-}
-
 /** Tokenizes semantic ids and prose so multiple query terms rank independent of word order. */
 function terms(value: string): string[] {
   return [
@@ -83,7 +69,7 @@ function terms(value: string): string[] {
 function search(query: string) {
   const wanted = terms(query);
   const matches = Object.entries(OPERATION_DEFINITIONS)
-    .filter(([, definition]) => !returnsOneTimeSecret(definition))
+    .filter(([, definition]) => operationMcpEligible(definition))
     .map(([id, definition]) => {
       const tokens = terms(`${id} ${definition.description}`);
       return {
@@ -184,7 +170,7 @@ export function registerRemoteMcpRoutes({
             // Only the canonical id and UUID correlate audit; never record arbitrary tool input.
             requestId = z.uuid().safeParse(input.requestId).data;
             if (definition.mutating && !getBootReadiness().acceptingProductWork)
-              throw new OperationInvocationError(
+              throw new OperationError(
                 'product_work_unavailable',
                 'NanoCore is not accepting product work during the current boot readiness state.',
                 503
@@ -192,35 +178,24 @@ export function registerRemoteMcpRoutes({
             result = await createOperationInvocation(dependencies)(
               operation as OperationId,
               input,
-              { kind: 'public', actor }
+              { kind: 'public', actor, delivery: 'model', signal: c.req.raw.signal }
             );
             break;
           }
           default:
-            throw new OperationInvocationError('unsupported_operation', 'Unknown tool.', 400);
+            throw new OperationError('unsupported_operation', 'Unknown tool.', 400);
         }
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       } catch (error) {
         refused = true;
         const result =
-          error instanceof WorkspaceSharingOperationError ||
-          error instanceof WorkspaceDeletionOperationError
-            ? {
-                code: error.code,
-                message: error.message,
-                status: error.status,
-                ...(error.details === undefined ? {} : { details: error.details }),
-              }
-            : error instanceof OperationInvocationError ||
-                error instanceof KernelCommandError ||
-                error instanceof RemoteMcpSecretRefusal
-              ? { code: error.code, message: error.message }
-              : error instanceof z.ZodError
-                ? { code: 'invalid_request', message: 'Invalid tool input.' }
-                : {
-                    code: 'operation_failed',
-                    message: 'Operation failed. Inspect the owner outcome before retrying.',
-                  };
+          projectOperationError(error) ??
+          (error instanceof z.ZodError
+            ? { code: 'invalid_request', message: 'Invalid tool input.' }
+            : {
+                code: 'operation_failed',
+                message: 'Operation failed. Inspect the owner outcome before retrying.',
+              });
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
     });
@@ -248,16 +223,17 @@ export function registerRemoteMcpRoutes({
 /** Resolves only the composed tables and refuses excluded contracts before dispatch. */
 function definitionFor(id: string) {
   if (!Object.hasOwn(OPERATION_DEFINITIONS, id))
-    throw new OperationInvocationError('unsupported_operation', 'Unknown operation.', 400);
+    throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
   const definition = OPERATION_DEFINITIONS[id as OperationId];
-  if (returnsOneTimeSecret(definition)) throw new RemoteMcpSecretRefusal();
+  if (!operationMcpEligible(definition))
+    throw new OperationError(
+      definition.returnsOneTimeSecret
+        ? 'mcp_secret_returning_operation'
+        : 'mcp_streaming_operation',
+      definition.returnsOneTimeSecret
+        ? 'One-time secret operations are unavailable over MCP.'
+        : 'Streaming operations are unavailable over MCP. Use the retained archive transfer interface.',
+      400
+    );
   return definition;
-}
-
-/** Projection-owned refusal for the credential owner's secret-returning contracts. */
-class RemoteMcpSecretRefusal extends Error {
-  readonly code = 'mcp_secret_returning_operation';
-  constructor() {
-    super('One-time secret operations are unavailable over MCP.');
-  }
 }

@@ -5,7 +5,7 @@ import {
   UpdateThreadRequestSchema,
 } from '@openkit/protocol';
 import { expect, it } from 'vitest';
-import { CORE_COMMAND_OPERATION_DEFINITIONS } from './core-commands.js';
+import { OPERATION_DEFINITIONS } from './operation-definitions.js';
 
 it.each([
   ['thread.update', UpdateThreadRequestSchema],
@@ -19,7 +19,7 @@ it.each([
     requestId: randomUUID(),
     futureHint: true,
   };
-  const current = CORE_COMMAND_OPERATION_DEFINITIONS[id].inputSchema;
+  const current = OPERATION_DEFINITIONS[id].inputSchema;
   expect(current.parse(input)).toEqual(former.parse(input));
   expect(current.parse(input)).not.toHaveProperty('futureHint');
   expect(current.safeParse({ ...input, threadId: undefined }).success).toBe(false);

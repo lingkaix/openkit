@@ -1,11 +1,12 @@
 import type { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { WorkspaceImportDryRunResponseSchema } from '@openkit/app-api-schemas';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type {
   OperationImplementations,
   OperationInvocationContext,
-  OperationInvocationDependencies,
-} from '../operation-invocation.js';
+} from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import { dryRunWorkspaceImport, verifyWorkspaceExportTree } from './workspace-export.js';
 import {
   assertRequestedExportHandles,
@@ -16,30 +17,18 @@ import {
   importVerifiedWorkspace,
 } from './workspace-transfer-routes.js';
 
-/** Existing transfer refusal, mapped only at native invocation. */
-export class WorkspaceTransferOperationError extends Error {
-  public constructor(
-    public readonly code: string,
-    message: string,
-    public readonly status: number
-  ) {
-    super(message);
-    this.name = 'WorkspaceTransferOperationError';
-  }
-}
-
 /** Joins JSON transfer definitions to the existing verified-tree and staged publication owners. */
 export function createWorkspaceTransferOperationImplementations(
-  dependencies: OperationInvocationDependencies
-): Pick<OperationImplementations, keyof typeof WORKSPACE_TRANSFER_OPERATION_DEFINITIONS> {
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
+) {
   const { coreDb, repositoryWorkspaceDb, store } = dependencies;
   return {
-    'workspace.export': (input, _actor, context) => {
+    'workspace.export': (input, context) => {
       // Definition credential admission proves public context before this native join.
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
       if (!dataRoot)
-        throw new WorkspaceTransferOperationError(
+        throw new OperationError(
           'workspace_export_unavailable',
           'Workspace export is unavailable.',
           503
@@ -54,11 +43,11 @@ export function createWorkspaceTransferOperationImplementations(
         workspaceId: input.workspaceId,
       }).response;
     },
-    'workspace.import-dry-run': (input, _actor, context) => {
+    'workspace.import-dry-run': (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
       if (!dataRoot)
-        throw new WorkspaceTransferOperationError(
+        throw new OperationError(
           'workspace_import_unavailable',
           'Workspace import dry-run is unavailable.',
           503
@@ -72,7 +61,7 @@ export function createWorkspaceTransferOperationImplementations(
           ),
         });
         if (!canReadWorkspaceExport(dataRoot, store!, actor, verified, coreDb))
-          throw new WorkspaceTransferOperationError(
+          throw new OperationError(
             'workspace_import_forbidden',
             'Workspace export is unavailable.',
             403
@@ -85,19 +74,19 @@ export function createWorkspaceTransferOperationImplementations(
         assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
         return WorkspaceImportDryRunResponseSchema.parse(report);
       } catch (error) {
-        if (error instanceof WorkspaceTransferOperationError) throw error;
-        throw new WorkspaceTransferOperationError(
+        if (error instanceof OperationError) throw error;
+        throw new OperationError(
           'workspace_import_dry_run_failed',
           'Workspace import dry-run could not verify the requested export.',
           400
         );
       }
     },
-    'workspace.import': (input, _actor, context) => {
+    'workspace.import': (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
       if (!dataRoot)
-        throw new WorkspaceTransferOperationError(
+        throw new OperationError(
           'workspace_import_unavailable',
           'Workspace import is unavailable.',
           503
@@ -111,7 +100,7 @@ export function createWorkspaceTransferOperationImplementations(
           ),
         });
         if (!canReadWorkspaceExport(dataRoot, store!, actor, verified, coreDb))
-          throw new WorkspaceTransferOperationError(
+          throw new OperationError(
             'workspace_import_forbidden',
             'Workspace export is unavailable.',
             403
@@ -131,13 +120,13 @@ export function createWorkspaceTransferOperationImplementations(
           verified,
         });
       } catch (error) {
-        if (error instanceof WorkspaceTransferOperationError) throw error;
-        throw new WorkspaceTransferOperationError(
+        if (error instanceof OperationError) throw error;
+        throw new OperationError(
           'workspace_import_failed',
           'Workspace import could not verify or publish the requested export.',
           400
         );
       }
     },
-  };
+  } satisfies Pick<OperationImplementations, keyof typeof WORKSPACE_TRANSFER_OPERATION_DEFINITIONS>;
 }

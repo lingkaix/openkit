@@ -142,8 +142,16 @@ describe('scheduler admission thread audience', () => {
       expect(hiddenCancel.status).toBe(404);
       expect(missingRetry.status).toBe(hiddenRetry.status);
       expect(missingCancel.status).toBe(hiddenCancel.status);
-      expect(hiddenRetryText).toBe('Thread not found.');
-      expect(hiddenCancelText).toBe('Thread not found.');
+      expect(JSON.parse(hiddenRetryText)).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'not_found',
+        message: 'Thread not found.',
+      });
+      expect(JSON.parse(hiddenCancelText)).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'not_found',
+        message: 'Thread not found.',
+      });
       expect(missingRetryText).toBe(hiddenRetryText);
       expect(missingCancelText).toBe(hiddenCancelText);
       expect(

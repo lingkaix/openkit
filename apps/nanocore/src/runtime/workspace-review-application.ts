@@ -12,6 +12,8 @@ import { listArtifactReviews } from '../artifact-reviews.js';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   applyStagedFilesystemChanges,
@@ -115,7 +117,7 @@ export function listWorkspaceSyncReviewsForRead(
  *
  * @param input Current actor authority, Workspace database, review identity, and decision.
  * @returns Durable review response shared by both App API decision routes.
- * @throws Error when the review is missing, already resolved differently, or application fails.
+ * @throws StoreRecordNotFoundError for missing reviews, OperationError for known refusals, or the unchanged unexpected application failure.
  */
 export async function decideWorkspaceSyncReview(input: {
   readonly authorityActor: ActorRef;
@@ -163,7 +165,7 @@ async function executeWorkspaceSyncReviewDecision(
   const storedReview = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
 
   if (!storedReview) {
-    throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+    throw new StoreRecordNotFoundError(`Workspace synchronization review not found: ${reviewId}`);
   }
   const review = parseWorkspaceSyncReviewItem(storedReview, false);
   if (
@@ -180,7 +182,11 @@ async function executeWorkspaceSyncReviewDecision(
 
   if (review.review.status !== 'pending') {
     if (review.review.status !== input.decision) {
-      throw new Error(`Workspace synchronization review is already resolved: ${reviewId}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        `Workspace synchronization review is already resolved: ${reviewId}`,
+        404
+      );
     }
 
     const workspaceApplyResult =
@@ -193,7 +199,11 @@ async function executeWorkspaceSyncReviewDecision(
         workspaceApplyResult.changeSetId !== review.changeSet.id ||
         workspaceApplyResult.workspaceId !== workspaceId)
     ) {
-      throw new Error(`Workspace apply result lineage mismatch: ${reviewId}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        `Workspace apply result lineage mismatch: ${reviewId}`,
+        404
+      );
     }
     if (workspaceApplyResult && review.changeSet.strategy === 'filesystem') {
       const staging = getFilesystemWorkspaceStagingRoot(workspaceDb, workspaceId, reviewId);
@@ -237,8 +247,10 @@ async function executeWorkspaceSyncReviewDecision(
   }
 
   if (review.changeSet.strategy !== 'filesystem')
-    throw new Error(
-      'Git review application is unavailable; publish through the selected vendor MCP.'
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Git review application is unavailable; publish through the selected vendor MCP.',
+      404
     );
   const staging = requireFilesystemWorkspaceStaging(workspaceDb, review);
   // The existing authorizer supplies administrator eligibility and current credential limits at this effect check too.
@@ -328,7 +340,11 @@ async function applyWorkspaceSyncReviewFilesystem(input: {
   const { review, appliedAt, staging } = input;
 
   if (review.changeSet.strategy !== 'filesystem') {
-    throw new Error(`Workspace review is not filesystem-backed: ${review.review.id}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      `Workspace review is not filesystem-backed: ${review.review.id}`,
+      404
+    );
   }
 
   return applyStagedFilesystemChanges({
@@ -351,7 +367,7 @@ async function applyWorkspaceSyncReviewFilesystem(input: {
  * @param workspaceDb Workspace database owning the review target.
  * @param review Pending filesystem review.
  * @returns Matching staging and target-root record.
- * @throws Error when the target tuple is missing or contradictory.
+ * @throws OperationError when the target tuple is missing or contradictory.
  */
 function requireFilesystemWorkspaceStaging(
   workspaceDb: WorkspaceDb,
@@ -363,10 +379,18 @@ function requireFilesystemWorkspaceStaging(
     review.review.id
   );
   if (!staging) {
-    throw new Error(`Filesystem workspace staging root is not available: ${review.review.id}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      `Filesystem workspace staging root is not available: ${review.review.id}`,
+      404
+    );
   }
   if (staging.changeSetId !== review.changeSet.id) {
-    throw new Error(`Filesystem workspace staging change set mismatch: ${review.review.id}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      `Filesystem workspace staging change set mismatch: ${review.review.id}`,
+      404
+    );
   }
   if (
     staging.workspaceId !== review.review.workspaceId ||
@@ -375,7 +399,11 @@ function requireFilesystemWorkspaceStaging(
     staging.before.resourceId !== review.changeSet.resourceId ||
     staging.before.contentDigest !== review.changeSet.base.contentDigest
   ) {
-    throw new Error(`Filesystem workspace staging lineage mismatch: ${review.review.id}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      `Filesystem workspace staging lineage mismatch: ${review.review.id}`,
+      404
+    );
   }
   return staging;
 }
@@ -440,7 +468,7 @@ function requireWorkspaceReview(
   const review = getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId);
 
   if (!review) {
-    throw new Error(`Workspace synchronization review not found: ${reviewId}`);
+    throw new StoreRecordNotFoundError(`Workspace synchronization review not found: ${reviewId}`);
   }
 
   return review;

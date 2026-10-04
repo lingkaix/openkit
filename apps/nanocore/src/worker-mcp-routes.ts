@@ -25,9 +25,9 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
-import { KernelCommandError } from './generative-kernel/errors.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
-import { OperationInvocationError } from './operation-invocation.js';
+import { OperationError, projectOperationError } from './operation-error.js';
+import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -42,7 +42,6 @@ import {
   dispatchOpenkitGenerativeTool,
   OPENKIT_GENERATIVE_CATALOG_DIGEST,
   OPENKIT_GENERATIVE_MCP_ID,
-  OPENKIT_GENERATIVE_TOOL_OPERATIONS,
   OPENKIT_GENERATIVE_TOOLS,
 } from './runtime/openkit-generative-mcp.js';
 import {
@@ -55,12 +54,7 @@ import {
 } from './runtime/openkit-work-mcp.js';
 import { approvalCardCopy } from './runtime/pending-request-disclosure.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
-import {
-  canonicalJsonText,
-  PendingRequestCommandError,
-  preflightPendingRequest,
-  type RaisePendingRequestInput,
-} from './runtime/pending-requests.js';
+import { canonicalJsonText, type RaisePendingRequestInput } from './runtime/pending-requests.js';
 import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
@@ -386,9 +380,11 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 } catch (error) {
                   if (error instanceof ProtocolError) throw error;
                   const normalized = normalizeWorkerMcpRouteError(error);
-                  throw new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
-                    code: normalized.code,
-                  });
+                  throw new ProtocolError(
+                    ProtocolErrorCode.InvalidRequest,
+                    normalized.message,
+                    projectOperationError(normalized) ?? { code: normalized.code }
+                  );
                 }
               }
 
@@ -445,19 +441,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 });
                 return mcp.projectCallToolResult(result, undefined);
               } catch (error) {
-                const operationId = OPENKIT_GENERATIVE_TOOL_OPERATIONS[request.params.name];
-                if (
-                  serverId === OPENKIT_GENERATIVE_MCP_ID &&
-                  operationId &&
-                  (error instanceof OperationInvocationError || error instanceof KernelCommandError)
-                ) {
-                  // Preserve the migrated owner's typed failure through the existing MCP publisher.
-                  throw finishMcpHandlerFailure(
-                    new WorkerControlGatewayError(error.code, error.message, error.status),
-                    call,
-                    activeWorkspaceDb
-                  );
-                }
                 throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
               }
             } finally {
@@ -1043,10 +1026,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   ) {
     assertValidMcpToolArguments(currentSnapshot!.tools, input.toolName, input.arguments);
     try {
-      const duplicate = preflightPendingRequest(input.workspaceDb.sqlite, pendingInput);
+      const duplicate = preflightPendingToolRequest(input.workspaceDb.sqlite, pendingInput);
       if (duplicate) return pendingToolResult('pending-approval', duplicate.requestId);
     } catch (error) {
-      if (error instanceof PendingRequestCommandError)
+      if (error instanceof OperationError)
         throw new ProtocolError(ProtocolErrorCode.InvalidRequest, error.message, {
           code: error.code,
         });
@@ -1850,9 +1833,11 @@ function finishMcpHandlerFailure(
   workspaceDb: WorkspaceDb
 ): ProtocolError {
   const normalized = finishMcpCallFailure(error, call, workspaceDb);
-  return new ProtocolError(ProtocolErrorCode.InvalidRequest, normalized.message, {
-    code: normalized.code,
-  });
+  return new ProtocolError(
+    ProtocolErrorCode.InvalidRequest,
+    normalized.message,
+    projectOperationError(normalized) ?? { code: normalized.code }
+  );
 }
 
 /** Safely terminalizes one MCP handler failure or returns a recovery-required result. */
@@ -1860,7 +1845,7 @@ function finishMcpCallFailure(
   error: unknown,
   call: StartedCapabilityCall,
   workspaceDb: WorkspaceDb
-): WorkerControlGatewayError {
+): WorkerControlGatewayError | OperationError {
   const normalized = normalizeWorkerMcpRouteError(error);
   try {
     finishCapabilityCall({
@@ -2089,10 +2074,8 @@ function unavailableServer(): WorkerControlGatewayError {
 }
 
 /** Maps one private route failure to the closed worker-visible vocabulary. */
-function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError {
-  if (error instanceof WorkerControlGatewayError) return error;
-  if (error instanceof PendingRequestCommandError)
-    return new WorkerControlGatewayError(error.code, error.message, error.status);
+function normalizeWorkerMcpRouteError(error: unknown): WorkerControlGatewayError | OperationError {
+  if (error instanceof WorkerControlGatewayError || error instanceof OperationError) return error;
   return new WorkerControlGatewayError('mcp-call-failed', 'MCP tool call failed.', 503);
 }
 
@@ -2103,7 +2086,7 @@ function workerMcpHttpError(error: unknown): Response {
     {
       error: {
         code: ProtocolErrorCode.InvalidRequest,
-        data: { code: normalized.code },
+        data: projectOperationError(normalized) ?? { code: normalized.code },
         message: normalized.message,
       },
       id: null,

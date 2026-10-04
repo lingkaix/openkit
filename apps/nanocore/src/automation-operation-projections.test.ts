@@ -43,6 +43,7 @@ describe('automation operation projections', () => {
     expect(deleted.headers.get('content-type')).toBeNull();
     expect(await deleted.text()).toBe('');
     expect(automationStore.listAutomations('user_local')).toEqual([]);
+    expect(deleted.headers.get('cache-control')).toBe('no-store');
   });
   it.each([
     'list',
@@ -92,7 +93,11 @@ describe('automation operation projections', () => {
           message: 'Workspace not found: ws_absent',
         });
       } else {
-        expect(await response.text()).toBe('Internal Server Error');
+        await expect(response.json()).resolves.toEqual({
+          protocolVersion: '0.5.0',
+          code: 'internal_error',
+          message: 'Internal Server Error',
+        });
       }
       expect(automationStore.listAutomations('user_local')).toEqual(before);
     } finally {

@@ -1,18 +1,20 @@
 import { createHash } from 'node:crypto';
 import {
+  composeOperationTables,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
+  operationMcpEligible,
   operationModelInput,
   operationToolName,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { type ActorRef, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
-
-import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { FsStore } from '../lib/store.js';
-import { createOperationInvocation } from '../operation-invocation.js';
+import { createOperationInvocation } from '../operation-composition.js';
+import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -20,11 +22,11 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 /** Reserved built-in Worker MCP server id. */
 export const OPENKIT_GENERATIVE_MCP_ID = 'openkit-generative';
 
-const definitions = {
-  ...KERNEL_OPERATION_DEFINITIONS,
-  ...KERNEL_REMAINING_OPERATION_DEFINITIONS,
-  ...GENERATIVE_UI_OPERATION_DEFINITIONS,
-} as const;
+const definitions = composeOperationTables(
+  KERNEL_OPERATION_DEFINITIONS,
+  KERNEL_REMAINING_OPERATION_DEFINITIONS,
+  GENERATIVE_UI_OPERATION_DEFINITIONS
+);
 
 function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
   const projection = z.toJSONSchema(schema, { target: 'draft-2020-12' }) as Record<string, unknown>;
@@ -33,13 +35,20 @@ function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
 }
 
 /** Built-in tool descriptors used for ListTools and catalog digest. */
-export const OPENKIT_GENERATIVE_TOOLS = Object.entries(definitions).map(([id, definition]) => ({
-  name: operationToolName(id),
-  description: definition.description,
-  inputSchema: mcpInputSchema(
-    operationModelInput(definition.inputSchema, ['workspaceId', 'requestId', 'threadId', 'turnId'])
-  ),
-}));
+export const OPENKIT_GENERATIVE_TOOLS = Object.entries(definitions)
+  .filter(([, definition]) => operationMcpEligible(definition))
+  .map(([id, definition]) => ({
+    name: operationToolName(id),
+    description: definition.description,
+    inputSchema: mcpInputSchema(
+      operationModelInput(definition.inputSchema, [
+        'workspaceId',
+        'requestId',
+        'threadId',
+        'turnId',
+      ])
+    ),
+  }));
 
 /** Definition-derived admission key for each supplied built-in Tool. */
 export const OPENKIT_GENERATIVE_TOOL_OPERATIONS: Readonly<
@@ -126,9 +135,15 @@ export async function dispatchOpenkitGenerativeTool(
 }> {
   const operationId = OPENKIT_GENERATIVE_TOOL_OPERATIONS[toolName];
   if (!operationId)
-    throw new KernelCommandError('unsupported_operation', `Unknown generative tool: ${toolName}.`);
+    throw new OperationError('unsupported_operation', 'Unknown generative tool.', 400);
   if (!context.coreDb || !context.workspaceMutationAdmission || !context.packageSnapshotId)
-    throw new KernelCommandError('unavailable', 'Invocation authority is unavailable.');
+    throw new OperationError('unavailable', 'Invocation authority is unavailable.', 503);
+  if (!operationMcpEligible(OPERATION_DEFINITIONS[operationId]))
+    throw new OperationError(
+      'mcp_result_unavailable',
+      'Operation result is unavailable over MCP.',
+      400
+    );
   const invoke = createOperationInvocation({
     coreDb: context.coreDb,
     store: context.store,
@@ -136,20 +151,33 @@ export async function dispatchOpenkitGenerativeTool(
     workspaceMutationAdmission: context.workspaceMutationAdmission,
     repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(context.dataRoot, workspaceId),
   });
-  const trusted = {
+  const packageSnapshotId = context.packageSnapshotId;
+  const trustedFor = (id: keyof typeof definitions) => ({
     kind: 'worker' as const,
     actor: context.actor,
-    lineage: { ...context.scope, packageSnapshotId: context.packageSnapshotId },
+    lineage: { ...context.scope, packageSnapshotId },
     requestId: requestIdFrom(context),
-  };
-  const output = await invoke(operationId, args, trusted);
+    bindings: {
+      workspaceId: context.scope.workspaceId,
+      ...(definitions[id].mutating ? { requestId: requestIdFrom(context) } : {}),
+      ...(id === 'generative-ui.publish'
+        ? { threadId: context.scope.threadId, turnId: context.scope.turnId }
+        : {}),
+      ...('threadField' in OPERATION_DEFINITIONS[id].target
+        ? { threadId: context.scope.threadId }
+        : {}),
+      ...('turnField' in OPERATION_DEFINITIONS[id].target ? { turnId: context.scope.turnId } : {}),
+    },
+    delivery: 'model' as const,
+  });
+  const output = await invoke(operationId, args, trustedFor(operationId));
   if (operationId === 'generative-ui.publish') {
     const published =
       output as import('@openkit/app-api-schemas').PublishGenerativePresentationResponse;
     const resource = await invoke(
       'generative-ui.resource',
       { presentationId: published.id },
-      trusted
+      trustedFor('generative-ui.resource')
     );
     return {
       content: [

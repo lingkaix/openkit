@@ -1,4 +1,4 @@
-import { PRODUCT_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -820,9 +820,9 @@ function readonlyTokenCannotMutate(
 }
 
 /**
- * Maps every guarded catalog entry to its canonical method and Hono route path.
+ * Maps retained catalog entries to canonical methods and Hono route paths; all composed definitions use native admission.
  *
- * @returns Unique non-server operation routes.
+ * @returns Unique legacy non-server operation routes.
  * @throws When a catalog operation has no canonical route owner.
  */
 function guardedOperationRoutes(): OperationRoute[] {
@@ -830,7 +830,7 @@ function guardedOperationRoutes(): OperationRoute[] {
   const routes: OperationRoute[] = [];
 
   for (const [operationKey, access] of Object.entries(PUBLIC_OPERATION_ACCESS)) {
-    if (access.scope === 'server' || Object.hasOwn(PRODUCT_OPERATION_DEFINITIONS, operationKey)) {
+    if (access.scope === 'server' || Object.hasOwn(OPERATION_DEFINITIONS, operationKey)) {
       continue;
     }
     const direct = directOperationRoute(operationKey);

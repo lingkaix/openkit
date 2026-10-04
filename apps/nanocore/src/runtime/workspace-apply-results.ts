@@ -1,6 +1,8 @@
 import { type WorkspaceApplyResult, WorkspaceApplyResultSchema } from '@openkit/app-api-schemas';
+import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 
 /**
@@ -324,7 +326,7 @@ export function importWorkspaceApplyResults(
  * @param workspaceId Workspace id.
  * @param applyResultId Apply result id.
  * @returns Stored workspace apply result.
- * @throws Error when the result does not exist.
+ * @throws StoreRecordNotFoundError when the result does not exist.
  */
 export function requireWorkspaceApplyResult(
   workspaceDb: WorkspaceDb,
@@ -334,7 +336,9 @@ export function requireWorkspaceApplyResult(
   const result = getWorkspaceApplyResult(workspaceDb, workspaceId, applyResultId);
 
   if (!result) {
-    throw new Error(`Workspace apply result not found: ${workspaceId}/${applyResultId}`);
+    throw new StoreRecordNotFoundError(
+      `Workspace apply result not found: ${workspaceId}/${applyResultId}`
+    );
   }
 
   return result;
@@ -424,14 +428,8 @@ function mapWorkspaceApplyResultRow(row: WorkspaceApplyResultRow): WorkspaceAppl
  *
  * @param value JSON string value to parse.
  * @returns Parsed JSON array.
- * @throws Error when the stored JSON is not an array.
+ * @throws SyntaxError or ZodError when the stored JSON is not an array.
  */
 function parseArray(value: string): unknown[] {
-  const parsed = JSON.parse(value) as unknown;
-
-  if (!Array.isArray(parsed)) {
-    throw new Error('Stored workspace apply result field is not an array.');
-  }
-
-  return parsed;
+  return z.array(z.unknown()).parse(JSON.parse(value));
 }

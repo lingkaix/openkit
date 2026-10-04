@@ -1,5 +1,6 @@
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import type { OperationDefinition } from './operation-contract.js';
 import {
   AcceptWorkspaceInvitationRequestSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
@@ -27,6 +28,9 @@ import {
 /** Canonical Workspace lifecycle contracts; Core receipts, authority and deletion phases retain their existing owners. */
 export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
   'workspace.member-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: "List the Workspace's current members.",
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceMembersResponseSchema,
@@ -37,6 +41,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.invitation-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List invitations for the Workspace.',
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceInvitationsResponseSchema,
@@ -47,6 +54,8 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.invitation-create': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
     description: 'Invite an existing canonical user to the Workspace.',
     inputSensitivity: 'secret stdin',
     inputSchema: CreateWorkspaceInvitationRequestSchema.safeExtend({
@@ -61,6 +70,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'workspace.my-invitation-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List invitations addressed to the current user.',
     inputSchema: z.object({}).strict(),
     outputSchema: ListWorkspaceInvitationsResponseSchema,
@@ -71,6 +83,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.my-invitation-accept': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Accept the addressed invitation for its invitee.',
     inputSchema: AcceptWorkspaceInvitationRequestSchema.safeExtend({
       invitationId: z.string().min(1),
@@ -84,6 +99,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'invitation-workspace', field: 'invitationId' },
   },
   'workspace.my-invitation-decline': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Decline the addressed invitation for its invitee.',
     inputSchema: DeclineWorkspaceInvitationRequestSchema.safeExtend({
       invitationId: z.string().min(1),
@@ -97,6 +115,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'invitation-workspace', field: 'invitationId' },
   },
   'workspace.invitation-revoke': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Revoke a pending Workspace invitation.',
     inputSchema: RevokeWorkspaceInvitationRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -110,6 +131,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.member-access-change': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: "Change an existing member's Workspace access level.",
     inputSchema: ChangeWorkspaceMemberAccessRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -123,6 +147,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.member-remove': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Remove a member from the Workspace.',
     inputSchema: RemoveWorkspaceMemberRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -136,6 +163,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.leave': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Leave the Workspace as the current user.',
     inputSchema: LeaveWorkspaceRequestSchema.safeExtend({ workspaceId: WorkspaceIdSchema }),
     outputSchema: WorkspaceMemberMutationResponseSchema,
@@ -147,6 +177,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
   },
   'workspace.ownership-transfer': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Transfer Workspace ownership to an active member.',
     inputSchema: TransferWorkspaceOwnershipRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -159,6 +192,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.access-recovery-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: "Read the Workspace's current access-recovery state.",
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: WorkspaceAccessRecoveryResponseSchema,
@@ -169,6 +205,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.access-recover': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Recover Workspace access using current administrator authority.',
     inputSchema: RecoverWorkspaceAccessRequestSchema.safeExtend({ workspaceId: WorkspaceIdSchema }),
     outputSchema: WorkspaceAccessRecoveryResponseSchema,
@@ -180,6 +219,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
   },
   'user.disable': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Disable a canonical user and revoke their live access.',
     inputSchema: DisableUserRequestSchema.safeExtend({ targetUserId: z.string().min(1) }),
     outputSchema: DisableUserResponseSchema,
@@ -190,6 +232,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.delete': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Delete the Workspace or resume the exact recorded deletion request.',
     inputSchema: DeleteWorkspaceRequestSchema.safeExtend({ workspaceId: WorkspaceIdSchema }),
     outputSchema: WorkspaceDeletionResponseSchema,
@@ -201,6 +246,9 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     successStatuses: [200, 202],
   },
   'workspace.deleted-recover': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'Recover the deleted Workspace from its verified archive.',
     inputSchema: RecoverDeletedWorkspaceRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
@@ -212,4 +260,4 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     policyOperation: 'workspace.write',
     mutating: true,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

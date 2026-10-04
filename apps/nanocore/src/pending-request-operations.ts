@@ -1,12 +1,15 @@
 import type { PENDING_REQUEST_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ApprovalRequestSchema, PendingRequestOutcomeSchema } from '@openkit/protocol';
+import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import type { Actor } from './auth/identity.js';
 import type { StartedCapabilityCall } from './capability/usage-ledger.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import type { FsStore } from './lib/store.js';
-import type { OperationImplementations } from './operation-invocation.js';
+import { StoreRecordNotFoundError } from './lib/store.js';
+import type { OperationImplementations } from './operation-contract.js';
+import { OperationError } from './operation-error.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
 import { admitCapturedPendingCall } from './runtime/captured-pending-call.js';
 import {
@@ -26,8 +29,10 @@ import {
 import {
   PendingRequestCommandError,
   type PendingRequestRecord,
+  preflightPendingRequest,
   projectApprovalRequest,
   readPendingRequest,
+  readPendingRequestLineage,
 } from './runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
@@ -99,7 +104,7 @@ export function createPendingRequestOperationImplementations({
   readonly requestCommitted?: PendingAdmissionDependencies['requestCommitted'];
   readonly requesterAuthority?: PendingAdmissionDependencies['requesterAuthority'];
   readonly checkCommandIntent?: PendingAdmissionDependencies['checkCommandIntent'];
-}): Pick<OperationImplementations, keyof typeof PENDING_REQUEST_OPERATION_DEFINITIONS> {
+}) {
   const admission = (): PendingAdmissionDependencies => ({
     ...(coreDb ? { coreDb } : {}),
     ...(agentAuthority ? { agentAuthority } : {}),
@@ -115,7 +120,7 @@ export function createPendingRequestOperationImplementations({
 
   // Native credential admission excludes Worker contexts before these public-only joins.
   return {
-    'approval.respond': async (input, _actor, context) => {
+    'approval.respond': async (input, context) => {
       const actor = context.actor as Actor;
       try {
         const approval = await runIdempotentCommand({
@@ -230,7 +235,7 @@ export function createPendingRequestOperationImplementations({
       }
     },
 
-    'question.answer': async (input, _actor, context) => {
+    'question.answer': async (input, context) => {
       const actor = context.actor as Actor;
       try {
         const outcome = await runIdempotentCommand({
@@ -297,7 +302,7 @@ export function createPendingRequestOperationImplementations({
       }
     },
 
-    'pending-request.withdraw': async (input, _actor, context) => {
+    'pending-request.withdraw': async (input, context) => {
       const actor = context.actor as Actor;
       try {
         const outcome = await runIdempotentCommand({
@@ -359,7 +364,7 @@ export function createPendingRequestOperationImplementations({
         throw pendingCommandFailure(error, 'pending_request_withdraw_failed');
       }
     },
-  };
+  } satisfies Pick<OperationImplementations, keyof typeof PENDING_REQUEST_OPERATION_DEFINITIONS>;
 }
 
 /** Projects only the shared record’s public decision outcome. */
@@ -375,7 +380,7 @@ function outcomeOf(record: PendingRequestRecord) {
 }
 
 /** Preserves the command owner's typed refusal and its previous fallback code and status. */
-function pendingCommandFailure(error: unknown, code: string): PendingRequestCommandError {
+function pendingCommandFailure(error: unknown, code: string): OperationError {
   if (
     error instanceof PendingRequestCommandError ||
     error instanceof IdempotencyKeyConflictError ||
@@ -383,6 +388,44 @@ function pendingCommandFailure(error: unknown, code: string): PendingRequestComm
     error instanceof TurnStartValidationError ||
     error instanceof KnowledgePageValidationError
   )
-    return new PendingRequestCommandError(error.code, error.message, error.status);
-  return new PendingRequestCommandError(code, publishedErrorMessage(error), 404);
+    return new OperationError(error.code, error.message, error.status, { cause: error });
+  if (error instanceof OperationError) return error;
+  if (
+    error instanceof StoreRecordNotFoundError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError
+  )
+    return new OperationError(code, publishedErrorMessage(error), 404, { cause: error });
+  throw error;
+}
+
+/** Selected-Workspace minimal Pending lineage; DB lifetime ends before the admission result escapes. */
+export function readPendingOperationLineage(
+  repositoryWorkspaceDb: (workspaceId: string) => import('./storage/db.js').WorkspaceDb,
+  store: FsStore,
+  workspaceId: string,
+  childId: string
+) {
+  const db = repositoryWorkspaceDb(workspaceId);
+  try {
+    return (
+      readPendingRequestLineage(db.sqlite, childId) ??
+      store.getApprovalProjectionLineage(workspaceId, childId)
+    );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Pending-owned Tool preflight translates only its known command refusal; capability framing remains with the Worker entry. */
+export function preflightPendingToolRequest(
+  ...args: Parameters<typeof preflightPendingRequest>
+): ReturnType<typeof preflightPendingRequest> {
+  try {
+    return preflightPendingRequest(...args);
+  } catch (error) {
+    if (error instanceof PendingRequestCommandError)
+      throw new OperationError(error.code, error.message, error.status, { cause: error });
+    throw error;
+  }
 }

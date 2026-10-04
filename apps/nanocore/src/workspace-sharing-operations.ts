@@ -25,7 +25,6 @@ import {
   WorkspaceOwnershipMutationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
-import { publishedErrorMessage } from './api-errors.js';
 import { recordServerAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
@@ -37,11 +36,12 @@ import {
   type CommandRequestRecord,
   type FsStore,
   quickChatWorkspaceIdForUser,
+  StoreRecordNotFoundError,
 } from './lib/store.js';
-import type {
-  OperationImplementations,
-  OperationInvocationDependencies,
-} from './operation-invocation.js';
+import type { OperationInvocationDependencies } from './operation-composition.js';
+import type { OperationImplementations } from './operation-contract.js';
+import { publicOperationActor } from './operation-contract.js';
+import { OperationError } from './operation-error.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -78,41 +78,19 @@ import {
 /** Stable Core scope selector shared by every Stage 5 lifecycle receipt. */
 const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 
-/** Transport-neutral sharing failure with its stable public code and safe details. */
-export class WorkspaceSharingOperationError extends Error {
-  /** Stable public error code. */
-  public readonly code: string;
-  /** Optional product-safe error details. */
-  public readonly details: unknown;
-  /** HTTP response status. */
-  public readonly status: number;
-
-  /** Preserves the existing sharing owner’s typed refusal. */
-  public constructor(code: string, message: string, status: number, details?: unknown) {
-    super(message);
-    this.name = 'WorkspaceSharingOperationError';
-    this.code = code;
-    this.details = details;
-    this.status = status;
-  }
-}
-
 /**
  * Joins sharing commands to their existing Core transaction, receipt and audit owners.
  * Existing receipt hashes retain the original command bodies; logical selectors remain in their canonical receipt scopes.
  */
 export function createWorkspaceSharingOperationImplementations(
-  input: OperationInvocationDependencies
-): Pick<
-  OperationImplementations,
-  Exclude<
-    keyof typeof WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
-    'workspace.delete' | 'workspace.deleted-recover'
+  input: Pick<
+    OperationInvocationDependencies,
+    'inflightCommands' | 'coreDb' | 'store' | 'workspaceMutationAdmission' | 'afterUserDisabled'
   >
-> {
+) {
   const inflightCommands = input.inflightCommands!;
   return {
-    'workspace.member-list': (value, _actor, _context) => {
+    'workspace.member-list': (value, _context) => {
       try {
         return ListWorkspaceMembersResponseSchema.parse({
           items: listWorkspaceMembers(requireCoreDb(input.coreDb), value.workspaceId),
@@ -122,7 +100,7 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.invitation-list': (value, _actor, _context) => {
+    'workspace.invitation-list': (value, _context) => {
       try {
         return ListWorkspaceInvitationsResponseSchema.parse({
           items: listWorkspaceInvitations(requireCoreDb(input.coreDb), value.workspaceId),
@@ -132,11 +110,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.invitation-create': async (value, _actor, context) => {
+    'workspace.invitation-create': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const workspaceId = value.workspaceId;
         const request = CreateWorkspaceInvitationRequestSchema.parse(
           Object.fromEntries(
@@ -160,7 +138,10 @@ export function createWorkspaceSharingOperationImplementations(
             const result = createWorkspaceInvitation({
               coreDb,
               inviterUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+              administratorEligible: isCurrentDeploymentAdministrator(
+                coreDb,
+                publicOperationActor(context)
+              ),
               inviteeEmail: request.inviteeEmail,
               proposedAccessLevel: request.proposedAccessLevel,
               workspaceId,
@@ -197,12 +178,12 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.my-invitation-list': (_value, _actor, context) => {
+    'workspace.my-invitation-list': (_value, context) => {
       try {
         return ListWorkspaceInvitationsResponseSchema.parse({
           items: listMyWorkspaceInvitations(
             requireCoreDb(input.coreDb),
-            publicActor(context).userId
+            publicOperationActor(context).userId
           ).filter(
             (invitation) => !input.workspaceMutationAdmission!.isClosed(invitation.workspaceId)
           ),
@@ -212,11 +193,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.my-invitation-accept': async (value, _actor, context) => {
+    'workspace.my-invitation-accept': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const invitationId = value.invitationId;
         const request = AcceptWorkspaceInvitationRequestSchema.parse(
           Object.fromEntries(
@@ -238,18 +219,21 @@ export function createWorkspaceSharingOperationImplementations(
                 coreDb,
                 invitationId,
                 actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
               ),
               workspaceId: invitationWorkspaceIdForInvitee(
                 coreDb,
                 invitationId,
                 actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
               ),
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+          administratorEligible: isCurrentDeploymentAdministrator(
+            coreDb,
+            publicOperationActor(context)
+          ),
           request,
           store,
           summary: 'Workspace invitation accepted.',
@@ -260,11 +244,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.my-invitation-decline': async (value, _actor, context) => {
+    'workspace.my-invitation-decline': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const invitationId = value.invitationId;
         const request = DeclineWorkspaceInvitationRequestSchema.parse(
           Object.fromEntries(
@@ -286,18 +270,21 @@ export function createWorkspaceSharingOperationImplementations(
                 coreDb,
                 invitationId,
                 actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
               ),
               workspaceId: invitationWorkspaceIdForInvitee(
                 coreDb,
                 invitationId,
                 actorId,
-                isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+                isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
               ),
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+          administratorEligible: isCurrentDeploymentAdministrator(
+            coreDb,
+            publicOperationActor(context)
+          ),
           request,
           store,
           summary: 'Workspace invitation declined.',
@@ -308,11 +295,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.invitation-revoke': async (value, _actor, context) => {
+    'workspace.invitation-revoke': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const workspaceId = value.workspaceId;
         const invitationId = value.invitationId;
         const existing = getWorkspaceInvitation(coreDb, invitationId);
@@ -334,12 +321,18 @@ export function createWorkspaceSharingOperationImplementations(
               expectedRevision: request.expectedRevision,
               invitationId,
               ownerUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+              administratorEligible: isCurrentDeploymentAdministrator(
+                coreDb,
+                publicOperationActor(context)
+              ),
               workspaceId,
             }),
           inflightCommands,
           invitationId,
-          administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+          administratorEligible: isCurrentDeploymentAdministrator(
+            coreDb,
+            publicOperationActor(context)
+          ),
           request,
           store,
           summary: 'Workspace invitation revoked.',
@@ -351,11 +344,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.member-access-change': async (value, _actor, context) => {
+    'workspace.member-access-change': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const workspaceId = value.workspaceId;
         const memberUserId = value.targetUserId;
         assertMemberLineage(coreDb, workspaceId, memberUserId);
@@ -377,7 +370,10 @@ export function createWorkspaceSharingOperationImplementations(
               expectedRevision: request.expectedRevision,
               memberUserId,
               ownerUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+              administratorEligible: isCurrentDeploymentAdministrator(
+                coreDb,
+                publicOperationActor(context)
+              ),
               workspaceId,
             }),
           inflightCommands,
@@ -393,11 +389,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.member-remove': async (value, _actor, context) => {
+    'workspace.member-remove': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const workspaceId = value.workspaceId;
         const memberUserId = value.targetUserId;
         assertMemberLineage(coreDb, workspaceId, memberUserId);
@@ -418,7 +414,10 @@ export function createWorkspaceSharingOperationImplementations(
               expectedRevision: request.expectedRevision,
               memberUserId,
               ownerUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+              administratorEligible: isCurrentDeploymentAdministrator(
+                coreDb,
+                publicOperationActor(context)
+              ),
               workspaceId,
             }),
           inflightCommands,
@@ -434,11 +433,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.leave': async (value, _actor, context) => {
+    'workspace.leave': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actor = publicActor(context);
+        const actor = publicOperationActor(context);
         const actorId = actor.userId;
         const workspaceId = value.workspaceId;
         const request = LeaveWorkspaceRequestSchema.parse(
@@ -492,11 +491,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.ownership-transfer': async (value, _actor, context) => {
+    'workspace.ownership-transfer': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actorId = publicActor(context).userId;
+        const actorId = publicOperationActor(context).userId;
         const workspaceId = value.workspaceId;
         const request = TransferWorkspaceOwnershipRequestSchema.parse(
           Object.fromEntries(
@@ -520,7 +519,10 @@ export function createWorkspaceSharingOperationImplementations(
             const result = transferWorkspaceOwnership({
               coreDb,
               currentOwnerUserId: actorId,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, publicActor(context)),
+              administratorEligible: isCurrentDeploymentAdministrator(
+                coreDb,
+                publicOperationActor(context)
+              ),
               expectedRegistryRevision: request.expectedRegistryRevision,
               targetUserId: request.targetUserId,
               workspaceId,
@@ -531,7 +533,7 @@ export function createWorkspaceSharingOperationImplementations(
               store,
               actorId,
               workspaceId,
-              isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+              isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
             );
             if (result.kind === 'transferred') {
               recordLifecycleAudit(coreDb, {
@@ -550,7 +552,7 @@ export function createWorkspaceSharingOperationImplementations(
               store,
               actorId,
               workspaceId,
-              isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+              isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
             );
           },
           inflightCommands,
@@ -562,7 +564,7 @@ export function createWorkspaceSharingOperationImplementations(
               store,
               actorId,
               workspaceId,
-              isCurrentDeploymentAdministrator(coreDb, publicActor(context))
+              isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
             );
           },
           requestId: request.requestId,
@@ -577,10 +579,10 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.access-recovery-read': (value, _actor, context) => {
+    'workspace.access-recovery-read': (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
-        const actor = publicActor(context);
+        const actor = publicOperationActor(context);
         const workspaceId = value.workspaceId;
         requireShareableWorkspace(coreDb, workspaceId);
         const recovery = getWorkspaceAccessRecoveryState(coreDb, workspaceId, actor.userId);
@@ -593,11 +595,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'workspace.access-recover': async (value, _actor, context) => {
+    'workspace.access-recover': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actor = publicActor(context);
+        const actor = publicOperationActor(context);
         const actorId = actor.userId;
         const workspaceId = value.workspaceId;
         requireShareableWorkspace(coreDb, workspaceId);
@@ -669,11 +671,11 @@ export function createWorkspaceSharingOperationImplementations(
       }
     },
 
-    'user.disable': async (value, _actor, context) => {
+    'user.disable': async (value, context) => {
       try {
         const coreDb = requireCoreDb(input.coreDb);
         const store = input.store!;
-        const actor = publicActor(context);
+        const actor = publicOperationActor(context);
         const actorId = actor.userId;
         const targetUserId = value.targetUserId;
         const request = DisableUserRequestSchema.parse(
@@ -728,7 +730,13 @@ export function createWorkspaceSharingOperationImplementations(
         throwSharingError(error);
       }
     },
-  };
+  } satisfies Pick<
+    OperationImplementations,
+    Exclude<
+      keyof typeof WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
+      'workspace.delete' | 'workspace.deleted-recover'
+    >
+  >;
 }
 
 /** Input shared by the three invitation terminal command wrappers. */
@@ -891,14 +899,6 @@ async function runMemberMutation(input: RunMemberMutationInput): Promise<Workspa
   });
 }
 
-/** Requires a public authenticated invocation, never model-supplied identity. */
-function publicActor(
-  context: import('./operation-invocation.js').OperationInvocationContext
-): Actor {
-  if (context.kind !== 'public') throw accessDenied();
-  return context.actor;
-}
-
 /** Requires configured Core lifecycle storage. */
 function requireCoreDb(coreDb: CoreDb | undefined): CoreDb {
   if (!coreDb) {
@@ -911,7 +911,7 @@ function requireCoreDb(coreDb: CoreDb | undefined): CoreDb {
 function requireShareableWorkspace(coreDb: CoreDb, workspaceId: string): void {
   const registry = getWorkspaceRegistryFact(coreDb, workspaceId);
   if (registry && workspaceId === quickChatWorkspaceIdForUser(registry.ownerUserId)) {
-    throw new WorkspaceSharingOperationError(
+    throw new OperationError(
       'quick_chat_not_shareable',
       'Quick Chat workspaces cannot be shared.',
       409
@@ -951,12 +951,8 @@ function serverAdminAuthorizedWorkspaceFact(
   };
 }
 
-function accessDenied(): WorkspaceSharingOperationError {
-  return new WorkspaceSharingOperationError(
-    'workspace_access_denied',
-    'Workspace access denied.',
-    403
-  );
+function accessDenied(): OperationError {
+  return new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
 }
 
 /** Requires exact current Core child lineage for one member operation. */
@@ -1035,7 +1031,7 @@ function requireNoLifecycleAudit(
     .prepare(`SELECT 1 FROM audit_events WHERE ${predicates.join(' AND ')} LIMIT 1`)
     .get(...values);
   if (found) {
-    throw new WorkspaceSharingOperationError(
+    throw new OperationError(
       'recovery_required',
       'The command effect exists without its matching receipt.',
       409
@@ -1129,11 +1125,8 @@ function requireTransferResult(
     return result.registry;
   }
   if (result.kind === 'revision_conflict') {
-    throw new WorkspaceSharingOperationError(
-      'revision_conflict',
-      'Workspace revision conflict.',
-      409,
-      {
+    throw new OperationError('revision_conflict', 'Workspace revision conflict.', 409, {
+      details: {
         current: authorizedWorkspaceSummary(
           coreDb,
           store,
@@ -1142,8 +1135,8 @@ function requireTransferResult(
           administratorEligible
         ),
         resource: 'workspace',
-      }
-    );
+      },
+    });
   }
   throw accessDenied();
 }
@@ -1160,47 +1153,40 @@ function throwDomainFailure(
     case 'workspace_access_denied':
       throw accessDenied();
     case 'invitee_unavailable':
-      throw new WorkspaceSharingOperationError(
-        'invitee_unavailable',
-        'The invitation target is unavailable.',
-        404
-      );
+      throw new OperationError('invitee_unavailable', 'The invitation target is unavailable.', 404);
     case 'owner_transfer_required':
-      throw new WorkspaceSharingOperationError(
+      throw new OperationError(
         'owner_transfer_required',
         'Workspace ownership must be transferred first.',
         409
       );
     case 'invitation_not_pending':
-      throw new WorkspaceSharingOperationError(
+      throw new OperationError(
         'invitation_not_pending',
         'Workspace invitation is not pending.',
         409,
-        { current: result.invitation }
+        { details: { current: result.invitation } }
       );
     case 'revision_conflict': {
       if ('invitation' in result) {
-        throw new WorkspaceSharingOperationError(
+        throw new OperationError(
           'revision_conflict',
           'Workspace invitation revision conflict.',
           409,
-          { current: result.invitation, resource: 'invitation' }
+          { details: { current: result.invitation, resource: 'invitation' } }
         );
       }
       if ('member' in result) {
-        throw new WorkspaceSharingOperationError(
+        throw new OperationError(
           'revision_conflict',
           'Workspace membership revision conflict.',
           409,
-          { current: result.member, resource: 'membership' }
+          { details: { current: result.member, resource: 'membership' } }
         );
       }
-      throw new WorkspaceSharingOperationError(
-        'revision_conflict',
-        'Workspace recovery revision conflict.',
-        409,
-        { current: result.recovery, resource: 'workspace_recovery' }
-      );
+      throw new OperationError('revision_conflict', 'Workspace recovery revision conflict.', 409, {
+        details: { current: result.recovery, resource: 'workspace_recovery' },
+      });
     }
     default:
       throw new Error('Unexpected successful Workspace sharing result.');
@@ -1292,8 +1278,8 @@ function isExactLeaveReceipt(
 }
 
 /** Returns the uniform missing-receipt recovery failure. */
-function recoveryRequired(): WorkspaceSharingOperationError {
-  return new WorkspaceSharingOperationError(
+function recoveryRequired(): OperationError {
+  return new OperationError(
     'recovery_required',
     'The command outcome cannot be proven from its current durable owners.',
     409
@@ -1302,16 +1288,21 @@ function recoveryRequired(): WorkspaceSharingOperationError {
 
 /** Preserves typed refusals and the former sharing-specific unexpected failure outcome. */
 function throwSharingError(error: unknown): never {
-  if (error instanceof WorkspaceSharingOperationError) throw error;
+  if (error instanceof OperationError) throw error;
   if (error instanceof IdempotencyKeyConflictError)
-    throw new WorkspaceSharingOperationError(error.code, error.message, error.status);
+    throw new OperationError(error.code, error.message, error.status);
   if (error instanceof z.ZodError)
-    throw new WorkspaceSharingOperationError('invalid_request', z.prettifyError(error), 400);
-  throw new WorkspaceSharingOperationError(
-    'workspace_sharing_failed',
-    publishedErrorMessage(error),
-    500
-  );
+    throw new OperationError('invalid_request', 'The retained record could not be read.', 400, {
+      cause: error,
+    });
+  if (error instanceof StoreRecordNotFoundError)
+    throw new OperationError(
+      'workspace_sharing_failed',
+      'Workspace sharing record is unavailable.',
+      500,
+      { cause: error }
+    );
+  throw error;
 }
 
 /** Requires a child to remain in the declared Workspace without transport types. */
@@ -1361,4 +1352,13 @@ export function readAuthorizedWorkspaces(
   } catch (error) {
     throwSharingError(error);
   }
+}
+
+/** Resolves invitation mutation targets from minimum Core selectors without invitation content. */
+export function readInvitationOperationLineage(coreDb: CoreDb, invitationId: string) {
+  return coreDb.sqlite
+    .prepare(
+      'SELECT workspace_id AS workspaceId, invitee_user_id AS inviteeUserId FROM workspace_invitations WHERE invitation_id = ?'
+    )
+    .get(invitationId) as { workspaceId: string; inviteeUserId: string } | undefined;
 }

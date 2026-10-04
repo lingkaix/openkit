@@ -21,6 +21,8 @@ import {
   type WorkspaceChangeSet,
   WorkspaceChangeSetSchema,
 } from '@openkit/app-api-schemas';
+import { z } from 'zod';
+import { OperationError } from '../operation-error.js';
 
 const defaultIgnoredPathPrefixes = ['.git', 'node_modules'];
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
@@ -402,6 +404,7 @@ async function reserveFilesystemTarget(rootPath: string, identity: string): Prom
  *
  * @param input Staged filesystem apply input.
  * @returns Durable workspace apply result.
+ * @throws OperationError for a known live filesystem safety refusal.
  */
 export async function applyStagedFilesystemChanges(
   input: ApplyStagedFilesystemChangesInput
@@ -434,7 +437,11 @@ export async function applyStagedFilesystemChanges(
           (path) => normalizedPath === path || normalizedPath.startsWith(`${path}/`)
         )
       ) {
-        throw new Error(`Reserved filesystem workspace path: ${changedPath.path}`);
+        throw new OperationError(
+          'workspace_sync_review_failed',
+          'Reserved filesystem workspace path.',
+          404
+        );
       }
     }
 
@@ -627,7 +634,13 @@ function filesystemReplacementPaths(changeSet: WorkspaceChangeSet): string[] {
     assertSafeRelativePath(changedPath.path);
     const normalizedPath = normalizeRelativePath(changedPath.path);
     if (paths.includes(normalizedPath)) {
-      throw new Error(`Duplicate filesystem replacement path: ${normalizedPath}`);
+      throw new z.ZodError([
+        {
+          code: 'custom',
+          message: `Duplicate filesystem replacement path: ${normalizedPath}`,
+          path: [],
+        },
+      ]);
     }
     paths.push(normalizedPath);
   }
@@ -642,6 +655,7 @@ function filesystemReplacementPaths(changeSet: WorkspaceChangeSet): string[] {
  * @param targetRoot Canonical target root.
  * @param expected Expected rollback lineage and optional exact replacement paths.
  * @returns Validated marker and canonical rollback root, or null when absent.
+ * @throws OperationError for an unsafe live rollback root or marker file; retained marker validation remains a decoder failure.
  */
 async function readFilesystemRollbackMarker(
   rollbackRoot: string,
@@ -661,7 +675,11 @@ async function readFilesystemRollbackMarker(
     return null;
   }
   if (!rollbackStats.isDirectory() || rollbackStats.isSymbolicLink()) {
-    throw new Error(`Unsafe filesystem rollback root: ${expected.reviewId}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Unsafe filesystem rollback root.',
+      404
+    );
   }
   const rollbackRealPath = await realpath(rollbackRoot);
   assertPathWithinRoot(stagingRoot, rollbackRealPath);
@@ -681,10 +699,20 @@ async function readFilesystemRollbackMarker(
     const markerPath = join(rollbackRealPath, 'ready.json');
     const markerStats = await lstat(markerPath);
     if (!markerStats.isFile() || markerStats.isSymbolicLink()) {
-      throw new Error('Filesystem rollback marker is not a regular file.');
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Filesystem rollback marker is not a regular file.',
+        404
+      );
     }
     marker = JSON.parse(await readFile(markerPath, 'utf8')) as unknown;
   } catch (error) {
+    if (
+      error instanceof OperationError ||
+      error instanceof SyntaxError ||
+      error instanceof z.ZodError
+    )
+      throw error;
     throw new Error(`Filesystem rollback marker is unreadable: ${expected.reviewId}`, {
       cause: error,
     });
@@ -711,22 +739,33 @@ async function readFilesystemRollbackMarker(
     !('workspaceId' in marker) ||
     marker.workspaceId !== expected.workspaceId
   ) {
-    throw new Error(`Filesystem rollback lineage mismatch: ${expected.reviewId}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Filesystem rollback lineage mismatch: ${expected.reviewId}`,
+        path: [],
+      },
+    ]);
   }
 
   const replacementPaths: string[] = [];
   try {
     for (const path of marker.replacementPaths) {
       if (typeof path !== 'string') {
-        throw new Error('Filesystem replacement path is not a string.');
+        throw new z.ZodError([
+          { code: 'custom', message: 'Filesystem replacement path is not a string.', path: [] },
+        ]);
       }
       assertSafeRelativePath(path);
       if (path !== normalizeRelativePath(path) || replacementPaths.includes(path)) {
-        throw new Error('Filesystem replacement path is not exact.');
+        throw new z.ZodError([
+          { code: 'custom', message: 'Filesystem replacement path is not exact.', path: [] },
+        ]);
       }
       replacementPaths.push(path);
     }
   } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) throw error;
     throw new Error(`Filesystem rollback lineage mismatch: ${expected.reviewId}`, {
       cause: error,
     });
@@ -736,7 +775,13 @@ async function readFilesystemRollbackMarker(
     (expected.replacementPaths.length !== replacementPaths.length ||
       expected.replacementPaths.some((path, index) => path !== replacementPaths[index]))
   ) {
-    throw new Error(`Filesystem rollback replacement lineage mismatch: ${expected.reviewId}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Filesystem rollback replacement lineage mismatch: ${expected.reviewId}`,
+        path: [],
+      },
+    ]);
   }
 
   return {
@@ -761,6 +806,7 @@ async function readFilesystemRollbackMarker(
  * @param targetRoot Canonical target root.
  * @param workspaceId Workspace that owns the review.
  * @param reviewId Review that owns the rollback.
+ * @throws OperationError when live rollback entries are unsafe or contain unknown content.
  */
 async function cleanupFilesystemRollback(
   rollback: { readonly marker: FilesystemRollbackMarker; readonly rootPath: string },
@@ -780,7 +826,11 @@ async function cleanupFilesystemRollback(
     return;
   }
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
-    throw new Error(`Unsafe filesystem rollback root: ${reviewId}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Unsafe filesystem rollback root.',
+      404
+    );
   }
   const rootEntries = await readdir(rollback.rootPath, { withFileTypes: true });
   if (rootEntries.length === 0) {
@@ -802,7 +852,11 @@ async function cleanupFilesystemRollback(
     (filesEntry && (!filesEntry.isDirectory() || filesEntry.isSymbolicLink())) ||
     rootEntries.some((entry) => entry.name !== 'ready.json' && entry.name !== 'files')
   ) {
-    throw new Error(`Filesystem rollback root contains unknown content: ${reviewId}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Filesystem rollback root contains unknown content.',
+      404
+    );
   }
 
   const backupFiles: string[] = [];
@@ -826,7 +880,11 @@ async function cleanupFilesystemRollback(
           continue;
         }
         if (!entry.isFile() || entry.isSymbolicLink()) {
-          throw new Error(`Filesystem rollback root contains unknown content: ${reviewId}`);
+          throw new OperationError(
+            'workspace_sync_review_failed',
+            'Filesystem rollback root contains unknown content.',
+            404
+          );
         }
         backupFiles.push(relativePath);
       }
@@ -873,6 +931,7 @@ async function cleanupFilesystemRollback(
  * @param stagingRoot Canonical staging root.
  * @param targetRoot Canonical target root.
  * @param rollbackRoot Review-specific rollback root.
+ * @throws OperationError when the live preparation root or owner file is unsafe.
  */
 async function cleanupFilesystemRollbackPreparation(
   input: ApplyStagedFilesystemChangesInput,
@@ -890,13 +949,18 @@ async function cleanupFilesystemRollbackPreparation(
     return;
   }
   if (!ownerStats?.isFile() || ownerStats.isSymbolicLink()) {
-    throw new Error(`Filesystem rollback preparation owner is unreadable: ${input.reviewId}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Filesystem rollback preparation owner is not a regular file.',
+      404
+    );
   }
 
   let owner: unknown;
   try {
     owner = JSON.parse(await readFile(ownerPath, 'utf8')) as unknown;
   } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) throw error;
     throw new Error(`Filesystem rollback preparation owner is unreadable: ${input.reviewId}`, {
       cause: error,
     });
@@ -920,12 +984,22 @@ async function cleanupFilesystemRollbackPreparation(
     !('workspaceId' in owner) ||
     owner.workspaceId !== input.workspaceId
   ) {
-    throw new Error(`Filesystem rollback preparation owner mismatch: ${input.reviewId}`);
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: `Filesystem rollback preparation owner mismatch: ${input.reviewId}`,
+        path: [],
+      },
+    ]);
   }
 
   if (preparationStats) {
     if (!preparationStats.isDirectory() || preparationStats.isSymbolicLink()) {
-      throw new Error(`Unsafe filesystem rollback preparation: ${input.reviewId}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Unsafe filesystem rollback preparation.',
+        404
+      );
     }
     const preparationRealPath = await realpath(preparationRoot);
     assertPathWithinRoot(stagingRoot, preparationRealPath);
@@ -1092,6 +1166,7 @@ async function prepareFilesystemRollback(
  * @param targetRoot Trusted target root.
  * @param rollbackRoot Prepared rollback root.
  * @param replacementPaths Marker-authorized deterministic replacement paths.
+ * @throws OperationError when target state changed or observed backup bytes are invalid.
  */
 async function restoreFilesystemRollback(
   input: ApplyStagedFilesystemChangesInput,
@@ -1124,7 +1199,11 @@ async function restoreFilesystemRollback(
         matchesApplied = Boolean(current && changedFileMatchesDeclaration(changedPath, current));
       }
       if (!matchesApplied) {
-        throw new Error(`Filesystem rollback target changed after apply: ${changedPath.path}`);
+        throw new OperationError(
+          'workspace_sync_review_failed',
+          'Filesystem rollback target changed after apply.',
+          404
+        );
       }
 
       const targetPath = await prepareWritablePathWithinRoot(targetRoot, changedPath.path);
@@ -1141,7 +1220,11 @@ async function restoreFilesystemRollback(
       );
       const backupDigest = digestBuffer(await readFile(backupPath));
       if (!before?.digest || backupDigest !== before.digest) {
-        throw new Error(`Filesystem rollback backup is invalid: ${changedPath.path}`);
+        throw new OperationError(
+          'workspace_sync_review_failed',
+          'Filesystem rollback backup is invalid.',
+          404
+        );
       }
       if (changedPath.status === 'mode_changed') {
         await chmod(targetPath, parsePermissionsSummary(before.permissions ?? ''));
@@ -1149,7 +1232,13 @@ async function restoreFilesystemRollback(
       }
       const normalizedPath = normalizeRelativePath(changedPath.path);
       if (!replacementPaths.includes(normalizedPath)) {
-        throw new Error(`Filesystem rollback replacement is unproven: ${changedPath.path}`);
+        throw new z.ZodError([
+          {
+            code: 'custom',
+            message: `Filesystem rollback replacement is unproven: ${changedPath.path}`,
+            path: [],
+          },
+        ]);
       }
       await replaceFileFromSource(
         backupPath,
@@ -1405,6 +1494,7 @@ async function detectWritableParentConflict(
  * @param rootRealPath Trusted real root path.
  * @param relativePath Workspace-relative file path.
  * @returns Content and permission state, or null when the path is absent.
+ * @throws OperationError when an existing entry is not a regular file or its live path is unsafe.
  */
 async function readFilesystemFileState(
   rootRealPath: string,
@@ -1426,7 +1516,11 @@ async function readFilesystemFileState(
 
   const stats = await lstat(filePath);
   if (!stats.isFile()) {
-    throw new Error(`Filesystem path is not a regular file: ${relativePath}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Filesystem path is not a regular file.',
+      404
+    );
   }
   return {
     digest: digestBuffer(await readFile(filePath)),
@@ -1440,6 +1534,7 @@ async function readFilesystemFileState(
  *
  * @param rootPath Canonical root path.
  * @param expectedIdentity Registered device and inode identity.
+ * @throws OperationError when the observed root identity contradicts its retained review.
  */
 async function requireFilesystemRootIdentity(
   rootPath: string,
@@ -1448,7 +1543,11 @@ async function requireFilesystemRootIdentity(
   const stats = await stat(rootPath, { bigint: true });
   const identity = `${stats.dev}:${stats.ino}`;
   if (!stats.isDirectory() || identity !== expectedIdentity) {
-    throw new Error('Filesystem workspace root identity changed after review staging.');
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Filesystem workspace root identity changed after review staging.',
+      404
+    );
   }
 }
 
@@ -1458,7 +1557,7 @@ async function requireFilesystemRootIdentity(
  * @param before Base filesystem manifest.
  * @param targetRoot Trusted target root.
  * @param changedPath Reviewed changed-path metadata.
- * @throws Error when a concurrent edit, chmod, creation, deletion, or path-kind change is found.
+ * @throws OperationError when a concurrent edit, chmod, creation, deletion, or path-kind change is found.
  */
 async function requireTargetMatchesBefore(
   before: FilesystemSnapshotManifest,
@@ -1473,7 +1572,11 @@ async function requireTargetMatchesBefore(
       current.size === beforeEntry.size
     : current === null && changedPath.status === 'added';
   if (!matches) {
-    throw new Error(`Filesystem target changed after review preflight: ${changedPath.path}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Filesystem target changed after review preflight.',
+      404
+    );
   }
 }
 
@@ -1505,6 +1608,7 @@ function changedFileMatchesDeclaration(
  * @param targetPath Validated target file path.
  * @param permissions Optional final POSIX permission summary.
  * @param replacement Deterministic root authorized by its enclosing product boundary.
+ * @throws OperationError when the existing target is not a regular file or its replacement root is unsafe.
  */
 async function replaceFileFromSource(
   sourcePath: string,
@@ -1515,7 +1619,11 @@ async function replaceFileFromSource(
   try {
     const targetStats = await lstat(targetPath);
     if (!targetStats.isFile() || targetStats.isSymbolicLink()) {
-      throw new Error('Filesystem target is not a regular file.');
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Filesystem target is not a regular file.',
+        404
+      );
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -1563,7 +1671,7 @@ async function replaceFileFromSource(
  * @param rootRealPath Real path for the trusted root.
  * @param relativePath Workspace-relative candidate path.
  * @returns Existing absolute path when it resolves inside the root.
- * @throws Error when the path escapes through symlinks or traversal.
+ * @throws OperationError when a live path escapes through symlinks; retained path syntax uses ZodError.
  */
 async function requireExistingPathWithinRoot(
   rootRealPath: string,
@@ -1577,10 +1685,18 @@ async function requireExistingPathWithinRoot(
     const candidatePath = join(currentPath, segment);
     const stats = await lstat(candidatePath);
     if (stats.isSymbolicLink()) {
-      throw new Error(`unsafe filesystem symlink path: ${relativePath}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'unsafe filesystem symlink path.',
+        404
+      );
     }
     if (index < segments.length - 1 && !stats.isDirectory()) {
-      throw new Error(`unsafe filesystem path parent: ${relativePath}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'unsafe filesystem path parent.',
+        404
+      );
     }
     currentPath = await realpath(candidatePath);
     assertPathWithinRoot(rootRealPath, currentPath);
@@ -1595,7 +1711,7 @@ async function requireExistingPathWithinRoot(
  * @param rootRealPath Real path for the trusted root.
  * @param relativePath Workspace-relative candidate path.
  * @returns Absolute path that may be safely written.
- * @throws Error when the path parent escapes through symlinks or traversal.
+ * @throws OperationError when a live path parent escapes through symlinks; retained path syntax uses ZodError.
  */
 async function prepareWritablePathWithinRoot(
   rootRealPath: string,
@@ -1605,7 +1721,11 @@ async function prepareWritablePathWithinRoot(
   const segments = normalizeRelativePath(relativePath).split('/');
   const fileName = segments.pop();
   if (!fileName) {
-    throw new Error(`Unsafe filesystem workspace path: ${relativePath}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Unsafe filesystem workspace path.',
+      404
+    );
   }
   let parentPath = rootRealPath;
 
@@ -1625,7 +1745,11 @@ async function prepareWritablePathWithinRoot(
     }
     const stats = await lstat(candidatePath);
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
-      throw new Error(`unsafe filesystem path parent: ${relativePath}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'unsafe filesystem path parent.',
+        404
+      );
     }
     parentPath = await realpath(candidatePath);
     assertPathWithinRoot(rootRealPath, parentPath);
@@ -1639,11 +1763,15 @@ async function prepareWritablePathWithinRoot(
  *
  * @param rootRealPath Real path for the trusted root.
  * @param resolvedPath Resolved candidate path.
- * @throws Error when the candidate is outside the root.
+ * @throws OperationError when the resolved candidate is outside the root.
  */
 function assertPathWithinRoot(rootRealPath: string, resolvedPath: string): void {
   if (!pathWithinRoot(rootRealPath, resolvedPath)) {
-    throw new Error(`unsafe filesystem path outside root: ${resolvedPath}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'unsafe filesystem path outside root.',
+      404
+    );
   }
 }
 
@@ -1759,6 +1887,7 @@ function filesystemReplacementRoot(
  * @param workspaceId Workspace that owns the review.
  * @param reviewId Review that owns the expected paths.
  * @param replacementPaths Exact paths that use deterministic replacement.
+ * @throws OperationError when an unproven live replacement root exists.
  */
 async function assertFilesystemReplacementRootsAbsent(
   targetRoot: string,
@@ -1769,7 +1898,11 @@ async function assertFilesystemReplacementRootsAbsent(
   for (const relativePath of replacementPaths) {
     const replacement = filesystemReplacementRoot(targetRoot, workspaceId, reviewId, relativePath);
     if (await lstatIfExists(replacement.rootPath)) {
-      throw new Error(`Unproven filesystem replacement root: ${relativePath}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        'Unproven filesystem replacement root.',
+        404
+      );
     }
   }
 }
@@ -1799,6 +1932,7 @@ async function cleanupFilesystemReplacementRoots(
  * Removes one exact replacement root after its caller validates rollback ownership.
  *
  * @param input Marker-authorized deterministic replacement root.
+ * @throws OperationError when the live replacement root is unsafe.
  */
 async function removeFilesystemReplacementRoot(
   input: ReturnType<typeof filesystemReplacementRoot>
@@ -1808,7 +1942,11 @@ async function removeFilesystemReplacementRoot(
     return;
   }
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
-    throw new Error(`Unsafe filesystem replacement root: ${input.relativePath}`);
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Unsafe filesystem replacement root.',
+      404
+    );
   }
   const rootRealPath = await realpath(input.rootPath);
   assertPathWithinRoot(input.boundaryRoot, rootRealPath);
@@ -1838,7 +1976,9 @@ function assertSafeRelativePath(path: string): void {
     unsafeRelativePathPattern.test(path) ||
     path.includes('\0')
   ) {
-    throw new Error(`Unsafe filesystem workspace path: ${path}`);
+    throw new z.ZodError([
+      { code: 'custom', message: `Unsafe filesystem workspace path: ${path}`, path: [] },
+    ]);
   }
 }
 
@@ -1860,7 +2000,9 @@ function permissionsSummary(mode: number): string {
  */
 function parsePermissionsSummary(permissions: string): number {
   if (!/^0[0-7]{3}$/.test(permissions)) {
-    throw new Error(`Invalid permission summary: ${permissions}`);
+    throw new z.ZodError([
+      { code: 'custom', message: `Invalid permission summary: ${permissions}`, path: [] },
+    ]);
   }
 
   return Number.parseInt(permissions.slice(1), 8);

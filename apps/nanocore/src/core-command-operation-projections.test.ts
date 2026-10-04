@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
+import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath } from './runtime/feedback.js';
@@ -338,4 +340,78 @@ it.each([
   expect(store.getWorkspace(receipt[0]!.response.id).name).toBe(
     id === 'workspace.create' ? 'Created' : 'Renamed'
   );
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('preserves missing interrupt outcome through %s without changes', async (projection) => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-missing-interrupt-'));
+  roots.push(root);
+  const coreDb = openCoreDb(root);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const issued = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace',
+      workspaceIds: ['ws_demo'],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const app = createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
+    const input = {
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'tu_missing',
+      requestId: randomUUID(),
+    };
+    const observed = () => ({
+      workspace: store.getWorkspace('ws_demo'),
+      thread: store.getThread('ws_demo', 'th_demo'),
+      turns: store.listThreadTurns('ws_demo', 'th_demo'),
+      items: store.listThreadItems('ws_demo', 'th_demo'),
+      receipts: store.listCommandRequests(),
+    });
+    const before = structuredClone(observed());
+    const response = await app.request(
+      projection === 'HTTP' ? '/api/app/operations/turn.interrupt' : '/mcp',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${issued.secret}`,
+          ...(projection === 'HTTP'
+            ? { 'x-openkit-request-id': input.requestId }
+            : { accept: 'application/json, text/event-stream' }),
+        },
+        body: JSON.stringify(
+          projection === 'HTTP'
+            ? input
+            : {
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'tools/call',
+                params: { name: 'call', arguments: { operation: 'turn.interrupt', input } },
+              }
+        ),
+      }
+    );
+    expect(observed()).toEqual(before);
+    const code = 'turn_interrupt_failed';
+    const message = 'Turn not found: tu_missing';
+    if (projection === 'HTTP') {
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+    } else {
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.isError).toBe(true);
+      expect(JSON.parse(body.result.content[0].text)).toEqual({ code, message, status: 404 });
+    }
+  } finally {
+    coreDb.sqlite.close();
+  }
 });

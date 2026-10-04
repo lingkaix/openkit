@@ -1,3 +1,6 @@
+/** Known scheduler admission transition refusal; the admission family owns its projection. */
+export class SchedulerAdmissionTransitionError extends Error {}
+
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
@@ -8,6 +11,7 @@ import {
   type TurnStatus,
 } from '@openkit/protocol';
 import { WorkerProcessKeySchema } from '@openkit/worker-protocol';
+import { z } from 'zod';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
 import type { CoreDb } from './storage/db.js';
@@ -1199,7 +1203,9 @@ export function retryDeniedSchedulerAdmissionEntry(
   const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 
   if (entry.status !== 'denied') {
-    throw new Error(`Scheduler admission entry ${input.queueEntryId} is not denied.`);
+    throw new SchedulerAdmissionTransitionError(
+      `Scheduler admission entry ${input.queueEntryId} is not denied.`
+    );
   }
 
   const updated = coreDb.sqlite
@@ -1209,7 +1215,9 @@ export function retryDeniedSchedulerAdmissionEntry(
     .run(input.queueEntryId, entry.workspaceId);
 
   if (updated.changes !== 1) {
-    throw new Error(`Scheduler admission entry could not be retried: ${input.queueEntryId}`);
+    throw new SchedulerAdmissionTransitionError(
+      `Scheduler admission entry could not be retried: ${input.queueEntryId}`
+    );
   }
 
   return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
@@ -1230,7 +1238,9 @@ export function cancelSchedulerAdmissionEntry(
   const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 
   if (entry.status !== 'queued' && entry.status !== 'denied') {
-    throw new Error(`Scheduler admission entry ${input.queueEntryId} cannot be cancelled.`);
+    throw new SchedulerAdmissionTransitionError(
+      `Scheduler admission entry ${input.queueEntryId} cannot be cancelled.`
+    );
   }
 
   const updated = coreDb.sqlite
@@ -1240,7 +1250,9 @@ export function cancelSchedulerAdmissionEntry(
     .run(input.queueEntryId, entry.workspaceId, entry.status);
 
   if (updated.changes !== 1) {
-    throw new Error(`Scheduler admission entry could not be cancelled: ${input.queueEntryId}`);
+    throw new SchedulerAdmissionTransitionError(
+      `Scheduler admission entry could not be cancelled: ${input.queueEntryId}`
+    );
   }
 
   return requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
@@ -3175,7 +3187,9 @@ export function requireSchedulerAdmissionEntry(
     .get(queueEntryId) as SchedulerAdmissionEntryRow | undefined;
 
   if (!row || (ownership !== undefined && row.workspace_id !== ownership.workspaceId)) {
-    throw new Error(`Scheduler admission entry not found: ${queueEntryId}`);
+    throw new SchedulerAdmissionTransitionError(
+      `Scheduler admission entry not found: ${queueEntryId}`
+    );
   }
 
   return mapSchedulerAdmissionEntryRow(row);
@@ -3769,10 +3783,12 @@ function mapSchedulerAdmissionEntryRow(
   };
 }
 
-/** Parses the closed retained-storage choice carried by scheduler admission. */
+/** Parses the closed retained-storage choice carried by scheduler admission; invalid known fields raise ZodError for the admission family's existing projection. */
 function parseSchedulerWorkerStorageChoice(input: unknown): SchedulerWorkerStorageChoice {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
-    throw new Error('Scheduler Worker storage choice is invalid.');
+    throw new z.ZodError([
+      { code: 'custom', message: 'Scheduler Worker storage choice is invalid.', path: [] },
+    ]);
   }
   const record = input as Record<string, unknown>;
   if (
@@ -3815,7 +3831,9 @@ function parseSchedulerWorkerStorageChoice(input: unknown): SchedulerWorkerStora
         !adjudicatedThreadIds.every(isNonemptyString) ||
         new Set(adjudicatedThreadIds).size !== adjudicatedThreadIds.length))
   ) {
-    throw new Error('Scheduler Worker storage choice is invalid.');
+    throw new z.ZodError([
+      { code: 'custom', message: 'Scheduler Worker storage choice is invalid.', path: [] },
+    ]);
   }
   return {
     ...(adjudicatedThreadIds === undefined

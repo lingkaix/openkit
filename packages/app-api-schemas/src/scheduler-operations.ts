@@ -5,6 +5,7 @@ import {
   ListSchedulerAdmissionsResponseSchema,
   RetrySchedulerAdmissionResponseSchema,
 } from './dashboard.js';
+import type { OperationDefinition } from './operation-contract.js';
 
 const credentials = [
   'local-user',
@@ -25,6 +26,9 @@ const mutation = {
 /** Public scheduler admission views and actions; queue lifecycle remains with NanoCore. */
 export const SCHEDULER_OPERATION_DEFINITIONS = {
   'scheduler.list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     description: 'List queued and denied admissions for one Workspace.',
     credentials,
     scope,
@@ -35,13 +39,19 @@ export const SCHEDULER_OPERATION_DEFINITIONS = {
     outputSchema: ListSchedulerAdmissionsResponseSchema,
   },
   'scheduler.retry': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...mutation,
     description: 'Retry one denied scheduler admission.',
     outputSchema: RetrySchedulerAdmissionResponseSchema,
   },
   'scheduler.cancel': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
     ...mutation,
     description: 'Cancel one queued or denied scheduler admission.',
     outputSchema: CancelSchedulerAdmissionResponseSchema,
   },
-} as const;
+} as const satisfies Record<string, OperationDefinition>;

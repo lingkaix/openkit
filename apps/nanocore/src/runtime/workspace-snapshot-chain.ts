@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   sameWorkspaceSnapshot,
@@ -100,7 +101,9 @@ export function readWorkspaceSnapshotCursor(
       }
     | undefined;
   if (row && (row.accepted_base_json === null) !== (row.head_json === null))
-    throw new Error('Workspace snapshot cursor is partially initialized.');
+    throw new z.ZodError([
+      { code: 'custom', message: 'Workspace snapshot cursor is partially initialized.', path: [] },
+    ]);
   return row && row.accepted_base_json !== null && row.head_json !== null
     ? {
         acceptedBase: WorkspaceSnapshotPairSchema.parse(JSON.parse(row.accepted_base_json)),
@@ -128,10 +131,18 @@ export function readWorkspaceCollection(
   if (!row) return null;
   const stored = WorkspaceCollectionIdentitySchema.parse(JSON.parse(row.identity_json));
   if (!isDeepStrictEqual(stored, WorkspaceCollectionIdentitySchema.parse(identity)))
-    throw new Error('Workspace collection identity conflicts with its committed receipt.');
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: 'Workspace collection identity conflicts with its committed receipt.',
+        path: [],
+      },
+    ]);
   const result = StoredCollectionResultSchema.parse(JSON.parse(row.result_json));
   if (row.is_link !== (result.outcome === 'no_new_head' && result.unstable === false ? 0 : 1))
-    throw new Error('Workspace collection link evidence is invalid.');
+    throw new z.ZodError([
+      { code: 'custom', message: 'Workspace collection link evidence is invalid.', path: [] },
+    ]);
   if (result.outcome === 'no_new_head' && result.unstable === true) {
     for (const field of ['head', 'previousHead', 'acceptedBase'])
       WorkspaceSnapshotPairSchema.parse(result[field]);
@@ -143,7 +154,13 @@ export function readWorkspaceCollection(
         `sha256:${createHash('sha256').update(row.candidate).digest('hex')}` !== result.sha256
       : row.candidate !== null
   )
-    throw new Error('Workspace collection committed candidate identity is invalid.');
+    throw new z.ZodError([
+      {
+        code: 'custom',
+        message: 'Workspace collection committed candidate identity is invalid.',
+        path: [],
+      },
+    ]);
   return {
     identity: stored,
     result,
@@ -494,7 +511,11 @@ export function acceptAppliedWorkspaceSnapshot(
   const head = WorkspaceSnapshotPairSchema.parse(receipt.result.head);
   if (cursor && sameWorkspaceSnapshot(cursor.acceptedBase, head)) return;
   if (workspaceSnapshotReviewIsStale(db, workspaceId, changeSetId))
-    throw new Error('Workspace snapshot accepted base changed during apply.');
+    throw new OperationError(
+      'workspace_sync_review_failed',
+      'Workspace snapshot accepted base changed during apply.',
+      404
+    );
   db.sqlite
     .prepare(
       'UPDATE workspace_snapshot_cursors SET accepted_base_json = ?, accepted_commit = ? WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'

@@ -110,7 +110,8 @@ describe('scheduler admission routes', () => {
 
       expect(retried.status).toBe(200);
       expect(cancelled.status).toBe(200);
-      expect(auditFailed.status).toBe(400);
+      expect(auditFailed.status).toBe(500);
+      expect(await auditFailed.text()).toBe('Internal Server Error');
       expect(workspaceDbs).toHaveLength(3);
       for (const workspaceDb of workspaceDbs) {
         expect(workspaceDb.sqlite.open).toBe(false);
@@ -194,8 +195,16 @@ describe('scheduler admission routes', () => {
 
       expect(missingRetry.status).toBe(404);
       expect(missingCancel.status).toBe(404);
-      expect(missingRetryText).toBe('Thread not found.');
-      expect(missingCancelText).toBe('Thread not found.');
+      expect(JSON.parse(missingRetryText)).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'not_found',
+        message: 'Thread not found.',
+      });
+      expect(JSON.parse(missingCancelText)).toEqual({
+        protocolVersion: '0.5.0',
+        code: 'not_found',
+        message: 'Thread not found.',
+      });
       for (const [queueEntryId, action, expectedStatus] of [
         ['queue_foreign_retry', 'retry', 'denied'],
         ['queue_foreign_cancel', 'cancel', 'queued'],

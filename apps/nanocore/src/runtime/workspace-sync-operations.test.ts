@@ -1,6 +1,15 @@
 // openkit-test-platform: posix
+
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SYNC_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -13,7 +22,7 @@ import {
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
-import { createOperationInvocation } from '../operation-invocation.js';
+import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -476,7 +485,7 @@ async function foreignFilesystemFixture() {
     ),
     receipts: f.store.listCommandRequests(),
   });
-  return { ...f, filesystemItem: item, targetRoot, observedFilesystem };
+  return { ...f, filesystemItem: item, stagingRoot, targetRoot, observedFilesystem };
 }
 
 /** Signs in through the real Web authentication route and returns the authenticated user's cookie. */
@@ -937,4 +946,304 @@ describe('Workspace synchronization native projections', () => {
     expect(await f.mcp(id, input)).toMatchObject({ isError: true, value: { code } });
     expect(f.observed()).toEqual(before);
   });
+});
+
+it.each([
+  ['sync.review-decide', 'HTTP'],
+  ['sync.review-decide', 'MCP'],
+  ['sync.recovery-decide', 'HTTP'],
+  ['sync.recovery-decide', 'MCP'],
+] as const)('preserves classified native terminal %s refusal through %s without changes', async (id, projection) => {
+  const f = fixture();
+  const selectors =
+    id === 'sync.review-decide'
+      ? { reviewId: f.item.review.id }
+      : { reconciliationRecordId: 'wrr_projection' };
+  const first = await f.http(id, {
+    workspaceId: 'ws_demo',
+    ...selectors,
+    decision: id === 'sync.review-decide' ? 'rejected' : 'abandon',
+    requestId: crypto.randomUUID(),
+  });
+  expect(first.status).toBe(200);
+  const before = structuredClone(f.observed());
+  const input = {
+    workspaceId: 'ws_demo',
+    ...selectors,
+    decision: id === 'sync.review-decide' ? 'accepted' : 'abandon',
+    requestId: crypto.randomUUID(),
+  };
+  const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
+  expect(f.observed()).toEqual(before);
+  const code =
+    id === 'sync.review-decide'
+      ? 'workspace_sync_review_failed'
+      : 'workspace_recovery_decision_failed';
+  const message =
+    id === 'sync.review-decide'
+      ? `Workspace synchronization review is already resolved: ${f.item.review.id}`
+      : 'Workspace reconciliation record is already terminal: wrr_projection';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else {
+    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+  }
+});
+
+it.each([
+  ['sync.review-decide', 'HTTP'],
+  ['sync.review-decide', 'MCP'],
+  ['sync.recovery-decide', 'HTTP'],
+  ['sync.recovery-decide', 'MCP'],
+] as const)('preserves classified native unavailable %s refusal through %s without changes', async (id, projection) => {
+  const f = fixture();
+  if (id === 'sync.recovery-decide')
+    f.db.sqlite
+      .prepare('DELETE FROM worker_output_manifests WHERE workspace_id = ?')
+      .run('ws_demo');
+  const before = structuredClone(f.observed());
+  const input = {
+    workspaceId: 'ws_demo',
+    requestId: crypto.randomUUID(),
+    ...(id === 'sync.review-decide'
+      ? { reviewId: f.item.review.id, decision: 'accepted' }
+      : { reconciliationRecordId: 'wrr_projection', decision: 'resume_collection' }),
+  };
+  const result = projection === 'HTTP' ? await f.http(id, input) : await f.mcp(id, input);
+  expect(f.observed()).toEqual(before);
+  const code =
+    id === 'sync.review-decide'
+      ? 'workspace_sync_review_failed'
+      : 'workspace_recovery_decision_failed';
+  const message =
+    id === 'sync.review-decide'
+      ? 'Git review application is unavailable; publish through the selected vendor MCP.'
+      : 'Workspace recovery collection has no durable output manifest: wrr_projection';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else {
+    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+  }
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('preserves classified native retained review integrity refusal through %s without changes', async (projection) => {
+  const f = fixture();
+  const patchPayload = { ...f.item.patchPayload!, text: 'tampered retained patch' };
+  f.db.sqlite
+    .prepare(
+      'UPDATE staged_workspace_reviews SET patch_payload_json = ? WHERE workspace_id = ? AND review_id = ?'
+    )
+    .run(JSON.stringify(patchPayload), 'ws_demo', f.item.review.id);
+  const observed = () => ({
+    reviews: f.db.sqlite.prepare('SELECT * FROM staged_workspace_reviews ORDER BY review_id').all(),
+    recovery: listWorkspaceReconciliationRecords(f.db, 'ws_demo'),
+    plans: listWorkspaceApplyPlans(f.db, 'ws_demo'),
+    results: listWorkspaceApplyResults(f.db, 'ws_demo'),
+    receipts: f.store.listCommandRequests(),
+  });
+  const before = structuredClone(observed());
+  const input = {
+    workspaceId: 'ws_demo',
+    reviewId: f.item.review.id,
+    decision: 'rejected',
+    requestId: crypto.randomUUID(),
+  };
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.review-decide', input)
+      : await f.mcp('sync.review-decide', input);
+  expect(observed()).toEqual(before);
+  const code = 'workspace_sync_review_failed';
+  const message = 'The retained record could not be read.';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else {
+    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+  }
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('preserves classified native filesystem identity refusal through %s and its existing preparation plan', async (projection) => {
+  const f = await foreignFilesystemFixture();
+  const heldRoot = `${f.targetRoot}.held`;
+  renameSync(f.targetRoot, heldRoot);
+  cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
+  mkdirSync(f.targetRoot);
+  writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
+  const { plans: beforePlans, ...before } = f.observedFilesystem();
+  expect(beforePlans).toEqual([]);
+  const input = {
+    workspaceId: 'ws_demo',
+    reviewId: f.filesystemItem.review.id,
+    decision: 'accepted',
+    requestId: crypto.randomUUID(),
+  };
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.review-decide', input)
+      : await f.mcp('sync.review-decide', input);
+  const { plans, ...after } = f.observedFilesystem();
+  expect(after).toEqual(before);
+  expect(plans).toHaveLength(1);
+  expect(plans[0]).toMatchObject({ workspaceId: 'ws_demo', reviewId: f.filesystemItem.review.id });
+  const code = 'workspace_sync_review_failed';
+  const message = 'Filesystem workspace root identity changed after review staging.';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else {
+    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+  }
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('keeps an unknown native Sync failure unclassified through %s without changes', async (projection) => {
+  const f = fixture();
+  const sentinel = new Error('private native Sync sentinel');
+  const owner = vi
+    .spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview')
+    .mockRejectedValue(sentinel);
+  const errors: Error[] = [];
+  f.app.onError((error, c) => {
+    errors.push(error);
+    return c.text('Internal Server Error', 500);
+  });
+  const before = structuredClone(f.observed());
+  const input = {
+    workspaceId: 'ws_demo',
+    reviewId: f.item.review.id,
+    decision: 'rejected',
+    requestId: crypto.randomUUID(),
+  };
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.review-decide', input)
+      : await f.mcp('sync.review-decide', input);
+  expect(f.observed()).toEqual(before);
+  expect(owner).toHaveBeenCalledTimes(1);
+  if (result instanceof Response) {
+    expect(errors).toEqual([sentinel]);
+    expect(result.status).toBe(500);
+    expect(await result.text()).toBe('Internal Server Error');
+  } else {
+    expect(errors).toEqual([]);
+    expect(result).toEqual({
+      isError: true,
+      value: {
+        code: 'operation_failed',
+        message: 'Operation failed. Inspect the owner outcome before retrying.',
+      },
+    });
+  }
+});
+
+it.each([
+  ['staging payload', 'HTTP'],
+  ['staging payload', 'MCP'],
+  ['apply plan', 'HTTP'],
+  ['apply plan', 'MCP'],
+] as const)('preserves classified native %s refusal through %s without changes', async (subject, projection) => {
+  const f = await foreignFilesystemFixture();
+  const input = {
+    workspaceId: 'ws_demo',
+    reviewId: f.filesystemItem.review.id,
+    decision: 'accepted',
+    requestId: crypto.randomUUID(),
+  };
+  if (subject === 'staging payload') {
+    f.db.sqlite
+      .prepare(
+        'UPDATE workspace_filesystem_staging_roots SET before_manifest_json = ? WHERE workspace_id = ? AND review_id = ?'
+      )
+      .run('{}', 'ws_demo', input.reviewId);
+  } else {
+    const heldRoot = `${f.targetRoot}.held`;
+    renameSync(f.targetRoot, heldRoot);
+    cleanups.push(() => rmSync(heldRoot, { recursive: true, force: true }));
+    mkdirSync(f.targetRoot);
+    writeFileSync(join(f.targetRoot, 'review.txt'), 'before\n');
+    expect((await f.http('sync.review-decide', input)).status).toBe(404);
+    const plan = f.observedFilesystem().plans[0]!;
+    expect(plan.plannedWrites).not.toEqual([]);
+    f.db.sqlite
+      .prepare(
+        'UPDATE workspace_apply_plans SET payload_json = ? WHERE workspace_id = ? AND apply_plan_id = ?'
+      )
+      .run(JSON.stringify({ ...plan, plannedWrites: [] }), 'ws_demo', plan.id);
+    input.requestId = crypto.randomUUID();
+  }
+  const observed = () => ({
+    ...f.observedFilesystem(),
+    staging: f.db.sqlite
+      .prepare('SELECT * FROM workspace_filesystem_staging_roots ORDER BY review_id')
+      .all(),
+  });
+  const before = observed();
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.review-decide', input)
+      : await f.mcp('sync.review-decide', input);
+  expect(observed()).toEqual(before);
+  const code = 'workspace_sync_review_failed';
+  const message =
+    subject === 'staging payload'
+      ? 'The retained record could not be read.'
+      : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+});
+
+it.each([
+  ['symlink', 'HTTP'],
+  ['symlink', 'MCP'],
+  ['file', 'HTTP'],
+  ['file', 'MCP'],
+] as const)('preserves the live rollback-root %s guard reason through %s without effects', async (kind, projection) => {
+  const f = await foreignFilesystemFixture();
+  const rollbackName =
+    '.openkit-workspace-rollback-' +
+    createHash('sha256').update('ws_demo\0swr_admin').digest('hex');
+  const rollbackRoot = join(f.stagingRoot, rollbackName);
+  const outside = join(f.targetRoot, 'outside.txt');
+  writeFileSync(outside, 'private external bytes');
+  if (kind === 'symlink') symlinkSync(f.targetRoot, rollbackRoot);
+  else writeFileSync(rollbackRoot, 'not a directory');
+  const before = f.observedFilesystem();
+  expect(before.review?.review.status).toBe('pending');
+  expect(before.receipts).toEqual([]);
+  const input = {
+    workspaceId: 'ws_demo',
+    reviewId: f.filesystemItem.review.id,
+    decision: 'accepted',
+    requestId: crypto.randomUUID(),
+  };
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.review-decide', input)
+      : await f.mcp('sync.review-decide', input);
+  const after = f.observedFilesystem();
+  expect(after.review).toEqual(before.review);
+  expect(after.review?.review.status).toBe('pending');
+  expect(after.receipts).toEqual([]);
+  expect(after.results).toEqual(before.results);
+  expect(after.targetBytes).toEqual(before.targetBytes);
+  expect(readFileSync(outside, 'utf8')).toBe('private external bytes');
+  const code = 'workspace_sync_review_failed';
+  const message = 'Unsafe filesystem rollback root.';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
+  } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
 });

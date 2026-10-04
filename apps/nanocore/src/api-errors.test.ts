@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { StoreRecordNotFoundError } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -45,7 +46,7 @@ it('keeps each caller fallback for non-Error values', () => {
 });
 
 it('preserves authored errors and route-specific code and status', async () => {
-  const error = new Error('Workspace not found: ws_demo');
+  const error = new StoreRecordNotFoundError('Workspace not found: ws_demo');
   const command = asCommandError(error, 'command_missing', 409);
   expect(command.status).toBe(409);
   expect(await command.json()).toMatchObject({ code: 'command_missing', message: error.message });
@@ -98,7 +99,7 @@ it.each([
   expect(JSON.stringify(body)).not.toContain(marker);
 });
 
-it('preserves safeParse request-body validation detail on the real route', async () => {
+it('preserves safe declared-field validation detail before entering the real operation', async () => {
   const app = new Hono<{ Variables: AuthVariables }>();
   registerOperationJsonRoutes({
     app,
@@ -119,8 +120,8 @@ it('preserves safeParse request-body validation detail on the real route', async
   expect(response.status).toBe(400);
   const body = await response.json();
   expect(body.code).toBe('invalid_request');
-  expect(body.message).toContain('name');
-  expect(body.message).toContain('requestId');
+  expect(body.message).toBe('Invalid operation input.');
+  expect(body.details).toEqual({ fields: ['requestId', 'name'] });
   const parsed = z.object({ name: z.string() }).safeParse({ name: 42 });
   if (parsed.success) throw new Error('Expected invalid request.');
   expect(await asInvalidRequestError(parsed.error).json()).toMatchObject({

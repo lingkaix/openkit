@@ -1,4 +1,5 @@
 import { type WorkspaceApplyPlan, WorkspaceApplyPlanSchema } from '@openkit/app-api-schemas';
+import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 
 interface WorkspaceApplyPlanRow {
@@ -11,6 +12,7 @@ interface WorkspaceApplyPlanRow {
  * @param workspaceDb Open workspace-scope database handle.
  * @param plan Apply plan to persist.
  * @returns Stored public workspace apply plan.
+ * @throws OperationError when a retained same-id plan contradicts the replay.
  */
 export function recordWorkspaceApplyPlan(
   workspaceDb: WorkspaceDb,
@@ -29,7 +31,11 @@ export function recordWorkspaceApplyPlan(
       JSON.parse(existingRow.payload_json) as unknown
     );
     if (JSON.stringify(existing) !== JSON.stringify({ ...parsed, createdAt: existing.createdAt })) {
-      throw new Error(`Workspace apply plan replay conflict: ${parsed.id}`);
+      throw new OperationError(
+        'workspace_sync_review_failed',
+        `Workspace apply plan replay conflict: ${parsed.id}`,
+        404
+      );
     }
     return existing;
   }

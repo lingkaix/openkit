@@ -1,38 +1,31 @@
 import type { SCHEDULER_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ListSchedulerAdmissionsResponseSchema } from '@openkit/app-api-schemas';
+import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type {
   OperationImplementations,
   OperationInvocationContext,
-  OperationInvocationDependencies,
-} from '../operation-invocation.js';
+} from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import {
   cancelSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
+  SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
-
-/** Scheduler failure retains the native published error code and status. */
-export class SchedulerAdmissionOperationError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly status = 400
-  ) {
-    super(message);
-  }
-}
 /** Joins scheduler views and mutations without changing queue or audit ownership. */
 export function createSchedulerAdmissionOperationImplementations(
-  dependencies: OperationInvocationDependencies
-): Pick<OperationImplementations, keyof typeof SCHEDULER_OPERATION_DEFINITIONS> {
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
+) {
   const { repositoryWorkspaceDb } = dependencies;
   // Native invocation admits Core storage before entering this family.
   const coreDb = dependencies.coreDb!;
@@ -41,7 +34,8 @@ export function createSchedulerAdmissionOperationImplementations(
     return context.kind === 'public' && isCurrentDeploymentAdministrator(coreDb, context.actor);
   }
   return {
-    'scheduler.list': (input, actor, context) => {
+    'scheduler.list': (input, context) => {
+      const actor = context.actorRef;
       try {
         const workspaceId = input.workspaceId;
         const store = dependencies.store!;
@@ -90,14 +84,23 @@ export function createSchedulerAdmissionOperationImplementations(
 
         return ListSchedulerAdmissionsResponseSchema.parse({ items });
       } catch (error) {
-        throw new SchedulerAdmissionOperationError(
-          publishedErrorMessage(error),
-          'scheduler_admissions_failed',
-          400
-        );
+        if (
+          error instanceof SchedulerAdmissionTransitionError ||
+          error instanceof StoreRecordNotFoundError ||
+          error instanceof SyntaxError ||
+          error instanceof z.ZodError
+        )
+          throw new OperationError(
+            'scheduler_admissions_failed',
+            publishedErrorMessage(error),
+            400,
+            { cause: error }
+          );
+        throw error;
       }
     },
-    'scheduler.retry': (input, actor, context) => {
+    'scheduler.retry': (input, context) => {
+      const actor = context.actorRef;
       try {
         const workspaceId = input.workspaceId;
         const queueEntryId = input.queueEntryId;
@@ -137,17 +140,26 @@ export function createSchedulerAdmissionOperationImplementations(
 
         return { retried: true };
       } catch (error) {
-        if (error instanceof SchedulerAdmissionOperationError) {
+        if (error instanceof OperationError) {
           throw error;
         }
-        throw new SchedulerAdmissionOperationError(
-          publishedErrorMessage(error),
-          'scheduler_admission_retry_failed',
-          400
-        );
+        if (
+          error instanceof SchedulerAdmissionTransitionError ||
+          error instanceof StoreRecordNotFoundError ||
+          error instanceof SyntaxError ||
+          error instanceof z.ZodError
+        )
+          throw new OperationError(
+            'scheduler_admission_retry_failed',
+            publishedErrorMessage(error),
+            400,
+            { cause: error }
+          );
+        throw error;
       }
     },
-    'scheduler.cancel': (input, actor, context) => {
+    'scheduler.cancel': (input, context) => {
+      const actor = context.actorRef;
       try {
         const workspaceId = input.workspaceId;
         const queueEntryId = input.queueEntryId;
@@ -187,17 +199,25 @@ export function createSchedulerAdmissionOperationImplementations(
 
         return { cancelled: true };
       } catch (error) {
-        if (error instanceof SchedulerAdmissionOperationError) {
+        if (error instanceof OperationError) {
           throw error;
         }
-        throw new SchedulerAdmissionOperationError(
-          publishedErrorMessage(error),
-          'scheduler_admission_cancel_failed',
-          400
-        );
+        if (
+          error instanceof SchedulerAdmissionTransitionError ||
+          error instanceof StoreRecordNotFoundError ||
+          error instanceof SyntaxError ||
+          error instanceof z.ZodError
+        )
+          throw new OperationError(
+            'scheduler_admission_cancel_failed',
+            publishedErrorMessage(error),
+            400,
+            { cause: error }
+          );
+        throw error;
       }
     },
-  };
+  } satisfies Pick<OperationImplementations, keyof typeof SCHEDULER_OPERATION_DEFINITIONS>;
 }
 
 /**
@@ -210,7 +230,7 @@ export function createSchedulerAdmissionOperationImplementations(
  * @param queueEntryId Queue entry id from the route.
  * @param userId Authenticated viewer.
  * @returns Admission entry visible to the viewer in this Workspace.
- * @throws SchedulerAdmissionOperationError when the entry is missing, mismatched, or not visible.
+ * @throws OperationError when the entry is missing, mismatched, or not visible.
  */
 function requireVisibleSchedulerAdmissionEntry(
   coreDb: CoreDb,
@@ -229,7 +249,7 @@ function requireVisibleSchedulerAdmissionEntry(
     !lineage ||
     !isThreadIdVisible(store, workspaceId, lineage.thread_id, userId, administratorEligible)
   ) {
-    throw new SchedulerAdmissionOperationError('Thread not found.', 'not_found', 404);
+    throw new OperationError('not_found', 'Thread not found.', 404);
   }
   return requireSchedulerAdmissionEntry(coreDb, queueEntryId, { workspaceId });
 }

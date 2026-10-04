@@ -10,8 +10,7 @@ import {
   DataRootBackupVerifyResponseSchema,
   StorageLayoutReportResponseSchema,
 } from '@openkit/app-api-schemas';
-
-import { publishedErrorMessage } from '../api-errors.js';
+import { OperationError } from '../operation-error.js';
 import {
   type VerifiedDataRootBackupManifest,
   verifyDataRootBackupManifest,
@@ -55,9 +54,7 @@ type DataRootImplementations = {
 };
 
 /** Joins the admitted deployment administration operations to existing storage and backup mechanics. */
-export function createDataRootAdminOperationImplementations(
-  dataRoot: string | null
-): DataRootImplementations {
+export function createDataRootAdminOperationImplementations(dataRoot: string | null) {
   return {
     'storage.layout-report': () => {
       if (!dataRoot) {
@@ -85,12 +82,8 @@ export function createDataRootAdminOperationImplementations(
         });
 
         return DataRootBackupCreateResponseSchema.parse(dataRootBackupResponse(verified));
-      } catch (error) {
-        return failure(
-          publishedErrorMessage(error, error instanceof Error ? undefined : String(error)),
-          'data_root_backup_failed',
-          400
-        );
+      } catch (_error) {
+        return failure('Data-root backup verification failed.', 'data_root_backup_failed', 400);
       }
     },
 
@@ -109,30 +102,18 @@ export function createDataRootAdminOperationImplementations(
         });
 
         return DataRootBackupVerifyResponseSchema.parse(dataRootBackupResponse(verified));
-      } catch (error) {
+      } catch (_error) {
         return failure(
-          publishedErrorMessage(error, error instanceof Error ? undefined : String(error)),
+          'Data-root backup verification failed.',
           'data_root_backup_verify_failed',
           400
         );
       }
     },
-  };
-}
-
-/** Storage owner's published error code and status. */
-export class DataRootAdminOperationError extends Error {
-  public constructor(
-    public readonly code: string,
-    message: string,
-    public readonly status: number
-  ) {
-    super(message);
-    this.name = 'DataRootAdminOperationError';
-  }
+  } satisfies DataRootImplementations;
 }
 
 /** Retains storage failures without constructing an HTTP response. */
 function failure(message: string, code: string, status: number): never {
-  throw new DataRootAdminOperationError(code, message, status);
+  throw new OperationError(code, message, status);
 }
