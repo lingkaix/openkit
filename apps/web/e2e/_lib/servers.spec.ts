@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   promises as fsPromises,
@@ -14,10 +14,240 @@ import { syncBuiltinESMExports } from 'node:module';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
+import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
+
+/** Reproduces the Material browser handoff after the simulator ends its question-raising Turn. */
+test('preserves Material delivery and delivers a durable simulator answer on the next Task Turn', async ({
+  request,
+}) => {
+  const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
+  const client = createCoreClient({ baseUrl: stack.coreUrl });
+  const workspaceId = 'ws_demo';
+  const content = '# Release revision one\n\nExact worker input.\n';
+  const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+
+  try {
+    const thread = await client.operations['thread.create']({
+      workspaceId,
+      name: 'Material pending-question reproduction',
+      visibility: 'workspace',
+      requestId: randomUUID(),
+    });
+    const { materialId } = await client.app.createWorkspaceMaterial(workspaceId, {
+      title: 'Release Material',
+      kind: 'markdown',
+      sensitivity: 'internal',
+      requestId: randomUUID(),
+    });
+    const { revisionId } = await client.app.saveWorkspaceMaterialRevision(workspaceId, materialId, {
+      expectedRevisionId: null,
+      content,
+      contentDigest,
+      requestId: randomUUID(),
+    });
+    await client.app.bindThreadMaterial(workspaceId, thread.id, materialId, {
+      expectedBindingState: 'not_bound',
+      requestId: randomUUID(),
+    });
+    const targets = await client.operations['conversation.targets']({
+      workspaceId,
+      threadId: thread.id,
+    });
+    const target = targets.targets.find((candidate) => candidate.kind === 'warm-worker');
+    expect(target?.availability).toBe('available');
+    const requestId = randomUUID();
+    const response = await request.post(`${stack.coreUrl}/api/app/operations/conversation.submit`, {
+      headers: { 'x-openkit-request-id': requestId },
+      data: {
+        workspaceId,
+        threadId: thread.id,
+        targetRef: target!.targetRef,
+        input: 'Create a summary from the exact first release revision.',
+        requestId,
+      },
+    });
+    expect(response.status(), await response.text()).toBe(202);
+    const submission = SubmitConversationResponseSchema.parse(await response.json());
+    expect(submission.receivingThreadId).toBe(thread.id);
+    const selector = { workspaceId, threadId: thread.id, turnId: submission.turn.id };
+    let completed = false;
+    for await (const event of client.core.subscribeTurnEvents(selector)) {
+      if (event.event === 'turn.completed') {
+        expect(event.data).toMatchObject({
+          type: 'turn-completed',
+          stopReason: 'completed',
+          turn: { id: submission.turn.id, status: 'completed' },
+        });
+        completed = true;
+      }
+    }
+    expect(completed, 'The exact admitted Turn must complete through its ordinary owner.').toBe(
+      true
+    );
+    const turn = await client.operations['turn.read'](selector);
+    expect(turn.status).toBe('completed');
+    expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+    const items = await client.operations['thread.items']({ workspaceId, threadId: thread.id });
+    const question = items.items.find((item) => item.type === 'user-input-request');
+    expect(question).toMatchObject({
+      turnId: turn.id,
+      status: 'completed',
+      prompt: 'Which summary tone should the simulator use?',
+    });
+    expect(items.items.some((item) => item.type === 'user-input-response')).toBe(false);
+    if (question?.type !== 'user-input-request') throw new Error('Simulator question missing.');
+    const dashboard = await client.operations['thread.dashboard']({
+      workspaceId,
+      threadId: thread.id,
+    });
+    expect(dashboard.pendingRequests).toEqual([
+      expect.objectContaining({
+        requestId: question.userInputRequestId,
+        state: 'pending',
+        resolution: null,
+        canRespond: true,
+      }),
+    ]);
+    const trace = JSON.parse(
+      readFileSync(
+        join(
+          stack.dataRoot,
+          'workspaces',
+          workspaceId,
+          'threads',
+          thread.id,
+          'turns',
+          turn.id,
+          'context-package.json'
+        ),
+        'utf8'
+      )
+    );
+    expect(trace).toMatchObject({
+      turnId: turn.id,
+      contextPackageDigest: turn.contextPackageDigest,
+      materialSelections: [{ materialId, revisionId, contentDigest }],
+    });
+    const projection = await client.app.getThreadMaterial(workspaceId, thread.id);
+    // S16 current-turn identity ends with the Turn; the verified worker-seen identity survives.
+    expect(projection.material).toMatchObject({
+      lastWorkerSeenRevisionId: revisionId,
+      currentTurnRevisionId: null,
+      activeDelivery: null,
+      latestQueuedRevisionId: null,
+    });
+    const nextContent = '# Release revision two\n\nSaved without another message.\n';
+    const { revisionId: nextRevisionId } = await client.app.saveWorkspaceMaterialRevision(
+      workspaceId,
+      materialId,
+      {
+        expectedRevisionId: revisionId,
+        content: nextContent,
+        contentDigest: `sha256:${createHash('sha256').update(nextContent).digest('hex')}`,
+        requestId: randomUUID(),
+      }
+    );
+    const queued = await client.app.getThreadMaterial(workspaceId, thread.id);
+    expect(queued.material).toMatchObject({
+      currentRevision: { revisionId: nextRevisionId },
+      latestQueuedRevisionId: nextRevisionId,
+      lastWorkerSeenRevisionId: revisionId,
+      currentTurnRevisionId: null,
+    });
+    await stack.restartCore();
+    expect(await client.app.getThreadMaterial(workspaceId, thread.id)).toEqual(queued);
+    expect(
+      (await client.operations['thread.dashboard']({ workspaceId, threadId: thread.id }))
+        .pendingRequests
+    ).toEqual(dashboard.pendingRequests);
+    await client.operations['question.answer']({
+      workspaceId,
+      threadId: thread.id,
+      userInputRequestId: question.userInputRequestId,
+      requestId: randomUUID(),
+      answers: { tone: ['Detailed'] },
+    });
+    const afterAnswer = await client.operations['thread.dashboard']({
+      workspaceId,
+      threadId: thread.id,
+    });
+    const nextTurn = afterAnswer.turns.at(-1)!;
+    expect(nextTurn.id).not.toBe(turn.id);
+    let answerTurnCompleted = false;
+    for await (const event of client.core.subscribeTurnEvents({
+      workspaceId,
+      threadId: thread.id,
+      turnId: nextTurn.id,
+    })) {
+      if (event.event === 'turn.completed') {
+        expect(event.data).toMatchObject({
+          stopReason: 'completed',
+          turn: { status: 'completed' },
+        });
+        answerTurnCompleted = true;
+      }
+    }
+    expect(answerTurnCompleted).toBe(true);
+    expect((await client.operations['turn.read'](selector)).status).toBe('completed');
+    const answeredItems = await client.operations['thread.items']({
+      workspaceId,
+      threadId: thread.id,
+    });
+    expect(answeredItems.items.filter((item) => item.type === 'user-input-response')).toEqual([
+      expect.objectContaining({
+        turnId: nextTurn.id,
+        userInputRequestId: question.userInputRequestId,
+        answers: { tone: ['Detailed'] },
+      }),
+    ]);
+    const [
+      { openWorkspaceDb },
+      { readPendingRequest },
+      { listExportableAgentEnvironmentPackageSnapshots },
+    ] = await Promise.all([
+      import('../../../nanocore/dist/storage/db.js'),
+      import('../../../nanocore/dist/runtime/pending-requests.js'),
+      import('../../../nanocore/dist/runtime/aep-snapshot-ledger.js'),
+    ]);
+    const workspaceDb = openWorkspaceDb(stack.dataRoot, workspaceId);
+    try {
+      expect(readPendingRequest(workspaceDb.sqlite, question.userInputRequestId)).toMatchObject({
+        kind: 'user-input',
+        requesterKind: 'worker',
+        state: 'resolved',
+        resolution: 'answered',
+        raisingTurnId: turn.id,
+        publicationTurnId: nextTurn.id,
+        deliveryTurnId: nextTurn.id,
+        delivery: 'delivered',
+        answerMap: { tone: ['Detailed'] },
+      });
+      const snapshot = listExportableAgentEnvironmentPackageSnapshots(
+        workspaceDb,
+        workspaceId
+      ).find((record) => record.snapshot.scope.turnId === nextTurn.id);
+      const workerInput = (snapshot!.snapshot.extensions.openkit as { turnInput: string })
+        .turnInput;
+      expect(JSON.parse(workerInput).pendingOutcomes).toEqual([
+        expect.objectContaining({
+          requestId: question.userInputRequestId,
+          resolution: 'answered',
+          answers: { tone: ['Detailed'] },
+          publicationTurnId: nextTurn.id,
+        }),
+      ]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  } finally {
+    await stack.stop();
+  }
+});
 
 /** Resolves the authored fixture Agent through production digest-bound image admission. */
 async function readFixtureNativeEnvironment(dataRoot: string) {

@@ -11,7 +11,7 @@ This directory contains NanoCore's existing app-local product-state aggregate an
 - Event envelopes project non-UUID App command ids to stable Workspace/Thread-scoped protocol UUIDs using the existing UUID helper; command receipts, checkpoints, and Worker packages retain the original command identity.
 - `store.ts` does not own a Knowledge context materialization path; S61 owns retrieval traces and S39 owns worker Context Package files under `../storage/`.
 - Split an existing family only when the new owner receives direct callers and removes a complete responsibility. Do not hide the same aggregate behind a pass-through repository or single-implementation interface.
-- `simulator.ts` owns deterministic demo execution only and must use the same public store invariants as production paths.
+- `simulator.ts` owns deterministic demo execution only and must use the same public store invariants as production paths. Product-backed questions use the existing Worker MCP `work_request_input` dispatcher and Pending Request owner before the raising Turn completes; answers arrive through frozen input on a later Turn of the same Task, never by reopening the raising Turn. Its modeled native start proves delivery only after accepting that exact input. Standalone protocol fixtures without Core storage cannot exercise durable answers.
 
 ## Verification
 

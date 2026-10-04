@@ -25,6 +25,7 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
+import { readPendingRequest } from '../runtime/pending-requests.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import {
   ensureConfiguredSchedulerBaseline,
@@ -738,6 +739,35 @@ describe('SimulatedTurnExecutor', () => {
       expect(workerTurn).toMatchObject({
         status: 'completed',
       });
+      const dashboardResponse = await app.request(
+        ...operationRequest('thread.dashboard', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+      );
+      expect(dashboardResponse.status).toBe(200);
+      const dashboard = await dashboardResponse.json();
+      expect(dashboard.pendingRequests).toEqual([
+        expect.objectContaining({ state: 'pending', resolution: null, canRespond: true }),
+      ]);
+      const question = store
+        .listThreadItems('ws_demo', 'th_demo')
+        .find((item) => item.type === 'user-input-request' && item.turnId === workerTurn.id);
+      expect(question?.type).toBe('user-input-request');
+      if (question?.type !== 'user-input-request') throw new Error('Simulator question missing.');
+      expect(dashboard.pendingRequests[0].requestId).toBe(question.userInputRequestId);
+      const pendingDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        expect(readPendingRequest(pendingDb.sqlite, question.userInputRequestId)).toMatchObject({
+          kind: 'user-input',
+          requesterKind: 'worker',
+          state: 'pending',
+          resolution: null,
+          raisingTurnId: workerTurn.id,
+          requestItemId: question.id,
+          agentId: workerTurn.agentId,
+          agentSessionId: workerTurn.agentSessionId,
+        });
+      } finally {
+        pendingDb.sqlite.close();
+      }
       const proposals = store.listArtifacts('ws_demo');
       expect(proposals).toHaveLength(3);
       expect(new Set(proposals.map((artifact) => artifact.contentDigest)).size).toBe(3);
@@ -815,6 +845,84 @@ describe('SimulatedTurnExecutor', () => {
         requestId,
         turnId: workerTurn.id,
       });
+      const answerResponse = await app.request(
+        ...operationRequest(
+          'question.answer',
+          { userInputRequestId: question.userInputRequestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              threadId: 'th_demo',
+              userInputRequestId: question.userInputRequestId,
+              requestId: '0190f4c8-0000-7000-8000-000000000242',
+              answers: { tone: ['Detailed'] },
+            }),
+          }
+        )
+      );
+      expect(answerResponse.status, await answerResponse.clone().text()).toBe(200);
+      const deliveringTurn = store.listThreadTurns('ws_demo', 'th_demo').at(-1)!;
+      expect(deliveringTurn.id).not.toBe(workerTurn.id);
+      if (deliveringTurn.status !== 'completed' && deliveringTurn.status !== 'failed') {
+        await new Promise<void>((resolve) => {
+          const remove = store.addTurnListener(deliveringTurn.id, (event) => {
+            if (event.event === 'turn.completed') {
+              remove();
+              resolve();
+            }
+          });
+        });
+      }
+      expect(store.getTurnById(workerTurn.id).status).toBe('completed');
+      expect(store.getArtifact('ws_demo', `ar_${deliveringTurn.id}`).content?.body).toBe(
+        'Simulator answer: Detailed'
+      );
+      expect(store.getTurnById(deliveringTurn.id)).toMatchObject({
+        status: 'completed',
+        agentId: workerTurn.agentId,
+        triggerSource: { kind: 'user-input' },
+      });
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.type === 'user-input-response')
+      ).toEqual([
+        expect.objectContaining({
+          turnId: deliveringTurn.id,
+          userInputRequestId: question.userInputRequestId,
+          answers: { tone: ['Detailed'] },
+        }),
+      ]);
+      const deliveredDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        expect(readPendingRequest(deliveredDb.sqlite, question.userInputRequestId)).toMatchObject({
+          state: 'resolved',
+          resolution: 'answered',
+          delivery: 'delivered',
+          publicationTurnId: deliveringTurn.id,
+          deliveryTurnId: deliveringTurn.id,
+          raisingTurnId: workerTurn.id,
+          answerMap: { tone: ['Detailed'] },
+        });
+        const snapshot = listExportableAgentEnvironmentPackageSnapshots(
+          deliveredDb,
+          'ws_demo'
+        ).find((record) => record.snapshot.scope.turnId === deliveringTurn.id);
+        const workerInput = (snapshot!.snapshot.extensions.openkit as { turnInput: string })
+          .turnInput;
+        expect(JSON.parse(workerInput).pendingOutcomes).toEqual([
+          expect.objectContaining({
+            requestId: question.userInputRequestId,
+            resolution: 'answered',
+            answers: { tone: ['Detailed'] },
+            publicationTurnId: deliveringTurn.id,
+          }),
+        ]);
+      } finally {
+        deliveredDb.sqlite.close();
+      }
     } finally {
       coreDb.sqlite.close();
     }

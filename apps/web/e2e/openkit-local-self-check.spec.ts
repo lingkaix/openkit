@@ -1,3 +1,4 @@
+import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -198,13 +199,13 @@ async function materialRevision(
 }
 
 /**
- * Starts one visible Task Turn and waits for the simulator's real non-secret user-input Gate.
+ * Starts one visible Task Turn and observes its emitted question after ordinary Turn completion.
  *
  * @param page Browser page connected to the isolated Web app.
  * @param threadId Thread that owns the Turn.
  * @param input Exact user-visible Task request.
- * @returns Resolves after a 202 response and visible question prove non-vacuity.
- * @throws When browser submission, the Task response, or Gate rendering fails.
+ * @returns Resolves after a 202 response, visible question, and verified terminal Turn prove non-vacuity.
+ * @throws When browser submission, the Task response, question rendering, or terminal proof fails.
  */
 async function startTaskTurn(page: Page, threadId: string, input: string): Promise<void> {
   await page.goto(`${stack?.webUrl}/tasks/ws_demo/${threadId}`);
@@ -216,11 +217,20 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   );
   await page.getByRole('button', { name: /^Send message$/ }).click();
   const response = await turnResponse;
-  expect(response.status(), `Task Turn start response: ${await response.text()}`).toBe(202);
+  const responseBody = await response.text();
+  expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
+  const submission = SubmitConversationResponseSchema.parse(JSON.parse(responseBody));
+  expect(submission.receivingThreadId).toBe(threadId);
   await expect(page.getByText('Which summary tone should the simulator use?')).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Couldn't send that message. Try again.")).toHaveCount(0);
+  const turn = await getJson<{ status: string; contextPackageDigest: string | null }>(
+    '/api/app/operations/turn.read',
+    { workspaceId: 'ws_demo', threadId, turnId: submission.turn.id }
+  );
+  expect(turn.status).toBe('completed');
+  expect(turn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
 }
 
 /**
@@ -237,7 +247,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const threadId = 'th_demo';
   const revisionOneContent = '# Release note\n\nRevision one.';
-  const revisionTwoContent = '# Release note\n\nRevision two, saved while revision one is active.';
+  const revisionTwoContent =
+    '# Release note\n\nRevision two, saved after revision one was delivered.';
   const primary = await createMaterial(page, threadId, 'Release Material', revisionOneContent);
   const [revisionOne] = await materialRevisions(primary.materialId);
   expect(revisionOne).toBeTruthy();
@@ -265,11 +276,19 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(
     page
       .getByRole('region', { name: 'Thread Material' })
-      .getByText('Current-turn revision', { exact: true })
+      .getByText('Worker-seen revision', { exact: true })
       .locator('..')
       .locator('dd'),
     `Thread Material response ${projectionResponse.status()}: ${projectionBody}`
   ).toHaveText(revisionOne.revisionId);
+  // S16 acceptance step 2 proves delivery; a pending question does not keep its Turn non-terminal.
+  await expect(
+    page
+      .getByRole('region', { name: 'Thread Material' })
+      .getByText('Current-turn revision', { exact: true })
+      .locator('..')
+      .locator('dd')
+  ).toHaveText('Unknown / none / not available');
 
   const materialEditor = page.getByLabel('Release Material');
   await materialEditor.fill(revisionTwoContent);
@@ -309,7 +328,7 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
       .getByText('Current-turn revision', { exact: true })
       .locator('..')
       .locator('dd')
-  ).toHaveText(revisionOne.revisionId);
+  ).toHaveText('Unknown / none / not available');
 
   await page.goto(`${stack.webUrl}/tasks/ws_demo/${threadId}`);
   await page.getByRole('textbox', { name: 'Tone' }).fill('Concise');

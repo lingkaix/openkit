@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   AgentEnvironmentPackage,
@@ -18,7 +18,9 @@ import {
   resolveAgentEnvironmentPackage,
   resolveAgentSessionCompatibilityKey,
 } from '../runtime/agent-environment.js';
+import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
+import { frozenPendingOutcomeInput, proveFrozenDelivery } from '../runtime/pending-requests.js';
 import type {
   AgentSessionReadModel,
   ApprovalDecision,
@@ -154,7 +156,6 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   public readonly eventFamilies = SIMULATOR_EVENT_FAMILIES;
   public readonly itemTypes = SIMULATOR_ITEM_TYPES;
   public readonly itemDeltaKinds = SIMULATOR_ITEM_DELTA_KINDS;
-  private readonly pendingByTurnId = new Map<string, SimulatedTurnState>();
   private readonly coreDb: CoreDb | null;
 
   /**
@@ -424,7 +425,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Starts one deterministic simulated turn and pauses on a non-secret user-input Gate.
+   * Starts one deterministic simulated Turn that completes normally, with Pending Request answers delivered on later Turns.
    *
    * @throws When launch did not supply the selected agent setup or its manifest does not match the
    * turn.
@@ -501,14 +502,13 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const captureCoverage =
-        workspaceDb && checkpoint
-          ? readWorkObservationTurnBinding(workspaceDb, {
-              threadId: turn.threadId,
-              turnId: turn.id,
-            }).coverage
-          : null;
-      if (checkpoint && !captureCoverage) {
+      const captureCoverage = workspaceDb
+        ? readWorkObservationTurnBinding(workspaceDb, {
+            threadId: turn.threadId,
+            turnId: turn.id,
+          }).coverage
+        : null;
+      if (this.coreDb && (!captureCoverage || !context.sandboxBindingRef)) {
         throw new TurnStartValidationError(
           'recovery_required',
           'Simulator capture admission is unavailable.',
@@ -528,18 +528,23 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             })
           : null;
       const environmentBackend = { kind: 'openshell' } as const;
-      const resolvedEnvironmentPackage = preparedContext
+      const workerInput = workspaceDb
+        ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
+        : input;
+      const resolvedEnvironmentPackage = captureCoverage
         ? resolveAgentEnvironmentPackage({
-            captureCoverage: captureCoverage!,
+            captureCoverage,
             agentSessionId,
             agentSetup: context.agentSetup,
             backend: environmentBackend,
             coreDb: this.coreDb!,
             createdAt: timestamp,
-            preparedContextPackage: preparedContext.preparedContextPackage,
+            ...(preparedContext
+              ? { preparedContextPackage: preparedContext.preparedContextPackage }
+              : {}),
             requestId: context.requestId ?? null,
             turn,
-            turnInput: input,
+            turnInput: workerInput,
             triggerActor: context.triggerActor,
             workspaceCwd: workerVisibleWorkspaceCwd(context, environmentBackend),
             workspaceRoots: context.workspaceRoots,
@@ -658,18 +663,12 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         turnId,
         agentSessionId: agentSession.id,
         requestId: context.requestId ?? null,
-        userInputRequestId: `ui_${turnId}`,
+        userInputRequestId: randomUUID(),
       };
 
       this.emitStartedEnvelope(store, state, agentSession, input);
 
-      if (
-        this.coreDb &&
-        workspaceDb &&
-        preparedContext &&
-        environmentPackage &&
-        context.sandboxBindingRef
-      ) {
+      if (this.coreDb && workspaceDb && environmentPackage && context.sandboxBindingRef) {
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: timestamp,
           environmentPackage,
@@ -741,22 +740,30 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           leaseId: backendSession.leaseId,
           now: () => timestamp,
         });
-        const acceptedTrace = acceptPreparedWorkerTurnContextPackage({
-          coreDb: this.coreDb,
-          environmentPackage,
-          preparedContext,
-          store,
-          workspaceDb,
-        });
-        this.importMaterialProposals(
-          store,
-          environmentPackage,
-          acceptedTrace,
-          workspaceDb,
-          timestamp
-        );
+        if (preparedContext) {
+          const acceptedTrace = acceptPreparedWorkerTurnContextPackage({
+            coreDb: this.coreDb,
+            environmentPackage,
+            preparedContext,
+            store,
+            workspaceDb,
+          });
+          this.importMaterialProposals(
+            store,
+            environmentPackage,
+            acceptedTrace,
+            workspaceDb,
+            timestamp
+          );
+        }
+        // This deterministic executor accepts the same frozen input at its modeled native start.
+        proveFrozenDelivery(workspaceDb.sqlite, turn.id, timestamp);
+        if (workerInput === input) {
+          await this.emitUserInputRequest(store, state, environmentPackage, workspaceDb);
+        }
+        const finalTimestamp = new Date().toISOString();
         recordWorkerControlAcceptedRecord(this.coreDb, {
-          acceptedAt: timestamp,
+          acceptedAt: finalTimestamp,
           lineage: {
             agentSessionId,
             packageSnapshotId: environmentPackage.snapshotId,
@@ -772,19 +779,19 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         });
         markSchedulerSessionLeaseReleasing(this.coreDb, {
           leaseId: backendSession.leaseId,
-          now: () => timestamp,
+          now: () => finalTimestamp,
           releaseReason: 'worker-final-status',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materialized',
           leaseId: backendSession.leaseId,
-          now: () => timestamp,
+          now: () => finalTimestamp,
           toState: 'cleanup-pending',
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'cleanup-pending',
           leaseId: backendSession.leaseId,
-          now: () => timestamp,
+          now: () => finalTimestamp,
           toState: 'physical-cleaned',
         });
         projectWorkerBackendCleanup(workspaceDb, {
@@ -792,7 +799,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
           backendSessionId,
           backendType: 'openshell',
           backendVersion: null,
-          completedAt: timestamp,
+          completedAt: finalTimestamp,
           environmentPackage,
           outcome: 'succeeded',
           packageSnapshotId: environmentPackage.snapshotId,
@@ -806,7 +813,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'physical-cleaned',
           leaseId: backendSession.leaseId,
-          now: () => timestamp,
+          now: () => finalTimestamp,
           toState: 'cleaned',
         });
       }
@@ -814,7 +821,46 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       this.emitAssistant(store, state);
       this.emitReasoning(store, state);
       this.emitCommand(store, state);
-      this.emitUserInputRequest(store, state);
+      if (workerInput !== input) {
+        const outcomes = JSON.parse(workerInput).pendingOutcomes as Array<{
+          answers: Record<string, string[]> | null;
+        }>;
+        const tone = outcomes.find((outcome) => outcome.answers?.tone)?.answers?.tone?.[0];
+        if (!state.requestId) throw new Error('Simulator outcome request identity is unavailable.');
+        this.emitArtifactAndComplete(store, state, tone ?? 'Concise', state.requestId);
+      } else {
+        if (!this.coreDb) {
+          await this.emitUserInputRequest(store, state, null, null);
+        }
+        if (state.requestId) {
+          this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
+          return;
+        }
+        const completedAt = new Date().toISOString();
+        const idleSession = store.updateAgentSession(state.agentSessionId, {
+          status: 'idle',
+          message: null,
+          updatedAt: completedAt,
+        });
+        const completedTurn = store.updateTurn(state.turnId, {
+          status: 'completed',
+          completedAt,
+        });
+        this.emitTurnUpdated(store, state, completedTurn);
+        this.emitAgentSessionUpdated(store, state, idleSession);
+        store.emitTurnEvent(
+          state.turnId,
+          {
+            event: 'turn.completed',
+            requestId: state.requestId,
+            workspaceId: state.workspaceId,
+            threadId: state.threadId,
+            turnId: state.turnId,
+            data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        );
+      }
     } finally {
       workspaceDb?.sqlite.close();
     }
@@ -832,7 +878,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     if (!turnRecord.agentSessionId) {
       throw new Error(`Simulator turn has no assigned AgentSession: ${turnId}`);
     }
-    const state = this.pendingByTurnId.get(turnId) ?? {
+    const state = {
       workspaceId: turnRecord.workspaceId,
       threadId: turnRecord.threadId,
       turnId,
@@ -876,7 +922,6 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    this.pendingByTurnId.delete(turnId);
   }
 
   /**
@@ -935,58 +980,14 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     };
   }
 
-  /**
-   * Resolves the simulator question, emits an artifact update, and completes the turn.
-   */
+  /** Refuses the obsolete same-Turn response hook; question.answer owns later-Turn delivery. */
   public async respondUserInput(
-    store: FsStore,
+    _store: FsStore,
     turnId: string,
-    answers: Record<string, [string]>,
-    context: HumanResponseCommandRuntimeContext
+    _answers: Record<string, [string]>,
+    _context: HumanResponseCommandRuntimeContext
   ) {
-    const state = this.pendingByTurnId.get(turnId);
-
-    if (!state) {
-      throw new Error(`Simulator user-input request is not active for turn: ${turnId}`);
-    }
-
-    const requestId = context.requestId;
-    if (!requestId) {
-      throw new Error('Simulator Artifact creation requires the current request identity.');
-    }
-    state.requestId = requestId;
-    const input = Object.values(answers)[0]?.[0];
-    if (!input) {
-      throw new Error('Simulator user-input response has no answer.');
-    }
-    const timestamp = new Date().toISOString();
-    const responseItem = store.createItem({
-      id: `it_user_input_response_${turnId}`,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId,
-      type: 'user-input-response',
-      status: 'completed',
-      actor: context.actor,
-      causationId: requestId,
-      userInputRequestId: state.userInputRequestId,
-      answers,
-      answeredAt: timestamp,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
-    const runningTurn = store.updateTurn(turnId, { status: 'running' });
-    const runningAgentSession = store.updateAgentSession(state.agentSessionId, {
-      status: 'busy',
-    });
-
-    this.emitItemCreated(store, state, responseItem);
-    this.emitItemCompleted(store, state, responseItem);
-    this.emitTurnUpdated(store, state, runningTurn);
-    this.emitAgentSessionUpdated(store, state, runningAgentSession);
-    this.emitArtifactAndComplete(store, state, input, requestId);
-    this.pendingByTurnId.delete(turnId);
-    return store.getTurnById(turnId);
+    throw new Error(`Simulator user-input request is not active for turn: ${turnId}`);
   }
 
   /**
@@ -1213,13 +1214,20 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Emits the deterministic non-secret user-input request and completes the Turn.
+   * Raises the deterministic question through Worker MCP while its backend admission is active.
    *
    * @param store Product store containing the active Turn.
    * @param state Active simulator lineage.
-   * @throws Error when the triggering actor has no responsible user.
+   * @param environmentPackage Accepted worker package, absent only in standalone protocol fixtures.
+   * @param workspaceDb Durable request owner, absent only in standalone protocol fixtures.
+   * @throws Error when responsibility or durable Worker MCP admission is unavailable.
    */
-  private emitUserInputRequest(store: FsStore, state: SimulatedTurnState): void {
+  private async emitUserInputRequest(
+    store: FsStore,
+    state: SimulatedTurnState,
+    environmentPackage: AgentEnvironmentPackage | null,
+    workspaceDb: WorkspaceDb | null
+  ): Promise<void> {
     const timestamp = new Date().toISOString();
     const responsibleUserId = responsibleUserIdForActor(
       store.getTurnById(state.turnId).triggerActor
@@ -1227,59 +1235,63 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     if (responsibleUserId === null) {
       throw new Error('Simulator user-input responsibility is unavailable.');
     }
-    const requestItem = store.createItem({
-      id: `it_user_input_request_${state.turnId}`,
-      workspaceId: state.workspaceId,
-      threadId: state.threadId,
-      turnId: state.turnId,
-      type: 'user-input-request',
-      status: 'completed',
-      responsibleUserId,
-      userInputRequestId: state.userInputRequestId,
-      prompt: 'Which summary tone should the simulator use?',
-      questions: [
-        {
-          id: 'tone',
-          header: 'Tone',
-          question: 'Which summary tone should the simulator use?',
-          options: null,
-          isOther: false,
-          isSecret: false,
-        },
-      ],
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
-    this.emitItemCreated(store, state, requestItem);
-    this.emitItemCompleted(store, state, requestItem);
-    if (state.requestId) {
-      this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
-      return;
-    }
-    const completedAt = new Date().toISOString();
-    const idleSession = store.updateAgentSession(state.agentSessionId, {
-      status: 'idle',
-      message: null,
-      updatedAt: completedAt,
-    });
-    const completedTurn = store.updateTurn(state.turnId, {
-      status: 'completed',
-      completedAt,
-    });
-    this.emitTurnUpdated(store, state, completedTurn);
-    this.emitAgentSessionUpdated(store, state, idleSession);
-    store.emitTurnEvent(
-      state.turnId,
+    const prompt = 'Which summary tone should the simulator use?';
+    const questions = [
       {
-        event: 'turn.completed',
-        requestId: state.requestId,
+        id: 'tone',
+        header: 'Tone',
+        question: prompt,
+        options: null,
+        isOther: false,
+        isSecret: false,
+      },
+    ];
+    let requestItem: RuntimeItem;
+    if (this.coreDb) {
+      if (!environmentPackage || !workspaceDb)
+        throw new Error('Simulator Worker MCP admission is unavailable.');
+      const result = await dispatchOpenkitWorkTool(
+        {
+          environmentPackage,
+          coreDb: this.coreDb,
+          store,
+          workspaceDb,
+        },
+        'work_request_input',
+        { requestId: state.userInputRequestId, prompt, questions }
+      );
+      state.userInputRequestId = result.structuredContent.requestId as string;
+      const recordedItem = store
+        .listThreadItems(state.workspaceId, state.threadId)
+        .find(
+          (item) =>
+            item.type === 'user-input-request' &&
+            item.userInputRequestId === state.userInputRequestId
+        );
+      if (!recordedItem) throw new Error('Simulator Worker MCP request Item is unavailable.');
+      requestItem = recordedItem;
+    } else {
+      // Standalone protocol fixtures have no durable product owner or answer command.
+      requestItem = store.createItem({
+        id: `it_user_input_request_${state.turnId}`,
         workspaceId: state.workspaceId,
         threadId: state.threadId,
         turnId: state.turnId,
-        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+        type: 'user-input-request',
+        status: 'completed',
+        responsibleUserId,
+        userInputRequestId: state.userInputRequestId,
+        prompt,
+        questions,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+    }
+    // A repeated question returns its existing Item without publishing it on another Turn.
+    if (requestItem.turnId === state.turnId) {
+      this.emitItemCreated(store, state, requestItem);
+      this.emitItemCompleted(store, state, requestItem);
+    }
   }
 
   /**
