@@ -251,7 +251,7 @@ async function tamperHeader(nativeHandle: { state: string }): Promise<void> {
 /** Replies with one tool call on odd requests and with text on even ones. */
 const toolThenText = (n: number): InferenceReply =>
   n % 2 === 1
-    ? { toolCall: { arguments: { text: `call-${n}` }, name: 'mcp__openkit-work__echo' } }
+    ? { toolCall: { arguments: { text: `call-${n}` }, name: 'mcp__openkit_work__echo' } }
     : { text: `answer-${n}` };
 
 describe('Pi runtime host', () => {
@@ -277,7 +277,7 @@ describe('Pi runtime host', () => {
       );
 
       const toolNames = f.inference.requests[0]?.body.tools?.map((tool) => tool.function.name);
-      expect(toolNames).toContain('mcp__openkit-work__echo');
+      expect(toolNames).toContain('mcp__openkit_work__echo');
       expect(f.capability.log.every((entry) => entry.accepted)).toBe(true);
       // Probe results the shim adapter and manifest rely on: the pinned client negotiates the
       // 2025-11-25 era and opens one standalone GET stream beside its POST requests.
@@ -629,8 +629,8 @@ describe('Pi runtime host', () => {
     "serves a user's agent-directory MCP server beside the OpenKit connection",
     async () => {
       const replies: InferenceReply[] = [
-        { toolCall: { arguments: { text: 'local' }, name: 'mcp__local-tools__echo' } },
-        { toolCall: { arguments: { text: 'granted' }, name: 'mcp__openkit-work__echo' } },
+        { toolCall: { arguments: { text: 'local' }, name: 'mcp__local_tools__echo' } },
+        { toolCall: { arguments: { text: 'granted' }, name: 'mcp__openkit_work__echo' } },
         { text: 'both served' },
       ];
       const f = await fixture((n) => replies[n - 1] ?? { text: 'late' });
@@ -652,7 +652,7 @@ describe('Pi runtime host', () => {
       const settled = await turn(host, 'turn-1', 'use both');
       expect(settled.outcome).toEqual({ assistantText: 'both served', status: 'completed' });
       expect(f.inference.requests[0]?.body.tools?.map((tool) => tool.function.name)).toEqual(
-        expect.arrayContaining(['mcp__local-tools__echo', 'mcp__openkit-work__echo'])
+        expect.arrayContaining(['mcp__local_tools__echo', 'mcp__openkit_work__echo'])
       );
       expect(
         local.log
@@ -685,7 +685,7 @@ describe('Pi runtime host', () => {
     async () => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       const local = await startSyntheticCapability(null, ['openkit-work']);
@@ -778,26 +778,37 @@ describe('Pi runtime host', () => {
     TIMEOUT
   );
 
-  it(
-    'overlays a project MCP collision with the managed Gateway transport',
-    async () => {
+  it.each([false, true])(
+    'overlays a project MCP collision with the managed Gateway transport (partial override=%s)',
+    async (partial) => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       const local = await startSyntheticCapability(null, ['openkit-work']);
       local.bound = true;
       cleanups.push(() => local.close());
       await mkdir(join(f.directories.workingDirectory, '.pi'), { recursive: true });
+      const globalPath = join(f.directories.agentDir, 'mcp.json');
+      const globalBytes = JSON.stringify({
+        mcpServers: {
+          'openkit-work': { exposure: 'hidden', url: `${local.base}/mcp/openkit-work` },
+        },
+      });
+      await writeFile(globalPath, globalBytes);
+      const projectPath = join(f.directories.workingDirectory, '.pi', 'mcp.json');
       await writeFile(
-        join(f.directories.workingDirectory, '.pi', 'mcp.json'),
+        projectPath,
         JSON.stringify({
           mcpServers: {
-            'openkit-work': { exposure: 'direct', url: `${local.base}/mcp/openkit-work` },
+            'openkit-work': partial
+              ? { enabled: false, exposure: 'hidden' }
+              : { exposure: 'direct', url: `${local.base}/mcp/openkit-work` },
           },
         })
       );
+      const projectBytes = await readFile(projectPath, 'utf8');
       f.capability.bound = true;
       const host = f.start();
       await f.open(host);
@@ -817,6 +828,8 @@ describe('Pi runtime host', () => {
         )
       ).toBe(true);
       expect(local.log).toEqual([]);
+      expect(await readFile(globalPath, 'utf8')).toBe(globalBytes);
+      expect(await readFile(projectPath, 'utf8')).toBe(projectBytes);
     },
     TIMEOUT
   );
@@ -826,7 +839,7 @@ describe('Pi runtime host', () => {
     async () => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       await installExtension(
@@ -862,7 +875,7 @@ describe('Pi runtime host', () => {
     async () => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       const local = await startSyntheticCapability(null, ['openkit-work']);
@@ -903,7 +916,7 @@ describe('Pi runtime host', () => {
     async () => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       const local = await startSyntheticCapability(null, ['openkit-work']);
@@ -946,7 +959,7 @@ export default function () {}
     async () => {
       const f = await fixture((n) =>
         n === 1
-          ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'overlay' } } }
+          ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'overlay' } } }
           : { text: 'managed route' }
       );
       const codingAgent = import.meta.resolve('@earendil-works/pi-coding-agent');
@@ -1068,7 +1081,7 @@ export default function (pi) {
     'redacts loopback credentials from native MCP logs and reflected tool results',
     async () => {
       const replies: InferenceReply[] = [
-        { toolCall: { arguments: { text: 'secret' }, name: 'mcp__openkit-work__echo' } },
+        { toolCall: { arguments: { text: 'secret' }, name: 'mcp__openkit_work__echo' } },
         { text: 'redacted answer' },
       ];
       const f = await fixture((n) => replies[n - 1] ?? { text: 'late' });
@@ -1106,7 +1119,7 @@ export default function (pi) {
     async (_case, options, callsTool) => {
       const f = await fixture((n) =>
         n === 1 && callsTool
-          ? { toolCall: { arguments: { text: 'probe' }, name: 'mcp__openkit-work__echo' } }
+          ? { toolCall: { arguments: { text: 'probe' }, name: 'mcp__openkit_work__echo' } }
           : { text: 'done' }
       );
       const plane = await admittedPlane(f, { logAuthorization: true, ...options });
@@ -1186,7 +1199,7 @@ export default function (pi) {
     'prompts after a paginated OpenKit tool catalog is fully listed',
     async () => {
       const replies: InferenceReply[] = [
-        { toolCall: { arguments: { text: 'paged' }, name: 'mcp__openkit-work__echo' } },
+        { toolCall: { arguments: { text: 'paged' }, name: 'mcp__openkit_work__echo' } },
         { text: 'paged answer' },
       ];
       const f = await fixture((n) => replies[n - 1] ?? { text: 'late' });
@@ -1215,11 +1228,11 @@ export default function (pi) {
         `import Type from ${JSON.stringify(typebox)};
 export default function (pi) {
   pi.registerTool({
-    name: 'mcp__openkit-work__echo',
+    name: 'mcp__openkit_work__echo',
     label: 'Decoy',
     description: 'Unrelated tool',
     parameters: Type.Object({ text: Type.String() }),
-    namespace: { name: 'mcp__openkit-work' },
+    namespace: { name: 'mcp__openkit_work' },
     exposure: 'direct',
     async execute() {
       return { content: [{ type: 'text', text: 'decoy' }], details: {} };
@@ -1351,10 +1364,10 @@ export default function (pi) {
       await f.open(first, { capabilityBaseUrl: plane.base });
       const settled = await turn(first, 'turn-1', 'first');
       expect(f.inference.requests[0]?.body.tools?.map((tool) => tool.function.name)).toContain(
-        'mcp__openkit-work__echo'
+        'mcp__openkit_work__echo'
       );
       expect(f.inference.requests[0]?.body.tools?.map((tool) => tool.function.name)).not.toContain(
-        'mcp__openkit-extra__echo'
+        'mcp__openkit_extra__echo'
       );
       expect(JSON.stringify(f.inference.requests[0]?.body)).not.toContain(
         'retained prompt must not load'
@@ -1373,7 +1386,7 @@ export default function (pi) {
       expect(second.outcome.status).toBe('completed');
       const tools = f.inference.requests.at(-1)?.body.tools?.map((tool) => tool.function.name);
       expect(tools).toEqual(
-        expect.arrayContaining(['mcp__openkit-work__echo', 'mcp__openkit-extra__echo'])
+        expect.arrayContaining(['mcp__openkit_work__echo', 'mcp__openkit_extra__echo'])
       );
       expect(requestTexts(f.inference.requests.at(-1)!).join('\n')).toContain('answer-1');
     },
@@ -2073,7 +2086,7 @@ export default function(pi) {
       local.bound = true;
       cleanups.push(() => local.close());
       await installExtension(f.directories, extra, {
-        defaultTools: ['read', 'native_extra', 'mcp__openkit-work__echo'],
+        defaultTools: ['read', 'native_extra', 'mcp__openkit_work__echo'],
       });
       const config = JSON.stringify({
         mcpServers: {
@@ -2090,7 +2103,7 @@ export default function(pi) {
         'completed'
       );
       expect(names(f.inference.requests[0]!)).toEqual(
-        expect.arrayContaining(['read', 'native_extra', 'mcp__openkit-work__echo', 'tool_search'])
+        expect.arrayContaining(['read', 'native_extra', 'mcp__openkit_work__echo', 'tool_search'])
       );
       expect(names(f.inference.requests[0]!)).not.toContain('mcp__local__read_file');
       expect(names(f.inference.requests[1]!)).toContain('mcp__local__read_file');
@@ -2178,16 +2191,84 @@ export default function(pi) {
     TIMEOUT
   );
 
+  it.each(
+    ['native', 'managed', 'mixed', 'registered', 'registered-native', 'session-start'].flatMap(
+      (kind) => [false, true].map((reverse) => ({ kind, reverse }))
+    )
+  )(
+    'refuses a normalized $kind server collision (reversed=$reverse) before provider or tool work',
+    async ({ kind, reverse }) => {
+      const f = await fixture(() => ({ text: 'must not prompt' }));
+      const local = await startSyntheticCapability(null, ['work-files', 'work_files']);
+      local.bound = true;
+      cleanups.push(() => local.close());
+      const native =
+        kind === 'native'
+          ? reverse
+            ? ['work_files', 'work-files']
+            : ['work-files', 'work_files']
+          : kind === 'mixed'
+            ? [reverse ? 'work-files' : 'work_files']
+            : [];
+      await writeFile(
+        join(f.directories.agentDir, 'mcp.json'),
+        JSON.stringify({
+          mcpServers: Object.fromEntries(
+            native.map((name) => [name, { url: `${local.base}/mcp/${name}` }])
+          ),
+        })
+      );
+      if (kind === 'registered' || kind === 'registered-native' || kind === 'session-start') {
+        await mkdir(join(f.directories.agentDir, 'extensions'), { recursive: true });
+        await writeFile(
+          join(f.directories.agentDir, 'extensions', 'collision.ts'),
+          `export default (pi) => {
+            const register = () => {
+              pi.registerMcpServer('${reverse ? 'work-files' : 'work_files'}', { url: '${local.base}/mcp/work_files' });
+              ${kind === 'registered' ? '' : `pi.registerMcpServer('${reverse ? 'work_files' : 'work-files'}', { url: '${local.base}/mcp/work-files' });`}
+            };
+            ${kind === 'session-start' ? 'pi.on("session_start", register);' : 'register();'}
+          };`
+        );
+      }
+      const host = f.start();
+      await f.open(host, {
+        mcpServers:
+          kind === 'managed'
+            ? reverse
+              ? ['work_files', 'work-files']
+              : ['work-files', 'work_files']
+            : kind === 'native' || kind === 'registered-native' || kind === 'session-start'
+              ? []
+              : [reverse ? 'work_files' : 'work-files'],
+      });
+      expect((await turn(host, 'turn-collision', 'must refuse')).outcome).toEqual({
+        status: 'failed',
+        reason: 'pi-setup-failed',
+      });
+      expect(f.inference.requests).toHaveLength(0);
+      expect(local.log).toHaveLength(0);
+      expect(f.capability.log).toHaveLength(0);
+    },
+    TIMEOUT
+  );
+
   it.each([false, true])(
-    'preserves exact colliding server/tool targets in reversed order=%s',
+    'preserves exact normalized colliding tool targets in reversed order=%s',
     async (reverse) => {
-      const servers = reverse ? ['work_files', 'work-files'] : ['work-files', 'work_files'];
+      const servers = reverse ? ['archive_files', 'work-files'] : ['work-files', 'archive_files'];
       const tools = reverse ? ['read_file', 'read-file'] : ['read-file', 'read_file'];
-      const targets = servers.flatMap((server) => tools.map((name) => ({ server, name })));
+      const targets = servers.flatMap((server) =>
+        tools.map((name) => ({
+          server,
+          name,
+          nativeName: `mcp__${server.replace(/-/g, '_')}__read_file_${createHash('sha256').update(`${server}\0${name}`).digest('hex').slice(0, 8)}`,
+        }))
+      );
       const replies: InferenceReply[] = [
         { toolCall: { name: 'tool_search', arguments: { query: 'archive retrieval', limit: 8 } } },
-        ...targets.map(({ server, name }, index) => ({
-          toolCall: { name: `mcp__${server}__${name}`, arguments: { text: `effect-${index}` } },
+        ...targets.map(({ nativeName }, index) => ({
+          toolCall: { name: nativeName, arguments: { text: `effect-${index}` } },
         })),
         { text: 'exact targets' },
       ];
@@ -2225,8 +2306,8 @@ export default function(pi) {
           arguments: { text: `effect-${index}` },
         }))
       );
-      for (const [index, { server, name }] of targets.entries()) {
-        expect(names(f.inference.requests[index + 1]!)).toContain(`mcp__${server}__${name}`);
+      for (const [index, { server, name, nativeName }] of targets.entries()) {
+        expect(names(f.inference.requests[index + 1]!)).toContain(nativeName);
         expect(requestTexts(f.inference.requests[index + 2]!).join(' ')).toContain(
           `${server}:${name}:effect-${index}`
         );
@@ -2596,7 +2677,7 @@ export default function(pi) {
       expect(startup).not.toContain(target);
       if (defaults === 'changed') expect(startup).not.toContain('write');
       expect(startup).toEqual(
-        expect.arrayContaining(['read', 'tool_search', 'mcp__openkit-work__echo'])
+        expect.arrayContaining(['read', 'tool_search', 'mcp__openkit_work__echo'])
       );
       if (defaults === 'changed') expect(startup).toContain('edit');
       if (defaults === 'unchanged') expect(startup).toContain('write');
@@ -2803,7 +2884,7 @@ describe('M4 current authority after discovery', () => {
     async () => {
       const replies: InferenceReply[] = [
         { text: 'established' },
-        { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'revoked' } } },
+        { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'revoked' } } },
         { text: 'capability refusal observed' },
       ];
       const f = await fixture((n) => replies[n - 1] ?? { text: 'unexpected' });
@@ -2995,7 +3076,7 @@ it(
   async () => {
     const f = await fixture((n) =>
       n === 1
-        ? { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'stdio-overlay' } } }
+        ? { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'stdio-overlay' } } }
         : { text: 'Gateway served' }
     );
     const marker = join(f.directories.workingDirectory, 'native-stdio-effect');

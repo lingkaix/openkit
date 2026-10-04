@@ -667,7 +667,7 @@ Runtime default state:
 - The AEP launches `openkit-worker-shim`; `control.adapter.targetRuntime` selects one adapter in the shim's static registry.
 - Current release documentation uses exact GHCR version or digest references.
 
-The catalog contains `worker-common` and `worker-runtimes`, with no leaf aliases. The deployment declares the ordered runtime set `codex`, `pi`, `opencode`, `deepseek` and carries Codex `0.159.2`, the built Pi SDK host with patched `0.99.1` production closure, OpenCode CLI/client `2.0.20`, and DeepSeek CLI `0.2.0-rc.2`. Its installed version manifest records adapter-derived package identities and the Pi patch/module digests. `pi-mcp-adapter` is absent. CI emits the plural runtime OCI label from the catalog, and preflight validates the runtime array, its workerContract relationship, and removed-id rejection. Historical leaf pins stay in the paragraphs below.
+The catalog contains `worker-common` and `worker-runtimes`, with no leaf aliases. The deployment declares the ordered runtime set `codex`, `pi`, `opencode`, `deepseek` and carries Codex `0.159.2`, the built Pi SDK host with patched `1.0.2` production closure, OpenCode CLI/client `2.0.20`, and DeepSeek CLI `0.2.0-rc.2`. Its installed version manifest records adapter-derived package identities and the Pi patch/module digests. `pi-mcp-adapter` is absent. CI emits the plural runtime OCI label from the catalog, and preflight validates the runtime array, its workerContract relationship, and removed-id rejection. Historical leaf pins stay in the paragraphs below.
 
 Release worker base state:
 

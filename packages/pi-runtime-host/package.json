@@ -15,9 +15,9 @@
     "format": "biome check --write ."
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.99.1",
-    "@earendil-works/pi-coding-agent": "0.99.1",
-    "@earendil-works/pi-tui": "0.99.1",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.2",
     "@openkit/protocol": "workspace:*",
     "typebox": "1.3.27",
     "zod": "4.6.5"

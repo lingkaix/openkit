@@ -5,12 +5,12 @@
   "displayName": "Pi Agent",
   "readiness": {
     "status": "disabled",
-    "message": "Pi 0.99.1 remains disabled until a live bounded inference Turn proves its Gateway route."
+    "message": "Pi 1.0.2 remains disabled until a live bounded inference Turn proves its Gateway route."
   },
   "runtime": {
     "kind": "pi",
     "adapter": "pi",
-    "version": "0.99.1",
+    "version": "1.0.2",
     "image": {
       "kind": "reference",
       "ref": "openkit/worker-runtimes:dev",

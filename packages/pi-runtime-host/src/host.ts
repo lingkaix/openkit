@@ -596,17 +596,6 @@ export class PiRuntimeHost {
         name: 'tool-search',
         replaceable: false,
       },
-      {
-        hidden: true,
-        factory: createMcpExtension({
-          createTransport: (entry, cwd, authProvider) =>
-            gate.createTransport(entry, cwd, authProvider),
-          loadConfig: () => gate.loadConfig(),
-          onConnectionState: (connection) => gate.connectionState(connection),
-        }),
-        name: 'mcp',
-        replaceable: false,
-      },
     ];
     try {
       return await this.#openResidentSession(
@@ -649,10 +638,25 @@ export class PiRuntimeHost {
     const settingsManager = SettingsManager.create(request.workingDirectory, request.agentDir, {
       projectTrusted: true,
     });
-    const resourceLoader = new DefaultResourceLoader({
+    const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
       agentDir: request.agentDir,
       cwd: request.workingDirectory,
-      extensionFactories,
+      extensionFactories: [
+        ...extensionFactories,
+        {
+          hidden: true,
+          factory: createMcpExtension({
+            createTransport: (entry, cwd, authProvider) =>
+              gate.createTransport(entry, cwd, authProvider),
+            // Native MCP calls this after earlier session_start handlers and before scheduling connections; read the live registry at that boundary.
+            loadConfig: () =>
+              gate.loadConfig(resourceLoader.getExtensions().runtime.mcpServers.list()),
+            onConnectionState: (connection) => gate.connectionState(connection),
+          }),
+          name: 'mcp',
+          replaceable: false,
+        },
+      ],
       noThemes: true,
       // Pi applies first-registration tool precedence. Remove collided native bindings before
       // binding the final host layer, while preserving unrelated registrations and user files.
@@ -706,6 +710,7 @@ export class PiRuntimeHost {
         };
       },
     });
+    gate.loadConfig();
     await resourceLoader.reload();
     checkpoint();
     const protectedProvider = binding.runtime.getRegisteredProviderConfig(PI_PROVIDER_ALIAS);
@@ -741,16 +746,19 @@ export class PiRuntimeHost {
       throw new Error('Host-supplied native MCP or search factory is unavailable.');
     }
     const recordExtensionError = (message: string): void => {
+      gate.observeSetupError(message);
       this.#io.send({ event: 'extension_error', message });
     };
     for (const error of extensionsResult.errors) {
       recordExtensionError(`${error.path}: ${error.error}`);
     }
+    gate.loadConfig(extensionsResult.runtime.mcpServers.list());
     await session.bindExtensions({
       onError: (error) =>
         recordExtensionError(`${error.extensionPath} ${error.event}: ${error.error}`),
       uiContext: this.#headlessUi(session.extensionRunner.getUIContext()),
     });
+    gate.loadConfig(extensionsResult.runtime.mcpServers.list());
     // session_start may change a protected binding; the managed layer is seated last.
     // Later Extension execution remains outside supported setup supply.
     for (const extension of extensionsResult.extensions) {

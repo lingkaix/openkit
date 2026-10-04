@@ -2,7 +2,7 @@ packages:
   - 'apps/*'
   - 'packages/*'
 patchedDependencies:
-  '@earendil-works/pi-coding-agent@0.99.1': patches/pi-coding-agent-0.99.1-openkit-native-state.patch
+  '@earendil-works/pi-coding-agent@1.0.2': patches/pi-coding-agent-1.0.2-openkit-native-state.patch
 allowBuilds:
   '@google/genai': false
   '@opencode/cli': true

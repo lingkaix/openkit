@@ -1,6 +1,6 @@
 # Worker Runtimes Image
 
-`worker-runtimes` is the deployment image built from `worker-common` in `containers/workers/Dockerfile`. It contains Codex App Server 0.159.2, the Pi 0.99.1 SDK host with its workspace-patched production closure, OpenCode V2 CLI/client 2.0.20, and DeepSeek `@deepseek-ai/dsh` 0.2.0-rc.2. `versions.json` records package identities, the Pi patch digest, and the exact patched MCP module digests; Docker copies it to `/usr/local/lib/openkit/worker-runtimes-versions.json`. The adapter packages and their specifications own the pins. Refresh those together with this manifest and the smoke assertions.
+`worker-runtimes` is the deployment image built from `worker-common` in `containers/workers/Dockerfile`. It contains Codex App Server 0.159.2, the Pi 1.0.2 SDK host with its workspace-patched production closure, OpenCode V2 CLI/client 2.0.20, and DeepSeek `@deepseek-ai/dsh` 0.2.0-rc.2. `versions.json` records package identities, the Pi patch digest, and the exact patched MCP module digests; Docker copies it to `/usr/local/lib/openkit/worker-runtimes-versions.json`. The adapter packages and their specifications own the pins. Refresh those together with this manifest and the smoke assertions.
 
 Build with `bash scripts/docker/build-image.sh worker-runtimes` and smoke with `bash scripts/docker/smoke-image.sh worker-runtimes`. Both accept an optional isolated tag. The old leaf targets and directories are removed.
 

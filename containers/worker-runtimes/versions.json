@@ -6,17 +6,17 @@
   },
   "pi": {
     "package": "@earendil-works/pi-coding-agent",
-    "version": "0.99.1",
+    "version": "1.0.2",
     "host": "@openkit/pi-runtime-host",
-    "patchSha256": "5868f5a848430430f1b3ef8066c70f34b28310f50b0fa325268b7f00dc1e9577",
+    "patchSha256": "e55eacea2faecd1b5812c21469aa28869d3b12974ec0eaf3299f35906d191d45",
     "patchedFiles": {
-      "dist/extensions/mcp/index.js": "f81591fc9e0af3e2b1cbf8bb24c22fe61a93319d49d26d42c62bac9e46ba467a",
-      "dist/extensions/mcp/index.d.ts": "e035f27fccb79bef5bd22b1000794a17457c10dcf4e424e805dc8cf34b19eabb"
+      "dist/extensions/mcp/index.js": "da36f914ed7bf3ad62bb69f20e9a82e123b19ab3fe874a3cf5d8a22f24f4c4ee",
+      "dist/extensions/mcp/index.d.ts": "6707eef166f180f99bd91cc4fb14dda787d9001183df6ce8eb5a3ee9086b251c"
     },
     "dependencies": {
-      "@earendil-works/pi-ai": "0.99.1",
-      "@earendil-works/pi-tui": "0.99.1",
-      "@earendil-works/pi-mcp": "0.99.1"
+      "@earendil-works/pi-ai": "1.0.2",
+      "@earendil-works/pi-tui": "1.0.2",
+      "@earendil-works/pi-mcp": "1.0.2"
     }
   },
   "opencode": {

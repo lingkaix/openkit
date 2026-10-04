@@ -1240,7 +1240,7 @@ export default function(pi) { pi.on('session_start', () => {
 it('M4 adapter discovers and calls default-exposure local MCP without a second managed owner', async () => {
   const replies: InferenceReply[] = [
     { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
-    { toolCall: { name: 'mcp__local-tools__echo', arguments: { text: 'adapter-sentinel' } } },
+    { toolCall: { name: 'mcp__local_tools__echo', arguments: { text: 'adapter-sentinel' } } },
     { text: 'adapter search completed' },
   ];
   const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
@@ -1267,8 +1267,8 @@ it('M4 adapter discovers and calls default-exposure local MCP without a second m
   const session = await f.open();
   expect((await (await session.startTurn(turnInput(f.dirs))).settled).status).toBe('completed');
   expect(toolNames(f.inference.requests[0]!)).toContain('tool_search');
-  expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit-work__echo');
-  expect(toolNames(f.inference.requests[1]!)).toContain('mcp__local-tools__echo');
+  expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
+  expect(toolNames(f.inference.requests[1]!)).toContain('mcp__local_tools__echo');
   expect(
     admittedLocal.log
       .filter((entry) => entry.method === 'tools/call')
@@ -1309,7 +1309,7 @@ describe('Pi resident host', () => {
       });
       const firstHandle = await session.nativeHandle();
       expect(session.nativeEventCount).toBeGreaterThan(0);
-      expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit-work__echo');
+      expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
       const second = await (
         await session.startTurn(
           turnInput(f.dirs, { prompt: 'what was the word?', turnId: 'turn-2' })
@@ -1386,7 +1386,7 @@ describe('Pi resident host', () => {
       const replies: InferenceReply[] = [
         { text: 'established' },
         { hang: true },
-        { toolCall: { arguments: { text: 'held' }, name: 'mcp__openkit-work__echo' } },
+        { toolCall: { arguments: { text: 'held' }, name: 'mcp__openkit_work__echo' } },
         { text: 'after interrupt' },
       ];
       const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'late' });
@@ -1760,8 +1760,8 @@ export default function (pi) {
         await session.startTurn(turnInput(f.dirs, { prompt: 'first', turnId: 'turn-1' }))
       ).settled;
       expect(first.status).toBe('completed');
-      expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit-work__echo');
-      expect(toolNames(f.inference.requests[0]!)).not.toContain('mcp__openkit-extra__echo');
+      expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
+      expect(toolNames(f.inference.requests[0]!)).not.toContain('mcp__openkit_extra__echo');
       const requests = f.inference.requests.length;
       await expect(
         session.startTurn(
@@ -1790,8 +1790,8 @@ export default function (pi) {
       ).settled;
       expect(second.status).toBe('completed');
       const names = toolNames(f.inference.requests.at(-1)!);
-      expect(names).toContain('mcp__openkit-extra__echo');
-      expect(names).not.toContain('mcp__openkit-work__echo');
+      expect(names).toContain('mcp__openkit_extra__echo');
+      expect(names).not.toContain('mcp__openkit_work__echo');
       expect(requestTexts(f.inference.requests.at(-1)!).join('\n')).toContain('answer-1');
       await successor.close();
     },
@@ -1811,7 +1811,7 @@ export default function (pi) {
         if (mode === 'tool') {
           if (!toolSent) {
             toolSent = true;
-            return { toolCall: { arguments: { text: 'x' }, name: 'mcp__openkit-work__echo' } };
+            return { toolCall: { arguments: { text: 'x' }, name: 'mcp__openkit_work__echo' } };
           }
           return { finish: 'length' as const, text: 'partial' };
         }
@@ -2019,7 +2019,7 @@ describe('M native configuration', () => {
         { toolCall: { name: 'tool_search', arguments: { query: 'echo' } } },
         { toolCall: { name: 'mcp__local__echo', arguments: { text: 'native-project' } } },
         ...(managed
-          ? [{ toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'managed' } } }]
+          ? [{ toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'managed' } } }]
           : []),
         { text: 'native configuration served' },
       ];

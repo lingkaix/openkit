@@ -3,11 +3,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { McpExtensionOptions, McpTransportFactory } from '@earendil-works/pi-coding-agent';
 
 /**
- * Loaded MCP configuration returned by Pi 0.99.1's loader.
+ * Loaded MCP configuration returned by Pi 1.0.2's loader.
  *
- * `loadMcpConfig` and `createDefaultTransport` ship in the installed package but are not
- * root-package exports. The host resolves the package entry and imports those sibling files by
- * absolute file URL. That access is pinned to the installed 0.99.1 dist layout.
+ * `loadMcpConfig` and `createDefaultTransport` ship in the installed package but are not root-package exports. The host resolves the package entry and imports those sibling files by absolute file URL. That access is pinned to the installed 1.0.2 dist layout.
  */
 type LoadedMcpConfig = ReturnType<NonNullable<McpExtensionOptions['loadConfig']>>;
 
@@ -26,7 +24,7 @@ interface PiMcpInternals {
 let loading: Promise<PiMcpInternals> | undefined;
 
 /**
- * Loads Pi 0.99.1's MCP loader and default transport from the installed dist modules.
+ * Loads Pi 1.0.2's MCP loader and default transport from the installed dist modules.
  *
  * @returns The two helpers. They are not public root exports.
  */
@@ -54,16 +52,18 @@ async function importPiMcpInternals(): Promise<PiMcpInternals> {
 
 type ServerPhase = 'pending' | 'ready' | 'failed';
 
+/** Refuses an ambiguous native/managed catalog under the Pi Worker Adapter setup contract. */
+export class PiMcpNamespaceCollisionError extends Error {
+  public constructor() {
+    super('Pi MCP server namespaces collide; use distinct normalized server names.');
+    this.name = 'PiMcpNamespaceCollisionError';
+  }
+}
+
 /**
  * Owns the native MCP hooks for one resident session.
  *
- * The loader hook reads the configuration Pi actually connects, including a file an Extension
- * writes while loading. The transport hook redacts both loopback credentials before Pi's log and
- * result handlers see a message. Pi's patched connection-state callback records completed setup
- * or terminal failure after native retries, on the current connection attempt. Pi 0.99.1 does not close a transport while
- * initialize is pending. This gate retains and closes only the host's OpenKit transports until
- * upstream closes in-progress transports through session shutdown. Remove the extra ownership when
- * that behavior is pinned and the held-initialize regression passes without it.
+ * The loader hook reads the configuration Pi actually connects, including a file an Extension writes while loading. The transport hook redacts both loopback credentials before Pi's log and result handlers see a message. Pi's patched connection-state callback records completed setup or terminal failure after native retries, on the current connection attempt. Pi 1.0.2 does not close a transport while initialize is pending. This gate retains and closes only the host's OpenKit transports until upstream closes in-progress transports through session shutdown. Remove the extra ownership when that behavior is pinned and the held-initialize regression passes without it.
  */
 export class OpenKitMcpGate {
   readonly #admitted: ReadonlySet<string>;
@@ -75,6 +75,7 @@ export class OpenKitMcpGate {
   readonly #retained: NativeTransport[] = [];
   readonly #secrets: readonly string[];
   readonly #managed: LoadedMcpConfig['servers'];
+  #refusal: PiMcpNamespaceCollisionError | null = null;
 
   constructor(options: {
     managed: LoadedMcpConfig['servers'];
@@ -93,8 +94,9 @@ export class OpenKitMcpGate {
     this.#secrets = options.secrets;
   }
 
-  /** Loads native configuration, then replaces whole admitted entries with the Gateway layer. */
-  loadConfig(): LoadedMcpConfig {
+  /** Loads native configuration, overlays whole managed entries and refuses ambiguous catalog namespaces. */
+  loadConfig(registered: readonly { name: string }[] = []): LoadedMcpConfig {
+    if (this.#refusal) throw this.#refusal;
     const loaded = this.#loadMcpConfig({
       agentDir: this.#agentDir,
       cwd: this.#cwd,
@@ -106,17 +108,39 @@ export class OpenKitMcpGate {
     if (overridden.length > 0) {
       console.warn(`OpenKit overlay: replaced native MCP servers: ${overridden.join(', ')}.`);
     }
-    return {
-      ...loaded,
-      servers: [
-        ...loaded.servers.filter((server) => !this.#admitted.has(server.name)),
-        ...this.#managed,
-      ],
-    };
+    const servers = [
+      ...loaded.servers.filter((server) => !this.#admitted.has(server.name)),
+      ...this.#managed,
+    ];
+    // Pi 1.0.2 drops colliding file entries with a diagnostic and lets configured namespaces shadow registrations. Refuse the whole catalog before that can silently remove a target.
+    const namespaces = new Map<string, string>();
+    const collision = [...servers, ...registered].some(({ name }) => {
+      const namespace = name.replace(/-/g, '_');
+      const prior = namespaces.get(namespace);
+      namespaces.set(namespace, name);
+      return prior !== undefined && prior !== name;
+    });
+    if (collision || loaded.errors.some((error) => this.#isNamespaceCollision(error))) {
+      this.#refusal = new PiMcpNamespaceCollisionError();
+      throw this.#refusal;
+    }
+    return { ...loaded, servers };
+  }
+
+  /** Latches native registration refusals that Pi reports as Extension diagnostics instead of throwing from setup. */
+  observeSetupError(message: string): void {
+    if (this.#isNamespaceCollision(message)) this.#refusal = new PiMcpNamespaceCollisionError();
+  }
+
+  #isNamespaceCollision(message: string): boolean {
+    // These are the two exact diagnostic forms emitted by the pinned file loader and Extension registration API.
+    return /(?:^|: )(?:MCP )?server "[A-Za-z0-9_-]+" conflicts with (?:registered server )?"[A-Za-z0-9_-]+"$/.test(
+      message
+    );
   }
 
   /**
-   * Builds Pi's default transport, redacts incoming messages, and retains admitted servers.
+   * Refuses a latched catalog collision; otherwise builds Pi's default transport, redacts incoming messages, and retains admitted servers.
    *
    * @param entry Server Pi is connecting.
    * @param cwd Session working directory.
@@ -128,6 +152,7 @@ export class OpenKitMcpGate {
     cwd: string,
     authProvider: Parameters<McpTransportFactory>[2]
   ): NativeTransport {
+    if (this.#refusal) throw this.#refusal;
     const transport = this.#createDefaultTransport(entry, cwd, authProvider);
     const admitted = this.#admitted.has(entry.name);
     if (admitted && this.#phase.get(entry.name) !== 'ready') {

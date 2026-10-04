@@ -544,7 +544,7 @@ describe('Pi real Integration lifecycle', () => {
             ? { text: 'established' }
             : stage === 'model'
               ? { hang: true }
-              : { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'held' } } },
+              : { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'held' } } },
         {
           observeChannel: (value) => {
             channel = value;
@@ -680,10 +680,10 @@ describe('Pi real Integration lifecycle', () => {
       await waitIdle(f, 'session-b');
       expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
       expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).toContain(
-        'mcp__openkit-extra__echo'
+        'mcp__openkit_extra__echo'
       );
       expect(f.inference.requests[1]!.body.tools?.map((t) => t.function.name)).not.toContain(
-        'mcp__openkit-work__echo'
+        'mcp__openkit_work__echo'
       );
       expect(f.capability.log.filter((r) => r.method === 'initialize')).toHaveLength(2);
       expect(
@@ -707,7 +707,7 @@ describe('Pi real Integration lifecycle', () => {
           ? { text: 'established' }
           : kind === 'model'
             ? { hang: true }
-            : { toolCall: { name: 'mcp__openkit-work__echo', arguments: { text: 'held' } } }
+            : { toolCall: { name: 'mcp__openkit_work__echo', arguments: { text: 'held' } } }
       );
       cleanup.push(f.close);
       await f.open('session-a');

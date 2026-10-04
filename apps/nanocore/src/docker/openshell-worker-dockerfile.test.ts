@@ -46,7 +46,7 @@ const workerImageContracts = [
     id: 'worker-runtimes',
     manifest: 'pi.agent.jsonc',
     nativeBinary: '/usr/local/bin/openkit-pi-runtime-host',
-    nativeVersion: '0.99.1',
+    nativeVersion: '1.0.2',
     runtime: 'pi',
   },
   {
