@@ -9966,6 +9966,611 @@
         }
       }
     },
+    "/api/app/operations/material.list": {
+      "post": {
+        "operationId": "material.list",
+        "tags": [
+          "material"
+        ],
+        "summary": "List Workspace Material metadata.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List Workspace Material metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.create": {
+      "post": {
+        "operationId": "material.create",
+        "tags": [
+          "material"
+        ],
+        "summary": "Create one Workspace Material.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.create.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Create one Workspace Material.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.create.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.read": {
+      "post": {
+        "operationId": "material.read",
+        "tags": [
+          "material"
+        ],
+        "summary": "Read one Workspace Material metadata record.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one Workspace Material metadata record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.revision-list": {
+      "post": {
+        "operationId": "material.revision-list",
+        "tags": [
+          "material"
+        ],
+        "summary": "List immutable Workspace Material revision metadata.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.revision-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "List immutable Workspace Material revision metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.revision-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.revision-save": {
+      "post": {
+        "operationId": "material.revision-save",
+        "tags": [
+          "material"
+        ],
+        "summary": "Save one immutable Workspace Material revision.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.revision-save.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Save one immutable Workspace Material revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.revision-save.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.revision-read": {
+      "post": {
+        "operationId": "material.revision-read",
+        "tags": [
+          "material"
+        ],
+        "summary": "Read one exact Workspace Material revision.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.revision-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read one exact Workspace Material revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.revision-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.thread-read": {
+      "post": {
+        "operationId": "material.thread-read",
+        "tags": [
+          "material"
+        ],
+        "summary": "Read the singular Thread Material projection.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.thread-read.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Read the singular Thread Material projection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.thread-read.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.bind": {
+      "post": {
+        "operationId": "material.bind",
+        "tags": [
+          "material"
+        ],
+        "summary": "Bind one Workspace Material to a Thread.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.bind.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bind one Workspace Material to a Thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.bind.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.unbind": {
+      "post": {
+        "operationId": "material.unbind",
+        "tags": [
+          "material"
+        ],
+        "summary": "Unbind one Workspace Material from a Thread.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.unbind.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Unbind one Workspace Material from a Thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.unbind.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.exclude": {
+      "post": {
+        "operationId": "material.exclude",
+        "tags": [
+          "material"
+        ],
+        "summary": "Exclude one bound Workspace Material from worker context.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.exclude.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Exclude one bound Workspace Material from worker context.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.exclude.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/material.restore": {
+      "post": {
+        "operationId": "material.restore",
+        "tags": [
+          "material"
+        ],
+        "summary": "Restore one bound Workspace Material to worker context.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/material.restore.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restore one bound Workspace Material to worker context.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/material.restore.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/worker-environment.list": {
       "post": {
         "operationId": "worker-environment.list",
@@ -11551,722 +12156,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SetMyAdminAccessTokenDefaultResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/materials": {
-      "get": {
-        "operationId": "listWorkspaceMaterials",
-        "tags": [
-          "materials"
-        ],
-        "summary": "List Workspace Materials.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List Workspace Materials.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListWorkspaceMaterialsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createWorkspaceMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Create one Workspace Material.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateWorkspaceMaterialRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Create one Workspace Material.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateWorkspaceMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/materials/{materialId}": {
-      "get": {
-        "operationId": "getWorkspaceMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Read one Workspace Material.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Read one Workspace Material.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetWorkspaceMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions": {
-      "get": {
-        "operationId": "listWorkspaceMaterialRevisions",
-        "tags": [
-          "materials"
-        ],
-        "summary": "List immutable revisions for one Workspace Material.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List immutable revisions for one Workspace Material.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListWorkspaceMaterialRevisionsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "saveWorkspaceMaterialRevision",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Save one immutable Workspace Material revision.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SaveWorkspaceMaterialRevisionRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Save one immutable Workspace Material revision.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SaveWorkspaceMaterialRevisionResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions/{revisionId}": {
-      "get": {
-        "operationId": "getWorkspaceMaterialRevision",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Read one exact Workspace Material revision.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          {
-            "name": "revisionId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Read one exact Workspace Material revision.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetWorkspaceMaterialRevisionResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/material": {
-      "get": {
-        "operationId": "getThreadMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Read the singular Material projection for one Thread.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Read the singular Material projection for one Thread.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetThreadMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/bind": {
-      "post": {
-        "operationId": "bindThreadMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Bind one Workspace Material to a Thread.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BindThreadMaterialRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Bind one Workspace Material to a Thread.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BindThreadMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/unbind": {
-      "post": {
-        "operationId": "unbindThreadMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Unbind one Workspace Material from a Thread.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UnbindThreadMaterialRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Unbind one Workspace Material from a Thread.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UnbindThreadMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/exclude": {
-      "post": {
-        "operationId": "excludeThreadMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Exclude one bound Workspace Material from worker context.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ExcludeThreadMaterialRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Exclude one bound Workspace Material from worker context.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ExcludeThreadMaterialResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/restore": {
-      "post": {
-        "operationId": "restoreThreadMaterial",
-        "tags": [
-          "materials"
-        ],
-        "summary": "Restore one bound Workspace Material to worker context.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "workspaceId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/WorkspaceId"
-            }
-          },
-          {
-            "name": "threadId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ThreadId"
-            }
-          },
-          {
-            "name": "materialId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RestoreThreadMaterialRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Restore one bound Workspace Material to worker context.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RestoreThreadMaterialResponse"
                 }
               }
             }
@@ -73442,6 +73331,1001 @@
         ],
         "additionalProperties": false
       },
+      "material.list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "material.list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materials": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "materialId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "markdown",
+                    "text"
+                  ]
+                },
+                "currentRevisionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sensitivity": {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "restricted"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "workspaceId",
+                "materialId",
+                "title",
+                "kind",
+                "currentRevisionId",
+                "sensitivity",
+                "createdAt",
+                "updatedAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "materials"
+        ],
+        "additionalProperties": false
+      },
+      "material.create.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "text"
+            ]
+          },
+          "sensitivity": {
+            "type": "string",
+            "enum": [
+              "public",
+              "internal",
+              "restricted"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "sensitivity",
+          "workspaceId"
+        ],
+        "additionalProperties": false
+      },
+      "material.create.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "material": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "materialId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "markdown",
+                  "text"
+                ]
+              },
+              "currentRevisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sensitivity": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "internal",
+                  "restricted"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "updatedAt": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "workspaceId",
+              "materialId",
+              "title",
+              "kind",
+              "currentRevisionId",
+              "sensitivity",
+              "createdAt",
+              "updatedAt"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "material"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revisions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "workspaceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "materialId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revisionId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parentRevisionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mediaType": {
+                  "type": "string",
+                  "enum": [
+                    "text/markdown",
+                    "text/plain"
+                  ]
+                },
+                "contentDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "authorId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "createdAt": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "workspaceId",
+                "materialId",
+                "revisionId",
+                "parentRevisionId",
+                "mediaType",
+                "contentDigest",
+                "authorId",
+                "createdAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "revisions"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-save.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedRevisionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "content": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedRevisionId",
+          "contentDigest",
+          "content",
+          "workspaceId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-save.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisionId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "materialId",
+          "revisionId"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revisionId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "materialId",
+          "revisionId"
+        ],
+        "additionalProperties": false
+      },
+      "material.revision-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "materialId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revisionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "parentRevisionId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mediaType": {
+                "type": "string",
+                "enum": [
+                  "text/markdown",
+                  "text/plain"
+                ]
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "authorId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "workspaceId",
+              "materialId",
+              "revisionId",
+              "parentRevisionId",
+              "mediaType",
+              "contentDigest",
+              "authorId",
+              "createdAt",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "material.thread-read.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "workspaceId",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "material.thread-read.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "material": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "threadId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "resource": {
+                    "type": "object",
+                    "properties": {
+                      "workspaceId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "materialId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "markdown",
+                          "text"
+                        ]
+                      },
+                      "currentRevisionId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "sensitivity": {
+                        "type": "string",
+                        "enum": [
+                          "public",
+                          "internal",
+                          "restricted"
+                        ]
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "workspaceId",
+                      "materialId",
+                      "title",
+                      "kind",
+                      "currentRevisionId",
+                      "sensitivity",
+                      "createdAt",
+                      "updatedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "currentRevision": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "materialId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revisionId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "parentRevisionId": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "mediaType": {
+                            "type": "string",
+                            "enum": [
+                              "text/markdown",
+                              "text/plain"
+                            ]
+                          },
+                          "contentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "authorId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "materialId",
+                          "revisionId",
+                          "parentRevisionId",
+                          "mediaType",
+                          "contentDigest",
+                          "authorId",
+                          "createdAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "inclusionState": {
+                    "type": "string",
+                    "enum": [
+                      "included",
+                      "excluded"
+                    ]
+                  },
+                  "latestQueuedRevisionId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lastWorkerSeenRevisionId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "currentTurnRevisionId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "activeDelivery": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "applied"
+                            ]
+                          },
+                          "pendingTurnId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "requestId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "contentItemId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "goalId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "activeTurnId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "materialId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "revisionId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "contentDigest": {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "state",
+                          "pendingTurnId",
+                          "requestId",
+                          "contentItemId",
+                          "goalId",
+                          "activeTurnId",
+                          "materialId",
+                          "revisionId",
+                          "contentDigest"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "threadId",
+                  "resource",
+                  "currentRevision",
+                  "inclusionState",
+                  "latestQueuedRevisionId",
+                  "lastWorkerSeenRevisionId",
+                  "currentTurnRevisionId",
+                  "activeDelivery"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "material"
+        ],
+        "additionalProperties": false
+      },
+      "material.bind.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedBindingState": {
+            "type": "string",
+            "enum": [
+              "not_bound"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedBindingState",
+          "workspaceId",
+          "threadId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.bind.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "const": "bound"
+          }
+        },
+        "required": [
+          "materialId",
+          "threadId",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "material.unbind.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedBindingState": {
+            "type": "string",
+            "const": "bound"
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedBindingState",
+          "workspaceId",
+          "threadId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.unbind.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "const": "unbound"
+          }
+        },
+        "required": [
+          "materialId",
+          "threadId",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "material.exclude.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedBindingState": {
+            "type": "string",
+            "const": "bound"
+          },
+          "expectedInclusionState": {
+            "type": "string",
+            "const": "included"
+          },
+          "expectedQueuedRevisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedBindingState",
+          "expectedInclusionState",
+          "expectedQueuedRevisionId",
+          "workspaceId",
+          "threadId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.exclude.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "const": "excluded"
+          }
+        },
+        "required": [
+          "materialId",
+          "threadId",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "material.restore.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "expectedBindingState": {
+            "type": "string",
+            "const": "bound"
+          },
+          "expectedInclusionState": {
+            "type": "string",
+            "const": "excluded"
+          },
+          "workspaceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "expectedBindingState",
+          "expectedInclusionState",
+          "workspaceId",
+          "threadId",
+          "materialId"
+        ],
+        "additionalProperties": false
+      },
+      "material.restore.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "materialId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "threadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "const": "included"
+          }
+        },
+        "required": [
+          "materialId",
+          "threadId",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
       "worker-environment.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -85657,861 +86541,6 @@
         "type": "string",
         "minLength": 1
       },
-      "BindThreadMaterialRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedBindingState": {
-            "type": "string",
-            "enum": [
-              "not_bound"
-            ]
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedBindingState"
-        ],
-        "additionalProperties": false
-      },
-      "BindThreadMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "threadId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "outcome": {
-            "type": "string",
-            "const": "bound"
-          }
-        },
-        "required": [
-          "materialId",
-          "threadId",
-          "outcome"
-        ],
-        "additionalProperties": false
-      },
-      "CreateWorkspaceMaterialRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "markdown",
-              "text"
-            ]
-          },
-          "sensitivity": {
-            "type": "string",
-            "enum": [
-              "public",
-              "internal",
-              "restricted"
-            ]
-          }
-        },
-        "required": [
-          "requestId",
-          "title",
-          "kind",
-          "sensitivity"
-        ],
-        "additionalProperties": false
-      },
-      "CreateWorkspaceMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "materialId"
-        ],
-        "additionalProperties": false
-      },
-      "ExcludeThreadMaterialRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedBindingState": {
-            "type": "string",
-            "const": "bound"
-          },
-          "expectedInclusionState": {
-            "type": "string",
-            "const": "included"
-          },
-          "expectedQueuedRevisionId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedBindingState",
-          "expectedInclusionState",
-          "expectedQueuedRevisionId"
-        ],
-        "additionalProperties": false
-      },
-      "ExcludeThreadMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "threadId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "outcome": {
-            "type": "string",
-            "const": "excluded"
-          }
-        },
-        "required": [
-          "materialId",
-          "threadId",
-          "outcome"
-        ],
-        "additionalProperties": false
-      },
-      "GetThreadMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "material": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "workspaceId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "threadId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "resource": {
-                    "type": "object",
-                    "properties": {
-                      "workspaceId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "materialId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "title": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "kind": {
-                        "type": "string",
-                        "enum": [
-                          "markdown",
-                          "text"
-                        ]
-                      },
-                      "currentRevisionId": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "sensitivity": {
-                        "type": "string",
-                        "enum": [
-                          "public",
-                          "internal",
-                          "restricted"
-                        ]
-                      },
-                      "createdAt": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "updatedAt": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "required": [
-                      "workspaceId",
-                      "materialId",
-                      "title",
-                      "kind",
-                      "currentRevisionId",
-                      "sensitivity",
-                      "createdAt",
-                      "updatedAt"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "currentRevision": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "workspaceId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "materialId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "revisionId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "parentRevisionId": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "minLength": 1
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "mediaType": {
-                            "type": "string",
-                            "enum": [
-                              "text/markdown",
-                              "text/plain"
-                            ]
-                          },
-                          "contentDigest": {
-                            "type": "string",
-                            "pattern": "^sha256:[a-f0-9]{64}$"
-                          },
-                          "authorId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "createdAt": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        },
-                        "required": [
-                          "workspaceId",
-                          "materialId",
-                          "revisionId",
-                          "parentRevisionId",
-                          "mediaType",
-                          "contentDigest",
-                          "authorId",
-                          "createdAt"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "inclusionState": {
-                    "type": "string",
-                    "enum": [
-                      "included",
-                      "excluded"
-                    ]
-                  },
-                  "latestQueuedRevisionId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "lastWorkerSeenRevisionId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "currentTurnRevisionId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "activeDelivery": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "state": {
-                            "type": "string",
-                            "enum": [
-                              "queued",
-                              "applied"
-                            ]
-                          },
-                          "pendingTurnId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "requestId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "contentItemId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "goalId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "activeTurnId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "materialId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "revisionId": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "contentDigest": {
-                            "type": "string",
-                            "pattern": "^sha256:[a-f0-9]{64}$"
-                          }
-                        },
-                        "required": [
-                          "state",
-                          "pendingTurnId",
-                          "requestId",
-                          "contentItemId",
-                          "goalId",
-                          "activeTurnId",
-                          "materialId",
-                          "revisionId",
-                          "contentDigest"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "workspaceId",
-                  "threadId",
-                  "resource",
-                  "currentRevision",
-                  "inclusionState",
-                  "latestQueuedRevisionId",
-                  "lastWorkerSeenRevisionId",
-                  "currentTurnRevisionId",
-                  "activeDelivery"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "material"
-        ],
-        "additionalProperties": false
-      },
-      "GetWorkspaceMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "material": {
-            "type": "object",
-            "properties": {
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "materialId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "title": {
-                "type": "string",
-                "minLength": 1
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "markdown",
-                  "text"
-                ]
-              },
-              "currentRevisionId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "sensitivity": {
-                "type": "string",
-                "enum": [
-                  "public",
-                  "internal",
-                  "restricted"
-                ]
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "workspaceId",
-              "materialId",
-              "title",
-              "kind",
-              "currentRevisionId",
-              "sensitivity",
-              "createdAt",
-              "updatedAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "material"
-        ],
-        "additionalProperties": false
-      },
-      "GetWorkspaceMaterialRevisionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "revision": {
-            "type": "object",
-            "properties": {
-              "workspaceId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "materialId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "revisionId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "parentRevisionId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "mediaType": {
-                "type": "string",
-                "enum": [
-                  "text/markdown",
-                  "text/plain"
-                ]
-              },
-              "contentDigest": {
-                "type": "string",
-                "pattern": "^sha256:[a-f0-9]{64}$"
-              },
-              "authorId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "content": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "workspaceId",
-              "materialId",
-              "revisionId",
-              "parentRevisionId",
-              "mediaType",
-              "contentDigest",
-              "authorId",
-              "createdAt",
-              "content"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "revision"
-        ],
-        "additionalProperties": false
-      },
-      "ListWorkspaceMaterialRevisionsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "revisions": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "materialId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "revisionId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "parentRevisionId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "mediaType": {
-                  "type": "string",
-                  "enum": [
-                    "text/markdown",
-                    "text/plain"
-                  ]
-                },
-                "contentDigest": {
-                  "type": "string",
-                  "pattern": "^sha256:[a-f0-9]{64}$"
-                },
-                "authorId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "workspaceId",
-                "materialId",
-                "revisionId",
-                "parentRevisionId",
-                "mediaType",
-                "contentDigest",
-                "authorId",
-                "createdAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "revisions"
-        ],
-        "additionalProperties": false
-      },
-      "ListWorkspaceMaterialsResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materials": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "workspaceId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "materialId": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "title": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "markdown",
-                    "text"
-                  ]
-                },
-                "currentRevisionId": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "sensitivity": {
-                  "type": "string",
-                  "enum": [
-                    "public",
-                    "internal",
-                    "restricted"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "workspaceId",
-                "materialId",
-                "title",
-                "kind",
-                "currentRevisionId",
-                "sensitivity",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "materials"
-        ],
-        "additionalProperties": false
-      },
-      "RestoreThreadMaterialRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedBindingState": {
-            "type": "string",
-            "const": "bound"
-          },
-          "expectedInclusionState": {
-            "type": "string",
-            "const": "excluded"
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedBindingState",
-          "expectedInclusionState"
-        ],
-        "additionalProperties": false
-      },
-      "RestoreThreadMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "threadId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "outcome": {
-            "type": "string",
-            "const": "included"
-          }
-        },
-        "required": [
-          "materialId",
-          "threadId",
-          "outcome"
-        ],
-        "additionalProperties": false
-      },
-      "SaveWorkspaceMaterialRevisionRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedRevisionId": {
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "contentDigest": {
-            "type": "string",
-            "pattern": "^sha256:[a-f0-9]{64}$"
-          },
-          "content": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedRevisionId",
-          "contentDigest",
-          "content"
-        ],
-        "additionalProperties": false
-      },
-      "SaveWorkspaceMaterialRevisionResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "revisionId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "materialId",
-          "revisionId"
-        ],
-        "additionalProperties": false
-      },
-      "UnbindThreadMaterialRequest": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "requestId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expectedBindingState": {
-            "type": "string",
-            "const": "bound"
-          }
-        },
-        "required": [
-          "requestId",
-          "expectedBindingState"
-        ],
-        "additionalProperties": false
-      },
-      "UnbindThreadMaterialResponse": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "materialId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "threadId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "outcome": {
-            "type": "string",
-            "const": "unbound"
-          }
-        },
-        "required": [
-          "materialId",
-          "threadId",
-          "outcome"
-        ],
-        "additionalProperties": false
-      },
       "AppDiagnosticsResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -91187,5 +91216,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:c41f540ed380a37a1defabffc1c958ef21f0dfdb1c538a811fa964cf671d7fe6"
+  "x-openkit-source-digest": "sha256:a5f344bdda3686413a8c48551474e3e4d02bc5197eca52625a5dac1d89ac1214"
 }

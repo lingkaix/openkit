@@ -96,7 +96,7 @@ type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -104,8 +104,8 @@ function makeClient(
 
       ...overrides.core,
     },
-    app: {
-      getWorkspaceMaterial: vi.fn().mockResolvedValue({
+    operations: {
+      'material.read': vi.fn().mockResolvedValue({
         material: {
           workspaceId: 'ws1',
           materialId: MATERIAL_BASE_REVISION.materialId,
@@ -117,19 +117,14 @@ function makeClient(
           updatedAt: MATERIAL_CURRENT_REVISION.createdAt,
         },
       }),
-      getWorkspaceMaterialRevision: vi
-        .fn()
-        .mockImplementation(async (_workspaceId, _materialId, revisionId) => ({
-          revision:
-            revisionId === MATERIAL_BASE_REVISION.revisionId
-              ? MATERIAL_BASE_REVISION
-              : MATERIAL_CURRENT_REVISION,
-        })),
-      saveWorkspaceMaterialRevision: vi.fn(),
-      ...overrides.app,
-    },
+      'material.revision-read': vi.fn().mockImplementation(async ({ revisionId }) => ({
+        revision:
+          revisionId === MATERIAL_BASE_REVISION.revisionId
+            ? MATERIAL_BASE_REVISION
+            : MATERIAL_CURRENT_REVISION,
+      })),
+      'material.revision-save': vi.fn(),
 
-    operations: {
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'turn.start': vi.fn(),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
@@ -212,21 +207,31 @@ describe('Artifact Review S14', () => {
   it('compares the exact reviewed proposal with its recorded immutable base revision', async () => {
     const getWorkspaceMaterialRevision = vi
       .fn()
-      .mockImplementation(async (workspaceId: string, materialId: string, revisionId: string) => {
-        if (
-          workspaceId === 'ws1' &&
-          materialId === MATERIAL_BASE_REVISION.materialId &&
-          revisionId === MATERIAL_BASE_REVISION.revisionId
-        ) {
-          return { revision: MATERIAL_BASE_REVISION };
+      .mockImplementation(
+        async ({
+          workspaceId,
+          materialId,
+          revisionId,
+        }: {
+          workspaceId: string;
+          materialId: string;
+          revisionId: string;
+        }) => {
+          if (
+            workspaceId === 'ws1' &&
+            materialId === MATERIAL_BASE_REVISION.materialId &&
+            revisionId === MATERIAL_BASE_REVISION.revisionId
+          ) {
+            return { revision: MATERIAL_BASE_REVISION };
+          }
+          throw new Error(
+            `Unexpected Material revision tuple: ${workspaceId}/${materialId}/${revisionId}`
+          );
         }
-        throw new Error(
-          `Unexpected Material revision tuple: ${workspaceId}/${materialId}/${revisionId}`
-        );
-      });
+      );
     const client = makeClient({
-      app: { getWorkspaceMaterialRevision },
       operations: {
+        'material.revision-read': getWorkspaceMaterialRevision,
         'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
         'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] }),
       },
@@ -241,11 +246,11 @@ describe('Artifact Review S14', () => {
     expect(base).toHaveTextContent(MATERIAL_BASE_REVISION.contentDigest);
     expect(base).toHaveTextContent(MATERIAL_BASE_REVISION.revisionId);
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledTimes(1);
-    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      'ws1',
-      MATERIAL_BASE_REVISION.materialId,
-      MATERIAL_BASE_REVISION.revisionId
-    );
+    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      materialId: MATERIAL_BASE_REVISION.materialId,
+      revisionId: MATERIAL_BASE_REVISION.revisionId,
+    });
   });
 
   it.each([
@@ -338,7 +343,7 @@ describe('Artifact Review S14', () => {
       })
     );
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
-    expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
+    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
   });
 
   it('keeps the review pending and preserves both sides after a typed apply conflict', async () => {
@@ -360,47 +365,60 @@ describe('Artifact Review S14', () => {
     const listArtifactReviews = vi.fn().mockResolvedValue({ reviews: [PROPOSAL_REVIEW] });
     const getWorkspaceMaterial = vi
       .fn()
-      .mockImplementation(async (workspaceId: string, materialId: string) => {
-        if (workspaceId === 'ws1' && materialId === MATERIAL_CURRENT_REVISION.materialId) {
-          return {
-            material: {
-              workspaceId,
-              materialId,
-              title: 'Release notes',
-              kind: 'markdown',
-              currentRevisionId: MATERIAL_CURRENT_REVISION.revisionId,
-              sensitivity: 'internal',
-              createdAt: TIMESTAMP,
-              updatedAt: MATERIAL_CURRENT_REVISION.createdAt,
-            },
-          };
+      .mockImplementation(
+        async ({ workspaceId, materialId }: { workspaceId: string; materialId: string }) => {
+          if (workspaceId === 'ws1' && materialId === MATERIAL_CURRENT_REVISION.materialId) {
+            return {
+              material: {
+                workspaceId,
+                materialId,
+                title: 'Release notes',
+                kind: 'markdown',
+                currentRevisionId: MATERIAL_CURRENT_REVISION.revisionId,
+                sensitivity: 'internal',
+                createdAt: TIMESTAMP,
+                updatedAt: MATERIAL_CURRENT_REVISION.createdAt,
+              },
+            };
+          }
+          throw new Error(`Unexpected Material identity tuple: ${workspaceId}/${materialId}`);
         }
-        throw new Error(`Unexpected Material identity tuple: ${workspaceId}/${materialId}`);
-      });
+      );
     const getWorkspaceMaterialRevision = vi
       .fn()
-      .mockImplementation(async (workspaceId: string, materialId: string, revisionId: string) => {
-        if (
-          workspaceId === 'ws1' &&
-          materialId === MATERIAL_BASE_REVISION.materialId &&
-          revisionId === MATERIAL_BASE_REVISION.revisionId
-        ) {
-          return { revision: MATERIAL_BASE_REVISION };
+      .mockImplementation(
+        async ({
+          workspaceId,
+          materialId,
+          revisionId,
+        }: {
+          workspaceId: string;
+          materialId: string;
+          revisionId: string;
+        }) => {
+          if (
+            workspaceId === 'ws1' &&
+            materialId === MATERIAL_BASE_REVISION.materialId &&
+            revisionId === MATERIAL_BASE_REVISION.revisionId
+          ) {
+            return { revision: MATERIAL_BASE_REVISION };
+          }
+          if (
+            workspaceId === 'ws1' &&
+            materialId === MATERIAL_CURRENT_REVISION.materialId &&
+            revisionId === MATERIAL_CURRENT_REVISION.revisionId
+          ) {
+            return { revision: MATERIAL_CURRENT_REVISION };
+          }
+          throw new Error(
+            `Unexpected Material revision tuple: ${workspaceId}/${materialId}/${revisionId}`
+          );
         }
-        if (
-          workspaceId === 'ws1' &&
-          materialId === MATERIAL_CURRENT_REVISION.materialId &&
-          revisionId === MATERIAL_CURRENT_REVISION.revisionId
-        ) {
-          return { revision: MATERIAL_CURRENT_REVISION };
-        }
-        throw new Error(
-          `Unexpected Material revision tuple: ${workspaceId}/${materialId}/${revisionId}`
-        );
-      });
+      );
     const client = makeClient({
-      app: { getWorkspaceMaterial, getWorkspaceMaterialRevision },
       operations: {
+        'material.read': getWorkspaceMaterial,
+        'material.revision-read': getWorkspaceMaterialRevision,
         'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),
         'artifact.review-list': listArtifactReviews,
         'artifact.review.decide': submitArtifactReviewDecision,
@@ -421,19 +439,22 @@ describe('Artifact Review S14', () => {
       /# Release notes\s+User saved newer work\./
     );
     expect(getWorkspaceMaterial).toHaveBeenCalledTimes(1);
-    expect(getWorkspaceMaterial).toHaveBeenCalledWith('ws1', MATERIAL_CURRENT_REVISION.materialId);
+    expect(getWorkspaceMaterial).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      materialId: MATERIAL_CURRENT_REVISION.materialId,
+    });
     expect(getWorkspaceMaterialRevision).toHaveBeenCalledTimes(2);
-    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      'ws1',
-      MATERIAL_BASE_REVISION.materialId,
-      MATERIAL_BASE_REVISION.revisionId
-    );
-    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      'ws1',
-      MATERIAL_CURRENT_REVISION.materialId,
-      MATERIAL_CURRENT_REVISION.revisionId
-    );
-    expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
+    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      materialId: MATERIAL_BASE_REVISION.materialId,
+      revisionId: MATERIAL_BASE_REVISION.revisionId,
+    });
+    expect(getWorkspaceMaterialRevision).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      materialId: MATERIAL_CURRENT_REVISION.materialId,
+      revisionId: MATERIAL_CURRENT_REVISION.revisionId,
+    });
+    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
     expect(submitArtifactReviewDecision).toHaveBeenCalledTimes(1);
     expect(submitArtifactReviewDecision).toHaveBeenNthCalledWith(1, {
       workspaceId: 'ws1',
@@ -592,7 +613,6 @@ describe('Artifact Review S14', () => {
       };
       const client = makeClient({
         core: {},
-        app: {},
 
         operations: {
           'artifact.read': vi.fn().mockResolvedValue(PROPOSAL_ARTIFACT),

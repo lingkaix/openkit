@@ -86,7 +86,6 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { registerMaterialRoutes } from './material-routes.js';
 import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
@@ -1647,14 +1646,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   const pendingAssistantDelivery = { startTurn: chatService.acceptPendingInput };
-
-  registerMaterialRoutes({
-    app,
-    coreDb: options.coreDb,
-    inflightCommands,
-    openWorkspaceDb: repositoryWorkspaceDb,
-    requestStore,
-  });
 
   const taskStart = createTaskStartOperation({
     assertProjectWorkspace,

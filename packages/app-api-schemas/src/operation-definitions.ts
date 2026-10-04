@@ -24,6 +24,7 @@ import {
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
 } from './knowledge-operation-definitions.js';
+import { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
 import { composeOperationTables } from './operation-contract.js';
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
@@ -111,7 +112,8 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   AGENT_OPERATION_DEFINITIONS,
   CATALOG_OPERATION_DEFINITIONS,
   WORKER_OPERATION_DEFINITIONS,
-  GOVERNANCE_OPERATION_DEFINITIONS
+  GOVERNANCE_OPERATION_DEFINITIONS,
+  MATERIAL_OPERATION_DEFINITIONS
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */

@@ -5,12 +5,12 @@ import { useCurrentWorkspaceId } from '../chat/data';
 
 /** The server-owned Workspace Material projection used by the screen. */
 export type WorkspaceMaterial = Awaited<
-  ReturnType<CoreClient['app']['listWorkspaceMaterials']>
+  ReturnType<CoreClient['operations']['material.list']>
 >['materials'][number];
 
 /** The immutable server-owned summary used by revision history. */
 export type WorkspaceMaterialRevision = Awaited<
-  ReturnType<CoreClient['app']['listWorkspaceMaterialRevisions']>
+  ReturnType<CoreClient['operations']['material.revision-list']>
 >['revisions'][number];
 
 /** The two material formats admitted by the current App API. */
@@ -37,7 +37,8 @@ export function useWorkspaceMaterials(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: materialKeys.list(workspaceId ?? ''),
-    queryFn: async () => (await client.app.listWorkspaceMaterials(workspaceId as string)).materials,
+    queryFn: async () =>
+      (await client.operations['material.list']({ workspaceId: workspaceId as string })).materials,
     enabled: Boolean(workspaceId),
   });
 }
@@ -47,7 +48,11 @@ export function useWorkspaceMaterial(workspaceId: string | null, materialId: str
   const client = useCoreClient();
   return useQuery({
     queryKey: materialKeys.material(workspaceId ?? '', materialId ?? ''),
-    queryFn: () => client.app.getWorkspaceMaterial(workspaceId as string, materialId as string),
+    queryFn: () =>
+      client.operations['material.read']({
+        workspaceId: workspaceId as string,
+        materialId: materialId as string,
+      }),
     enabled: Boolean(workspaceId && materialId),
   });
 }
@@ -61,7 +66,10 @@ export function useWorkspaceMaterialRevisions(
   return useQuery({
     queryKey: materialKeys.revisions(workspaceId ?? '', materialId ?? ''),
     queryFn: () =>
-      client.app.listWorkspaceMaterialRevisions(workspaceId as string, materialId as string),
+      client.operations['material.revision-list']({
+        workspaceId: workspaceId as string,
+        materialId: materialId as string,
+      }),
     enabled: Boolean(workspaceId && materialId),
   });
 }
@@ -76,11 +84,11 @@ export function useWorkspaceMaterialRevision(
   return useQuery({
     queryKey: materialKeys.revision(workspaceId ?? '', materialId ?? '', revisionId ?? ''),
     queryFn: () =>
-      client.app.getWorkspaceMaterialRevision(
-        workspaceId as string,
-        materialId as string,
-        revisionId as string
-      ),
+      client.operations['material.revision-read']({
+        workspaceId: workspaceId as string,
+        materialId: materialId as string,
+        revisionId: revisionId as string,
+      }),
     enabled: Boolean(workspaceId && materialId && revisionId),
   });
 }
@@ -90,7 +98,11 @@ export function useThreadMaterial(workspaceId: string | null, threadId: string |
   const client = useCoreClient();
   return useQuery({
     queryKey: materialKeys.thread(workspaceId ?? '', threadId ?? ''),
-    queryFn: () => client.app.getThreadMaterial(workspaceId as string, threadId as string),
+    queryFn: () =>
+      client.operations['material.thread-read']({
+        workspaceId: workspaceId as string,
+        threadId: threadId as string,
+      }),
     enabled: Boolean(workspaceId && threadId),
   });
 }
@@ -105,12 +117,12 @@ export function useBindThreadMaterial(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { expectedBindingState: 'not_bound' }) =>
-      client.app.bindThreadMaterial(
-        workspaceId as string,
-        threadId as string,
-        materialId as string,
-        input
-      ),
+      client.operations['material.bind']({
+        workspaceId: workspaceId as string,
+        threadId: threadId as string,
+        materialId: materialId as string,
+        ...input,
+      }),
     onSuccess: () =>
       queryClient.refetchQueries({
         queryKey: materialKeys.thread(workspaceId ?? '', threadId ?? ''),
@@ -129,12 +141,12 @@ export function useUnbindThreadMaterial(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { expectedBindingState: 'bound' }) =>
-      client.app.unbindThreadMaterial(
-        workspaceId as string,
-        threadId as string,
-        materialId as string,
-        input
-      ),
+      client.operations['material.unbind']({
+        workspaceId: workspaceId as string,
+        threadId: threadId as string,
+        materialId: materialId as string,
+        ...input,
+      }),
     onSuccess: () =>
       queryClient.refetchQueries({
         queryKey: materialKeys.thread(workspaceId ?? '', threadId ?? ''),
@@ -157,12 +169,12 @@ export function useExcludeThreadMaterial(
       expectedInclusionState: 'included';
       expectedQueuedRevisionId: string;
     }) =>
-      client.app.excludeThreadMaterial(
-        workspaceId as string,
-        threadId as string,
-        materialId as string,
-        input
-      ),
+      client.operations['material.exclude']({
+        workspaceId: workspaceId as string,
+        threadId: threadId as string,
+        materialId: materialId as string,
+        ...input,
+      }),
     onSuccess: () =>
       queryClient.refetchQueries({
         queryKey: materialKeys.thread(workspaceId ?? '', threadId ?? ''),
@@ -181,12 +193,12 @@ export function useRestoreThreadMaterial(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { expectedBindingState: 'bound'; expectedInclusionState: 'excluded' }) =>
-      client.app.restoreThreadMaterial(
-        workspaceId as string,
-        threadId as string,
-        materialId as string,
-        input
-      ),
+      client.operations['material.restore']({
+        workspaceId: workspaceId as string,
+        threadId: threadId as string,
+        materialId: materialId as string,
+        ...input,
+      }),
     onSuccess: () =>
       queryClient.refetchQueries({
         queryKey: materialKeys.thread(workspaceId ?? '', threadId ?? ''),
@@ -201,7 +213,7 @@ export function useCreateWorkspaceMaterial(workspaceId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { title: string; kind: MaterialKind; sensitivity: MaterialSensitivity }) =>
-      client.app.createWorkspaceMaterial(workspaceId as string, input),
+      client.operations['material.create']({ workspaceId: workspaceId as string, ...input }),
     onSuccess: () => {
       if (workspaceId)
         void queryClient.invalidateQueries({ queryKey: materialKeys.list(workspaceId) });
@@ -229,7 +241,12 @@ export function useSaveWorkspaceMaterialRevision(
       expectedRevisionId: string | null;
       contentDigest: string;
       content: string;
-    }) => client.app.saveWorkspaceMaterialRevision(workspaceId as string, materialId, input),
+    }) =>
+      client.operations['material.revision-save']({
+        workspaceId: workspaceId as string,
+        materialId: materialId,
+        ...input,
+      }),
     onSuccess: async () => {
       if (!workspaceId) return;
       void queryClient.invalidateQueries({ queryKey: materialKeys.list(workspaceId) });

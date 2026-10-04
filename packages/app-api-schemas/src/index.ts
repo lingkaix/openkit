@@ -25,6 +25,7 @@ export * from './governance-operations.js';
 export * from './knowledge-manager.js';
 export * from './light-apps.js';
 export * from './material.js';
+export { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 export * from './nanohost.js';
 export * from './nanohost-operations.js';
 export * from './operation-definitions.js';

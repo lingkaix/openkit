@@ -28,3 +28,5 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 `createKnowledgeSource` authors a neutral `knowledge_source_register_failed` 404 before any source or receipt write when Turn lineage lacks its Thread or a source id belongs to another Workspace. The Knowledge family preserves that definite refusal; unrelated storage and implementation exceptions remain unclassified.
 
 `FsStore.updateAgentSession` admits the materializer's private `retainedStorage` association and slot once and refuses any later replacement or erasure. It remains historical provenance after terminalization and does not enter the public AgentSession projection or grant attachment authority.
+
+The simulator Material fixtures invoke the canonical definition-derived JSON operations and retain their queue, projection and worker-delivery assertions.

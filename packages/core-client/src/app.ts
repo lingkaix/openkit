@@ -1,10 +1,6 @@
 import {
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
-  type BindThreadMaterialRequest,
-  BindThreadMaterialRequestSchema,
-  type BindThreadMaterialResponse,
-  BindThreadMaterialResponseSchema,
   type ConsumeOpenKitBootstrapTokenRequest,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
@@ -13,20 +9,6 @@ import {
   CreateOpenKitAccessTokenRequestSchema,
   type CreateOpenKitAccessTokenResponse,
   CreateOpenKitAccessTokenResponseSchema,
-  type CreateWorkspaceMaterialRequest,
-  CreateWorkspaceMaterialRequestSchema,
-  type CreateWorkspaceMaterialResponse,
-  CreateWorkspaceMaterialResponseSchema,
-  type ExcludeThreadMaterialRequest,
-  ExcludeThreadMaterialRequestSchema,
-  type ExcludeThreadMaterialResponse,
-  ExcludeThreadMaterialResponseSchema,
-  type GetThreadMaterialResponse,
-  GetThreadMaterialResponseSchema,
-  type GetWorkspaceMaterialResponse,
-  GetWorkspaceMaterialResponseSchema,
-  type GetWorkspaceMaterialRevisionResponse,
-  GetWorkspaceMaterialRevisionResponseSchema,
   type KnowledgeManagerAnswerRequest,
   type KnowledgeManagerDraftProposalRequest,
   type KnowledgeManagerHealthCheckRequest,
@@ -36,19 +18,11 @@ import {
   ListMyAdminAccessTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
-  type ListWorkspaceMaterialRevisionsResponse,
-  ListWorkspaceMaterialRevisionsResponseSchema,
-  type ListWorkspaceMaterialsResponse,
-  ListWorkspaceMaterialsResponseSchema,
   type RecordKnowledgeClaimRequest,
   type RecordKnowledgeConflictRequest,
   type RecordKnowledgeObservationRequest,
   type RegisterKnowledgeSourceRequest,
   type ResolveKnowledgeConflictRequest,
-  type RestoreThreadMaterialRequest,
-  RestoreThreadMaterialRequestSchema,
-  type RestoreThreadMaterialResponse,
-  RestoreThreadMaterialResponseSchema,
   type RetrieveKnowledgeRequest,
   type ReverseKnowledgeProposalRequest,
   type RevokeOpenKitAccessTokenResponse,
@@ -57,10 +31,6 @@ import {
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
   RotateOpenKitAccessTokenResponseSchema,
-  type SaveWorkspaceMaterialRevisionRequest,
-  SaveWorkspaceMaterialRevisionRequestSchema,
-  type SaveWorkspaceMaterialRevisionResponse,
-  SaveWorkspaceMaterialRevisionResponseSchema,
   type SetMyAdminAccessTokenDefaultRequest,
   SetMyAdminAccessTokenDefaultRequestSchema,
   type SetMyAdminAccessTokenDefaultResponse,
@@ -68,10 +38,6 @@ import {
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
-  type UnbindThreadMaterialRequest,
-  UnbindThreadMaterialRequestSchema,
-  type UnbindThreadMaterialResponse,
-  UnbindThreadMaterialResponseSchema,
   type VaultAdminBootstrapCodexAuthJsonRequest,
   type VaultAdminUnlockRequest,
   type WorkspaceImportDryRunResponse,
@@ -83,22 +49,9 @@ import {
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { ApiCallError } from './errors.js';
-import { createRequestId, type OptionalRequestId, withRequestId } from './request-id.js';
+import { createRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
-/** Workspace Material create input with optional caller-provided request id. */
-export type CreateWorkspaceMaterialInput = OptionalRequestId<CreateWorkspaceMaterialRequest>;
-/** Workspace Material revision save input with optional caller-provided request id. */
-export type SaveWorkspaceMaterialRevisionInput =
-  OptionalRequestId<SaveWorkspaceMaterialRevisionRequest>;
-/** Thread Material bind input with optional caller-provided request id. */
-export type BindThreadMaterialInput = OptionalRequestId<BindThreadMaterialRequest>;
-/** Thread Material unbind input with optional caller-provided request id. */
-export type UnbindThreadMaterialInput = OptionalRequestId<UnbindThreadMaterialRequest>;
-/** Thread Material exclusion input with optional caller-provided request id. */
-export type ExcludeThreadMaterialInput = OptionalRequestId<ExcludeThreadMaterialRequest>;
-/** Thread Material restore input with optional caller-provided request id. */
-export type RestoreThreadMaterialInput = OptionalRequestId<RestoreThreadMaterialRequest>;
 /** Knowledge Manager answer request input. */
 export type KnowledgeManagerAnswerInput = KnowledgeManagerAnswerRequest;
 /** Knowledge Manager context-material request input. */
@@ -166,65 +119,6 @@ export function parseWorkspaceSharingError(error: unknown): WorkspaceSharingErro
 
 /** NanoCore App API client for read models and app-local commands. */
 export interface AppApiClient {
-  /** Lists Workspace Materials. */
-  listWorkspaceMaterials(workspaceId: string): Promise<ListWorkspaceMaterialsResponse>;
-  /** Creates one Workspace Material. */
-  createWorkspaceMaterial(
-    workspaceId: string,
-    input: CreateWorkspaceMaterialInput
-  ): Promise<CreateWorkspaceMaterialResponse>;
-  /** Reads one Workspace Material. */
-  getWorkspaceMaterial(
-    workspaceId: string,
-    materialId: string
-  ): Promise<GetWorkspaceMaterialResponse>;
-  /** Lists immutable revisions for one Workspace Material. */
-  listWorkspaceMaterialRevisions(
-    workspaceId: string,
-    materialId: string
-  ): Promise<ListWorkspaceMaterialRevisionsResponse>;
-  /** Saves one immutable Workspace Material revision. */
-  saveWorkspaceMaterialRevision(
-    workspaceId: string,
-    materialId: string,
-    input: SaveWorkspaceMaterialRevisionInput
-  ): Promise<SaveWorkspaceMaterialRevisionResponse>;
-  /** Reads one exact Workspace Material revision. */
-  getWorkspaceMaterialRevision(
-    workspaceId: string,
-    materialId: string,
-    revisionId: string
-  ): Promise<GetWorkspaceMaterialRevisionResponse>;
-  /** Reads the singular Material projection for one Thread. */
-  getThreadMaterial(workspaceId: string, threadId: string): Promise<GetThreadMaterialResponse>;
-  /** Binds one Workspace Material to a Thread. */
-  bindThreadMaterial(
-    workspaceId: string,
-    threadId: string,
-    materialId: string,
-    input: BindThreadMaterialInput
-  ): Promise<BindThreadMaterialResponse>;
-  /** Unbinds one Workspace Material from a Thread. */
-  unbindThreadMaterial(
-    workspaceId: string,
-    threadId: string,
-    materialId: string,
-    input: UnbindThreadMaterialInput
-  ): Promise<UnbindThreadMaterialResponse>;
-  /** Excludes one bound Workspace Material from worker context. */
-  excludeThreadMaterial(
-    workspaceId: string,
-    threadId: string,
-    materialId: string,
-    input: ExcludeThreadMaterialInput
-  ): Promise<ExcludeThreadMaterialResponse>;
-  /** Restores one bound Workspace Material to worker context. */
-  restoreThreadMaterial(
-    workspaceId: string,
-    threadId: string,
-    materialId: string,
-    input: RestoreThreadMaterialInput
-  ): Promise<RestoreThreadMaterialResponse>;
   /** Reads Settings diagnostics. */
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
   /** Reads setup diagnostics. */
@@ -266,85 +160,6 @@ export interface AppApiClient {
 /** Creates the NanoCore App API client. */
 export function createAppApiClient(transport: ClientTransport): AppApiClient {
   return {
-    listWorkspaceMaterials: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/materials`,
-        ListWorkspaceMaterialsResponseSchema
-      ),
-    createWorkspaceMaterial: (workspaceId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/materials`,
-        CreateWorkspaceMaterialRequestSchema.parse(request),
-        CreateWorkspaceMaterialResponseSchema
-      );
-    },
-    getWorkspaceMaterial: (workspaceId, materialId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/materials/${materialId}`,
-        GetWorkspaceMaterialResponseSchema
-      ),
-    listWorkspaceMaterialRevisions: (workspaceId, materialId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions`,
-        ListWorkspaceMaterialRevisionsResponseSchema
-      ),
-    saveWorkspaceMaterialRevision: (workspaceId, materialId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions`,
-        SaveWorkspaceMaterialRevisionRequestSchema.parse(request),
-        SaveWorkspaceMaterialRevisionResponseSchema
-      );
-    },
-    getWorkspaceMaterialRevision: (workspaceId, materialId, revisionId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/materials/${materialId}/revisions/${revisionId}`,
-        GetWorkspaceMaterialRevisionResponseSchema
-      ),
-    getThreadMaterial: (workspaceId, threadId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/material`,
-        GetThreadMaterialResponseSchema
-      ),
-    bindThreadMaterial: (workspaceId, threadId, materialId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/bind`,
-        BindThreadMaterialRequestSchema.parse(request),
-        BindThreadMaterialResponseSchema
-      );
-    },
-    unbindThreadMaterial: (workspaceId, threadId, materialId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/unbind`,
-        UnbindThreadMaterialRequestSchema.parse(request),
-        UnbindThreadMaterialResponseSchema
-      );
-    },
-    excludeThreadMaterial: (workspaceId, threadId, materialId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/exclude`,
-        ExcludeThreadMaterialRequestSchema.parse(request),
-        ExcludeThreadMaterialResponseSchema
-      );
-    },
-    restoreThreadMaterial: (workspaceId, threadId, materialId, input) => {
-      const request = withRequestId(input);
-
-      return transport.postJson(
-        `/api/app/workspaces/${workspaceId}/threads/${threadId}/materials/${materialId}/restore`,
-        RestoreThreadMaterialRequestSchema.parse(request),
-        RestoreThreadMaterialResponseSchema
-      );
-    },
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),

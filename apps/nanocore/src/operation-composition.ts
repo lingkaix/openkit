@@ -26,6 +26,7 @@ import { createKnowledgeOperationImplementations } from './knowledge-operations.
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
 import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
+import { createMaterialOperationImplementations } from './material-operation-implementations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import type { OperationImplementations } from './operation-contract.js';
 import { createOperationEngine } from './operation-invocation.js';
@@ -122,6 +123,12 @@ export interface OperationInvocationDependencies {
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
+    createMaterialOperationImplementations({
+      coreDb: dependencies.coreDb,
+      store: dependencies.store!,
+      inflightCommands: dependencies.inflightCommands!,
+      repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+    }),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
     createAgentOperationImplementations(dependencies),

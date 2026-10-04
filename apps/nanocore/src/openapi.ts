@@ -4,35 +4,24 @@ import {
   AcceptWorkspaceInvitationRequestSchema,
   AppDiagnosticsResponseSchema,
   AppUpdateStatusResponseSchema,
-  BindThreadMaterialRequestSchema,
-  BindThreadMaterialResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateWorkspaceInvitationRequestSchema,
-  CreateWorkspaceMaterialRequestSchema,
-  CreateWorkspaceMaterialResponseSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
-  ExcludeThreadMaterialRequestSchema,
-  ExcludeThreadMaterialResponseSchema,
-  GetThreadMaterialResponseSchema,
-  GetWorkspaceMaterialResponseSchema,
-  GetWorkspaceMaterialRevisionResponseSchema,
   LeaveWorkspaceRequestSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
   ListSkillCatalogResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
-  ListWorkspaceMaterialRevisionsResponseSchema,
-  ListWorkspaceMaterialsResponseSchema,
   ListWorkspaceMembersResponseSchema,
   OPERATION_DEFINITIONS,
   type OperationId,
@@ -42,22 +31,16 @@ import {
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
-  RestoreThreadMaterialRequestSchema,
-  RestoreThreadMaterialResponseSchema,
   RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
-  SaveWorkspaceMaterialRevisionRequestSchema,
-  SaveWorkspaceMaterialRevisionResponseSchema,
   SetMyAdminAccessTokenDefaultRequestSchema,
   SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
   SetupDiagnosticsResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
-  UnbindThreadMaterialRequestSchema,
-  UnbindThreadMaterialResponseSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminRebindWorkspaceReferenceRequestSchema,
   VaultAdminUnlockRequestSchema,
@@ -114,12 +97,6 @@ const APP_API_VERSION = '0.1.0';
 /** Deployment-admin operations accept a presented server-admin bearer or a derived-admin session cookie. */
 const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }, { sessionCookie: [] }];
 const SESSION_COOKIE_SECURITY = [{ sessionCookie: [] }];
-const THREAD_ID_PARAMETER = {
-  name: 'threadId',
-  in: 'path',
-  required: true,
-  schema: { $ref: '#/components/schemas/ThreadId' },
-} as const;
 const WORKSPACE_ID_PARAMETER = {
   name: 'workspaceId',
   in: 'path',
@@ -144,23 +121,11 @@ const _USER_ID_PARAMETER = {
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
-const MATERIAL_ID_PARAMETER = {
-  name: 'materialId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
 const REQUEST_ID_HEADER = {
   name: 'x-openkit-request-id',
   in: 'header',
   required: true,
   schema: { type: 'string', format: 'uuid' },
-} as const;
-const REVISION_ID_PARAMETER = {
-  name: 'revisionId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
 } as const;
 
 /**
@@ -664,118 +629,6 @@ export function createAppOpenApiDocument() {
           security: SESSION_COOKIE_SECURITY,
         }),
       },
-      '/api/app/workspaces/{workspaceId}/materials': {
-        get: appJsonOperation({
-          operationId: 'listWorkspaceMaterials',
-          tag: 'materials',
-          summary: 'List Workspace Materials.',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ListWorkspaceMaterialsResponse',
-        }),
-        post: appJsonOperation({
-          operationId: 'createWorkspaceMaterial',
-          tag: 'materials',
-          summary: 'Create one Workspace Material.',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestSchema: 'CreateWorkspaceMaterialRequest',
-          responseStatus: '201',
-          responseSchema: 'CreateWorkspaceMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/materials/{materialId}': {
-        get: appJsonOperation({
-          operationId: 'getWorkspaceMaterial',
-          tag: 'materials',
-          summary: 'Read one Workspace Material.',
-          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GetWorkspaceMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions': {
-        get: appJsonOperation({
-          operationId: 'listWorkspaceMaterialRevisions',
-          tag: 'materials',
-          summary: 'List immutable revisions for one Workspace Material.',
-          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ListWorkspaceMaterialRevisionsResponse',
-        }),
-        post: appJsonOperation({
-          operationId: 'saveWorkspaceMaterialRevision',
-          tag: 'materials',
-          summary: 'Save one immutable Workspace Material revision.',
-          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          requestSchema: 'SaveWorkspaceMaterialRevisionRequest',
-          responseStatus: '201',
-          responseSchema: 'SaveWorkspaceMaterialRevisionResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/materials/{materialId}/revisions/{revisionId}': {
-        get: appJsonOperation({
-          operationId: 'getWorkspaceMaterialRevision',
-          tag: 'materials',
-          summary: 'Read one exact Workspace Material revision.',
-          parameters: [WORKSPACE_ID_PARAMETER, MATERIAL_ID_PARAMETER, REVISION_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GetWorkspaceMaterialRevisionResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/material': {
-        get: appJsonOperation({
-          operationId: 'getThreadMaterial',
-          tag: 'materials',
-          summary: 'Read the singular Material projection for one Thread.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'GetThreadMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/bind': {
-        post: appJsonOperation({
-          operationId: 'bindThreadMaterial',
-          tag: 'materials',
-          summary: 'Bind one Workspace Material to a Thread.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          requestSchema: 'BindThreadMaterialRequest',
-          responseStatus: '200',
-          responseSchema: 'BindThreadMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/unbind': {
-        post: appJsonOperation({
-          operationId: 'unbindThreadMaterial',
-          tag: 'materials',
-          summary: 'Unbind one Workspace Material from a Thread.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          requestSchema: 'UnbindThreadMaterialRequest',
-          responseStatus: '200',
-          responseSchema: 'UnbindThreadMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/exclude': {
-        post: appJsonOperation({
-          operationId: 'excludeThreadMaterial',
-          tag: 'materials',
-          summary: 'Exclude one bound Workspace Material from worker context.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          requestSchema: 'ExcludeThreadMaterialRequest',
-          responseStatus: '200',
-          responseSchema: 'ExcludeThreadMaterialResponse',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/threads/{threadId}/materials/{materialId}/restore': {
-        post: appJsonOperation({
-          operationId: 'restoreThreadMaterial',
-          tag: 'materials',
-          summary: 'Restore one bound Workspace Material to worker context.',
-          parameters: [WORKSPACE_ID_PARAMETER, THREAD_ID_PARAMETER, MATERIAL_ID_PARAMETER],
-          requestSchema: 'RestoreThreadMaterialRequest',
-          responseStatus: '200',
-          responseSchema: 'RestoreThreadMaterialResponse',
-        }),
-      },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
           operationId: 'downloadWorkspaceExportArchive',
@@ -934,32 +787,7 @@ export function createAppOpenApiDocument() {
         AgentId: toJsonSchema(AgentIdSchema),
         ApiError: toJsonSchema(ApiErrorSchema),
         ArtifactId: toJsonSchema(ArtifactIdSchema),
-        BindThreadMaterialRequest: toJsonSchema(BindThreadMaterialRequestSchema),
-        BindThreadMaterialResponse: toJsonSchema(BindThreadMaterialResponseSchema),
-        CreateWorkspaceMaterialRequest: toJsonSchema(CreateWorkspaceMaterialRequestSchema),
-        CreateWorkspaceMaterialResponse: toJsonSchema(CreateWorkspaceMaterialResponseSchema),
 
-        ExcludeThreadMaterialRequest: toJsonSchema(ExcludeThreadMaterialRequestSchema),
-        ExcludeThreadMaterialResponse: toJsonSchema(ExcludeThreadMaterialResponseSchema),
-        GetThreadMaterialResponse: toJsonSchema(GetThreadMaterialResponseSchema),
-        GetWorkspaceMaterialResponse: toJsonSchema(GetWorkspaceMaterialResponseSchema),
-        GetWorkspaceMaterialRevisionResponse: toJsonSchema(
-          GetWorkspaceMaterialRevisionResponseSchema
-        ),
-        ListWorkspaceMaterialRevisionsResponse: toJsonSchema(
-          ListWorkspaceMaterialRevisionsResponseSchema
-        ),
-        ListWorkspaceMaterialsResponse: toJsonSchema(ListWorkspaceMaterialsResponseSchema),
-        RestoreThreadMaterialRequest: toJsonSchema(RestoreThreadMaterialRequestSchema),
-        RestoreThreadMaterialResponse: toJsonSchema(RestoreThreadMaterialResponseSchema),
-        SaveWorkspaceMaterialRevisionRequest: toJsonSchema(
-          SaveWorkspaceMaterialRevisionRequestSchema
-        ),
-        SaveWorkspaceMaterialRevisionResponse: toJsonSchema(
-          SaveWorkspaceMaterialRevisionResponseSchema
-        ),
-        UnbindThreadMaterialRequest: toJsonSchema(UnbindThreadMaterialRequestSchema),
-        UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(

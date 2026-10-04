@@ -46,7 +46,6 @@ import * as nanoHostOperations from './nanohost-operations.js';
 import { PUBLIC_OPERATION_ACCESS } from './operation-access.js';
 import * as operationAuthorizer from './operation-authorizer.js';
 import {
-  assertAuthorizedWorkspaceLineage,
   currentScheduledTurnWorkspaceAuthority,
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -143,7 +142,7 @@ function createFixture() {
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
   let deleteWorkspaceHandlerReads = 0;
-  let threadDashboardHandlerReads = 0;
+  let workspaceDbReads = 0;
 
   app.use('*', async (c, next) => {
     c.set('actor', actorState.current);
@@ -213,7 +212,10 @@ function createFixture() {
       },
     },
     dataRoot,
-    repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
+    repositoryWorkspaceDb: (id) => {
+      workspaceDbReads += 1;
+      return openWorkspaceDb(dataRoot, id);
+    },
     closeWorkspaceMcpSessions: async () => {
       deleteWorkspaceHandlerReads += 1;
     },
@@ -243,13 +245,6 @@ function createFixture() {
     getBootReadiness: createBootReadinessSnapshot,
   });
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
-  app.get('/api/app/workspaces/:workspaceId/threads/:threadId/material', (c) => {
-    threadDashboardHandlerReads += 1;
-    const actualWorkspaceId =
-      c.req.param('threadId') === foreignThread.id ? foreignThread.workspaceId : workspace.id;
-    assertAuthorizedWorkspaceLineage(c.get('workspaceAccess'), actualWorkspaceId);
-    return c.json(c.get('workspaceAccess'));
-  });
 
   return {
     actorState,
@@ -263,7 +258,7 @@ function createFixture() {
     foreignWorkspace,
     quickChatWorkspace,
     store,
-    threadDashboardHandlerReads: () => threadDashboardHandlerReads,
+    workspaceDbReads: () => workspaceDbReads,
     turn,
     workspace,
     workspaceMutationAdmission,
@@ -798,21 +793,27 @@ describe('central Workspace operation authorizer', () => {
   it('authorizes the Workspace before reading child lineage and denies a mismatched child', async () => {
     fixture.actorState.current = { kind: 'session', userId: 'user_missing' };
     const deniedBeforeHandler = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/material`
+      ...operationRequest('material.thread-read', {
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.foreignThread.id,
+      })
     );
 
     expect(deniedBeforeHandler.status).toBe(403);
-    expect(fixture.threadDashboardHandlerReads()).toBe(0);
+    expect(fixture.workspaceDbReads()).toBe(0);
 
     fixture.actorState.current = { kind: 'session', userId: 'user_local' };
     const deniedAfterAuthorization = await fixture.app.request(
-      `/api/app/workspaces/${fixture.workspace.id}/threads/${fixture.foreignThread.id}/material`
+      ...operationRequest('material.thread-read', {
+        workspaceId: fixture.workspace.id,
+        threadId: fixture.foreignThread.id,
+      })
     );
     const deniedBeforeHandlerBody = await deniedBeforeHandler.json();
     const deniedAfterAuthorizationBody = await deniedAfterAuthorization.json();
 
     expect(deniedAfterAuthorization.status).toBe(404);
-    expect(fixture.threadDashboardHandlerReads()).toBe(0);
+    expect(fixture.workspaceDbReads()).toBe(0);
     expect(deniedBeforeHandlerBody).toMatchObject({ code: 'workspace_access_denied' });
     expect(deniedAfterAuthorizationBody).toMatchObject({
       code: 'not_found',

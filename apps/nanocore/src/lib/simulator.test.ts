@@ -675,45 +675,57 @@ describe('SimulatedTurnExecutor', () => {
 
     try {
       await linkRepository(app);
-      const createResponse = await app.request('/api/app/workspaces/ws_demo/materials', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'simulator-material-create',
-          title: 'Deterministic worker input',
-          kind: 'markdown',
-          sensitivity: 'internal',
-        }),
-      });
+      const createResponse = await app.request(
+        ...operationRequest(
+          'material.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'simulator-material-create',
+              title: 'Deterministic worker input',
+              kind: 'markdown',
+              sensitivity: 'internal',
+            }),
+          }
+        )
+      );
       expect(createResponse.status).toBe(201);
       const material = CreateWorkspaceMaterialResponseSchema.parse(await createResponse.json());
       const revisionResponse = await app.request(
-        `/api/app/workspaces/ws_demo/materials/${material.materialId}/revisions`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'simulator-material-save',
-            expectedRevisionId: null,
-            content,
-            contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-          }),
-        }
+        ...operationRequest(
+          'material.revision-save',
+          { workspaceId: 'ws_demo', materialId: material.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'simulator-material-save',
+              expectedRevisionId: null,
+              content,
+              contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+            }),
+          }
+        )
       );
       expect(revisionResponse.status).toBe(201);
       const revision = SaveWorkspaceMaterialRevisionResponseSchema.parse(
         await revisionResponse.json()
       );
       const bindResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/th_demo/materials/${material.materialId}/bind`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'simulator-material-bind',
-            expectedBindingState: 'not_bound',
-          }),
-        }
+        ...operationRequest(
+          'material.bind',
+          { workspaceId: 'ws_demo', threadId: 'th_demo', materialId: material.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'simulator-material-bind',
+              expectedBindingState: 'not_bound',
+            }),
+          }
+        )
       );
       expect(bindResponse.status).toBe(200);
 
@@ -808,7 +820,11 @@ describe('SimulatedTurnExecutor', () => {
       }
 
       const projectionResponse = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/material'
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {}
+        )
       );
       const projectionBody = await projectionResponse.json();
       expect(projectionResponse.status, JSON.stringify(projectionBody)).toBe(200);
@@ -895,7 +911,11 @@ describe('SimulatedTurnExecutor', () => {
           )
       ).toEqual([]);
       const outcomeMaterialResponse = await app.request(
-        '/api/app/workspaces/ws_demo/threads/th_demo/material'
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {}
+        )
       );
       expect(outcomeMaterialResponse.status, await outcomeMaterialResponse.clone().text()).toBe(
         200

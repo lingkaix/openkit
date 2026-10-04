@@ -146,6 +146,14 @@ export function listExportableWorkspaceMaterialRows(workspaceDb: WorkspaceDb): {
   };
 }
 
+/** Reads canonical sensitivity after Workspace admission without loading revision bytes. @param workspaceDb Authorized Workspace database. @param materialId Exact Material owner. @returns Stored sensitivity. @throws The owner's stale failure when metadata is absent. */
+export function readWorkspaceMaterialSensitivity(
+  workspaceDb: WorkspaceDb,
+  materialId: string
+): WorkspaceMaterialView['sensitivity'] {
+  return requireMaterial(workspaceDb, materialId).sensitivity;
+}
+
 /** Lists Materials in stable order. @param workspaceDb Workspace database. @returns Closed views. @throws A recovery error for an invalid pointer. */
 export function listWorkspaceMaterials(workspaceDb: WorkspaceDb): WorkspaceMaterialView[] {
   const rows = workspaceDb.sqlite

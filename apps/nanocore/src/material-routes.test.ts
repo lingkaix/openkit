@@ -10,13 +10,13 @@ import {
   SaveWorkspaceMaterialRevisionResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-
 import { ensureLocalUser } from './auth/identity.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -91,32 +91,52 @@ describe('Workspace Material app API', () => {
 
     try {
       const stalePaths = [
-        '/api/app/workspaces/ws_demo/materials/material_missing',
-        `/api/app/workspaces/ws_demo/materials/${foreignMaterial.materialId}`,
-        `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/revision_missing`,
-        `/api/app/workspaces/ws_demo/materials/${localMaterial.materialId}/revisions/${foreignRevision.revisionId}`,
+        operationRequest('material.read', {
+          workspaceId: 'ws_demo',
+          materialId: 'material_missing',
+        }),
+        operationRequest('material.read', {
+          workspaceId: 'ws_demo',
+          materialId: foreignMaterial.materialId,
+        }),
+        operationRequest('material.revision-read', {
+          workspaceId: 'ws_demo',
+          materialId: localMaterial.materialId,
+          revisionId: 'revision_missing',
+        }),
+        operationRequest('material.revision-read', {
+          workspaceId: 'ws_demo',
+          materialId: localMaterial.materialId,
+          revisionId: foreignRevision.revisionId,
+        }),
       ];
       const threadNotFoundPaths = [
-        '/api/app/workspaces/ws_demo/threads/thread_missing/material',
-        `/api/app/workspaces/ws_demo/threads/${foreignThread.id}/material`,
+        operationRequest('material.thread-read', {
+          workspaceId: 'ws_demo',
+          threadId: 'thread_missing',
+        }),
+        operationRequest('material.thread-read', {
+          workspaceId: 'ws_demo',
+          threadId: foreignThread.id,
+        }),
       ];
 
       for (const path of stalePaths) {
-        const response = await app.request(path);
+        const response = await app.request(...path);
         const body = (await response.json()) as { readonly code?: unknown };
-        expect.soft({ status: response.status, code: body.code }, path).toEqual({
+        expect.soft({ status: response.status, code: body.code }, path[0]).toEqual({
           status: 409,
           code: 'stale',
         });
       }
       for (const path of threadNotFoundPaths) {
-        const response = await app.request(path);
+        const response = await app.request(...path);
         const body = (await response.json()) as {
           readonly code?: unknown;
           readonly message?: unknown;
         };
         expect
-          .soft({ status: response.status, code: body.code, message: body.message }, path)
+          .soft({ status: response.status, code: body.code, message: body.message }, path[0])
           .toEqual({
             status: 404,
             code: 'not_found',
@@ -125,7 +145,11 @@ describe('Workspace Material app API', () => {
       }
 
       const deniedPath = await app.request(
-        `/api/app/workspaces/${foreignWorkspace.id}/materials/${foreignMaterial.materialId}`
+        ...operationRequest(
+          'material.read',
+          { workspaceId: foreignWorkspace.id, materialId: foreignMaterial.materialId },
+          {}
+        )
       );
       expect(deniedPath.status).toBe(403);
       await expect(deniedPath.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
@@ -135,12 +159,15 @@ describe('Workspace Material app API', () => {
         ['bind-foreign-material', foreignMaterial.materialId],
       ] as const) {
         const response = await app.request(
-          `/api/app/workspaces/ws_demo/threads/${localThread.id}/materials/${materialId}/bind`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ requestId, expectedBindingState: 'not_bound' }),
-          }
+          ...operationRequest(
+            'material.bind',
+            { workspaceId: 'ws_demo', threadId: localThread.id, materialId: materialId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ requestId, expectedBindingState: 'not_bound' }),
+            }
+          )
         );
         const body = (await response.json()) as { readonly code?: unknown };
         expect.soft({ status: response.status, code: body.code }, requestId).toEqual({
@@ -190,30 +217,47 @@ describe('Workspace Material app API', () => {
     };
 
     try {
-      const createResponse = await app.request('/api/app/workspaces/ws_demo/materials', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(createRequest),
-      });
+      const createResponse = await app.request(
+        ...operationRequest(
+          'material.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(createRequest),
+          }
+        )
+      );
       expect(createResponse.status).toBe(201);
       const created = CreateWorkspaceMaterialResponseSchema.parse(await createResponse.json());
 
-      const exactCreateReplay = await app.request('/api/app/workspaces/ws_demo/materials', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(createRequest),
-      });
+      const exactCreateReplay = await app.request(
+        ...operationRequest(
+          'material.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(createRequest),
+          }
+        )
+      );
       expect(exactCreateReplay.status).toBe(201);
       expect(CreateWorkspaceMaterialResponseSchema.parse(await exactCreateReplay.json())).toEqual(
         created
       );
-      const revisionsPath = `/api/app/workspaces/ws_demo/materials/${created.materialId}/revisions`;
 
-      const conflictingCreate = await app.request('/api/app/workspaces/ws_demo/materials', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...createRequest, title: 'Changed input' }),
-      });
+      const conflictingCreate = await app.request(
+        ...operationRequest(
+          'material.create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...createRequest, title: 'Changed input' }),
+          }
+        )
+      );
       expect(conflictingCreate.status).toBe(409);
       await expect(conflictingCreate.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
@@ -226,23 +270,34 @@ describe('Workspace Material app API', () => {
         contentDigest: contentDigest(firstContent),
         content: firstContent,
       };
-      const firstSaveResponse = await app.request(revisionsPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(firstSaveRequest),
-      });
+      const firstSaveResponse = await app.request(
+        ...operationRequest(
+          'material.revision-save',
+          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(firstSaveRequest),
+          }
+        )
+      );
       expect(firstSaveResponse.status).toBe(201);
       const firstSaved = SaveWorkspaceMaterialRevisionResponseSchema.parse(
         await firstSaveResponse.json()
       );
 
-      const bindPath = `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/bind`;
       const bindRequest = { requestId: 'material-bind-1', expectedBindingState: 'not_bound' };
-      const bindResponse = await app.request(bindPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(bindRequest),
-      });
+      const bindResponse = await app.request(
+        ...operationRequest(
+          'material.bind',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(bindRequest),
+          }
+        )
+      );
       expect(bindResponse.status).toBe(200);
       expect(BindThreadMaterialResponseSchema.parse(await bindResponse.json())).toEqual({
         materialId: created.materialId,
@@ -266,11 +321,17 @@ describe('Workspace Material app API', () => {
         bindReceiptDb.sqlite.close();
       }
 
-      const exactBindReplay = await app.request(bindPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(bindRequest),
-      });
+      const exactBindReplay = await app.request(
+        ...operationRequest(
+          'material.bind',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(bindRequest),
+          }
+        )
+      );
       expect(exactBindReplay.status).toBe(200);
       expect(BindThreadMaterialResponseSchema.parse(await exactBindReplay.json())).toEqual({
         materialId: created.materialId,
@@ -279,14 +340,20 @@ describe('Workspace Material app API', () => {
       });
 
       for (const removedLiteral of ['absent', 'unbound']) {
-        const removedLiteralResponse = await app.request(bindPath, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: `material-bind-removed-${removedLiteral}`,
-            expectedBindingState: removedLiteral,
-          }),
-        });
+        const removedLiteralResponse = await app.request(
+          ...operationRequest(
+            'material.bind',
+            { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: `material-bind-removed-${removedLiteral}`,
+                expectedBindingState: removedLiteral,
+              }),
+            }
+          )
+        );
         expect(removedLiteralResponse.status).toBe(400);
         await expect(removedLiteralResponse.json()).resolves.toMatchObject({
           code: 'invalid_request',
@@ -294,7 +361,11 @@ describe('Workspace Material app API', () => {
       }
 
       const threadResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {}
+        )
       );
       expect(threadResponse.status).toBe(200);
       expect(GetThreadMaterialResponseSchema.parse(await threadResponse.json())).toMatchObject({
@@ -310,7 +381,11 @@ describe('Workspace Material app API', () => {
       });
 
       const materialResponse = await app.request(
-        `/api/app/workspaces/ws_demo/materials/${created.materialId}`
+        ...operationRequest(
+          'material.read',
+          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {}
+        )
       );
       expect(materialResponse.status).toBe(200);
       expect(GetWorkspaceMaterialResponseSchema.parse(await materialResponse.json())).toMatchObject(
@@ -323,16 +398,22 @@ describe('Workspace Material app API', () => {
       );
 
       const secondContent = '# Updated release notes\n';
-      const secondSaveResponse = await app.request(revisionsPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'material-save-2',
-          expectedRevisionId: firstSaved.revisionId,
-          contentDigest: contentDigest(secondContent),
-          content: secondContent,
-        }),
-      });
+      const secondSaveResponse = await app.request(
+        ...operationRequest(
+          'material.revision-save',
+          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'material-save-2',
+              expectedRevisionId: firstSaved.revisionId,
+              contentDigest: contentDigest(secondContent),
+              content: secondContent,
+            }),
+          }
+        )
+      );
       expect(secondSaveResponse.status).toBe(201);
       const secondSaved = SaveWorkspaceMaterialRevisionResponseSchema.parse(
         await secondSaveResponse.json()
@@ -340,53 +421,73 @@ describe('Workspace Material app API', () => {
       expect(secondSaved.revisionId).not.toBe(firstSaved.revisionId);
 
       const excludeResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/exclude`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'material-exclude-before-rebind',
-            expectedBindingState: 'bound',
-            expectedInclusionState: 'included',
-            expectedQueuedRevisionId: secondSaved.revisionId,
-          }),
-        }
+        ...operationRequest(
+          'material.exclude',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'material-exclude-before-rebind',
+              expectedBindingState: 'bound',
+              expectedInclusionState: 'included',
+              expectedQueuedRevisionId: secondSaved.revisionId,
+            }),
+          }
+        )
       );
       expect(excludeResponse.status).toBe(200);
 
       const unbindResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/materials/${created.materialId}/unbind`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            requestId: 'material-unbind-before-rebind',
-            expectedBindingState: 'bound',
-          }),
-        }
+        ...operationRequest(
+          'material.unbind',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'material-unbind-before-rebind',
+              expectedBindingState: 'bound',
+            }),
+          }
+        )
       );
       expect(unbindResponse.status).toBe(200);
 
       const unboundThreadResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {}
+        )
       );
       expect(unboundThreadResponse.status).toBe(200);
       expect(GetThreadMaterialResponseSchema.parse(await unboundThreadResponse.json())).toEqual({
         material: null,
       });
 
-      const rebindResponse = await app.request(bindPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          requestId: 'material-rebind-after-refresh',
-          expectedBindingState: 'not_bound',
-        }),
-      });
+      const rebindResponse = await app.request(
+        ...operationRequest(
+          'material.bind',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'material-rebind-after-refresh',
+              expectedBindingState: 'not_bound',
+            }),
+          }
+        )
+      );
       expect(rebindResponse.status).toBe(200);
 
       const reboundThreadResponse = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {}
+        )
       );
       expect(reboundThreadResponse.status).toBe(200);
       expect(
@@ -407,11 +508,17 @@ describe('Workspace Material app API', () => {
         expect(
           changeReceiptTarget.run(secondSaved.revisionId, firstSaveRequest.requestId).changes
         ).toBe(1);
-        const corruptedReplay = await app.request(revisionsPath, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(firstSaveRequest),
-        });
+        const corruptedReplay = await app.request(
+          ...operationRequest(
+            'material.revision-save',
+            { workspaceId: 'ws_demo', materialId: created.materialId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(firstSaveRequest),
+            }
+          )
+        );
         expect(corruptedReplay.status).toBe(409);
         await expect(corruptedReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
         expect(
@@ -421,21 +528,33 @@ describe('Workspace Material app API', () => {
         receiptDb.sqlite.close();
       }
 
-      const historicalReplay = await app.request(revisionsPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(firstSaveRequest),
-      });
+      const historicalReplay = await app.request(
+        ...operationRequest(
+          'material.revision-save',
+          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(firstSaveRequest),
+          }
+        )
+      );
       expect(historicalReplay.status).toBe(201);
       expect(
         SaveWorkspaceMaterialRevisionResponseSchema.parse(await historicalReplay.json())
       ).toEqual(firstSaved);
 
-      const tamperedReplay = await app.request(revisionsPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...firstSaveRequest, content: 'tampered bytes' }),
-      });
+      const tamperedReplay = await app.request(
+        ...operationRequest(
+          'material.revision-save',
+          { workspaceId: 'ws_demo', materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...firstSaveRequest, content: 'tampered bytes' }),
+          }
+        )
+      );
       expect(tamperedReplay.status).toBe(400);
       await expect(tamperedReplay.json()).resolves.toMatchObject({
         code: 'source_digest_mismatch',
@@ -467,7 +586,11 @@ describe('Workspace Material app API', () => {
         'utf8'
       );
       const corruptProjection = await app.request(
-        `/api/app/workspaces/ws_demo/threads/${thread.id}/material`
+        ...operationRequest(
+          'material.thread-read',
+          { workspaceId: 'ws_demo', threadId: thread.id },
+          {}
+        )
       );
       expect(corruptProjection.status).toBe(409);
       await expect(corruptProjection.json()).resolves.toMatchObject({ code: 'recovery_required' });
@@ -483,11 +606,17 @@ describe('Workspace Material app API', () => {
       } finally {
         ownerDb.sqlite.close();
       }
-      const ownerlessBindingReplay = await app.request(bindPath, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(bindRequest),
-      });
+      const ownerlessBindingReplay = await app.request(
+        ...operationRequest(
+          'material.bind',
+          { workspaceId: 'ws_demo', threadId: thread.id, materialId: created.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(bindRequest),
+          }
+        )
+      );
       expect(ownerlessBindingReplay.status).toBe(409);
       await expect(ownerlessBindingReplay.json()).resolves.toMatchObject({
         code: 'recovery_required',

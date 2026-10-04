@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,6 +34,8 @@ import { users } from './storage/schema/index.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
+import * as materialOwners from './workspace-materials.js';
+import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real isolated credential, membership and Kernel owners behind the App listener. */
@@ -1188,6 +1190,225 @@ for (const projection of ['HTTP', 'MCP'] as const) {
       expect(f.store.getTurnById(foreign.id)).toEqual(before.foreign);
       expect(f.store.listCommandRequests()).toEqual(before.receipts);
     } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+}
+
+/** Exact Material bytes used by the channel regressions. */
+function materialDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+for (const sensitivity of ['restricted', 'public', 'internal'] as const) {
+  it(`keeps ${sensitivity} Material content at its trusted delivery boundary with no refused writes`, async () => {
+    const f = await fixture();
+    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    applyScopedMigrations(db);
+    try {
+      const token = f.token();
+      const content = `Exact ${sensitivity} Material bytes`;
+      const { materialId } = createWorkspaceMaterial(db, {
+        title: 'Channel boundary',
+        kind: 'text',
+        sensitivity,
+        requestId: randomUUID(),
+        actorId: 'user_remote_mcp',
+        acceptedAt: new Date().toISOString(),
+      });
+      const { revisionId } = saveWorkspaceMaterialRevision(db, {
+        materialId,
+        content,
+        contentDigest: materialDigest(content),
+        expectedRevisionId: null,
+        requestId: randomUUID(),
+        actorId: 'user_remote_mcp',
+        acceptedAt: new Date().toISOString(),
+      });
+      const selectors = { workspaceId: 'ws_demo', materialId };
+      const counts = () => ({
+        materials: db.sqlite.prepare('SELECT count(*) AS n FROM workspace_materials').get(),
+        revisions: db.sqlite
+          .prepare('SELECT count(*) AS n FROM workspace_material_revisions')
+          .get(),
+        receipts: f.store.listCommandRequests(),
+      });
+      const before = counts();
+      const contentRead = vi.spyOn(materialOwners, 'getWorkspaceMaterialRevision');
+      const contentSave = vi.spyOn(materialOwners, 'saveWorkspaceMaterialRevision');
+      const materialCreate = vi.spyOn(materialOwners, 'createWorkspaceMaterial');
+      const readInput = { ...selectors, revisionId };
+      const saveInput = {
+        ...selectors,
+        requestId: randomUUID(),
+        expectedRevisionId: revisionId,
+        content: 'New exact bytes',
+        contentDigest: materialDigest('New exact bytes'),
+      };
+      const read = await f.call(
+        'call',
+        { operation: 'material.revision-read', input: readInput },
+        token.secret
+      );
+      const save = await f.call(
+        'call',
+        { operation: 'material.revision-save', input: saveInput },
+        token.secret
+      );
+      const create = await f.call(
+        'call',
+        {
+          operation: 'material.create',
+          input: {
+            workspaceId: 'ws_demo',
+            requestId: randomUUID(),
+            title: 'MCP create',
+            kind: 'text',
+            sensitivity,
+          },
+        },
+        token.secret
+      );
+      if (sensitivity === 'restricted') {
+        for (const result of [read, save, create]) {
+          expect(result.isError).toBe(true);
+          expect(JSON.parse(result.content[0].text)).toMatchObject({
+            code: 'sensitive_content',
+            status: 409,
+          });
+          expect(JSON.stringify(result)).not.toContain(content);
+          expect(JSON.stringify(result)).not.toContain(saveInput.content);
+        }
+        expect(counts()).toEqual(before);
+        expect(contentRead).not.toHaveBeenCalled();
+        expect(contentSave).not.toHaveBeenCalled();
+        expect(materialCreate).not.toHaveBeenCalled();
+        const metadata = await f.call(
+          'call',
+          { operation: 'material.read', input: selectors },
+          token.secret
+        );
+        expect(metadata.isError).not.toBe(true);
+        expect(JSON.parse(metadata.content[0].text).material.sensitivity).toBe('restricted');
+        const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: 'user_remote_mcp',
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        const adminRead = await f.call(
+          'call',
+          { operation: 'material.revision-read', input: readInput },
+          admin.secret
+        );
+        expect(JSON.parse(adminRead.content[0].text)).toMatchObject({
+          code: 'sensitive_content',
+          status: 409,
+        });
+        expect(counts()).toEqual(before);
+        const injected = await f.call(
+          'call',
+          { operation: 'material.revision-read', input: { ...readInput, delivery: 'human' } },
+          token.secret
+        );
+        expect(JSON.parse(injected.content[0].text)).toMatchObject({
+          code: 'invalid_request',
+          status: 400,
+        });
+        expect(counts()).toEqual(before);
+        const humanRead = await f.app.request(
+          ...operationRequest('material.revision-read', readInput, {
+            headers: { authorization: `Bearer ${token.secret}` },
+          })
+        );
+        expect(humanRead.status).toBe(200);
+        expect((await humanRead.json()).revision.content).toBe(content);
+        const humanSave = await f.app.request(
+          ...operationRequest(
+            'material.revision-save',
+            {},
+            {
+              headers: { authorization: `Bearer ${token.secret}` },
+              body: JSON.stringify(saveInput),
+            }
+          )
+        );
+        expect(humanSave.status).toBe(201);
+        expect((await humanSave.json()).revisionId).toBeTruthy();
+      } else {
+        for (const result of [read, save, create]) expect(result.isError).not.toBe(true);
+        expect(contentRead).toHaveBeenCalledWith(expect.anything(), materialId, revisionId);
+        expect(contentSave).toHaveBeenCalledOnce();
+        expect(materialCreate).toHaveBeenCalledOnce();
+        expect(JSON.parse(read.content[0].text).revision.content).toBe(content);
+        expect(counts().receipts).toHaveLength(before.receipts.length + 2);
+        const savedId = JSON.parse(save.content[0].text).revisionId;
+        const saved = await f.call(
+          'call',
+          { operation: 'material.revision-read', input: { ...selectors, revisionId: savedId } },
+          token.secret
+        );
+        expect(JSON.parse(saved.content[0].text).revision.content).toBe(saveInput.content);
+      }
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+}
+
+for (const projection of ['HTTP', 'MCP'] as const) {
+  it(`fences Material mutation through ${projection} when product work is unavailable without a row or receipt`, async () => {
+    const readiness = computeBootReadinessSnapshot({
+      bootId: 'material-closed',
+      subsystems: {
+        storage: {
+          state: 'failed',
+          reasons: [{ code: 'storage.failed', message: 'Unavailable', blocks: ['product_work'] }],
+        },
+      },
+    });
+    const f = await fixture('server', () => readiness);
+    const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+    applyScopedMigrations(db);
+    try {
+      const token = f.token();
+      const rows = () => ({
+        materials: db.sqlite.prepare('SELECT * FROM workspace_materials').all(),
+        revisions: db.sqlite.prepare('SELECT * FROM workspace_material_revisions').all(),
+        receipts: f.store.listCommandRequests(),
+      });
+      const before = rows();
+      const input = {
+        workspaceId: 'ws_demo',
+        requestId: randomUUID(),
+        title: 'Closed',
+        kind: 'text',
+        sensitivity: 'internal',
+      };
+      if (projection === 'HTTP') {
+        const response = await f.app.request(
+          ...operationRequest(
+            'material.create',
+            {},
+            {
+              headers: { authorization: `Bearer ${token.secret}` },
+              body: JSON.stringify(input),
+            }
+          )
+        );
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
+      } else {
+        const result = await f.call('call', { operation: 'material.create', input }, token.secret);
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({
+          code: 'product_work_unavailable',
+        });
+      }
+      expect(rows()).toEqual(before);
+    } finally {
+      db.sqlite.close();
       f.coreDb.sqlite.close();
     }
   });

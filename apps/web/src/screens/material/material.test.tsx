@@ -105,7 +105,7 @@ function createDeferred<T>() {
 
 /** Build a fake Core Client whose Material operations remain individually observable. */
 function makeClient(
-  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -113,53 +113,48 @@ function makeClient(
 
       ...overrides.core,
     },
-    app: {
-      listWorkspaceMaterials: vi.fn().mockResolvedValue({ materials: [MATERIAL] }),
-      createWorkspaceMaterial: vi.fn().mockResolvedValue({ materialId: 'material_new' }),
-      getWorkspaceMaterial: vi.fn().mockResolvedValue({ material: MATERIAL }),
-      listWorkspaceMaterialRevisions: vi.fn().mockResolvedValue({
+    operations: {
+      'material.list': vi.fn().mockResolvedValue({ materials: [MATERIAL] }),
+      'material.create': vi.fn().mockResolvedValue({ materialId: 'material_new' }),
+      'material.read': vi.fn().mockResolvedValue({ material: MATERIAL }),
+      'material.revision-list': vi.fn().mockResolvedValue({
         revisions: [REVISION_1, REVISION_2].map(({ content: _content, ...revision }) => revision),
       }),
-      getWorkspaceMaterialRevision: vi
-        .fn()
-        .mockImplementation(async (_workspaceId, _materialId, revisionId) => {
-          if (revisionId === REVISION_1.revisionId) {
-            return { revision: REVISION_1 };
-          }
-          if (revisionId === REVISION_2.revisionId) {
-            return { revision: REVISION_2 };
-          }
-          throw new Error(`Unknown revision id: ${revisionId}`);
-        }),
-      saveWorkspaceMaterialRevision: vi.fn().mockResolvedValue({
+      'material.revision-read': vi.fn().mockImplementation(async ({ revisionId }) => {
+        if (revisionId === REVISION_1.revisionId) {
+          return { revision: REVISION_1 };
+        }
+        if (revisionId === REVISION_2.revisionId) {
+          return { revision: REVISION_2 };
+        }
+        throw new Error(`Unknown revision id: ${revisionId}`);
+      }),
+      'material.revision-save': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
         revisionId: 'revision_3',
       }),
-      getThreadMaterial: vi.fn().mockResolvedValue({ material: null }),
-      bindThreadMaterial: vi.fn().mockResolvedValue({
+      'material.thread-read': vi.fn().mockResolvedValue({ material: null }),
+      'material.bind': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
         threadId: THREAD_ID,
         outcome: 'bound',
       }),
-      unbindThreadMaterial: vi.fn().mockResolvedValue({
+      'material.unbind': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
         threadId: THREAD_ID,
         outcome: 'unbound',
       }),
-      excludeThreadMaterial: vi.fn().mockResolvedValue({
+      'material.exclude': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
         threadId: THREAD_ID,
         outcome: 'excluded',
       }),
-      restoreThreadMaterial: vi.fn().mockResolvedValue({
+      'material.restore': vi.fn().mockResolvedValue({
         materialId: MATERIAL_ID,
         threadId: THREAD_ID,
         outcome: 'included',
       }),
-      ...overrides.app,
-    },
 
-    operations: {
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'turn.start': vi.fn(),
       'conversation.submit': vi.fn(),
@@ -253,17 +248,17 @@ describe('S19-F Material Workspace discovery barrier', () => {
       operations: { 'workspace.list': vi.fn().mockReturnValue(discovery.promise) },
     });
     const materialOperations = [
-      client.app.listWorkspaceMaterials,
-      client.app.createWorkspaceMaterial,
-      client.app.getWorkspaceMaterial,
-      client.app.listWorkspaceMaterialRevisions,
-      client.app.getWorkspaceMaterialRevision,
-      client.app.saveWorkspaceMaterialRevision,
-      client.app.getThreadMaterial,
-      client.app.bindThreadMaterial,
-      client.app.unbindThreadMaterial,
-      client.app.excludeThreadMaterial,
-      client.app.restoreThreadMaterial,
+      client.operations['material.list'],
+      client.operations['material.create'],
+      client.operations['material.read'],
+      client.operations['material.revision-list'],
+      client.operations['material.revision-read'],
+      client.operations['material.revision-save'],
+      client.operations['material.thread-read'],
+      client.operations['material.bind'],
+      client.operations['material.unbind'],
+      client.operations['material.exclude'],
+      client.operations['material.restore'],
     ];
     renderMaterial(client);
 
@@ -307,13 +302,21 @@ describe('S19-F Material Workspace discovery barrier', () => {
       REVISION_2.content
     );
     await waitFor(() => {
-      expect(client.app.listWorkspaceMaterials).toHaveBeenCalledWith(WORKSPACE_ID);
-      expect(client.app.getWorkspaceMaterial).toHaveBeenCalledWith(WORKSPACE_ID, MATERIAL_ID);
-      expect(client.app.listWorkspaceMaterialRevisions).toHaveBeenCalledWith(
-        WORKSPACE_ID,
-        MATERIAL_ID
-      );
-      expect(client.app.getThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID);
+      expect(client.operations['material.list']).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+      });
+      expect(client.operations['material.read']).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+        materialId: MATERIAL_ID,
+      });
+      expect(client.operations['material.revision-list']).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+        materialId: MATERIAL_ID,
+      });
+      expect(client.operations['material.thread-read']).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+        threadId: THREAD_ID,
+      });
     });
   });
 });
@@ -336,9 +339,9 @@ describe('Workspace Material Plane 1 S11', () => {
     await user.click(screen.getByRole('button', { name: /create material/i }));
 
     await waitFor(() =>
-      expect(client.app.createWorkspaceMaterial).toHaveBeenCalledWith(
-        WORKSPACE_ID,
+      expect(client.operations['material.create']).toHaveBeenCalledWith(
         expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
           title: 'Launch brief',
           kind: 'markdown',
           sensitivity: 'internal',
@@ -356,7 +359,7 @@ describe('Workspace Material Plane 1 S11', () => {
       .fn()
       .mockRejectedValueOnce(new Error('list unavailable'))
       .mockResolvedValueOnce({ materials: [] });
-    const client = makeClient({ app: { listWorkspaceMaterials } });
+    const client = makeClient({ operations: { 'material.list': listWorkspaceMaterials } });
     renderMaterial(client, null);
 
     expect(screen.queryByText(/create your first material/i)).not.toBeInTheDocument();
@@ -375,7 +378,7 @@ describe('Workspace Material Plane 1 S11', () => {
       .fn()
       .mockRejectedValueOnce(new Error('create unavailable'))
       .mockResolvedValueOnce({ materialId: 'material_new' });
-    const client = makeClient({ app: { createWorkspaceMaterial } });
+    const client = makeClient({ operations: { 'material.create': createWorkspaceMaterial } });
     renderMaterial(client);
 
     await user.click(await screen.findByRole('button', { name: /new material/i }));
@@ -394,8 +397,8 @@ describe('Workspace Material Plane 1 S11', () => {
     await waitFor(() => expect(createWorkspaceMaterial).toHaveBeenCalledTimes(2));
     expect(createWorkspaceMaterial).toHaveBeenNthCalledWith(
       1,
-      WORKSPACE_ID,
       expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
         title: 'Launch brief',
         kind: 'text',
         sensitivity: 'restricted',
@@ -403,8 +406,8 @@ describe('Workspace Material Plane 1 S11', () => {
     );
     expect(createWorkspaceMaterial).toHaveBeenNthCalledWith(
       2,
-      WORKSPACE_ID,
       expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
         title: 'Launch brief',
         kind: 'text',
         sensitivity: 'restricted',
@@ -423,11 +426,11 @@ describe('Workspace Material Plane 1 S11', () => {
       revisionId: 'revision_1',
     });
     const client = makeClient({
-      app: {
-        listWorkspaceMaterials: vi.fn().mockResolvedValue({ materials: [materialWithoutRevision] }),
-        getWorkspaceMaterial: vi.fn().mockResolvedValue({ material: materialWithoutRevision }),
-        listWorkspaceMaterialRevisions: vi.fn().mockResolvedValue({ revisions: [] }),
-        saveWorkspaceMaterialRevision,
+      operations: {
+        'material.list': vi.fn().mockResolvedValue({ materials: [materialWithoutRevision] }),
+        'material.read': vi.fn().mockResolvedValue({ material: materialWithoutRevision }),
+        'material.revision-list': vi.fn().mockResolvedValue({ revisions: [] }),
+        'material.revision-save': saveWorkspaceMaterialRevision,
       },
     });
     renderMaterial(client);
@@ -443,9 +446,9 @@ describe('Workspace Material Plane 1 S11', () => {
 
     await waitFor(() =>
       expect(saveWorkspaceMaterialRevision).toHaveBeenCalledWith(
-        WORKSPACE_ID,
-        MATERIAL_ID,
         expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
+          materialId: MATERIAL_ID,
           expectedRevisionId: null,
           contentDigest: 'sha256:ec1119548ae594f4eabe554616b81c5ae0050d615c0f9934679b0d6a5dc44645',
           content: '# First draft.\n',
@@ -457,18 +460,21 @@ describe('Workspace Material Plane 1 S11', () => {
 
   it('keeps an explicit Material route independent while the catalog read reports a retryable failure', async () => {
     const listWorkspaceMaterials = vi.fn().mockRejectedValue(new Error('list unavailable'));
-    const client = makeClient({ app: { listWorkspaceMaterials } });
+    const client = makeClient({ operations: { 'material.list': listWorkspaceMaterials } });
     renderMaterial(client, MATERIAL_ID);
 
     const editor = await screen.findByRole('textbox', { name: 'Release notes' });
     expect(editor).toHaveValue(REVISION_2.content);
-    expect(listWorkspaceMaterials).toHaveBeenCalledWith(WORKSPACE_ID);
-    expect(client.app.getWorkspaceMaterial).toHaveBeenCalledWith(WORKSPACE_ID, MATERIAL_ID);
-    expect(client.app.getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      WORKSPACE_ID,
-      MATERIAL_ID,
-      REVISION_2.revisionId
-    );
+    expect(listWorkspaceMaterials).toHaveBeenCalledWith({ workspaceId: WORKSPACE_ID });
+    expect(client.operations['material.read']).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      materialId: MATERIAL_ID,
+    });
+    expect(client.operations['material.revision-read']).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      materialId: MATERIAL_ID,
+      revisionId: REVISION_2.revisionId,
+    });
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
   });
 
@@ -479,15 +485,15 @@ describe('Workspace Material Plane 1 S11', () => {
 
     const editor = await screen.findByRole('textbox', { name: 'Release notes' });
     expect(editor).toHaveValue(REVISION_2.content);
-    expect(client.app.getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      WORKSPACE_ID,
-      MATERIAL_ID,
-      REVISION_2.revisionId
-    );
+    expect(client.operations['material.revision-read']).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      materialId: MATERIAL_ID,
+      revisionId: REVISION_2.revisionId,
+    });
     await user.type(editor, 'Ship exactly.\n');
 
     expect(screen.getByText(/unsaved/i)).toBeInTheDocument();
-    expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
+    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
@@ -495,17 +501,17 @@ describe('Workspace Material Plane 1 S11', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
-      expect(client.app.saveWorkspaceMaterialRevision).toHaveBeenCalledWith(
-        WORKSPACE_ID,
-        MATERIAL_ID,
+      expect(client.operations['material.revision-save']).toHaveBeenCalledWith(
         expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
+          materialId: MATERIAL_ID,
           expectedRevisionId: REVISION_2.revisionId,
           contentDigest: 'sha256:9f93be420182b7f4885bc2dc66ab9eadc62e89cc39845bb5dec4e4cbe65833bd',
           content: '# Release notes\nShip exactly.\n',
         })
       )
     );
-    expect(client.app.saveWorkspaceMaterialRevision).toHaveBeenCalledOnce();
+    expect(client.operations['material.revision-save']).toHaveBeenCalledOnce();
   });
 
   it('surfaces a typed stale-precondition conflict while preserving the unsaved draft', async () => {
@@ -515,7 +521,9 @@ describe('Workspace Material Plane 1 S11', () => {
         code: 'conflict',
       })
     );
-    const client = makeClient({ app: { saveWorkspaceMaterialRevision } });
+    const client = makeClient({
+      operations: { 'material.revision-save': saveWorkspaceMaterialRevision },
+    });
     renderMaterial(client);
 
     const editor = await screen.findByRole('textbox', { name: 'Release notes' });
@@ -530,9 +538,11 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(screen.getByText(REVISION_2.revisionId)).toBeInTheDocument();
     expect(screen.queryByText('revision_3')).not.toBeInTheDocument();
     expect(saveWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      WORKSPACE_ID,
-      MATERIAL_ID,
-      expect.objectContaining({ expectedRevisionId: REVISION_2.revisionId })
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        materialId: MATERIAL_ID,
+        expectedRevisionId: REVISION_2.revisionId,
+      })
     );
   });
 
@@ -545,20 +555,20 @@ describe('Workspace Material Plane 1 S11', () => {
       expect(screen.getByText(REVISION_1.revisionId)).toBeInTheDocument();
       expect(screen.getByText(REVISION_2.revisionId)).toBeInTheDocument();
     });
-    expect(client.app.getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      WORKSPACE_ID,
-      MATERIAL_ID,
-      REVISION_2.revisionId
-    );
+    expect(client.operations['material.revision-read']).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      materialId: MATERIAL_ID,
+      revisionId: REVISION_2.revisionId,
+    });
     await user.click(screen.getByText(REVISION_1.revisionId));
 
     const openedRevision = await screen.findByLabelText(new RegExp(REVISION_1.revisionId));
     expect(openedRevision.textContent).toBe(REVISION_1.content);
-    expect(client.app.getWorkspaceMaterialRevision).toHaveBeenCalledWith(
-      WORKSPACE_ID,
-      MATERIAL_ID,
-      REVISION_1.revisionId
-    );
+    expect(client.operations['material.revision-read']).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      materialId: MATERIAL_ID,
+      revisionId: REVISION_1.revisionId,
+    });
 
     await user.click(screen.getByRole('button', { name: /compare revisions/i }));
     const before = await screen.findByLabelText(new RegExp(REVISION_1.revisionId));
@@ -567,8 +577,8 @@ describe('Workspace Material Plane 1 S11', () => {
     expect(before.textContent).toBe(REVISION_1.content);
     expect(after.textContent).toBe(REVISION_2.content);
     expect(screen.queryByRole('button', { name: /apply|accept/i })).not.toBeInTheDocument();
-    expect(client.app.createWorkspaceMaterial).not.toHaveBeenCalled();
-    expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
+    expect(client.operations['material.create']).not.toHaveBeenCalled();
+    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
   });
 
   it('compares the earlier immutable revision before the current revision by default', async () => {
@@ -610,8 +620,8 @@ describe('Workspace Material Plane 1 S12', () => {
     const save = await screen.findByRole('button', { name: /^save$/i });
     expect(newMaterial).toBeDisabled();
     expect(save).toBeDisabled();
-    expect(client.app.createWorkspaceMaterial).not.toHaveBeenCalled();
-    expect(client.app.saveWorkspaceMaterialRevision).not.toHaveBeenCalled();
+    expect(client.operations['material.create']).not.toHaveBeenCalled();
+    expect(client.operations['material.revision-save']).not.toHaveBeenCalled();
 
     resolveProbe?.({});
     await waitFor(() => expect(newMaterial).toBeEnabled());
@@ -624,7 +634,7 @@ describe('Workspace Material Plane 1 S12', () => {
     const getThreadMaterial = vi.fn().mockResolvedValue({ material: NULL_THREAD_MATERIAL });
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('offline')) },
-      app: { getThreadMaterial },
+      operations: { 'material.thread-read': getThreadMaterial },
     });
     renderMaterial(client);
 
@@ -637,7 +647,10 @@ describe('Workspace Material Plane 1 S12', () => {
     expect(panel).toHaveTextContent(/current-turn revision.*(unknown|none|not available)/i);
     expect(screen.getByRole('button', { name: /unbind/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /exclude/i })).toBeDisabled();
-    expect(getThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID);
+    expect(getThreadMaterial).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+    });
   });
 
   it('refetches the authoritative Thread Material projection after a successful bind without local advancement', async () => {
@@ -663,14 +676,24 @@ describe('Workspace Material Plane 1 S12', () => {
           resolveBindMutation = resolve;
         })
     );
-    const client = makeClient({ app: { getThreadMaterial, bindThreadMaterial } });
+    const client = makeClient({
+      operations: {
+        'material.thread-read': getThreadMaterial,
+        'material.bind': bindThreadMaterial,
+      },
+    });
     renderMaterial(client);
 
     await user.click(await screen.findByRole('button', { name: /^bind material$/i }));
 
     await waitFor(() =>
-      expect(bindThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID, MATERIAL_ID, {
-        expectedBindingState: 'not_bound',
+      expect(bindThreadMaterial).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+        threadId: THREAD_ID,
+        materialId: MATERIAL_ID,
+        ...{
+          expectedBindingState: 'not_bound',
+        },
       })
     );
     expect(getThreadMaterial).toHaveBeenCalledOnce();
@@ -704,7 +727,10 @@ describe('Workspace Material Plane 1 S12', () => {
       revisionId: advancedQueuedRevisionId,
     });
     const client = makeClient({
-      app: { getThreadMaterial, saveWorkspaceMaterialRevision },
+      operations: {
+        'material.thread-read': getThreadMaterial,
+        'material.revision-save': saveWorkspaceMaterialRevision,
+      },
     });
     renderMaterial(client);
 
@@ -754,20 +780,25 @@ describe('Workspace Material Plane 1 S12', () => {
       outcome: 'unbound',
     });
     const client = makeClient({
-      app: {
-        getThreadMaterial,
-        bindThreadMaterial,
-        excludeThreadMaterial,
-        restoreThreadMaterial,
-        unbindThreadMaterial,
+      operations: {
+        'material.thread-read': getThreadMaterial,
+        'material.bind': bindThreadMaterial,
+        'material.exclude': excludeThreadMaterial,
+        'material.restore': restoreThreadMaterial,
+        'material.unbind': unbindThreadMaterial,
       },
     });
     renderMaterial(client);
 
     await user.click(await screen.findByRole('button', { name: /^bind material$/i }));
     await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(2));
-    expect(bindThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID, MATERIAL_ID, {
-      expectedBindingState: 'not_bound',
+    expect(bindThreadMaterial).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      materialId: MATERIAL_ID,
+      ...{
+        expectedBindingState: 'not_bound',
+      },
     });
     let panel = await screen.findByRole('region', { name: /thread material/i });
     expect(panel).toHaveTextContent(/current revision.*revision_2/i);
@@ -786,10 +817,15 @@ describe('Workspace Material Plane 1 S12', () => {
 
     await user.click(await screen.findByRole('button', { name: /exclude/i }));
     await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(3));
-    expect(excludeThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID, MATERIAL_ID, {
-      expectedBindingState: 'bound',
-      expectedInclusionState: 'included',
-      expectedQueuedRevisionId: THREAD_QUEUED_REVISION_ID,
+    expect(excludeThreadMaterial).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      materialId: MATERIAL_ID,
+      ...{
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'included',
+        expectedQueuedRevisionId: THREAD_QUEUED_REVISION_ID,
+      },
     });
     expect(getThreadMaterial.mock.invocationCallOrder[2]).toBeGreaterThan(
       excludeThreadMaterial.mock.invocationCallOrder[0]
@@ -797,9 +833,14 @@ describe('Workspace Material Plane 1 S12', () => {
 
     await user.click(await screen.findByRole('button', { name: /restore/i }));
     await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(4));
-    expect(restoreThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID, MATERIAL_ID, {
-      expectedBindingState: 'bound',
-      expectedInclusionState: 'excluded',
+    expect(restoreThreadMaterial).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      materialId: MATERIAL_ID,
+      ...{
+        expectedBindingState: 'bound',
+        expectedInclusionState: 'excluded',
+      },
     });
     expect(getThreadMaterial.mock.invocationCallOrder[3]).toBeGreaterThan(
       restoreThreadMaterial.mock.invocationCallOrder[0]
@@ -810,8 +851,13 @@ describe('Workspace Material Plane 1 S12', () => {
 
     await user.click(await screen.findByRole('button', { name: /unbind/i }));
     await waitFor(() => expect(getThreadMaterial).toHaveBeenCalledTimes(5));
-    expect(unbindThreadMaterial).toHaveBeenCalledWith(WORKSPACE_ID, THREAD_ID, MATERIAL_ID, {
-      expectedBindingState: 'bound',
+    expect(unbindThreadMaterial).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      materialId: MATERIAL_ID,
+      ...{
+        expectedBindingState: 'bound',
+      },
     });
     expect(getThreadMaterial.mock.invocationCallOrder[4]).toBeGreaterThan(
       unbindThreadMaterial.mock.invocationCallOrder[0]
@@ -824,7 +870,12 @@ describe('Workspace Material Plane 1 S12', () => {
     const excludeThreadMaterial = vi
       .fn()
       .mockRejectedValue(new ApiCallError(409, 'Mutation rejected.', { code: 'conflict' }));
-    const client = makeClient({ app: { getThreadMaterial, excludeThreadMaterial } });
+    const client = makeClient({
+      operations: {
+        'material.thread-read': getThreadMaterial,
+        'material.exclude': excludeThreadMaterial,
+      },
+    });
     renderMaterial(client);
 
     const panel = await screen.findByRole('region', { name: /thread material/i });

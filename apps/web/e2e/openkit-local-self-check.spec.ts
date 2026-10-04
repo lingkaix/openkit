@@ -158,7 +158,8 @@ async function createMaterial(
   await expect(page.getByText('Saved', { exact: true })).toBeVisible();
 
   const response = await getJson<{ materials: MaterialSummary[] }>(
-    '/api/app/workspaces/ws_demo/materials'
+    '/api/app/operations/material.list',
+    { workspaceId: 'ws_demo' }
   );
   const material = response.materials.find((candidate) => candidate.title === title);
   expect(material, `Material ${title} must be server-visible after browser save`).toBeTruthy();
@@ -174,9 +175,10 @@ async function createMaterial(
  */
 async function materialRevisions(materialId: string): Promise<MaterialRevision[]> {
   return (
-    await getJson<{ revisions: MaterialRevision[] }>(
-      `/api/app/workspaces/ws_demo/materials/${materialId}/revisions`
-    )
+    await getJson<{ revisions: MaterialRevision[] }>('/api/app/operations/material.revision-list', {
+      workspaceId: 'ws_demo',
+      materialId: materialId,
+    })
   ).revisions;
 }
 
@@ -193,7 +195,8 @@ async function materialRevision(
 ): Promise<MaterialRevisionView> {
   return (
     await getJson<{ revision: MaterialRevisionView }>(
-      `/api/app/workspaces/ws_demo/materials/${materialId}/revisions/${revisionId}`
+      '/api/app/operations/material.revision-read',
+      { workspaceId: 'ws_demo', materialId: materialId, revisionId: revisionId }
     )
   ).revision;
 }
@@ -264,12 +267,15 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   ).toHaveText(revisionOne.revisionId);
 
   await startTaskTurn(page, threadId, 'Create a summary from the exact first release revision.');
-  const materialProjectionResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'GET' &&
-      new URL(response.url()).pathname ===
-        `/api/app/workspaces/ws_demo/threads/${threadId}/material`
-  );
+  const materialProjectionResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.thread-read'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return input.workspaceId === 'ws_demo' && input.threadId === threadId;
+  });
   await page.goto(`${stack.webUrl}/materials/ws_demo/${threadId}/${primary.materialId}`);
   const projectionResponse = await materialProjectionResponse;
   const projectionBody = await projectionResponse.text();
@@ -292,12 +298,15 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
 
   const materialEditor = page.getByLabel('Release Material');
   await materialEditor.fill(revisionTwoContent);
-  const saveResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'POST' &&
-      new URL(response.url()).pathname ===
-        `/api/app/workspaces/ws_demo/materials/${primary.materialId}/revisions`
-  );
+  const saveResponse = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== 'POST' ||
+      new URL(response.url()).pathname !== '/api/app/operations/material.revision-save'
+    )
+      return false;
+    const input = response.request().postDataJSON();
+    return input.workspaceId === 'ws_demo' && input.materialId === primary.materialId;
+  });
   await page.getByRole('button', { name: /^Save$/ }).click();
   const revisionTwoSave = await saveResponse;
   expect(
@@ -419,9 +428,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     })
   );
   const materialAfterApply = (
-    await getJson<{ material: MaterialSummary }>(
-      `/api/app/workspaces/ws_demo/materials/${primary.materialId}`
-    )
+    await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
+      workspaceId: 'ws_demo',
+      materialId: primary.materialId,
+    })
   ).material;
   expect(materialAfterApply.currentRevisionId).toBe(appliedRevision.revisionId);
   const revisionThreeContent = '# Release note\n\nA newer user revision after proposal one.';
@@ -440,9 +450,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     expect.objectContaining({ revisionId: userRevision.revisionId, content: revisionThreeContent })
   );
   const materialAfterUserSave = (
-    await getJson<{ material: MaterialSummary }>(
-      `/api/app/workspaces/ws_demo/materials/${primary.materialId}`
-    )
+    await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
+      workspaceId: 'ws_demo',
+      materialId: primary.materialId,
+    })
   ).material;
   expect(materialAfterUserSave.currentRevisionId).toBe(userRevision.revisionId);
   const revisionIdsAfterUserSave = revisionsAfterUserSave
@@ -463,9 +474,10 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
     revisionIdsAfterUserSave
   );
   const materialAfterConflict = (
-    await getJson<{ material: MaterialSummary }>(
-      `/api/app/workspaces/ws_demo/materials/${primary.materialId}`
-    )
+    await getJson<{ material: MaterialSummary }>('/api/app/operations/material.read', {
+      workspaceId: 'ws_demo',
+      materialId: primary.materialId,
+    })
   ).material;
   expect(materialAfterConflict.currentRevisionId).toBe(userRevision.revisionId);
   expect(
@@ -505,7 +517,8 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   });
   const recoveredProjection = (
     await getJson<{ material: ThreadMaterialSummary | null }>(
-      `/api/app/workspaces/ws_demo/threads/${threadId}/material`
+      '/api/app/operations/material.thread-read',
+      { workspaceId: 'ws_demo', threadId: threadId }
     )
   ).material;
   expect(recoveredProjection).not.toBeNull();

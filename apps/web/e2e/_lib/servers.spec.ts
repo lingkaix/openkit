@@ -38,19 +38,25 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       visibility: 'workspace',
       requestId: randomUUID(),
     });
-    const { materialId } = await client.app.createWorkspaceMaterial(workspaceId, {
+    const { materialId } = await client.operations['material.create']({
+      workspaceId,
       title: 'Release Material',
       kind: 'markdown',
       sensitivity: 'internal',
       requestId: randomUUID(),
     });
-    const { revisionId } = await client.app.saveWorkspaceMaterialRevision(workspaceId, materialId, {
+    const { revisionId } = await client.operations['material.revision-save']({
+      workspaceId,
+      materialId,
       expectedRevisionId: null,
       content,
       contentDigest,
       requestId: randomUUID(),
     });
-    await client.app.bindThreadMaterial(workspaceId, thread.id, materialId, {
+    await client.operations['material.bind']({
+      workspaceId,
+      threadId: thread.id,
+      materialId,
       expectedBindingState: 'not_bound',
       requestId: randomUUID(),
     });
@@ -133,7 +139,10 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       contextPackageDigest: turn.contextPackageDigest,
       materialSelections: [{ materialId, revisionId, contentDigest }],
     });
-    const projection = await client.app.getThreadMaterial(workspaceId, thread.id);
+    const projection = await client.operations['material.thread-read']({
+      workspaceId,
+      threadId: thread.id,
+    });
     // S16 current-turn identity ends with the Turn; the verified worker-seen identity survives.
     expect(projection.material).toMatchObject({
       lastWorkerSeenRevisionId: revisionId,
@@ -142,17 +151,18 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       latestQueuedRevisionId: null,
     });
     const nextContent = '# Release revision two\n\nSaved without another message.\n';
-    const { revisionId: nextRevisionId } = await client.app.saveWorkspaceMaterialRevision(
+    const { revisionId: nextRevisionId } = await client.operations['material.revision-save']({
       workspaceId,
       materialId,
-      {
-        expectedRevisionId: revisionId,
-        content: nextContent,
-        contentDigest: `sha256:${createHash('sha256').update(nextContent).digest('hex')}`,
-        requestId: randomUUID(),
-      }
-    );
-    const queued = await client.app.getThreadMaterial(workspaceId, thread.id);
+      expectedRevisionId: revisionId,
+      content: nextContent,
+      contentDigest: `sha256:${createHash('sha256').update(nextContent).digest('hex')}`,
+      requestId: randomUUID(),
+    });
+    const queued = await client.operations['material.thread-read']({
+      workspaceId,
+      threadId: thread.id,
+    });
     expect(queued.material).toMatchObject({
       currentRevision: { revisionId: nextRevisionId },
       latestQueuedRevisionId: nextRevisionId,
@@ -160,7 +170,12 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       currentTurnRevisionId: null,
     });
     await stack.restartCore();
-    expect(await client.app.getThreadMaterial(workspaceId, thread.id)).toEqual(queued);
+    expect(
+      await client.operations['material.thread-read']({
+        workspaceId,
+        threadId: thread.id,
+      })
+    ).toEqual(queued);
     expect(
       (await client.operations['thread.dashboard']({ workspaceId, threadId: thread.id }))
         .pendingRequests
@@ -199,7 +214,10 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       turnId: nextTurn.id,
     });
     expect(answerTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
-    const deliveredMaterial = await client.app.getThreadMaterial(workspaceId, thread.id);
+    const deliveredMaterial = await client.operations['material.thread-read']({
+      workspaceId,
+      threadId: thread.id,
+    });
     expect(deliveredMaterial.material).toMatchObject({
       lastWorkerSeenRevisionId: nextRevisionId,
       latestQueuedRevisionId: null,
@@ -257,7 +275,12 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       workspaceDb.sqlite.close();
     }
     await stack.restartCore();
-    expect(await client.app.getThreadMaterial(workspaceId, thread.id)).toEqual(deliveredMaterial);
+    expect(
+      await client.operations['material.thread-read']({
+        workspaceId,
+        threadId: thread.id,
+      })
+    ).toEqual(deliveredMaterial);
     expect(
       (
         await client.operations['turn.read']({

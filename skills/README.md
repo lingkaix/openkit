@@ -73,3 +73,5 @@ The sixteen Workspace sharing and lifecycle operations derive their canonical ID
 The eleven ordinary core commands and Quick Chat rows derive from the Workspace, Thread, Turn and Conversation family tables in `OPERATION_DEFINITIONS` through `strictShared` in `openkit-operations.mjs`. Their literal rows and former Core Client mappings are removed; `pnpm build:openkit` rebuilds the bundled CLI.
 
 Agent, Worker and resource catalog CLI rows derive from the three shared family tables and execute through `client.operations`; no literal online row or former route remains for these seventeen operations.
+
+The eleven Material CLI rows derive from the shared definitions with `strictShared`. Restricted creation is refused locally; revision read/save preflight metadata through `material.read` before invoking any content operation, including for administrator credentials. Rebuild the bundle with `pnpm build:openkit`.

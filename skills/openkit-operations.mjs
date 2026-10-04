@@ -65,7 +65,6 @@ const LOCAL_CANONICAL_USER_ACCESS = Object.freeze({
 });
 
 const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
-const threadScope = { ...workspaceScope, threadId: protocol.ThreadIdSchema };
 
 /**
  * Creates one strict flat input schema by combining URL scope fields with a shared request body.
@@ -510,213 +509,6 @@ export const operationCatalog = [
   },
 
   {
-    ...STANDARD,
-    id: 'material.list',
-    source: 'app-api',
-    appOperationId: 'listWorkspaceMaterials',
-    clientMethod: 'app.listWorkspaceMaterials',
-    group: 'material',
-    summary: 'List Workspace Material metadata.',
-    mutating: false,
-    inputSchema: strictScope(workspaceScope),
-    handler: ({ client }, input) => client.app.listWorkspaceMaterials(input.workspaceId),
-  },
-  {
-    ...STANDARD,
-    id: 'material.create',
-    source: 'app-api',
-    appOperationId: 'createWorkspaceMaterial',
-    clientMethod: 'app.createWorkspaceMaterial',
-    group: 'material',
-    summary: 'Create one public or internal Workspace Material.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.CreateWorkspaceMaterialRequestSchema, workspaceScope),
-    handler: ({ client }, input) => {
-      requireAgentReadableMaterial(input.sensitivity);
-      return client.app.createWorkspaceMaterial(
-        input.workspaceId,
-        bodyWithout(input, 'workspaceId')
-      );
-    },
-  },
-  {
-    ...STANDARD,
-    id: 'material.read',
-    source: 'app-api',
-    appOperationId: 'getWorkspaceMaterial',
-    clientMethod: 'app.getWorkspaceMaterial',
-    group: 'material',
-    summary: 'Read one Workspace Material metadata record.',
-    mutating: false,
-    inputSchema: strictScope({ ...workspaceScope, materialId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.app.getWorkspaceMaterial(input.workspaceId, input.materialId),
-  },
-  {
-    ...STANDARD,
-    id: 'material.revision-list',
-    source: 'app-api',
-    appOperationId: 'listWorkspaceMaterialRevisions',
-    clientMethod: 'app.listWorkspaceMaterialRevisions',
-    group: 'material',
-    summary: 'List immutable Workspace Material revision metadata.',
-    mutating: false,
-    inputSchema: strictScope({ ...workspaceScope, materialId: IDENTIFIER }),
-    handler: ({ client }, input) =>
-      client.app.listWorkspaceMaterialRevisions(input.workspaceId, input.materialId),
-  },
-  {
-    ...STANDARD,
-    outputSensitivity: 'workspace content',
-    id: 'material.revision-read',
-    source: 'app-api',
-    appOperationId: 'getWorkspaceMaterialRevision',
-    clientMethod: 'app.getWorkspaceMaterialRevision',
-    group: 'material',
-    summary: 'Read one exact public or internal Workspace Material revision.',
-    mutating: false,
-    inputSchema: strictScope({
-      ...workspaceScope,
-      materialId: IDENTIFIER,
-      revisionId: IDENTIFIER,
-    }),
-    async handler({ client }, input) {
-      const { material } = await client.app.getWorkspaceMaterial(
-        input.workspaceId,
-        input.materialId
-      );
-      requireAgentReadableMaterial(material.sensitivity);
-      return client.app.getWorkspaceMaterialRevision(
-        input.workspaceId,
-        input.materialId,
-        input.revisionId
-      );
-    },
-  },
-  {
-    ...STANDARD,
-    inputSensitivity: 'workspace content',
-    id: 'material.revision-save',
-    source: 'app-api',
-    appOperationId: 'saveWorkspaceMaterialRevision',
-    clientMethod: 'app.saveWorkspaceMaterialRevision',
-    group: 'material',
-    summary: 'Save one immutable public or internal Workspace Material revision.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.SaveWorkspaceMaterialRevisionRequestSchema, {
-      ...workspaceScope,
-      materialId: IDENTIFIER,
-    }),
-    async handler({ client }, input) {
-      const { material } = await client.app.getWorkspaceMaterial(
-        input.workspaceId,
-        input.materialId
-      );
-      requireAgentReadableMaterial(material.sensitivity);
-      return client.app.saveWorkspaceMaterialRevision(
-        input.workspaceId,
-        input.materialId,
-        bodyWithout(input, 'workspaceId', 'materialId')
-      );
-    },
-  },
-  {
-    ...STANDARD,
-    id: 'material.thread-read',
-    source: 'app-api',
-    appOperationId: 'getThreadMaterial',
-    clientMethod: 'app.getThreadMaterial',
-    group: 'material',
-    summary: 'Read one Thread Material projection.',
-    mutating: false,
-    inputSchema: strictScope(threadScope),
-    handler: ({ client }, input) => client.app.getThreadMaterial(input.workspaceId, input.threadId),
-  },
-  {
-    ...STANDARD,
-    id: 'material.bind',
-    source: 'app-api',
-    appOperationId: 'bindThreadMaterial',
-    clientMethod: 'app.bindThreadMaterial',
-    group: 'material',
-    summary: 'Bind one Workspace Material to a Thread.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.BindThreadMaterialRequestSchema, {
-      ...threadScope,
-      materialId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.bindThreadMaterial(
-        input.workspaceId,
-        input.threadId,
-        input.materialId,
-        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'material.unbind',
-    source: 'app-api',
-    appOperationId: 'unbindThreadMaterial',
-    clientMethod: 'app.unbindThreadMaterial',
-    group: 'material',
-    summary: 'Unbind one Workspace Material from a Thread.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.UnbindThreadMaterialRequestSchema, {
-      ...threadScope,
-      materialId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.unbindThreadMaterial(
-        input.workspaceId,
-        input.threadId,
-        input.materialId,
-        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'material.exclude',
-    source: 'app-api',
-    appOperationId: 'excludeThreadMaterial',
-    clientMethod: 'app.excludeThreadMaterial',
-    group: 'material',
-    summary: 'Exclude one bound Workspace Material from worker context.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.ExcludeThreadMaterialRequestSchema, {
-      ...threadScope,
-      materialId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.excludeThreadMaterial(
-        input.workspaceId,
-        input.threadId,
-        input.materialId,
-        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
-      ),
-  },
-  {
-    ...STANDARD,
-    id: 'material.restore',
-    source: 'app-api',
-    appOperationId: 'restoreThreadMaterial',
-    clientMethod: 'app.restoreThreadMaterial',
-    group: 'material',
-    summary: 'Restore one bound Workspace Material to worker context.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.RestoreThreadMaterialRequestSchema, {
-      ...threadScope,
-      materialId: IDENTIFIER,
-    }),
-    handler: ({ client }, input) =>
-      client.app.restoreThreadMaterial(
-        input.workspaceId,
-        input.threadId,
-        input.materialId,
-        bodyWithout(input, 'workspaceId', 'threadId', 'materialId')
-      ),
-  },
-  {
     ...LOCAL_CREDENTIAL,
     id: 'credential.store',
     source: 'local-only',
@@ -778,6 +570,8 @@ export const operationCatalog = [
       ? { requiredAccess: 'canonical user: implicit local actor or server-admin bearer token' }
       : {}),
     ...('inputSensitivity' in definition ? { inputSensitivity: definition.inputSensitivity } : {}),
+    ...(id === 'material.revision-save' ? { inputSensitivity: 'workspace content' } : {}),
+    ...(id === 'material.revision-read' ? { outputSensitivity: 'workspace content' } : {}),
     id,
     source: 'app-api',
     appOperationId: id,
@@ -787,7 +581,17 @@ export const operationCatalog = [
     mutating: definition.mutating,
     inputSchema: strictShared(definition.inputSchema),
     outputSchema: definition.outputSchema,
-    handler: ({ client }, input) => client.operations[id](input),
+    handler: async ({ client }, input) => {
+      if (id === 'material.create') requireAgentReadableMaterial(input.sensitivity);
+      if (id === 'material.revision-read' || id === 'material.revision-save') {
+        const { material } = await client.operations['material.read']({
+          workspaceId: input.workspaceId,
+          materialId: input.materialId,
+        });
+        requireAgentReadableMaterial(material.sensitivity);
+      }
+      return client.operations[id](input);
+    },
   })),
 ];
 

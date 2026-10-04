@@ -169,62 +169,18 @@ registerOperations(catalog, ['POST /v1/chat/completions', 'POST /v1/responses'],
   workspaceResolver: 'gateway-metadata-workspace',
 });
 
-registerOperations(catalog, ['listWorkspaceMaterials'], {
-  mutating: false,
-  policyOperation: 'workspace.read',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-
-registerOperations(catalog, ['createWorkspaceMaterial'], {
-  mutating: true,
-  policyOperation: 'workspace.write',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
 registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
   mutating: false,
   policyOperation: 'workspace.export',
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(
-  catalog,
-  ['getThreadMaterial', 'GET /api/workspaces/:workspaceId/threads/:threadId/events'],
-  {
-    mutating: false,
-    policyOperation: 'thread.read',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-
-registerOperations(
-  catalog,
-  ['getWorkspaceMaterial', 'listWorkspaceMaterialRevisions', 'getWorkspaceMaterialRevision'],
-  {
-    mutating: false,
-    policyOperation: 'workspace.read',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(
-  catalog,
-  [
-    'saveWorkspaceMaterialRevision',
-    'bindThreadMaterial',
-    'unbindThreadMaterial',
-    'excludeThreadMaterial',
-    'restoreThreadMaterial',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'workspace.write',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
+registerOperations(catalog, ['GET /api/workspaces/:workspaceId/threads/:threadId/events'], {
+  mutating: false,
+  policyOperation: 'thread.read',
+  resolver: 'workspace-child-lineage',
+  scope: 'workspace',
+});
 
 // Migrated declarations are projections, never a second contract or admission path.
 for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {

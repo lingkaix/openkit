@@ -1312,17 +1312,17 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
     'artifact.introduce': 'artifact.introduce',
     'artifact.review.decide': 'artifact.review.decide',
     'artifact.review-list': 'artifact.review-list',
-    'material.list': 'listWorkspaceMaterials',
-    'material.create': 'createWorkspaceMaterial',
-    'material.read': 'getWorkspaceMaterial',
-    'material.revision-list': 'listWorkspaceMaterialRevisions',
-    'material.revision-read': 'getWorkspaceMaterialRevision',
-    'material.revision-save': 'saveWorkspaceMaterialRevision',
-    'material.thread-read': 'getThreadMaterial',
-    'material.bind': 'bindThreadMaterial',
-    'material.unbind': 'unbindThreadMaterial',
-    'material.exclude': 'excludeThreadMaterial',
-    'material.restore': 'restoreThreadMaterial',
+    'material.list': 'material.list',
+    'material.create': 'material.create',
+    'material.read': 'material.read',
+    'material.revision-list': 'material.revision-list',
+    'material.revision-read': 'material.revision-read',
+    'material.revision-save': 'material.revision-save',
+    'material.thread-read': 'material.thread-read',
+    'material.bind': 'material.bind',
+    'material.unbind': 'material.unbind',
+    'material.exclude': 'material.exclude',
+    'material.restore': 'material.restore',
   };
   const mapped = Object.fromEntries(
     operationCatalog
@@ -1358,19 +1358,29 @@ test('the catalog projects the approved Artifact, Material, and Goal steering op
 
 test('restricted Material content operations fail before content-bearing transport', async () => {
   const { operationCatalog } = await operations();
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'material.revision-save').inputSensitivity,
+    'workspace content'
+  );
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'material.revision-read').outputSensitivity,
+    'workspace content'
+  );
   const contentCalls = [];
+  const metadataCalls = [];
   const client = {
-    app: {
-      createWorkspaceMaterial() {
+    operations: {
+      'material.create'() {
         contentCalls.push('create');
       },
-      async getWorkspaceMaterial() {
+      async 'material.read'(input) {
+        metadataCalls.push(input);
         return { material: { sensitivity: 'restricted' } };
       },
-      getWorkspaceMaterialRevision() {
+      'material.revision-read'() {
         contentCalls.push('read');
       },
-      saveWorkspaceMaterialRevision() {
+      'material.revision-save'() {
         contentCalls.push('save');
       },
     },
@@ -1411,6 +1421,10 @@ test('restricted Material content operations fail before content-bearing transpo
     );
   }
   assert.deepEqual(contentCalls, []);
+  assert.deepEqual(
+    metadataCalls,
+    Array(2).fill({ workspaceId: 'ws_demo', materialId: 'material_demo' })
+  );
 });
 
 test('credential.store accepts one token or one complete recovery envelope and stores only token', async () => {
