@@ -1,6 +1,6 @@
 # Vault
 
-This directory owns NanoCore's encrypted-file Vault backend contract, unlock state, non-secret reference and grant records, audited material resolution, Vault use evidence, and Vault App API routes.
+This directory owns NanoCore's encrypted-file Vault backend contract, unlock state, non-secret reference and grant records, audited material resolution, Vault use evidence, and Vault operation implementations.
 
 ## Boundaries
 
@@ -17,14 +17,14 @@ This directory owns NanoCore's encrypted-file Vault backend contract, unlock sta
 - `vault-references.ts`, `vault-grants.ts`, and `vault-use-records.ts` own non-secret durable Vault records.
 - `vault-references.ts` also owns idempotent insert evidence, active equal-or-next material-version advancement, and atomic dependent-state revocation.
 - `vault-use-audited-backend.ts` owns audited material resolution across server and workspace scopes.
-- `vault-admin-audit-events.ts` and `vault-admin-routes.ts` own administrative audit projection and App API behavior.
+- `vault-admin-audit-events.ts` and `vault-operation-implementations.ts` own administrative audit projection and App API behavior.
 
 ## Runtime Lifecycle
 
 - The encrypted-file backend becomes available only after its raw 32-byte master key authenticates `header.json`; an empty store may initialize the header, while a non-empty headerless store fails closed without mutation.
 - `vault-key-file.ts` accepts only an absolute regular non-symlink file owned by the process user with exact `0600` mode and exactly 32 raw bytes, using one bounded no-follow descriptor read.
 - `../bootstrap/vault.ts` may unlock the shared process state from the configured key file. Missing, invalid, or wrong keys remain a redacted non-critical degraded condition.
-- The unlock state owns one mutable key buffer. Failed replacement, lock, orderly shutdown, and exit cleanup zero owned material; key-file and admin-route callers zero their temporary buffers in `finally`.
+- The unlock state owns one mutable key buffer. Failed replacement, lock, orderly shutdown, and exit cleanup zero owned material; key-file and operation callers zero their temporary buffers in `finally`.
 - Retained encrypted-file backend references fail locked after state replacement or lock, so a cleared key cannot be reused to write new material.
 
 ## Verification
@@ -42,4 +42,6 @@ pnpm run build
 - [Vault Backend Implementation](../../../../docs/specs/20260704-vault_backend_implementation.md)
 - [Worker Credential Access Declarations](../../../../docs/specs/20260709-worker_credential_access_declarations.md)
 
-`vault-secret-routes.ts` projects deployment-admin workspace secret create/rotate/revoke and ordinary gateway-only or GitHub Worker runtime-env grant create/revoke. It uses the existing backend and Core lifecycle, rejects scope/version disagreement, and returns fixed redacted failures for partial effects. Worker grants remain separate from gateway-only grants; the public gateway-only issuer has no capability target and the selected MCP consumer checks existing current Vault authority.
+`vault-operation-implementations.ts` projects deployment-admin workspace secret create/rotate/revoke and ordinary gateway-only or GitHub Worker runtime-env grant create/revoke. It uses the existing backend and Core lifecycle, rejects scope/version disagreement, and returns fixed redacted failures for partial effects. Worker grants remain separate from gateway-only grants; the public gateway-only issuer has no capability target and the selected MCP consumer checks existing current Vault authority.
+
+The 17 `vault.*` definitions live in `packages/app-api-schemas/src/vault-operations.ts`. The exact native map is composed once through `operation-composition.ts`; JSON HTTP, Core Client, CLI and remote MCP derive their framing from that table. Every output remains redacted, and unlock, bootstrap, provider-key, secret create/rotate and reference rebind inputs retain `secret stdin` handling. Server admission owns common administrator refusals; Workspace secret and grant effects retain their additional administrator requirement.

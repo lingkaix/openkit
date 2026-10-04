@@ -271,19 +271,18 @@ function createRelayStandIn(options = {}) {
   };
 
   const core = {
-    app: {
-      getCapabilityUsage: async () => {
+    app: {},
+    operations: {
+      'usage.read': async () => {
         const observations = turns.map(observationFor);
         return {
           capabilityCalls: observations.map((entry) => entry.capabilityCall),
           usageRecords: observations.map((entry) => entry.usageRecord),
         };
       },
-      listAgentEnvironmentPackageSnapshots: async () => ({
+      'environment.snapshot-list': async () => ({
         items: turns.map((turn) => observationFor(turn).aepItem),
       }),
-    },
-    operations: {
       'sync.review-decide': async ({
         workspaceId: receivedWorkspaceId,
         reviewId: receivedReviewId,
@@ -317,7 +316,6 @@ function createRelayStandIn(options = {}) {
           agentId: options.wrongTaskAgent ? 'wrong_agent' : selectedTurn.agentId,
         },
       }),
-
       'thread.create': async () => ({ id: `thread_${selectedTurn.agentId}` }),
       'thread.items': async () => ({
         items: turns.map((turn) => observationFor(turn).threadItem),

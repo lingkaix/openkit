@@ -706,7 +706,7 @@ test('one catalog covers the checked App API and public Core projection', async 
 
   assert.equal(
     operationExclusions.filter((entry) =>
-      ['workspace.dashboard', 'getThreadDashboard', 'searchApp'].includes(entry.name)
+      ['workspace.dashboard', 'getThreadDashboard', 'app.search'].includes(entry.name)
     ).length,
     0
   );
@@ -814,13 +814,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'storage.layout-report',
       'user.disable',
       'vault.bootstrap-codex-auth',
-      'vault.grant-create',
-      'vault.grant-revoke',
       'vault.lock',
       'vault.provider-api-key-set',
-      'vault.secret-create',
-      'vault.secret-revoke',
-      'vault.secret-rotate',
       'vault.server-use-list',
       'vault.status',
       'vault.unlock',
@@ -916,11 +911,21 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
       'secret stdin'
     );
   }
-  assert.strictEqual(
-    operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSchema.shape
-      .providerId,
-    appSchemas.ProviderApiKeyProfileIdSchema
+  const providerInput = { providerId: 'provider-b6', apiKey: 'synthetic-b6-key' };
+  const providerSchema = operationCatalog.find(
+    (entry) => entry.id === 'vault.provider-api-key-set'
+  )?.inputSchema;
+  assert.deepEqual(
+    providerSchema.parse(providerInput),
+    appSchemas.OPERATION_DEFINITIONS['vault.provider-api-key-set'].inputSchema.parse(providerInput)
   );
+  assert.deepEqual(
+    Object.keys(providerSchema.shape).sort(),
+    Object.keys(
+      appSchemas.OPERATION_DEFINITIONS['vault.provider-api-key-set'].inputSchema.shape
+    ).sort()
+  );
+  assert.equal(providerSchema.safeParse({ ...providerInput, arbitrary: true }).success, false);
   assert.deepEqual(
     operationExclusions
       .filter((entry) => entry.owner === 'docs/specs/20260715-multi_user_workspace_system.md')
@@ -2331,7 +2336,7 @@ for (const [operation, required] of [
 
 test('bundled Vault secret writes keep material in stdin bodies and redact upstream failures', async () => {
   const material = 'generic-vault-canary-do-not-print';
-  for (const [operation, input, suffix] of [
+  for (const [operation, input] of [
     [
       'vault.secret-create',
       { workspaceId: 'ws_demo', secretKind: 'github-token', material },
@@ -2353,9 +2358,9 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
       [
         dataModule(`
       globalThis.fetch = async (url, options) => {
-        if (url !== 'http://nanocore.example/api/app/workspaces/ws_demo/vault${suffix}' || options.method !== 'POST') throw new Error('Wrong transport');
+        if (url !== 'http://nanocore.example/api/app/operations/${operation}' || options.method !== 'POST') throw new Error('Wrong transport');
         const body = JSON.parse(options.body);
-        if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== undefined || body.referenceId !== undefined) throw new Error('Wrong body');
+        if (body.material !== ${JSON.stringify(material)} || body.workspaceId !== 'ws_demo' || (${JSON.stringify(operation)} === 'vault.secret-rotate' && body.referenceId !== 'vault_test')) throw new Error('Wrong body');
         return Response.json({ protocolVersion: '0.5.0', code: 'vault_mutation_failed', message: body.material }, { status: 409 });
       };
     `),
@@ -2842,7 +2847,7 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
       { workspaceId: 'ws_team', threadId: 'th_shared' },
       [{ workspaceId: 'ws_team', threadId: 'th_shared' }],
     ],
-    ['app.search', 'searchApp', 'search', { query: 'needle' }, ['needle']],
+    ['app.search', 'app.search', 'app.search', { query: 'needle' }, [{ query: 'needle' }]],
     [
       'conversation.navigation',
       'conversation.navigation',
@@ -2873,7 +2878,8 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
           [id === 'thread.dashboard' ||
           id === 'conversation.navigation' ||
           id === 'workspace.dashboard' ||
-          id === 'worker.list'
+          id === 'worker.list' ||
+          id === 'app.search'
             ? 'operations'
             : 'app']: {
             [method]: async (...values) => {
@@ -2902,7 +2908,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
       { workspaceId: 'ws_team', threadId: 'th_private' },
       '/api/app/operations/thread.dashboard',
     ],
-    ['app.search', { query: 'private needle' }, '/api/app/search?q=private%20needle'],
+    ['app.search', { query: 'private needle' }, '/api/app/operations/app.search'],
     ['worker.list', { workspaceId: 'ws_team' }, '/api/app/operations/worker.list'],
   ]) {
     for (const status of [401, 403, 404]) {
@@ -2916,7 +2922,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         [
           dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
+          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' || operation === 'app.search' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
           return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };

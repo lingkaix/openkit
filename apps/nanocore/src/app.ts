@@ -78,7 +78,6 @@ import {
 import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
-import { registerGovernanceRoutes } from './governance-routes.js';
 import type { WorkerCoordinatorCandidate } from './internal-agents/worker-coordinator.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
@@ -110,7 +109,6 @@ import {
   revokeVaultProviderCredential,
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
-import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
 import {
   evaluateCapturedPendingCall,
   executeCapturedPendingCall,
@@ -172,7 +170,6 @@ import {
   SchedulerLeaseHeartbeatRejectedError,
   type SchedulerWorkerStorageChoice,
 } from './scheduler-records.js';
-import { registerSearchRoutes } from './search-routes.js';
 import { mapRuntimeCapabilitiesToFlags, registerServiceRoutes } from './service-routes.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { LOCAL_USER_ID } from './storage/fs-layout.js';
@@ -181,7 +178,6 @@ import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-ro
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
 import { interruptProductTurn } from './turn-routes.js';
-import { registerVaultAdminRoutes } from './vault/vault-admin-routes.js';
 import { createVaultUnlockState, type VaultUnlockState } from './vault/vault-unlock-state.js';
 import {
   createWorkerEnvironmentActivation,
@@ -1058,29 +1054,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Returns the Workspace candidates already admitted by the central operation guard.
-   *
-   * @param c Request context carrying one central authorization result.
-   * @returns Authorized Workspace ids without physical Workspace discovery.
-   * @throws Error when a Core-backed request reaches a Workspace route without authorization.
-   */
-  function authorizedWorkspaceIds(c: {
-    get: (key: 'workspaceAccess') => AuthVariables['workspaceAccess'];
-  }): readonly string[] {
-    const access = c.get('workspaceAccess');
-    if (access?.kind === 'workspace') {
-      return [access.workspaceId];
-    }
-    if (access?.kind === 'workspace-set') {
-      return access.workspaceIds;
-    }
-    if (!options.coreDb && mode === 'local') {
-      return sharedStore.listWorkspaces().map((workspace) => workspace.id);
-    }
-    throw new Error('Central Workspace authorization is unavailable for this request.');
-  }
-
-  /**
    * Checks the internally consistent active Workspace role required by membership-gated callers.
    *
    * @param userId Canonical user id.
@@ -1407,13 +1380,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerServiceRoutes({ app, mode, turnExecutor });
 
-  registerVaultAdminRoutes({
-    app,
-    coreDb: options.coreDb,
-    dataRoot,
-    repositoryWorkspaceDb,
-    vaultUnlockState,
-  });
   app.get('/api/diagnostics', (c) => {
     const adminError = requireDiagnosticsAdminActor(c.get('actor'));
     if (adminError) {
@@ -1694,15 +1660,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
   });
 
-  registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
-
-  registerGovernanceRoutes({
-    app,
-    coreDb: options.coreDb,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
-
   const taskStart = createTaskStartOperation({
     assertProjectWorkspace,
     coreDb: options.coreDb,
@@ -1871,6 +1828,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerOperationJsonRoutes({
+    ...(vaultUnlockState ? { vaultUnlockState } : {}),
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     ...(dataRoot
       ? {
@@ -1916,6 +1874,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    ...(vaultUnlockState ? { vaultUnlockState } : {}),
     closeWorkspaceMcpSessions: (workspaceId) => workerMcpGateway.closeWorkspace(workspaceId),
     ...(dataRoot
       ? {
@@ -1961,7 +1920,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
   });
 
-  registerAgentEnvironmentRoutes({ app, repositoryWorkspaceDb });
   registerWorkerEnvironmentRoutes({
     app,
     operations: workerEnvironmentOperations,

@@ -2416,15 +2416,15 @@ test('failure evidence reads one fresh Workspace and filters the exact Turn when
   assert.deepEqual(calls, [
     {
       authority: 'product',
-      body: undefined,
-      method: 'GET',
-      path: '/api/app/workspaces/workspace-exact/runtime-evidence',
+      body: { workspaceId: 'workspace-exact' },
+      method: 'POST',
+      path: '/api/app/operations/evidence.runtime-list',
     },
     {
       authority: 'product',
-      body: undefined,
-      method: 'GET',
-      path: '/api/app/workspaces/workspace-exact/runtime-evidence',
+      body: { workspaceId: 'workspace-exact' },
+      method: 'POST',
+      path: '/api/app/operations/evidence.runtime-list',
     },
   ]);
   assert.deepEqual(runtimeEvidence, [exact]);

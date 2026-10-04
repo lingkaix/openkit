@@ -20,10 +20,11 @@ const STATUS = {
 /** Only the three accepted deployment Vault operations are available. */
 function makeClient(): CoreClient {
   return {
-    app: {
-      getVaultAdminStatus: vi.fn().mockResolvedValue(STATUS),
-      unlockVaultAdminBackend: vi.fn().mockResolvedValue({ ...STATUS, state: 'available' }),
-      lockVaultAdminBackend: vi.fn().mockResolvedValue(STATUS),
+    app: {},
+    operations: {
+      'vault.status': vi.fn().mockResolvedValue(STATUS),
+      'vault.unlock': vi.fn().mockResolvedValue({ ...STATUS, state: 'available' }),
+      'vault.lock': vi.fn().mockResolvedValue(STATUS),
     },
   } as unknown as CoreClient;
 }
@@ -83,27 +84,27 @@ describe('Vault backend administration', () => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
     expect(await screen.findByText('Vault is locked.')).toBeInTheDocument();
-    expect(client.app.getVaultAdminStatus).toHaveBeenCalledExactlyOnceWith();
+    expect(client.operations['vault.status']).toHaveBeenCalledExactlyOnceWith({});
     expect(screen.getByLabelText('Master key (base64)')).toHaveAttribute('type', 'password');
     expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Lock' })).toBeDisabled();
-    expect(client.app.unlockVaultAdminBackend).not.toHaveBeenCalled();
-    vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+    expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
+    vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
       ...STATUS,
       state: 'available',
       diagnostic: 'Vault is available.',
     });
     await unlock();
     expect(await screen.findByText('Vault is available.')).toBeInTheDocument();
-    expect(client.app.unlockVaultAdminBackend).toHaveBeenCalledExactlyOnceWith({
+    expect(client.operations['vault.unlock']).toHaveBeenCalledExactlyOnceWith({
       masterKeyBase64: KEY,
     });
     expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
     expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: 'Lock' }));
     expect(await screen.findByText('Vault is locked.')).toBeInTheDocument();
-    expect(client.app.lockVaultAdminBackend).toHaveBeenCalledExactlyOnceWith();
-    expect(client.app.getVaultAdminStatus).toHaveBeenCalledTimes(3);
+    expect(client.operations['vault.lock']).toHaveBeenCalledExactlyOnceWith({});
+    expect(client.operations['vault.status']).toHaveBeenCalledTimes(3);
     expect(container.innerHTML).not.toContain(KEY);
     expect(container.innerHTML).not.toContain(POISON);
     expectSafeCaches(queryClient);
@@ -116,7 +117,7 @@ describe('Vault backend administration', () => {
 
   it.each([401, 403])('recovers initial %s denial without mutating', async (status) => {
     const client = makeClient();
-    vi.mocked(client.app.getVaultAdminStatus).mockRejectedValueOnce(
+    vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(
       new ApiCallError(status, POISON)
     );
     const { container, queryClient } = renderScreen(client);
@@ -125,8 +126,8 @@ describe('Vault backend administration', () => {
     expect(container.innerHTML).not.toContain(POISON);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('Vault is locked.');
-    expect(client.app.unlockVaultAdminBackend).not.toHaveBeenCalled();
-    expect(client.app.lockVaultAdminBackend).not.toHaveBeenCalled();
+    expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
+    expect(client.operations['vault.lock']).not.toHaveBeenCalled();
     expectSafeCaches(queryClient);
   });
 
@@ -137,7 +138,7 @@ describe('Vault backend administration', () => {
   ] as const)('hides prior status on %s denial and recovers without replay', async (action) => {
     const client = makeClient();
     if (action === 'lock')
-      vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+      vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
         ...STATUS,
         state: 'available',
       });
@@ -145,17 +146,17 @@ describe('Vault backend administration', () => {
     await screen.findByText('Vault is locked.');
     if (action === 'refetch') {
       await userEvent.type(screen.getByLabelText('Master key (base64)'), KEY);
-      vi.mocked(client.app.getVaultAdminStatus).mockRejectedValueOnce(
+      vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(
         new ApiCallError(401, POISON)
       );
       await act(() => queryClient.invalidateQueries({ queryKey: ['settings', 'vault-admin'] }));
     } else if (action === 'unlock') {
-      vi.mocked(client.app.unlockVaultAdminBackend).mockRejectedValueOnce(
+      vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
         new ApiCallError(403, KEY)
       );
       await unlock();
     } else {
-      vi.mocked(client.app.lockVaultAdminBackend).mockRejectedValueOnce(
+      vi.mocked(client.operations['vault.lock']).mockRejectedValueOnce(
         new ApiCallError(403, POISON)
       );
       await userEvent.click(screen.getByRole('button', { name: 'Lock' }));
@@ -167,8 +168,8 @@ describe('Vault backend administration', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('Vault is locked.');
     expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
-    expect(client.app.unlockVaultAdminBackend).toHaveBeenCalledTimes(action === 'unlock' ? 1 : 0);
-    expect(client.app.lockVaultAdminBackend).toHaveBeenCalledTimes(action === 'lock' ? 1 : 0);
+    expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(action === 'unlock' ? 1 : 0);
+    expect(client.operations['vault.lock']).toHaveBeenCalledTimes(action === 'lock' ? 1 : 0);
     expectSafeCaches(queryClient);
   });
 
@@ -176,7 +177,7 @@ describe('Vault backend administration', () => {
     400, 429, 500,
   ])('clears failed unlock input and safely retries a %s error without resubmitting', async (status) => {
     const client = makeClient();
-    vi.mocked(client.app.unlockVaultAdminBackend).mockRejectedValueOnce(
+    vi.mocked(client.operations['vault.unlock']).mockRejectedValueOnce(
       new ApiCallError(status, `${POISON} ${KEY}`)
     );
     const { container, queryClient } = renderScreen(client);
@@ -188,8 +189,8 @@ describe('Vault backend administration', () => {
     expectSafeCaches(queryClient);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-    expect(client.app.unlockVaultAdminBackend).toHaveBeenCalledTimes(1);
-    expect(client.app.lockVaultAdminBackend).not.toHaveBeenCalled();
+    expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
+    expect(client.operations['vault.lock']).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Unlock' })).toBeDisabled();
   });
 
@@ -198,14 +199,14 @@ describe('Vault backend administration', () => {
     'lock',
   ] as const)('blocks edits and overlapping actions while %s is pending', async (action) => {
     const client = makeClient();
-    const method = action === 'unlock' ? 'unlockVaultAdminBackend' : 'lockVaultAdminBackend';
+    const method = action === 'unlock' ? 'vault.unlock' : 'vault.lock';
     if (action === 'lock')
-      vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+      vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
         ...STATUS,
         state: 'available',
       });
     let finish = () => {};
-    vi.mocked(client.app[method]).mockImplementationOnce(
+    vi.mocked(client.operations[method]).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = () => resolve(STATUS);
@@ -221,16 +222,16 @@ describe('Vault backend administration', () => {
     expectSafeCaches(queryClient);
     await act(async () => finish());
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
-    expect(client.app[method]).toHaveBeenCalledTimes(1);
+    expect(client.operations[method]).toHaveBeenCalledTimes(1);
   });
 
   it('rechecks status after a failed lock without repeating it', async () => {
     const client = makeClient();
-    vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+    vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
       ...STATUS,
       state: 'available',
     });
-    vi.mocked(client.app.lockVaultAdminBackend).mockRejectedValueOnce(new Error(POISON));
+    vi.mocked(client.operations['vault.lock']).mockRejectedValueOnce(new Error(POISON));
     const { queryClient } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Lock' }));
     await screen.findByRole('alert');
@@ -238,8 +239,8 @@ describe('Vault backend administration', () => {
     expectSafeCaches(queryClient);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('locked', { exact: true });
-    expect(client.app.lockVaultAdminBackend).toHaveBeenCalledTimes(1);
-    expect(client.app.unlockVaultAdminBackend).not.toHaveBeenCalled();
+    expect(client.operations['vault.lock']).toHaveBeenCalledTimes(1);
+    expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
   });
 
   it('waits for the post-unlock status read and handles its failure without replay', async () => {
@@ -247,14 +248,14 @@ describe('Vault backend administration', () => {
     renderScreen(client);
     await screen.findByText('Vault is locked.');
     let fail = () => {};
-    vi.mocked(client.app.getVaultAdminStatus).mockImplementationOnce(
+    vi.mocked(client.operations['vault.status']).mockImplementationOnce(
       () =>
         new Promise((_resolve, reject) => {
           fail = () => reject(new ApiCallError(500, POISON));
         })
     );
     await unlock();
-    await waitFor(() => expect(client.app.getVaultAdminStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.operations['vault.status']).toHaveBeenCalledTimes(2));
     expect(screen.getByLabelText('Master key (base64)')).toBeDisabled();
     for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
     await act(async () => fail());
@@ -262,13 +263,13 @@ describe('Vault backend administration', () => {
     expect(screen.queryByText('Vault is locked.')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('Vault is locked.');
-    expect(client.app.unlockVaultAdminBackend).toHaveBeenCalledTimes(1);
+    expect(client.operations['vault.unlock']).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Master key (base64)')).toHaveValue('');
   });
 
   it('redacts secret-shaped diagnostic text before caching', async () => {
     const client = makeClient();
-    vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+    vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
       ...STATUS,
       diagnostic: `Failure: ${POISON}`,
     });
@@ -280,7 +281,7 @@ describe('Vault backend administration', () => {
 
   it('blocks both actions when unavailable', async () => {
     const client = makeClient();
-    vi.mocked(client.app.getVaultAdminStatus).mockResolvedValueOnce({
+    vi.mocked(client.operations['vault.status']).mockResolvedValueOnce({
       ...STATUS,
       state: 'unavailable',
     });
@@ -293,14 +294,14 @@ describe('Vault backend administration', () => {
 
   it('retries status failure without leaking errors or mutating', async () => {
     const client = makeClient();
-    vi.mocked(client.app.getVaultAdminStatus).mockRejectedValueOnce(new Error(POISON));
+    vi.mocked(client.operations['vault.status']).mockRejectedValueOnce(new Error(POISON));
     const { container, queryClient } = renderScreen(client);
     await screen.findByRole('alert');
     expect(container.innerHTML).not.toContain(POISON);
     expectSafeCaches(queryClient);
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByText('Vault is locked.');
-    expect(client.app.unlockVaultAdminBackend).not.toHaveBeenCalled();
-    expect(client.app.lockVaultAdminBackend).not.toHaveBeenCalled();
+    expect(client.operations['vault.unlock']).not.toHaveBeenCalled();
+    expect(client.operations['vault.lock']).not.toHaveBeenCalled();
   });
 });

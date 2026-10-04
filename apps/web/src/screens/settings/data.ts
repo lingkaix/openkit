@@ -232,9 +232,9 @@ export interface UsageAndAuditProjection {
  * @returns Secret-safe metadata needed by the Vault screen and nothing else.
  */
 export function projectVault(
-  references: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultReferences']>>,
-  grants: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultGrants']>>,
-  uses: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultUseRecords']>>
+  references: Awaited<ReturnType<CoreClient['operations']['vault.reference-list']>>,
+  grants: Awaited<ReturnType<CoreClient['operations']['vault.grant-list']>>,
+  uses: Awaited<ReturnType<CoreClient['operations']['vault.use-list']>>
 ): VaultProjection {
   return {
     references: references.items.map((reference) => ({
@@ -269,7 +269,7 @@ export function projectVault(
  * @returns Secret-safe plan rows needed by the Vault screen and nothing else.
  */
 export function projectVaultInjectionPlans(
-  plans: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultInjectionPlans']>>
+  plans: Awaited<ReturnType<CoreClient['operations']['vault.injection-plan-list']>>
 ): VaultInjectionPlanRow[] {
   return plans.items.map((plan) => ({
     planId: projectSafeValue(plan.planId) as string,
@@ -286,7 +286,7 @@ export function projectVaultInjectionPlans(
  * @returns Secret-safe receipt rows needed by the Vault screen and nothing else.
  */
 export function projectVaultInjectionReceipts(
-  receipts: Awaited<ReturnType<CoreClient['app']['listWorkspaceVaultInjectionReceipts']>>
+  receipts: Awaited<ReturnType<CoreClient['operations']['vault.injection-receipt-list']>>
 ): VaultInjectionReceiptRow[] {
   return receipts.items.map((receipt) => ({
     receiptId: projectSafeValue(receipt.receiptId) as string,
@@ -302,7 +302,7 @@ export function projectVaultInjectionReceipts(
  * @returns Summary rows with no locators, session ids, or secret-named fields.
  */
 export function projectEvidenceBundles(
-  bundles: Awaited<ReturnType<CoreClient['app']['listWorkspaceEvidenceBundles']>>
+  bundles: Awaited<ReturnType<CoreClient['operations']['evidence.bundle-list']>>
 ): EvidenceBundleRow[] {
   return bundles.evidenceBundles.map((bundle) => ({
     id: projectSafeValue(bundle.id) as string,
@@ -317,7 +317,7 @@ export function projectEvidenceBundles(
  * @returns Summary rows with no stdout, locators, or session ids.
  */
 export function projectRuntimeEvidence(
-  evidence: Awaited<ReturnType<CoreClient['app']['listWorkspaceRuntimeEvidence']>>
+  evidence: Awaited<ReturnType<CoreClient['operations']['evidence.runtime-list']>>
 ): RuntimeEvidenceRow[] {
   return evidence.runtimeEvidence.map((record) => ({
     id: projectSafeValue(record.id) as string,
@@ -332,7 +332,7 @@ export function projectRuntimeEvidence(
  * @returns Snapshot ids only; detail bodies stay unloaded.
  */
 export function projectAepSnapshots(
-  snapshots: Awaited<ReturnType<CoreClient['app']['listAgentEnvironmentPackageSnapshots']>>
+  snapshots: Awaited<ReturnType<CoreClient['operations']['environment.snapshot-list']>>
 ): AepSnapshotListRow[] {
   return snapshots.items.map((item) => ({
     snapshotId: projectSafeValue(item.snapshotId) as string,
@@ -347,7 +347,7 @@ export function projectAepSnapshots(
  * @returns Snapshot id, package id, and runtime kind only.
  */
 export function projectAepSnapshotDetail(
-  record: Awaited<ReturnType<CoreClient['app']['getAgentEnvironmentPackageSnapshot']>>
+  record: Awaited<ReturnType<CoreClient['operations']['environment.snapshot-read']>>
 ): AepSnapshotDetailRow {
   return {
     snapshotId: projectSafeValue(record.snapshotId) as string,
@@ -366,9 +366,9 @@ export function projectAepSnapshotDetail(
  * @returns Safe selected-Workspace evidence needed by the screen and nothing else.
  */
 export function projectUsageAndAudit(
-  usage: Awaited<ReturnType<CoreClient['app']['getCapabilityUsage']>>,
-  audit: Awaited<ReturnType<CoreClient['app']['listWorkspaceAuditEvents']>>,
-  decisions: Awaited<ReturnType<CoreClient['app']['listWorkspacePermissionDecisions']>>
+  usage: Awaited<ReturnType<CoreClient['operations']['usage.read']>>,
+  audit: Awaited<ReturnType<CoreClient['operations']['audit.workspace-list']>>,
+  decisions: Awaited<ReturnType<CoreClient['operations']['permission.workspace-list']>>
 ): UsageAndAuditProjection {
   return {
     capabilityCalls: usage.capabilityCalls.map((call) => ({
@@ -426,7 +426,7 @@ function recordedInstant(value: unknown): string | undefined {
  * @returns Only fields displayed by the read-only evidence rows.
  */
 function projectAuditAndDecisions(
-  audit: Awaited<ReturnType<CoreClient['app']['listServerAuditEvents']>>,
+  audit: Awaited<ReturnType<CoreClient['operations']['audit.server-list']>>,
   decisions: {
     permissionDecisions: readonly {
       decisionId: string;
@@ -716,9 +716,9 @@ export function useVault(workspaceId: string | null) {
     queryKey: settingsKeys.vault(workspaceId ?? ''),
     queryFn: async () => {
       const [references, grants, uses] = await Promise.all([
-        client.app.listWorkspaceVaultReferences(workspaceId as string),
-        client.app.listWorkspaceVaultGrants(workspaceId as string),
-        client.app.listWorkspaceVaultUseRecords(workspaceId as string),
+        client.operations['vault.reference-list']({ workspaceId: workspaceId as string }),
+        client.operations['vault.grant-list']({ workspaceId: workspaceId as string }),
+        client.operations['vault.use-list']({ workspaceId: workspaceId as string }),
       ]);
       return projectVault(references, grants, uses);
     },
@@ -738,7 +738,7 @@ export function useVaultInjectionPlans(workspaceId: string | null) {
     queryKey: settingsKeys.vaultInjectionPlans(workspaceId ?? ''),
     queryFn: async () =>
       projectVaultInjectionPlans(
-        await client.app.listWorkspaceVaultInjectionPlans(workspaceId as string)
+        await client.operations['vault.injection-plan-list']({ workspaceId: workspaceId as string })
       ),
     enabled: Boolean(workspaceId),
   });
@@ -756,7 +756,9 @@ export function useVaultInjectionReceipts(workspaceId: string | null) {
     queryKey: settingsKeys.vaultInjectionReceipts(workspaceId ?? ''),
     queryFn: async () =>
       projectVaultInjectionReceipts(
-        await client.app.listWorkspaceVaultInjectionReceipts(workspaceId as string)
+        await client.operations['vault.injection-receipt-list']({
+          workspaceId: workspaceId as string,
+        })
       ),
     enabled: Boolean(workspaceId),
   });
@@ -773,7 +775,9 @@ export function useEvidenceBundles(workspaceId: string | null) {
   return useQuery({
     queryKey: settingsKeys.evidenceBundles(workspaceId ?? ''),
     queryFn: async () =>
-      projectEvidenceBundles(await client.app.listWorkspaceEvidenceBundles(workspaceId as string)),
+      projectEvidenceBundles(
+        await client.operations['evidence.bundle-list']({ workspaceId: workspaceId as string })
+      ),
     enabled: Boolean(workspaceId),
   });
 }
@@ -789,7 +793,9 @@ export function useRuntimeEvidence(workspaceId: string | null) {
   return useQuery({
     queryKey: settingsKeys.runtimeEvidence(workspaceId ?? ''),
     queryFn: async () =>
-      projectRuntimeEvidence(await client.app.listWorkspaceRuntimeEvidence(workspaceId as string)),
+      projectRuntimeEvidence(
+        await client.operations['evidence.runtime-list']({ workspaceId: workspaceId as string })
+      ),
     enabled: Boolean(workspaceId),
   });
 }
@@ -806,7 +812,7 @@ export function useAepSnapshots(workspaceId: string | null) {
     queryKey: settingsKeys.aepSnapshots(workspaceId ?? ''),
     queryFn: async () =>
       projectAepSnapshots(
-        await client.app.listAgentEnvironmentPackageSnapshots(workspaceId as string)
+        await client.operations['environment.snapshot-list']({ workspaceId: workspaceId as string })
       ),
     enabled: Boolean(workspaceId),
   });
@@ -825,10 +831,10 @@ export function useAepSnapshotDetail(workspaceId: string | null, snapshotId: str
     queryKey: settingsKeys.aepSnapshot(workspaceId ?? '', snapshotId ?? ''),
     queryFn: async () =>
       projectAepSnapshotDetail(
-        await client.app.getAgentEnvironmentPackageSnapshot(
-          workspaceId as string,
-          snapshotId as string
-        )
+        await client.operations['environment.snapshot-read']({
+          workspaceId: workspaceId as string,
+          snapshotId: snapshotId as string,
+        })
       ),
     enabled: Boolean(workspaceId && snapshotId),
   });
@@ -846,9 +852,9 @@ export function useUsageAndAudit(workspaceId: string | null) {
     queryKey: settingsKeys.usage(workspaceId ?? ''),
     queryFn: async () => {
       const [usage, audit, decisions] = await Promise.all([
-        client.app.getCapabilityUsage(workspaceId as string),
-        client.app.listWorkspaceAuditEvents(workspaceId as string),
-        client.app.listWorkspacePermissionDecisions(workspaceId as string),
+        client.operations['usage.read']({ workspaceId: workspaceId as string }),
+        client.operations['audit.workspace-list']({ workspaceId: workspaceId as string }),
+        client.operations['permission.workspace-list']({ workspaceId: workspaceId as string }),
       ]);
       return projectUsageAndAudit(usage, audit, decisions);
     },
@@ -884,8 +890,8 @@ export function useServerAudit() {
     queryKey: ['settings', 'server-audit'],
     queryFn: async () => {
       const [audit, decisions] = await Promise.all([
-        client.app.listServerAuditEvents(),
-        client.app.listServerPermissionDecisions(),
+        client.operations['audit.server-list']({}),
+        client.operations['permission.server-list']({}),
       ]);
       return projectAuditAndDecisions(audit, decisions);
     },

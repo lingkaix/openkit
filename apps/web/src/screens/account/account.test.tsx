@@ -473,9 +473,6 @@ function makeClient(overrides: ClientOverrides = {}) {
     app: {
       getDiagnostics: forbidden.diagnostics,
       getSetupDiagnostics: forbidden.setup,
-      listServerAuditEvents: forbidden.admin,
-      listServerPermissionDecisions: forbidden.admin,
-      listServerVaultUseRecords: forbidden.admin,
       ...overrides.app,
     },
     auth: {
@@ -495,6 +492,9 @@ function makeClient(overrides: ClientOverrides = {}) {
     operations: {
       'runtime.file-read': forbidden.runtimeConfig,
       'runtime.file-list': forbidden.runtimeConfig,
+      'vault.server-use-list': forbidden.admin,
+      'audit.server-list': forbidden.admin,
+      'permission.server-list': forbidden.admin,
       'user.disable': forbidden.admin,
       'workspace.access-recovery-read': forbidden.admin,
       'workspace.access-recover': forbidden.admin,

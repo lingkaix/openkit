@@ -353,15 +353,13 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
 
       ...core,
     },
-    app: {
-      search: vi.fn().mockResolvedValue({ items: [SEARCH_THREAD] }),
-      ...app,
-    },
+    app: { ...app },
     agents: {
       list: vi.fn().mockResolvedValue({ items: [] }),
     },
 
     operations: {
+      'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_THREAD] }),
       'recovery.worker-list': vi.fn().mockResolvedValue({ items: ALL_WORKERS }),
       'recovery.checkpoint-retry': vi.fn().mockResolvedValue(WORKER_RETRY_SUCCESS),
       'scheduler.list': vi
@@ -371,12 +369,10 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
         ),
       'scheduler.retry': vi.fn().mockResolvedValue(SCHEDULER_RETRY_MUTATION),
       'scheduler.cancel': vi.fn().mockResolvedValue(SCHEDULER_CANCEL_MUTATION),
-
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.dashboard': vi.fn().mockResolvedValue({ activeWork: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
-
       ...core,
       ...app,
       'workspace.list': vi
@@ -612,7 +608,7 @@ describe('Recovery and search', () => {
         [{ workspaceId: WORKSPACE.id }],
       ]);
     });
-    expect(client.app.search).not.toHaveBeenCalled();
+    expect(client.operations['app.search']).not.toHaveBeenCalled();
     expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
     expect(pathname).toBe('/recovery');
 
@@ -1087,7 +1083,7 @@ describe('Recovery and search', () => {
       scenario.mutate === 'cancelSchedulerAdmission' ? 1 : 0
     );
     expect(client.operations['recovery.checkpoint-retry']).not.toHaveBeenCalled();
-    expect(client.app.search).not.toHaveBeenCalled();
+    expect(client.operations['app.search']).not.toHaveBeenCalled();
     poisonDom();
   });
 
@@ -1146,7 +1142,7 @@ describe('Recovery and search', () => {
     const client = makeClient({
       'recovery.worker-list': listInterruptedWorkers,
       'scheduler.list': listSchedulerAdmissions,
-      search,
+      'app.search': search,
     });
     renderApp(scenario.path, client);
 
@@ -1202,7 +1198,9 @@ describe('Recovery and search', () => {
       expect(listInterruptedWorkers).toHaveBeenCalledTimes(workersBefore);
       expect(search).not.toHaveBeenCalled();
     } else {
-      await waitFor(() => expect(search.mock.calls).toEqual([[SEARCH_QUERY], [SEARCH_QUERY]]));
+      await waitFor(() =>
+        expect(search.mock.calls).toEqual([[{ query: SEARCH_QUERY }], [{ query: SEARCH_QUERY }]])
+      );
       expect(listInterruptedWorkers).not.toHaveBeenCalled();
       expect(listSchedulerAdmissions).not.toHaveBeenCalled();
     }
@@ -1250,7 +1248,7 @@ describe('Recovery and search', () => {
         ? { 'recovery.worker-list': vi.fn().mockResolvedValue({ items: [] }) }
         : scenario.emptyOwner === 'listSchedulerAdmissions'
           ? { 'scheduler.list': vi.fn().mockResolvedValue({ items: [] }) }
-          : { search: vi.fn().mockResolvedValue(EMPTY_SEARCH) };
+          : { 'app.search': vi.fn().mockResolvedValue(EMPTY_SEARCH) };
     const client = makeClient(emptyApp);
     renderApp(scenario.path, client);
 
@@ -1260,7 +1258,9 @@ describe('Recovery and search', () => {
       ).toBeInTheDocument();
       await submitSearch(user);
       await waitFor(() =>
-        expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY]])
+        expect(vi.mocked(client.operations['app.search']).mock.calls).toEqual([
+          [{ query: SEARCH_QUERY }],
+        ])
       );
       expect(screen.queryByText(SEARCH_THREAD.title)).not.toBeInTheDocument();
       expect(screen.getByText(scenario.empty)).toBeInTheDocument();
@@ -1362,7 +1362,11 @@ describe('Recovery and search', () => {
     expect(client.operations['scheduler.list']).not.toHaveBeenCalled();
 
     await submitSearch(user);
-    await waitFor(() => expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY]]));
+    await waitFor(() =>
+      expect(vi.mocked(client.operations['app.search']).mock.calls).toEqual([
+        [{ query: SEARCH_QUERY }],
+      ])
+    );
     expect(await screen.findByText(SEARCH_THREAD.title)).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue(SEARCH_QUERY);
     expect(pathname).toBe('/chat');
@@ -1374,7 +1378,10 @@ describe('Recovery and search', () => {
     await submitSearch(user);
     expect(screen.getByRole('searchbox', { name: /search/i })).toHaveValue(SEARCH_QUERY);
     expect(await screen.findByText(SEARCH_THREAD.title)).toBeInTheDocument();
-    expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY], [SEARCH_QUERY]]);
+    expect(vi.mocked(client.operations['app.search']).mock.calls).toEqual([
+      [{ query: SEARCH_QUERY }],
+      [{ query: SEARCH_QUERY }],
+    ]);
     expect(client.operations['recovery.worker-list']).not.toHaveBeenCalled();
     poisonDom();
   });
@@ -1643,7 +1650,7 @@ describe('Recovery and search', () => {
     });
     let pathname = '';
     const client = makeClient({
-      search: vi.fn().mockResolvedValue({ items: [SEARCH_CROSS_WORKSPACE] }),
+      'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_CROSS_WORKSPACE] }),
     });
     renderApp('/chat', client, (next) => {
       pathname = next;
@@ -1714,7 +1721,9 @@ describe('Recovery and search', () => {
     expect(searchbox).toHaveValue('');
     expect(screen.queryByText(SEARCH_THREAD.title)).not.toBeInTheDocument();
     expect(screen.queryByText(/no (search )?results/i)).not.toBeInTheDocument();
-    expect(vi.mocked(client.app.search).mock.calls).toEqual([[SEARCH_QUERY]]);
+    expect(vi.mocked(client.operations['app.search']).mock.calls).toEqual([
+      [{ query: SEARCH_QUERY }],
+    ]);
     poisonDom();
   });
 
@@ -1998,7 +2007,7 @@ describe('Recovery and search', () => {
     });
     let pathname = '';
     const client = makeClient({
-      search: vi.fn().mockResolvedValue({ items: [SEARCH_WORKSPACE] }),
+      'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_WORKSPACE] }),
     });
     renderApp('/chat', client, (next) => {
       pathname = next;
@@ -2080,7 +2089,7 @@ describe('Recovery and search', () => {
         }
       );
     const client = makeClient(
-      { search: vi.fn().mockResolvedValue({ items: [SEARCH_ARTIFACT] }) },
+      { 'app.search': vi.fn().mockResolvedValue({ items: [SEARCH_ARTIFACT] }) },
       { 'artifact.list': listArtifacts, 'artifact.read': getArtifact }
     );
     renderApp('/chat', client, (next) => {
@@ -3258,7 +3267,7 @@ describe('Recovery and search', () => {
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const client = makeClient(
       {
-        search: vi.fn().mockResolvedValue({ items: scenario.items }),
+        'app.search': vi.fn().mockResolvedValue({ items: scenario.items }),
         'thread.dashboard': getThreadDashboard,
         'workspace.dashboard': getWorkspaceDashboard,
         'conversation.navigation': listConversationNavigation,
@@ -3387,7 +3396,7 @@ describe('Recovery and search', () => {
       items: Array<{ workspace: { id: string; name: string } }>;
     }>();
     const client = makeClient(
-      { search: vi.fn().mockResolvedValue({ items: [scenario.hit] }) },
+      { 'app.search': vi.fn().mockResolvedValue({ items: [scenario.hit] }) },
       { 'workspace.list': vi.fn().mockReturnValue(discovery.promise) }
     );
     useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id });

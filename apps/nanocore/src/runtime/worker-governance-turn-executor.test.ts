@@ -72,6 +72,7 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
@@ -3232,7 +3233,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(backend.calls.indexOf('importRuntimeProvenance')).toBeLessThan(
         backend.calls.indexOf('collectWorkspaceChanges')
       );
-      const evidenceResponse = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
+      const evidenceResponse = await app.request(
+        ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+      );
       expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
       const evidence = ListWorkspaceEvidenceBundlesResponseSchema.parse(
         await evidenceResponse.json()
@@ -3276,7 +3279,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(JSON.stringify(workerRequests)).not.toContain('cache_shared');
       expect(JSON.stringify(workerRequests)).not.toContain('cache_child_a');
 
-      const usageResponse = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+      const usageResponse = await app.request(
+        ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      );
       expect(usageResponse.status, await usageResponse.clone().text()).toBe(200);
       const usage = CapabilityUsageResponseSchema.parse(await usageResponse.json());
       const workerCalls = usage.capabilityCalls.filter(
@@ -3313,7 +3318,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         )
       ).toEqual(workerCallIds);
 
-      const auditResponse = await app.request('/api/app/workspaces/ws_demo/audit/events');
+      const auditResponse = await app.request(
+        ...operationRequest('audit.workspace-list', { workspaceId: 'ws_demo' }, {})
+      );
       expect(auditResponse.status, await auditResponse.clone().text()).toBe(200);
       const audit = ListWorkspaceAuditEventsResponseSchema.parse(await auditResponse.json());
       const linkedFinishEvents = audit.auditEvents.filter(
@@ -3328,7 +3335,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(linkedFinishEvents.every((event) => event.outcome === 'succeeded')).toBe(true);
 
       const runtimeEvidenceResponse = await app.request(
-        '/api/app/workspaces/ws_demo/runtime-evidence'
+        ...operationRequest('evidence.runtime-list', { workspaceId: 'ws_demo' }, {})
       );
       expect(runtimeEvidenceResponse.status, await runtimeEvidenceResponse.clone().text()).toBe(
         200

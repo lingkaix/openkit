@@ -107,7 +107,7 @@ Provider inventory returns `ProviderSubscriptionsResponse`; account list returns
 
 For this slice, a non-success `ApiError` becomes `ApiCallError` while preserving its HTTP status, stable code, and fixed sanitized message. A malformed successful payload becomes `ProtocolValidationError`; the client never accepts unknown response fields or repairs a response into another union branch.
 
-The prior `client.oauth.openaiCodex` namespace and every root-level or nested alias for its methods are removed in the same release as the provider-neutral App API cutover. No old namespace remains. This removal does not remove or rename the separately owned Vault administration client method for `/api/app/vault/bootstrap/codex-auth-json`.
+The prior `client.oauth.openaiCodex` namespace and every root-level or nested alias for its methods are removed in the same release as the provider-neutral App API cutover. No old namespace remains. This removal does not remove or rename the separately owned Vault administration client method for `vault.bootstrap-codex-auth`.
 
 ## Agent Catalog Slice
 

@@ -22,7 +22,6 @@ import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
-import type { AuthVariables } from './auth/middleware.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -87,7 +86,6 @@ import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
-import { registerVaultSecretRoutes } from './vault/vault-secret-routes.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems, registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -1109,17 +1107,21 @@ describe('worker MCP routes', () => {
       secretKind: 'api-key',
       workspaceId: 'ws_demo',
     });
-    const issuer = new Hono<{ Variables: AuthVariables }>();
-    issuer.use('*', async (context, next) => {
-      context.set('actor', { kind: 'local', userId: 'user_local' });
-      await next();
-    });
-    registerVaultSecretRoutes({ app: issuer, coreDb, vaultUnlockState });
-    const grantResponse = await issuer.request('/api/app/workspaces/ws_demo/vault/grants', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ referenceId: 'vault_pending_echo', injectionPath: 'gateway-only' }),
-    });
+    const issuer = createApp({ coreDb, dataRoot, store, vaultUnlockState });
+    const grantResponse = await issuer.request(
+      ...operationRequest(
+        'vault.grant-create',
+        { workspaceId: 'ws_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            referenceId: 'vault_pending_echo',
+            injectionPath: 'gateway-only',
+          }),
+        }
+      )
+    );
     expect(grantResponse.status).toBe(200);
     const publicGrant = await grantResponse.json();
     expect(publicGrant.allowedInjectionPaths).toEqual(['gateway-only']);

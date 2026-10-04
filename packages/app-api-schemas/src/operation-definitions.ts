@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
+import { APP_SEARCH_OPERATION_DEFINITIONS } from './app-search-operations.js';
 import { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
 import { ATTENTION_OPERATION_DEFINITIONS } from './attention-operations.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
@@ -9,11 +10,13 @@ import {
   TASK_OPERATION_DEFINITIONS,
 } from './conversation-operations.js';
 import { DATA_ROOT_ADMIN_OPERATION_DEFINITIONS } from './data-root-admin-operations.js';
+import { ENVIRONMENT_OPERATION_DEFINITIONS } from './environment-operations.js';
 import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
 } from './generative-operations.js';
 import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
+import { GOVERNANCE_OPERATION_DEFINITIONS } from './governance-operations.js';
 import { KERNEL_OPERATION_DEFINITIONS } from './kernel-operations.js';
 import {
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
@@ -29,6 +32,7 @@ import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
+import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
 import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
@@ -75,6 +79,9 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
 export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   RUNTIME_CONFIG_OPERATION_DEFINITIONS,
   PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
+  VAULT_OPERATION_DEFINITIONS,
+  APP_SEARCH_OPERATION_DEFINITIONS,
+  ENVIRONMENT_OPERATION_DEFINITIONS,
   AUTOMATION_OPERATION_DEFINITIONS,
   SCHEDULER_OPERATION_DEFINITIONS,
   RECOVERY_OPERATION_DEFINITIONS,
@@ -97,7 +104,8 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   PENDING_REQUEST_OPERATION_DEFINITIONS,
   AGENT_OPERATION_DEFINITIONS,
   CATALOG_OPERATION_DEFINITIONS,
-  WORKER_OPERATION_DEFINITIONS
+  WORKER_OPERATION_DEFINITIONS,
+  GOVERNANCE_OPERATION_DEFINITIONS
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */

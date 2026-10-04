@@ -226,7 +226,7 @@ Remaining rollout is owned by this specification together with `docs/specs/20260
 
 No internal compatibility alias remains for `codex-oauth`, and no app-server fallback remains after cutover.
 
-This removal is limited to the Gateway and provider-subscription account paths. It does not remove or rename `/api/app/vault/bootstrap/codex-auth-json` and does not alter worker-runtime Codex app-server ownership.
+This removal is limited to the Gateway and provider-subscription account paths. It does not remove or rename `vault.bootstrap-codex-auth` and does not alter worker-runtime Codex app-server ownership.
 
 ## Testing Strategy / Acceptance Criteria
 

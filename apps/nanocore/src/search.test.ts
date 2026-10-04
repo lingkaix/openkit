@@ -5,15 +5,16 @@ import { join } from 'node:path';
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
-import { registerSearchRoutes } from './search-routes.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('search app API', () => {
@@ -63,13 +64,21 @@ describe('search app API', () => {
       c.set('actor', { kind: 'local', userId: 'user_local' } as AuthVariables['actor']);
       await next();
     });
-    registerSearchRoutes({
-      app,
-      authorizedWorkspaceIds: () => ['ws_demo'],
-      requestStore: () => store,
-    });
+    app.post('/api/app/operations/app.search', async (c) =>
+      c.json(
+        createAppSearchOperationImplementations({ store, coreDb: undefined })['app.search'](
+          { query: 'needle' },
+          {
+            kind: 'public',
+            actor: c.get('actor'),
+            actorRef: { kind: 'user', id: 'user_local' },
+            scope: { kind: 'authorized-workspace-set', workspaceIds: ['ws_demo'] },
+          }
+        )
+      )
+    );
 
-    const response = await app.request('/api/app/search?q=needle');
+    const response = await app.request(...operationRequest('app.search', { query: 'needle' }, {}));
     const items = AppSearchResponseSchema.parse(await response.json()).items;
 
     expect(response.status).toBe(200);
@@ -101,7 +110,7 @@ describe('search app API', () => {
     });
     const app = createApp({ store });
 
-    const res = await app.request('/api/app/search?q=needle');
+    const res = await app.request(...operationRequest('app.search', { query: 'needle' }, {}));
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -200,9 +209,15 @@ describe('search app API', () => {
     });
 
     try {
-      const response = await app.request('/api/app/search?q=visibility%20needle', {
-        headers: { authorization: `Bearer ${scopedToken.secret}` },
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'app.search',
+          { query: 'visibility needle' },
+          {
+            headers: { authorization: `Bearer ${scopedToken.secret}` },
+          }
+        )
+      );
       const items = AppSearchResponseSchema.parse(await response.json()).items;
 
       expect(response.status).toBe(200);
@@ -256,9 +271,15 @@ describe('search app API', () => {
       })();
       app = createApp({ auth, coreDb, dataRoot, mode: 'server', store });
 
-      const hiddenResponse = await app.request('/api/app/search?q=visibility%20needle', {
-        headers: { authorization: `Bearer ${scopedToken.secret}` },
-      });
+      const hiddenResponse = await app.request(
+        ...operationRequest(
+          'app.search',
+          { query: 'visibility needle' },
+          {
+            headers: { authorization: `Bearer ${scopedToken.secret}` },
+          }
+        )
+      );
 
       expect(hiddenResponse.status).toBe(200);
       await expect(hiddenResponse.json()).resolves.toMatchObject({ items: [] });

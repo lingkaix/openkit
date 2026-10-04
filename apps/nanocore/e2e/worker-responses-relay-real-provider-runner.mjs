@@ -534,8 +534,8 @@ async function runSelectedAgentRelay(client, configuration, input) {
   const [threadResponse, aepRead, usage] = await awaitRelayDeadline(
     Promise.all([
       client.operations['thread.items']({ workspaceId: input.workspaceId, threadId: threadId }),
-      client.app.listAgentEnvironmentPackageSnapshots(input.workspaceId),
-      client.app.getCapabilityUsage(input.workspaceId),
+      client.operations['environment.snapshot-list']({ workspaceId: input.workspaceId }),
+      client.operations['usage.read']({ workspaceId: input.workspaceId }),
     ]),
     input.timeoutMs
   );

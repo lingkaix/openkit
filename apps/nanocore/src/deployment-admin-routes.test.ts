@@ -129,11 +129,15 @@ const ADMIN_ROUTE_CASES = [
     method: 'POST',
     body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
   },
-  { code: 'server_audit_admin_forbidden', method: 'GET', path: '/api/app/audit/events' },
   {
-    code: 'server_permission_decisions_admin_forbidden',
-    method: 'GET',
-    path: '/api/app/permission-decisions',
+    code: 'deployment_admin_required',
+    method: 'POST',
+    path: '/api/app/operations/audit.server-list',
+  },
+  {
+    code: 'deployment_admin_required',
+    method: 'POST',
+    path: '/api/app/operations/permission.server-list',
   },
 ] as const;
 
@@ -311,8 +315,8 @@ describe('deployment-admin routes', () => {
               { headers }
             )
           ),
-          app.request('/api/app/audit/events', { headers }),
-          app.request('/api/app/permission-decisions', { headers }),
+          app.request(...operationRequest('audit.server-list', {}, { headers })),
+          app.request(...operationRequest('permission.server-list', {}, { headers })),
         ]);
 
         for (const response of responses) {

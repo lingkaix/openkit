@@ -30,9 +30,9 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 ## Client Shape
 
-- `client.operations`: definition-derived product operations, including `chat.quick` and `turn.feedback`.
+- `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, and redacted Agent Environment Package snapshot readback.
 - `client.core`: metadata discovery and the Thread event stream.
-- `client.app`: dashboards, diagnostics, setup diagnostics, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership plus session-user redacted admin Token inventory and default selection, vault admin status/unlock/lock/Codex auth JSON bootstrap and authored provider API-key store or replacement, raw portable archive download, dry-run, and import streams, Workspace Material reads and mutations, workspace vault reference discovery and re-binding, capability usage evidence, server and workspace audit events, search, and redacted Agent Environment Package snapshot readback.
+- `client.app`: dashboards, diagnostics, setup diagnostics, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership plus session-user redacted admin Token inventory and default selection, raw portable archive download, dry-run, and import streams, Workspace Material reads and mutations.
 - `client.app` also exposes current-administrator Worker environment list, select, prepare, activate, status, and purge methods plus the private administration conversation entry. The client validates every payload and keeps the path and body storage reference identical for destructive purge.
 - `client.operations[id]`: the ten `runtime.*` configuration editor and reload operations.
 - `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
@@ -58,7 +58,7 @@ Deprecated flat aliases are not exported.
 
 `client.app.applyAdministrationConfiguration` submits a human-confirmed immutable catalog candidate; its response distinguishes persisted configuration from successful reload and restart requirements.
 
-`client.app.createWorkspaceVaultSecret`, `rotateWorkspaceVaultSecret`, `revokeWorkspaceVaultSecret`, `createWorkspaceVaultGrant`, and `revokeWorkspaceVaultGrant` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
+`client.operations['vault.secret-create']`, `client.operations['vault.secret-rotate']`, `client.operations['vault.secret-revoke']`, `client.operations['vault.grant-create']`, and `client.operations['vault.grant-revoke']` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
 
 `client.operations['conversation.navigation']` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
 
@@ -72,7 +72,7 @@ The private native environment configuration client discards inert additive resp
 
 `operations['runtime.file-delete']` sends the strict Provider deletion command through the definition-derived JSON POST transport. It requires an exact Provider file ID and existing revision and maps the empty HTTP 204 response to logical `null`. NanoCore owns revocation and restart-required activation.
 
-`client.app.getCapabilityUsage` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The Skill `usage.read` operation returns that same reader result without rebuilding private Provider lineage.
+`client.operations['usage.read']` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The Skill `usage.read` operation returns that same reader result without rebuilding private Provider lineage.
 
 Knowledge reads, Sources, maintenance ledgers, retrieval, preparation, proposals and the four retained entry operations use `client.operations` derived from the two Knowledge definition tables. The `client.app` and `client.core` handwritten Knowledge methods are removed. Caller argument types preserve schema defaults, and command request identities travel in `x-openkit-request-id`; trace-only retrieval and preparation require no command identity. Deletion returns the definition’s JSON `null` success.
 
@@ -95,3 +95,5 @@ Workspace sharing, invitation decisions, leave, ownership transfer, access recov
 Ordinary Workspace, Thread and Turn commands, Workspace dashboard, Turn feedback and Quick Chat use `client.operations[id](input)` with complete logical selectors. Request identity stays in `x-openkit-request-id`; `client.core` retains metadata and the Thread event stream. The eleven former named Core and App methods are removed without aliases.
 
 All seventeen Agent, Worker and resource catalog operations use `client.operations[id](input)` with complete logical selectors. Request identities retain caller values or use the existing generator when omitted; catalog request bodies and redacted results reuse their shared schemas. The drained Agent and resource catalog namespaces and the old Worker-list App member are removed.
+
+Governance, AEP snapshot, App search and Vault operations use `client.operations[id](input)`, including `usage.read`, `audit.workspace-list`, `audit.server-list`, `evidence.bundle-list`, `evidence.runtime-list`, `permission.workspace-list`, `permission.server-list`, `environment.snapshot-list`, `environment.snapshot-read`, `app.search` and the 17 `vault.*` operations. Workspace reads receive `{ workspaceId }`, snapshot reads also receive `snapshotId`, search receives `{ query }`, and empty server reads receive `{}`. The former App methods and route mappings are removed.

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { OperationId } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -106,24 +107,24 @@ describe('vault admin app API', () => {
     expect(workspaceResponse.status).toBe(201);
     const workspace = await workspaceResponse.json();
     const workspaceId = workspace.id;
-    const root = `/api/app/workspaces/${workspaceId}/vault`;
     const secret = 'ghp_synthetic_canary_no_real_credential';
-    const request = (path: string, body: unknown = {}) =>
-      app.request(`${root}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(path.startsWith('/api/app/operations/') &&
-          body &&
-          typeof body === 'object' &&
-          'requestId' in body
-            ? { 'x-openkit-request-id': String(body.requestId) }
-            : {}),
-        },
-        body: JSON.stringify(body),
-      });
+    const request = (id: OperationId, input: Record<string, unknown>) =>
+      app.request(
+        ...operationRequest(
+          id,
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(input),
+          }
+        )
+      );
     try {
-      const created = await request('/secrets', { secretKind: 'github-token', material: secret });
+      const created = await request('vault.secret-create', {
+        workspaceId: workspaceId,
+        ...{ secretKind: 'github-token', material: secret },
+      });
       expect(created.status).toBe(200);
       expect(created.headers.get('cache-control')).toBe('no-store');
       const reference = await created.json();
@@ -136,7 +137,10 @@ describe('vault admin app API', () => {
       expect(
         vaultUnlockState.backend().resolve({ referenceId: reference.referenceId }).toString()
       ).toBe(secret);
-      const grantResponse = await request('/grants', { referenceId: reference.referenceId });
+      const grantResponse = await request('vault.grant-create', {
+        workspaceId: workspaceId,
+        ...{ referenceId: reference.referenceId },
+      });
       expect(grantResponse.status).toBe(200);
       const grant = await grantResponse.json();
       expect(grant).toMatchObject({
@@ -144,9 +148,12 @@ describe('vault admin app API', () => {
         targetCapabilityId: null,
         lifetime: 'workspace',
       });
-      const workerGrantResponse = await request('/grants', {
-        referenceId: reference.referenceId,
-        injectionPath: 'runtime-env',
+      const workerGrantResponse = await request('vault.grant-create', {
+        workspaceId: workspaceId,
+        ...{
+          referenceId: reference.referenceId,
+          injectionPath: 'runtime-env',
+        },
       });
       expect(workerGrantResponse.status).toBe(200);
       const workerGrant = await workerGrantResponse.json();
@@ -160,32 +167,52 @@ describe('vault admin app API', () => {
       expect(getVaultGrant(coreDb, workerGrant.grantId)?.allowedInjectionPaths).not.toContain(
         'gateway-only'
       );
-      const rotated = await request(`/secrets/${reference.referenceId}/rotate`, {
-        material: 'replacement-canary',
+      const rotated = await request('vault.secret-rotate', {
+        workspaceId: workspaceId,
+        referenceId: reference.referenceId,
+        ...{
+          material: 'replacement-canary',
+        },
       });
       expect(rotated.status).toBe(200);
       expect(await rotated.json()).toMatchObject({ currentVersion: 2 });
-      for (const path of ['/references', '/grants']) {
-        const listed = await app.request(`${root}${path}`);
+      for (const id of ['vault.reference-list', 'vault.grant-list'] as const) {
+        const listed = await app.request(...operationRequest(id, { workspaceId }));
         expect(listed.status).toBe(200);
         const bytes = await listed.text();
         expect(bytes).not.toContain(secret);
         expect(bytes).not.toContain('replacement-canary');
       }
-      const revokedGrant = await request(`/grants/${grant.grantId}/revoke`);
+      const revokedGrant = await request('vault.grant-revoke', {
+        workspaceId: workspaceId,
+        grantId: grant.grantId,
+      });
       expect(revokedGrant.status).toBe(200);
       expect(getVaultGrant(coreDb, grant.grantId)?.status).toBe('revoked');
       const secondGrant = await (
-        await request('/grants', { referenceId: reference.referenceId })
+        await request('vault.grant-create', {
+          workspaceId: workspaceId,
+          ...{ referenceId: reference.referenceId },
+        })
       ).json();
-      const revoked = await request(`/secrets/${reference.referenceId}/revoke`);
+      const revoked = await request('vault.secret-revoke', {
+        workspaceId: workspaceId,
+        referenceId: reference.referenceId,
+      });
       expect(revoked.status).toBe(200);
       expect(getVaultReference(coreDb, reference.referenceId)?.status).toBe('revoked');
       expect(getVaultGrant(coreDb, secondGrant.grantId)?.status).toBe('revoked');
       expect(() =>
         vaultUnlockState.backend().resolve({ referenceId: reference.referenceId })
       ).toThrow();
-      expect((await request('/grants', { referenceId: reference.referenceId })).status).toBe(409);
+      expect(
+        (
+          await request('vault.grant-create', {
+            workspaceId: workspaceId,
+            ...{ referenceId: reference.referenceId },
+          })
+        ).status
+      ).toBe(409);
       const audit = JSON.stringify(
         coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all()
       );
@@ -198,35 +225,43 @@ describe('vault admin app API', () => {
 
   it('rejects locked, malformed, cross-workspace and inconsistent secret mutations with redacted errors', async () => {
     const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
-    const root = '/api/app/workspaces/ws_demo/vault';
-    const request = (path: string, body: unknown = {}) =>
-      app.request(`${root}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(path.startsWith('/api/app/operations/') &&
-          body &&
-          typeof body === 'object' &&
-          'requestId' in body
-            ? { 'x-openkit-request-id': String(body.requestId) }
-            : {}),
-        },
-        body: JSON.stringify(body),
-      });
+    const request = (id: OperationId, input: Record<string, unknown>) =>
+      app.request(
+        ...operationRequest(
+          id,
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(input),
+          }
+        )
+      );
     try {
       expect(
-        (await request('/secrets', { secretKind: 'github-token', material: 'fake' })).status
+        (
+          await request('vault.secret-create', {
+            workspaceId: 'ws_demo',
+            ...{ secretKind: 'github-token', material: 'fake' },
+          })
+        ).status
       ).toBe(423);
       vaultUnlockState.unlock({ masterKey });
-      const malformed = await request('/secrets', {
-        secretKind: 'github-token',
-        material: '',
-        ghp_fake_error_canary: true,
+      const malformed = await request('vault.secret-create', {
+        workspaceId: 'ws_demo',
+        ...{
+          secretKind: 'github-token',
+          material: '',
+          ghp_fake_error_canary: true,
+        },
       });
       expect(malformed.status).toBe(400);
       expect(await malformed.text()).not.toContain('ghp_fake_error_canary');
       const created = await (
-        await request('/secrets', { secretKind: 'github-token', material: 'fake' })
+        await request('vault.secret-create', {
+          workspaceId: 'ws_demo',
+          ...{ secretKind: 'github-token', material: 'fake' },
+        })
       ).json();
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -234,16 +269,30 @@ describe('vault admin app API', () => {
         workspaceId: 'ws_other',
       });
       const foreign = await app.request(
-        `/api/app/workspaces/ws_other/vault/secrets/${created.referenceId}/revoke`,
-        { method: 'POST' }
+        ...operationRequest(
+          'vault.secret-revoke',
+          { workspaceId: 'ws_other', referenceId: created.referenceId },
+          { method: 'POST' }
+        )
       );
       expect(foreign.status).toBe(404);
-      const grant = await (await request('/grants', { referenceId: created.referenceId })).json();
+      const grant = await (
+        await request('vault.grant-create', {
+          workspaceId: 'ws_demo',
+          ...{ referenceId: created.referenceId },
+        })
+      ).json();
       expect(
         (
-          await app.request(`/api/app/workspaces/ws_other/vault/grants/${grant.grantId}/revoke`, {
-            method: 'POST',
-          })
+          await app.request(
+            ...operationRequest(
+              'vault.grant-revoke',
+              { workspaceId: 'ws_other', grantId: grant.grantId },
+              {
+                method: 'POST',
+              }
+            )
+          )
         ).status
       ).toBe(404);
       expect(getVaultGrant(coreDb, grant.grantId)?.status).toBe('active');
@@ -251,14 +300,30 @@ describe('vault admin app API', () => {
         .backend()
         .rotate({ referenceId: created.referenceId, material: 'unprojected-version' });
       expect(
-        (await request(`/secrets/${created.referenceId}/rotate`, { material: 'new' })).status
+        (
+          await request('vault.secret-rotate', {
+            workspaceId: 'ws_demo',
+            referenceId: created.referenceId,
+            ...{ material: 'new' },
+          })
+        ).status
       ).toBe(409);
-      expect((await request('/grants', { referenceId: created.referenceId })).status).toBe(409);
+      expect(
+        (
+          await request('vault.grant-create', {
+            workspaceId: 'ws_demo',
+            ...{ referenceId: created.referenceId },
+          })
+        ).status
+      ).toBe(409);
       const backend = vaultUnlockState.backend();
       const spy = vi.spyOn(backend, 'store').mockImplementation(() => {
         throw new Error('ghp_fake_error_canary');
       });
-      const failed = await request('/secrets', { secretKind: 'github-token', material: 'fake' });
+      const failed = await request('vault.secret-create', {
+        workspaceId: 'ws_demo',
+        ...{ secretKind: 'github-token', material: 'fake' },
+      });
       expect(failed.status).toBe(409);
       expect(await failed.text()).not.toContain('ghp_fake_error_canary');
       spy.mockRestore();
@@ -284,19 +349,35 @@ describe('vault admin app API', () => {
       auth: createSignedOutAuthStub(),
     });
     try {
-      for (const path of [
-        'secrets',
-        'secrets/vault_test/rotate',
-        'secrets/vault_test/revoke',
-        'grants',
-        'grants/grant_test/revoke',
-      ]) {
-        const response = await app.request(`/api/app/workspaces/ws_demo/vault/${path}`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ secretKind: 'github-token', material: 'fake' }),
-        });
+      for (const [id, input] of [
+        [
+          'vault.secret-create',
+          { workspaceId: 'ws_demo', secretKind: 'github-token', material: 'fake' },
+        ],
+        [
+          'vault.secret-rotate',
+          { workspaceId: 'ws_demo', referenceId: 'vault_test', material: 'fake' },
+        ],
+        ['vault.secret-revoke', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
+        ['vault.grant-create', { workspaceId: 'ws_demo', referenceId: 'vault_test' }],
+        ['vault.grant-revoke', { workspaceId: 'ws_demo', grantId: 'grant_test' }],
+      ] as const) {
+        const response = await app.request(
+          ...operationRequest(
+            id,
+            {},
+            {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${token.secret}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify(input),
+            }
+          )
+        );
         expect(response.status).toBe(403);
+        await expect(response.json()).resolves.toMatchObject({ code: 'deployment_admin_required' });
       }
       expect(vaultUnlockState.backend().listReferences()).toEqual([]);
     } finally {
@@ -327,14 +408,20 @@ describe('vault admin app API', () => {
     };
     const app = createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
     try {
-      const response = await app.request('/api/app/workspaces/ws_demo/vault/secrets', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(kind === 'token' ? { authorization: `Bearer ${admin.secret}` } : {}),
-        },
-        body: JSON.stringify({ secretKind: 'github-token', material: 'fake-admin-secret' }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.secret-create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...(kind === 'token' ? { authorization: `Bearer ${admin.secret}` } : {}),
+            },
+            body: JSON.stringify({ secretKind: 'github-token', material: 'fake-admin-secret' }),
+          }
+        )
+      );
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ workspaceId: 'ws_demo', status: 'active' });
     } finally {
@@ -349,11 +436,20 @@ describe('vault admin app API', () => {
       "CREATE TRIGGER reject_secret_insert BEFORE INSERT ON vault_references BEGIN SELECT RAISE(ABORT, 'persistence-error-canary'); END"
     );
     try {
-      const response = await app.request('/api/app/workspaces/ws_demo/vault/secrets', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ secretKind: 'api-token', material: 'fake-partial-effect-secret' }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.secret-create',
+          { workspaceId: 'ws_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              secretKind: 'api-token',
+              material: 'fake-partial-effect-secret',
+            }),
+          }
+        )
+      );
       expect(response.status).toBe(409);
       const bytes = await response.text();
       expect(bytes).not.toContain('persistence-error-canary');
@@ -397,11 +493,17 @@ describe('vault admin app API', () => {
     vaultUnlockState.unlock({ masterKey });
 
     try {
-      const first = await app.request('/api/app/providers/xai-api/api-key', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: firstApiKey }),
-      });
+      const first = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'xai-api' },
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ apiKey: firstApiKey }),
+          }
+        )
+      );
 
       expect(first.status).toBe(200);
       const firstBody = await first.json();
@@ -418,11 +520,17 @@ describe('vault admin app API', () => {
         status: 'active',
       });
 
-      const replacement = await app.request('/api/app/providers/xai-api/api-key', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: replacementApiKey }),
-      });
+      const replacement = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'xai-api' },
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ apiKey: replacementApiKey }),
+          }
+        )
+      );
 
       expect(replacement.status).toBe(200);
       const replacementBody = await replacement.json();
@@ -472,11 +580,17 @@ describe('vault admin app API', () => {
     vaultUnlockState.unlock({ masterKey });
 
     try {
-      const response = await app.request('/api/app/providers/okt_demo/api-key', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: 'response-safety-test-key' }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'okt_demo' },
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ apiKey: 'response-safety-test-key' }),
+          }
+        )
+      );
 
       expect(response.status).toBe(400);
       await expect(response.json()).resolves.toMatchObject({
@@ -509,11 +623,17 @@ describe('vault admin app API', () => {
     vaultUnlockState.unlock({ masterKey });
 
     try {
-      const response = await app.request('/api/app/providers/provider-demo/api-key', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: 'malformed-config-test-key' }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'provider-demo' },
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ apiKey: 'malformed-config-test-key' }),
+          }
+        )
+      );
       const row = latestVaultAdminAuditEvent(coreDb);
 
       expect(response.status).toBe(409);
@@ -560,11 +680,17 @@ describe('vault admin app API', () => {
     vaultUnlockState.unlock({ masterKey });
 
     try {
-      const response = await app.request('/api/app/providers/provider-failure/api-key', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'provider-failure' },
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ apiKey }),
+          }
+        )
+      );
       const row = latestVaultAdminAuditEvent(coreDb);
       const audit = serverAuditEvent(coreDb, row.audit_event_id as string);
 
@@ -615,10 +741,16 @@ describe('vault admin app API', () => {
     });
 
     try {
-      const localStatus = await localApp.request('/api/app/vault/status');
-      const serverStatus = await serverApp.request('/api/app/vault/status', {
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const localStatus = await localApp.request(...operationRequest('vault.status', {}, {}));
+      const serverStatus = await serverApp.request(
+        ...operationRequest(
+          'vault.status',
+          {},
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
 
       expect(localStatus.status).toBe(200);
       await expect(localStatus.json()).resolves.toMatchObject({
@@ -675,18 +807,24 @@ describe('vault admin app API', () => {
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
 
     try {
-      const initial = await app.request('/api/app/vault/status');
+      const initial = await app.request(...operationRequest('vault.status', {}, {}));
       expect(initial.status).toBe(200);
       await expect(initial.json()).resolves.toMatchObject({
         backendKind: 'encrypted-file',
         state: 'locked',
       });
 
-      const unlock = await app.request('/api/app/vault/unlock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ masterKeyBase64 }),
-      });
+      const unlock = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ masterKeyBase64 }),
+          }
+        )
+      );
       const unlockBody = await unlock.json();
       expect(unlock.status).toBe(200);
       expect(unlockBody).toMatchObject({
@@ -697,14 +835,14 @@ describe('vault admin app API', () => {
       expect(unlockSpy).toHaveBeenCalledOnce();
       expect(unlockSpy.mock.calls[0]?.[0].masterKey).toEqual(Buffer.alloc(32));
 
-      const available = await app.request('/api/app/vault/status');
+      const available = await app.request(...operationRequest('vault.status', {}, {}));
       expect(available.status).toBe(200);
       await expect(available.json()).resolves.toMatchObject({
         backendKind: 'encrypted-file',
         state: 'available',
       });
 
-      const locked = await app.request('/api/app/vault/lock', { method: 'POST' });
+      const locked = await app.request(...operationRequest('vault.lock', {}, { method: 'POST' }));
       expect(locked.status).toBe(200);
       await expect(locked.json()).resolves.toMatchObject({
         backendKind: 'encrypted-file',
@@ -721,11 +859,17 @@ describe('vault admin app API', () => {
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
 
     try {
-      const response = await app.request('/api/app/vault/unlock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ masterKeyBase64: badKey }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ masterKeyBase64: badKey }),
+          }
+        )
+      );
       const body = await response.json();
       const row = latestVaultAdminAuditEvent(coreDb);
       const audit = serverAuditEvent(coreDb, row.audit_event_id as string);
@@ -765,20 +909,32 @@ describe('vault admin app API', () => {
 
     try {
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        const response = await app.request('/api/app/vault/unlock', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ masterKeyBase64: badKey }),
-        });
+        const response = await app.request(
+          ...operationRequest(
+            'vault.unlock',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ masterKeyBase64: badKey }),
+            }
+          )
+        );
 
         expect(response.status).toBe(400);
       }
 
-      const limited = await app.request('/api/app/vault/unlock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ masterKeyBase64: badKey }),
-      });
+      const limited = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ masterKeyBase64: badKey }),
+          }
+        )
+      );
       const body = await limited.json();
       const row = latestVaultAdminAuditEvent(coreDb);
 
@@ -803,18 +959,30 @@ describe('vault admin app API', () => {
     const authJsonBase64 = Buffer.from(authJson, 'utf8').toString('base64');
 
     try {
-      const unlock = await app.request('/api/app/vault/unlock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
-      });
+      const unlock = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+          }
+        )
+      );
       expect(unlock.status).toBe(200);
 
-      const response = await app.request('/api/app/vault/bootstrap/codex-auth-json', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ authJsonBase64 }),
-      });
+      const response = await app.request(
+        ...operationRequest(
+          'vault.bootstrap-codex-auth',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ authJsonBase64 }),
+          }
+        )
+      );
       expect(response.status).toBe(200);
       const body = await response.json();
       const row = latestVaultAdminAuditEvent(coreDb);
@@ -869,19 +1037,28 @@ describe('vault admin app API', () => {
         secretKind: 'api-token',
         workspaceId: 'ws_demo',
       });
-      await app.request('/api/app/vault/unlock', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
-      });
+      await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+          }
+        )
+      );
 
       const response = await app.request(
-        '/api/app/workspaces/ws_demo/vault/references/vault_imported/rebind',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ materialBase64 }),
-        }
+        ...operationRequest(
+          'vault.reference-rebind',
+          { workspaceId: 'ws_demo', referenceId: 'vault_imported' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ materialBase64 }),
+          }
+        )
       );
 
       expect(response.status).toBe(200);
@@ -923,28 +1100,40 @@ describe('vault admin app API', () => {
         secretKind: 'api-token',
         workspaceId: 'ws_foreign',
       });
-      const unlock = await app.request('/api/app/vault/unlock', {
-        body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
-        headers: { 'content-type': 'application/json' },
-        method: 'POST',
-      });
+      const unlock = await app.request(
+        ...operationRequest(
+          'vault.unlock',
+          {},
+          {
+            body: JSON.stringify({ masterKeyBase64: masterKey.toString('base64') }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
       expect(unlock.status).toBe(200);
 
       const foreign = await app.request(
-        '/api/app/workspaces/ws_demo/vault/references/vault_foreign/rebind',
-        {
-          body: JSON.stringify({ materialBase64 }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'vault.reference-rebind',
+          { workspaceId: 'ws_demo', referenceId: 'vault_foreign' },
+          {
+            body: JSON.stringify({ materialBase64 }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
       const missing = await app.request(
-        '/api/app/workspaces/ws_demo/vault/references/vault_missing/rebind',
-        {
-          body: JSON.stringify({ materialBase64 }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+        ...operationRequest(
+          'vault.reference-rebind',
+          { workspaceId: 'ws_demo', referenceId: 'vault_missing' },
+          {
+            body: JSON.stringify({ materialBase64 }),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
       );
 
       expect(foreign.status).toBe(403);
@@ -970,7 +1159,9 @@ describe('vault admin app API', () => {
         workspaceId: 'ws_demo',
       });
 
-      const response = await app.request('/api/app/workspaces/ws_demo/vault/references');
+      const response = await app.request(
+        ...operationRequest('vault.reference-list', { workspaceId: 'ws_demo' }, {})
+      );
 
       expect(response.status).toBe(200);
       const body = await response.json();
@@ -1020,17 +1211,38 @@ describe('vault admin app API', () => {
 
     try {
       const responses = await Promise.all([
-        app.request('/api/app/vault/status'),
-        app.request('/api/app/vault/use-records'),
-        app.request('/api/app/vault/unlock', { method: 'POST' }),
-        app.request('/api/app/vault/lock', { method: 'POST' }),
-        app.request('/api/app/vault/bootstrap/codex-auth-json', { method: 'POST' }),
-        app.request('/api/app/providers/provider-demo/api-key', { method: 'PUT' }),
+        app.request(...operationRequest('vault.status', {}, {})),
+        app.request(...operationRequest('vault.server-use-list', {}, {})),
+        app.request(
+          ...operationRequest(
+            'vault.unlock',
+            {},
+            {
+              method: 'POST',
+              body: JSON.stringify({ masterKeyBase64: Buffer.alloc(32, 9).toString('base64') }),
+            }
+          )
+        ),
+        app.request(...operationRequest('vault.lock', {}, { method: 'POST' })),
+        app.request(
+          ...operationRequest(
+            'vault.bootstrap-codex-auth',
+            {},
+            { method: 'POST', body: JSON.stringify({ authJsonBase64: 'e30=' }) }
+          )
+        ),
+        app.request(
+          ...operationRequest(
+            'vault.provider-api-key-set',
+            { providerId: 'provider-demo' },
+            { method: 'PUT', body: JSON.stringify({ apiKey: 'synthetic-rejected-key' }) }
+          )
+        ),
       ]);
 
       for (const response of responses) {
         expect(response.status).toBe(403);
-        await expect(response.json()).resolves.toMatchObject({ code: 'vault_admin_forbidden' });
+        await expect(response.json()).resolves.toMatchObject({ code: 'deployment_admin_required' });
       }
     } finally {
       coreDb.sqlite.close();
@@ -1081,36 +1293,72 @@ describe('vault admin app API', () => {
     });
 
     try {
-      const apiKeyResponse = await app.request('/api/app/providers/provider-demo/api-key', {
-        method: 'PUT',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ apiKey: 'server-admin-provider-key' }),
-      });
-      const response = await app.request('/api/app/vault/lock', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
-      const useRecords = await app.request('/api/app/vault/use-records', {
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const apiKeyResponse = await app.request(
+        ...operationRequest(
+          'vault.provider-api-key-set',
+          { providerId: 'provider-demo' },
+          {
+            method: 'PUT',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ apiKey: 'server-admin-provider-key' }),
+          }
+        )
+      );
+      const response = await app.request(
+        ...operationRequest(
+          'vault.lock',
+          {},
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
+      const useRecords = await app.request(
+        ...operationRequest(
+          'vault.server-use-list',
+          {},
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       const denied = await Promise.all([
-        app.request('/api/app/vault/status', {
-          headers: { authorization: `Bearer ${workspaceToken.secret}` },
-        }),
-        app.request('/api/app/vault/use-records', {
-          headers: { authorization: `Bearer ${workspaceToken.secret}` },
-        }),
-        app.request('/api/app/providers/provider-demo/api-key', {
-          method: 'PUT',
-          headers: {
-            authorization: `Bearer ${workspaceToken.secret}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({ apiKey: 'workspace-token-provider-key' }),
-        }),
+        app.request(
+          ...operationRequest(
+            'vault.status',
+            {},
+            {
+              headers: { authorization: `Bearer ${workspaceToken.secret}` },
+            }
+          )
+        ),
+        app.request(
+          ...operationRequest(
+            'vault.server-use-list',
+            {},
+            {
+              headers: { authorization: `Bearer ${workspaceToken.secret}` },
+            }
+          )
+        ),
+        app.request(
+          ...operationRequest(
+            'vault.provider-api-key-set',
+            { providerId: 'provider-demo' },
+            {
+              method: 'PUT',
+              headers: {
+                authorization: `Bearer ${workspaceToken.secret}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({ apiKey: 'workspace-token-provider-key' }),
+            }
+          )
+        ),
       ]);
 
       expect(apiKeyResponse.status).toBe(200);
@@ -1123,7 +1371,7 @@ describe('vault admin app API', () => {
       for (const deniedResponse of denied) {
         expect(deniedResponse.status).toBe(403);
         await expect(deniedResponse.json()).resolves.toMatchObject({
-          code: 'vault_admin_forbidden',
+          code: 'deployment_admin_required',
         });
       }
     } finally {
@@ -1147,7 +1395,7 @@ describe('vault admin app API', () => {
     });
 
     try {
-      const response = await app.request('/api/app/vault/status');
+      const response = await app.request(...operationRequest('vault.status', {}, {}));
 
       expect(response.status).toBe(401);
       await expect(response.json()).resolves.toMatchObject({

@@ -192,9 +192,9 @@ describe('app api openapi projection', () => {
     expect(JSON.stringify(document.components.schemas['task.start.output'])).not.toContain(
       'agentSessionId'
     );
-    expect(
-      JSON.stringify(document.components.schemas.ListWorkspaceRuntimeEvidenceResponse)
-    ).toContain('agentSessionId');
+    expect(JSON.stringify(document.components.schemas['evidence.runtime-list.output'])).toContain(
+      'agentSessionId'
+    );
     expect(JSON.stringify(document)).not.toContain('"staleSessions"');
     expect(JSON.stringify(document)).not.toContain('restartRuntimeConfigStaleSession');
   });
@@ -239,27 +239,24 @@ describe('app api openapi projection', () => {
     const schemas = createAppOpenApiDocument().components.schemas;
 
     for (const name of [
-      'VaultAdminStatusResponse',
-      'VaultAdminUnlockResponse',
-      'VaultAdminLockResponse',
-      'VaultAdminBootstrapCodexAuthJsonResponse',
-      'VaultAdminRebindWorkspaceReferenceResponse',
+      'vault.status.output',
+      'vault.unlock.output',
+      'vault.lock.output',
+      'vault.bootstrap-codex-auth.output',
+      'vault.reference-rebind.output',
     ] as const) {
       expect(schemas[name]).toMatchObject({
         properties: { backendKind: { enum: ['encrypted-file'] } },
       });
     }
-    expect(schemas.VaultAdminListWorkspaceReferencesResponse).toMatchObject({
+    expect(schemas['vault.reference-list.output']).toMatchObject({
       properties: {
         items: {
           items: { properties: { backendKind: { enum: ['encrypted-file'] } } },
         },
       },
     });
-    for (const name of [
-      'ListWorkspaceVaultUseRecordsResponse',
-      'ListServerVaultUseRecordsResponse',
-    ] as const) {
+    for (const name of ['vault.use-list.output', 'vault.server-use-list.output'] as const) {
       expect(schemas[name]).toMatchObject({
         properties: {
           vaultUseRecords: {
@@ -466,16 +463,26 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/search']?.get).toMatchObject({
-      operationId: 'searchApp',
-      tags: ['app-utils'],
-      parameters: [expect.objectContaining({ name: 'q', in: 'query', required: false })],
+    expect(document.components.schemas['app.search.input']).toMatchObject({
+      type: 'object',
+      properties: { query: { type: 'string', default: '' } },
+      additionalProperties: false,
+    });
+    expect(OPERATION_DEFINITIONS['app.search'].inputSchema.parse({})).toEqual({ query: '' });
+    expect(document.paths['/api/app/operations/app.search']?.post).toMatchObject({
+      operationId: 'app.search',
+      tags: ['app'],
+      requestBody: {
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/app.search.input' } },
+        },
+      },
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/AppSearchResponse',
+                $ref: '#/components/schemas/app.search.output',
               },
             },
           },
@@ -625,24 +632,22 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/capability-usage']?.get).toMatchObject(
-      {
-        operationId: 'getCapabilityUsage',
-        tags: ['diagnostics'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/CapabilityUsageResponse',
-                },
+    expect(document.paths['/api/app/operations/usage.read']?.post).toMatchObject({
+      operationId: 'usage.read',
+      tags: ['usage'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/usage.read.output',
               },
             },
           },
         },
-      }
-    );
-    expect(document.components.schemas.CapabilityUsageResponse).toEqual(
+      },
+    });
+    expect(document.components.schemas['usage.read.output']).toEqual(
       z.toJSONSchema(CapabilityUsageResponseSchema)
     );
     const capabilityUsage = CapabilityUsageResponseSchema.parse({
@@ -669,9 +674,7 @@ describe('app api openapi projection', () => {
     });
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
-    const validateCapabilityUsage = ajv.compile(
-      document.components.schemas.CapabilityUsageResponse
-    );
+    const validateCapabilityUsage = ajv.compile(document.components.schemas['usage.read.output']);
     expect(validateCapabilityUsage(capabilityUsage)).toBe(true);
     expect(
       validateCapabilityUsage({
@@ -679,101 +682,93 @@ describe('app api openapi projection', () => {
         capabilityCalls: [{ ...capabilityUsage.capabilityCalls[0], completedAt: null }],
       })
     ).toBe(false);
-    expect(document.paths['/api/app/workspaces/{workspaceId}/audit/events']?.get).toMatchObject({
-      operationId: 'listWorkspaceAuditEvents',
-      tags: ['diagnostics'],
+    expect(document.paths['/api/app/operations/audit.workspace-list']?.post).toMatchObject({
+      operationId: 'audit.workspace-list',
+      tags: ['audit'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceAuditEventsResponse',
+                $ref: '#/components/schemas/audit.workspace-list.output',
               },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/evidence-bundles']?.post
-    ).toBeUndefined();
+    expect(document.paths['/api/app/workspaces/{workspaceId}/evidence-bundles']).toBeUndefined();
     expect(document.components.schemas).not.toHaveProperty('CreateEvidenceBundleRequest');
     expect(document.components.schemas).not.toHaveProperty('CreateEvidenceBundleResponse');
-    expect(document.paths['/api/app/workspaces/{workspaceId}/evidence-bundles']?.get).toMatchObject(
-      {
-        operationId: 'listWorkspaceEvidenceBundles',
-        tags: ['diagnostics'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListWorkspaceEvidenceBundlesResponse',
-                },
-              },
-            },
-          },
-        },
-      }
-    );
-    expect(document.paths['/api/app/workspaces/{workspaceId}/runtime-evidence']?.get).toMatchObject(
-      {
-        operationId: 'listWorkspaceRuntimeEvidence',
-        tags: ['diagnostics'],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/ListWorkspaceRuntimeEvidenceResponse',
-                },
-              },
-            },
-          },
-        },
-      }
-    );
-    expect(document.paths['/api/app/audit/events']?.get).toMatchObject({
-      operationId: 'listServerAuditEvents',
-      tags: ['diagnostics'],
+    expect(document.paths['/api/app/operations/evidence.bundle-list']?.post).toMatchObject({
+      operationId: 'evidence.bundle-list',
+      tags: ['evidence'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListServerAuditEventsResponse',
+                $ref: '#/components/schemas/evidence.bundle-list.output',
               },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/permission-decisions']?.get
-    ).toMatchObject({
-      operationId: 'listWorkspacePermissionDecisions',
-      tags: ['diagnostics'],
+    expect(document.paths['/api/app/operations/evidence.runtime-list']?.post).toMatchObject({
+      operationId: 'evidence.runtime-list',
+      tags: ['evidence'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspacePermissionDecisionsResponse',
+                $ref: '#/components/schemas/evidence.runtime-list.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/permission-decisions']?.get).toMatchObject({
-      operationId: 'listServerPermissionDecisions',
-      tags: ['diagnostics'],
+    expect(document.paths['/api/app/operations/audit.server-list']?.post).toMatchObject({
+      operationId: 'audit.server-list',
+      tags: ['audit'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListServerPermissionDecisionsResponse',
+                $ref: '#/components/schemas/audit.server-list.output',
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(document.paths['/api/app/operations/permission.workspace-list']?.post).toMatchObject({
+      operationId: 'permission.workspace-list',
+      tags: ['permission'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/permission.workspace-list.output',
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(document.paths['/api/app/operations/permission.server-list']?.post).toMatchObject({
+      operationId: 'permission.server-list',
+      tags: ['permission'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/permission.server-list.output',
               },
             },
           },
@@ -819,19 +814,19 @@ describe('app api openapi projection', () => {
     );
     for (const route of [
       [
-        '/api/app/workspaces/{workspaceId}/agent-environment/snapshots',
-        'listAgentEnvironmentPackageSnapshots',
-        'ListAgentEnvironmentPackageSnapshotsResponse',
+        '/api/app/operations/environment.snapshot-list',
+        'environment.snapshot-list',
+        'environment.snapshot-list.output',
       ],
       [
-        '/api/app/workspaces/{workspaceId}/agent-environment/snapshots/{snapshotId}',
-        'getAgentEnvironmentPackageSnapshot',
-        'GetAgentEnvironmentPackageSnapshotResponse',
+        '/api/app/operations/environment.snapshot-read',
+        'environment.snapshot-read',
+        'environment.snapshot-read.output',
       ],
     ] as const) {
-      expect(document.paths[route[0]]?.get).toMatchObject({
+      expect(document.paths[route[0]]?.post).toMatchObject({
         operationId: route[1],
-        tags: ['agent-environment'],
+        tags: ['environment'],
         responses: {
           '200': {
             content: {
@@ -884,68 +879,29 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/vault/status']?.get).toMatchObject({
-      operationId: 'getVaultAdminStatus',
+    expect(document.paths['/api/app/operations/vault.status']?.post).toMatchObject({
+      operationId: 'vault.status',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/VaultAdminStatusResponse',
+                $ref: '#/components/schemas/vault.status.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/vault/unlock']?.post).toMatchObject({
-      operationId: 'unlockVaultAdminBackend',
-      tags: ['vault'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/VaultAdminUnlockRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/VaultAdminUnlockResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/vault/lock']?.post).toMatchObject({
-      operationId: 'lockVaultAdminBackend',
-      tags: ['vault'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/VaultAdminLockResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/app/vault/bootstrap/codex-auth-json']?.post).toMatchObject({
-      operationId: 'bootstrapCodexAuthJsonVaultReference',
+    expect(document.paths['/api/app/operations/vault.unlock']?.post).toMatchObject({
+      operationId: 'vault.unlock',
       tags: ['vault'],
       requestBody: {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/VaultAdminBootstrapCodexAuthJsonRequest',
+              $ref: '#/components/schemas/vault.unlock.input',
             },
           },
         },
@@ -955,49 +911,36 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/VaultAdminBootstrapCodexAuthJsonResponse',
+                $ref: '#/components/schemas/vault.unlock.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/providers/{providerId}/api-key']?.put).toMatchObject({
-      operationId: 'setProviderApiKey',
-      tags: ['providers', 'vault'],
-      parameters: [expect.objectContaining({ name: 'providerId', in: 'path', required: true })],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/SetProviderApiKeyRequest' },
-          },
-        },
-      },
+    expect(document.paths['/api/app/operations/vault.lock']?.post).toMatchObject({
+      operationId: 'vault.lock',
+      tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/SetProviderApiKeyResponse' },
+              schema: {
+                $ref: '#/components/schemas/vault.lock.output',
+              },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/vault/references/{referenceId}/rebind']
-        ?.post
-    ).toMatchObject({
-      operationId: 'rebindWorkspaceVaultReference',
+    expect(document.paths['/api/app/operations/vault.bootstrap-codex-auth']?.post).toMatchObject({
+      operationId: 'vault.bootstrap-codex-auth',
       tags: ['vault'],
-      parameters: [
-        expect.objectContaining({ name: 'workspaceId', in: 'path', required: true }),
-        expect.objectContaining({ name: 'referenceId', in: 'path', required: true }),
-      ],
       requestBody: {
         content: {
           'application/json': {
             schema: {
-              $ref: '#/components/schemas/VaultAdminRebindWorkspaceReferenceRequest',
+              $ref: '#/components/schemas/vault.bootstrap-codex-auth.input',
             },
           },
         },
@@ -1007,107 +950,141 @@ describe('app api openapi projection', () => {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/VaultAdminRebindWorkspaceReferenceResponse',
+                $ref: '#/components/schemas/vault.bootstrap-codex-auth.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/vault/references']?.get).toMatchObject(
-      {
-        operationId: 'listWorkspaceVaultReferences',
-        tags: ['vault'],
-        parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/VaultAdminListWorkspaceReferencesResponse',
-                },
-              },
+    expect(document.paths['/api/app/operations/vault.provider-api-key-set']?.post).toMatchObject({
+      operationId: 'vault.provider-api-key-set',
+      tags: ['vault'],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/vault.provider-api-key-set.input' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/vault.provider-api-key-set.output' },
             },
           },
         },
-      }
-    );
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/vault/use-records']?.get
-    ).toMatchObject({
-      operationId: 'listWorkspaceVaultUseRecords',
+      },
+    });
+    expect(document.paths['/api/app/operations/vault.reference-rebind']?.post).toMatchObject({
+      operationId: 'vault.reference-rebind',
       tags: ['vault'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
+      requestBody: {
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/vault.reference-rebind.input',
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceVaultUseRecordsResponse',
+                $ref: '#/components/schemas/vault.reference-rebind.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/vault/grants']?.get).toMatchObject({
-      operationId: 'listWorkspaceVaultGrants',
+    expect(document.paths['/api/app/operations/vault.reference-list']?.post).toMatchObject({
+      operationId: 'vault.reference-list',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceVaultGrantsResponse',
+                $ref: '#/components/schemas/vault.reference-list.output',
               },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/vault/injection-plans']?.get
-    ).toMatchObject({
-      operationId: 'listWorkspaceVaultInjectionPlans',
+    expect(document.paths['/api/app/operations/vault.use-list']?.post).toMatchObject({
+      operationId: 'vault.use-list',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceVaultInjectionPlansResponse',
+                $ref: '#/components/schemas/vault.use-list.output',
               },
             },
           },
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/vault/injection-receipts']?.get
-    ).toMatchObject({
-      operationId: 'listWorkspaceVaultInjectionReceipts',
+    expect(document.paths['/api/app/operations/vault.grant-list']?.post).toMatchObject({
+      operationId: 'vault.grant-list',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListWorkspaceVaultInjectionReceiptsResponse',
+                $ref: '#/components/schemas/vault.grant-list.output',
               },
             },
           },
         },
       },
     });
-    expect(document.paths['/api/app/vault/use-records']?.get).toMatchObject({
-      operationId: 'listServerVaultUseRecords',
+    expect(document.paths['/api/app/operations/vault.injection-plan-list']?.post).toMatchObject({
+      operationId: 'vault.injection-plan-list',
       tags: ['vault'],
       responses: {
         '200': {
           content: {
             'application/json': {
               schema: {
-                $ref: '#/components/schemas/ListServerVaultUseRecordsResponse',
+                $ref: '#/components/schemas/vault.injection-plan-list.output',
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(document.paths['/api/app/operations/vault.injection-receipt-list']?.post).toMatchObject({
+      operationId: 'vault.injection-receipt-list',
+      tags: ['vault'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/vault.injection-receipt-list.output',
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(document.paths['/api/app/operations/vault.server-use-list']?.post).toMatchObject({
+      operationId: 'vault.server-use-list',
+      tags: ['vault'],
+      responses: {
+        '200': {
+          content: {
+            'application/json': {
+              schema: {
+                $ref: '#/components/schemas/vault.server-use-list.output',
               },
             },
           },
@@ -2011,20 +1988,6 @@ describe('app api openapi projection', () => {
       'rotateOpenKitAccessToken',
       'listMyAdminAccessTokens',
       'setMyAdminAccessTokenDefault',
-      'createWorkspaceVaultSecret',
-      'rotateWorkspaceVaultSecret',
-      'revokeWorkspaceVaultSecret',
-      'createWorkspaceVaultGrant',
-      'revokeWorkspaceVaultGrant',
-      'getVaultAdminStatus',
-      'setProviderApiKey',
-      'listServerVaultUseRecords',
-      'unlockVaultAdminBackend',
-      'bootstrapCodexAuthJsonVaultReference',
-      'rebindWorkspaceVaultReference',
-      'listWorkspaceVaultReferences',
-      'listWorkspaceVaultUseRecords',
-      'lockVaultAdminBackend',
       'getAppDiagnostics',
       'getSetupDiagnostics',
       'prepareAppUpdate',
@@ -2046,20 +2009,7 @@ describe('app api openapi projection', () => {
       'unbindThreadMaterial',
       'excludeThreadMaterial',
       'restoreThreadMaterial',
-      'searchApp',
-      'getCapabilityUsage',
-      'listWorkspaceEvidenceBundles',
-      'listWorkspaceRuntimeEvidence',
-      'listWorkspaceAuditEvents',
-      'listServerAuditEvents',
-      'listWorkspacePermissionDecisions',
-      'listWorkspaceVaultGrants',
-      'listWorkspaceVaultInjectionPlans',
-      'listWorkspaceVaultInjectionReceipts',
-      'listServerPermissionDecisions',
       ...Object.keys(OPERATION_DEFINITIONS),
-      'listAgentEnvironmentPackageSnapshots',
-      'getAgentEnvironmentPackageSnapshot',
       'listWorkerEnvironments',
       'selectWorkerEnvironment',
       'getWorkerEnvironmentStatus',

@@ -374,7 +374,7 @@ The Hono route layer remains thin: authenticate, authorize, validate, resolve on
 
 The clean cutover owned by this specification together with `docs/specs/20260721-provider_subscription_accounts.md` and `docs/specs/20260708-pi_ai_unified_llm_backend.md` is implemented: `gateway.jsonc` owns logical IDs and ordered routes, Server Gateway Provider/model defaults and public Provider ownership are deleted, and worker plus internal-role inference use the same resolver. No compatibility alias, dual model meaning, direct worker Provider route, default-Provider dispatch branch, or intermediate account selector remains.
 
-The removed Gateway and account dependencies do not remove or rename `/api/app/vault/bootstrap/codex-auth-json` and do not alter worker-runtime Codex app-server ownership; those boundaries remain with their existing specifications.
+The removed Gateway and account dependencies do not remove or rename `vault.bootstrap-codex-auth` and do not alter worker-runtime Codex app-server ownership; those boundaries remain with their existing specifications.
 
 ## Testing Strategy / Acceptance Criteria
 

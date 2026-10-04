@@ -189,11 +189,14 @@ export async function runPiAiRealProviderTest(options = {}) {
   assert(stream.text.includes('data: [DONE]'), 'streaming response did not terminate with [DONE]');
   assertNoPublicLeak(stream.text, prohibitedPublicValues);
 
-  const usage = await fetchJson(
-    fetcher,
-    `${baseUrl}/api/app/workspaces/${prerequisites.config.workspaceId}/capability-usage`,
-    { headers: prerequisites.config.token ? { authorization: headers.authorization } : {} }
-  );
+  const usage = await fetchJson(fetcher, `${baseUrl}/api/app/operations/usage.read`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(prerequisites.config.token ? { authorization: headers.authorization } : {}),
+    },
+    body: JSON.stringify({ workspaceId: prerequisites.config.workspaceId }),
+  });
 
   assert(usage.status === 200, `capability usage read failed: ${usage.status}`);
   assertNoPublicLeak(usage.json, prohibitedPublicValues);

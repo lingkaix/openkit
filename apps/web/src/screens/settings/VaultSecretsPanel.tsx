@@ -26,8 +26,8 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
     queryFn: async () => {
       try {
         const [references, grants] = await Promise.all([
-          client.app.listWorkspaceVaultReferences(workspaceId),
-          client.app.listWorkspaceVaultGrants(workspaceId),
+          client.operations['vault.reference-list']({ workspaceId }),
+          client.operations['vault.grant-list']({ workspaceId }),
         ]);
         return {
           references: references.items.map(
@@ -62,19 +62,32 @@ export function VaultSecretsPanel({ workspaceId }: { readonly workspaceId: strin
         if (input.action === 'save') {
           if (!secret) throw new Error('Secret is required.');
           if (input.id)
-            await client.app.rotateWorkspaceVaultSecret(workspaceId, input.id, {
+            await client.operations['vault.secret-rotate']({
+              workspaceId,
+              referenceId: input.id,
               material: secret,
             });
           else
-            await client.app.createWorkspaceVaultSecret(workspaceId, {
+            await client.operations['vault.secret-create']({
+              workspaceId,
               secretKind,
               material: secret,
             });
         } else if (input.action === 'grant')
-          await client.app.createWorkspaceVaultGrant(workspaceId, { referenceId: input.id! });
+          await client.operations['vault.grant-create']({
+            workspaceId,
+            referenceId: input.id!,
+          });
         else if (input.action === 'revoke-grant')
-          await client.app.revokeWorkspaceVaultGrant(workspaceId, input.id!);
-        else await client.app.revokeWorkspaceVaultSecret(workspaceId, input.id!);
+          await client.operations['vault.grant-revoke']({
+            workspaceId,
+            grantId: input.id!,
+          });
+        else
+          await client.operations['vault.secret-revoke']({
+            workspaceId,
+            referenceId: input.id!,
+          });
         // Discard mutation responses: only a fresh, whitelisted inventory enters the cache.
       } catch (error) {
         throw safeError(error);

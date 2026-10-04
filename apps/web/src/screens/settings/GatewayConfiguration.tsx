@@ -153,7 +153,11 @@ export function KeyProviderCard({
 }) {
   const [key, setKey] = useState('');
   const save = useMutation({
-    mutationFn: () => client.app.setProviderApiKey(profile.id, { apiKey: key }),
+    mutationFn: () =>
+      client.operations['vault.provider-api-key-set']({
+        providerId: profile.id,
+        apiKey: key,
+      }),
     onSuccess: () => {
       setKey('');
       onChanged();

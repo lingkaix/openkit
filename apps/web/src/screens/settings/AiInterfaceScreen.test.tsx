@@ -178,13 +178,7 @@ function makeClient(
     core: {
       meta: vi.fn().mockResolvedValue({}),
     },
-    app: {
-      getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS),
-      setProviderApiKey: vi
-        .fn()
-        .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
-      ...overrides.app,
-    },
+    app: { getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS), ...overrides.app },
     operations: {
       'runtime.file-read': vi.fn().mockImplementation(() =>
         Promise.resolve({
@@ -291,6 +285,9 @@ function makeClient(
                 : { ...CODEX_QUOTA, accountSlotId }
             )
         ),
+      'vault.provider-api-key-set': vi
+        .fn()
+        .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
       ...overrides.operations,
     },
   } as unknown as CoreClient;
@@ -1046,7 +1043,7 @@ describe('AI interface deployment-admin workflow', () => {
     expect(client.operations['runtime.file-create']).not.toHaveBeenCalled();
   });
 
-  it('submits a masked API key through setProviderApiKey and never keeps it in query or rendered state', async () => {
+  it('submits a masked API key through vault.provider-api-key-set and never keeps it in query or rendered state', async () => {
     const user = userEvent.setup();
     const client = makeClient();
     const { queryClient } = renderScreen(client);
@@ -1055,11 +1052,14 @@ describe('AI interface deployment-admin workflow', () => {
     await user.type(keyField, API_KEY);
     await user.click(screen.getByRole('button', { name: 'Save or Replace API key' }));
 
-    const apiKeys = client.app as unknown as {
-      setProviderApiKey: ReturnType<typeof vi.fn>;
+    const apiKeys = client.operations as unknown as {
+      'vault.provider-api-key-set': ReturnType<typeof vi.fn>;
     };
     await waitFor(() =>
-      expect(apiKeys.setProviderApiKey).toHaveBeenCalledWith('provider_demo', { apiKey: API_KEY })
+      expect(apiKeys['vault.provider-api-key-set']).toHaveBeenCalledWith({
+        providerId: 'provider_demo',
+        apiKey: API_KEY,
+      })
     );
     expect(keyField).toHaveValue('');
     expect(document.body.textContent).not.toContain(API_KEY);

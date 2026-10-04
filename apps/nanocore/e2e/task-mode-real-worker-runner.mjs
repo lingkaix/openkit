@@ -593,11 +593,13 @@ async function executeTaskModeRealWorkerTest({
     }
     reviewIds = Array.isArray(task.evidence?.reviewIds) ? task.evidence.reviewIds : [];
     assert(task.state === 'completed', `Task Mode returned a non-acceptance state: ${task.state}`);
-    runtimeEvidencePromise = clients.core.app.listWorkspaceRuntimeEvidence(workspaceId);
+    runtimeEvidencePromise = clients.core.operations['evidence.runtime-list']({
+      workspaceId: workspaceId,
+    });
     const [threadResponse, aepRead, usage, runtimeEvidence] = await Promise.all([
       clients.core.operations['thread.items']({ workspaceId, threadId: threadId }),
-      clients.core.app.listAgentEnvironmentPackageSnapshots(workspaceId),
-      clients.core.app.getCapabilityUsage(workspaceId),
+      clients.core.operations['environment.snapshot-list']({ workspaceId: workspaceId }),
+      clients.core.operations['usage.read']({ workspaceId: workspaceId }),
       runtimeEvidencePromise,
     ]);
     runtimeEvidenceRead = runtimeEvidence;
@@ -624,7 +626,9 @@ async function executeTaskModeRealWorkerTest({
     if (runtimeEvidenceRead === null && typeof task.turn?.id === 'string') {
       try {
         if (runtimeEvidencePromise === null) {
-          runtimeEvidencePromise = clients.core.app.listWorkspaceRuntimeEvidence(workspaceId);
+          runtimeEvidencePromise = clients.core.operations['evidence.runtime-list']({
+            workspaceId: workspaceId,
+          });
         }
         runtimeEvidenceRead = await runtimeEvidencePromise;
       } catch {}

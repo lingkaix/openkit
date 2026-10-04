@@ -30,6 +30,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -1359,7 +1360,9 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
 
-      const usageRes = await app.request(`/api/app/workspaces/${workspace.id}/capability-usage`);
+      const usageRes = await app.request(
+        ...operationRequest('usage.read', { workspaceId: workspace.id }, {})
+      );
       const usageText = await usageRes.text();
       expect(usageRes.status, usageText).toBe(200);
       const usageBody = JSON.parse(usageText);
@@ -1617,7 +1620,9 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(res.status, body).toBe(200);
 
-      const usageRes = await app.request(`/api/app/workspaces/${workspace.id}/capability-usage`);
+      const usageRes = await app.request(
+        ...operationRequest('usage.read', { workspaceId: workspace.id }, {})
+      );
       const usageText = await usageRes.text();
       expect(usageRes.status, usageText).toBe(200);
 
@@ -3892,11 +3897,17 @@ it('the API-key path restores the same member on next resolve without reload', a
   try {
     expect((await (await app.request('/v1/models')).json()).data).toEqual([]);
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
-    const response = await app.request('/api/app/providers/activation-profile/api-key', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ apiKey: 'synthetic-activation-key' }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'vault.provider-api-key-set',
+        { providerId: 'activation-profile' },
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ apiKey: 'synthetic-activation-key' }),
+        }
+      )
+    );
     expect(response.status, await response.text()).toBe(200);
     vaultUnlockState.lock();
     const useBefore = listVaultUseRecords(coreDb);

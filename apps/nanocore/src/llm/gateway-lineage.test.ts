@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { describe, expect, it, vi } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
   listWorkspaceCapabilityCalls,
@@ -15,6 +16,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { GatewayAttemptFailure } from './gateway-execution.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -127,6 +129,7 @@ function fixture(missingKey = false) {
   };
   return {
     app,
+    coreDb,
     store,
     workspaceId,
     dataRoot,
@@ -243,7 +246,9 @@ describe('public durable logical Gateway lineage', () => {
       expect(
         f.read().calls[0]?.extensions?.['openkit.gateway/routeLineage']?.entries[0]
       ).toMatchObject(effortFacts);
-      const response = await f.app.request(`/api/app/workspaces/${f.workspaceId}/capability-usage`);
+      const response = await f.app.request(
+        ...operationRequest('usage.read', { workspaceId: f.workspaceId }, {})
+      );
       expect(response.status, await response.clone().text()).toBe(200);
       const projection = await response.json();
       expect(projection.capabilityCalls[0]?.routeLineage).toMatchObject({
@@ -269,8 +274,20 @@ describe('public durable logical Gateway lineage', () => {
       f.close();
     }
   });
-  it('audit.read omits calls and measurements of another user private Thread', async () => {
+  it('usage.read omits another user private Thread for a readonly member while preserving administrator eligibility', async () => {
     const f = fixture();
+    const memberApp = createApp({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+      mode: 'server',
+    });
+    const memberToken = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_local',
+      scope: 'workspace-readonly',
+      workspaceIds: [f.workspaceId],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
     const thread = f.store.createThread(f.workspaceId, 'Private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'user_other',
@@ -294,9 +311,22 @@ describe('public durable logical Gateway lineage', () => {
         records: [{ category: 'llm', unit: 'tokens', quantity: 1, source: 'reported' }],
       });
       expect(f.read().calls).toHaveLength(1);
-      const response = await f.app.request(`/api/app/workspaces/${f.workspaceId}/capability-usage`);
+      const response = await memberApp.request(
+        ...operationRequest(
+          'usage.read',
+          { workspaceId: f.workspaceId },
+          { headers: { authorization: `Bearer ${memberToken.secret}` } }
+        )
+      );
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ capabilityCalls: [], usageRecords: [] });
+      const administratorResponse = await f.app.request(
+        ...operationRequest('usage.read', { workspaceId: f.workspaceId }, {})
+      );
+      expect(administratorResponse.status).toBe(200);
+      const administratorProjection = await administratorResponse.json();
+      expect(administratorProjection.capabilityCalls).toHaveLength(1);
+      expect(administratorProjection.usageRecords).toHaveLength(1);
     } finally {
       db.sqlite.close();
       f.close();

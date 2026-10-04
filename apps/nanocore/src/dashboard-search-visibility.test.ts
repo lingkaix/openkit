@@ -393,7 +393,9 @@ describe('dashboard and search Thread audiences', () => {
           expect(introduced.status).toBe(409);
           expect(await introduced.json()).toMatchObject({ code: 'thread_busy' });
         }
-        const search = await app.request('/api/app/search?q=needle', { headers });
+        const search = await app.request(
+          ...operationRequest('app.search', { query: 'needle' }, { headers })
+        );
         expect(search.status).toBe(200);
         const hits = await search.json();
         expect(
@@ -401,11 +403,18 @@ describe('dashboard and search Thread audiences', () => {
             .filter((item: { kind: string }) => item.kind === 'thread')
             .map((item: { id: string }) => item.id)
             .sort()
-        ).toEqual([own.id, threads[2]!.id, threads[3]!.id].sort());
-        expect(JSON.stringify(hits)).not.toContain(denied.name);
+        ).toEqual(
+          [
+            own.id,
+            ...(scope === 'server-admin' ? [denied.id] : []),
+            threads[2]!.id,
+            threads[3]!.id,
+          ].sort()
+        );
+        if (scope !== 'server-admin') expect(JSON.stringify(hits)).not.toContain(denied.name);
         expect(
           hits.items.filter((item: { kind: string }) => item.kind === 'artifact')
-        ).toHaveLength(3);
+        ).toHaveLength(scope === 'server-admin' ? 4 : 3);
         for (const hidden of [denied, threads[4]!, threads[5]!]) {
           if (scope !== 'server-admin' || hidden.id !== denied.id)
             expect(readItems.mock.calls.some((args) => args[1] === hidden.id)).toBe(false);

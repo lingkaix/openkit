@@ -19,10 +19,10 @@ function formatRecordedTime(value: string) {
 }
 
 /** Provides only the two authorized server reads; any other client call fails. */
-function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
   return {
-    app: {
-      listServerAuditEvents: vi.fn().mockResolvedValue({
+    operations: {
+      'audit.server-list': vi.fn().mockResolvedValue({
         token: PRIVATE,
         auditEvents: [
           {
@@ -36,7 +36,7 @@ function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> =
           },
         ],
       }),
-      listServerPermissionDecisions: vi.fn().mockResolvedValue({
+      'permission.server-list': vi.fn().mockResolvedValue({
         secret: PRIVATE,
         permissionDecisions: [
           {
@@ -82,8 +82,8 @@ describe('Server audit administration', () => {
     expect(screen.getByText('server.read [redacted]')).toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(screen.getByText('Rejected')).toBeInTheDocument();
-    expect(client.app.listServerAuditEvents).toHaveBeenCalledExactlyOnceWith();
-    expect(client.app.listServerPermissionDecisions).toHaveBeenCalledExactlyOnceWith();
+    expect(client.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({});
+    expect(client.operations['permission.server-list']).toHaveBeenCalledExactlyOnceWith({});
   });
 
   it('whitelists and redacts records before rendering or caching', async () => {
@@ -104,8 +104,8 @@ describe('Server audit administration', () => {
   it('shows separate empty states', async () => {
     renderScreen(
       makeClient({
-        listServerAuditEvents: vi.fn().mockResolvedValue({ auditEvents: [] }),
-        listServerPermissionDecisions: vi.fn().mockResolvedValue({ permissionDecisions: [] }),
+        'audit.server-list': vi.fn().mockResolvedValue({ auditEvents: [] }),
+        'permission.server-list': vi.fn().mockResolvedValue({ permissionDecisions: [] }),
       })
     );
     expect(await screen.findByText('No server audit events')).toBeInTheDocument();
@@ -113,11 +113,11 @@ describe('Server audit administration', () => {
   });
 
   it.each([
-    'listServerAuditEvents',
-    'listServerPermissionDecisions',
+    'audit.server-list',
+    'permission.server-list',
   ] as const)('denies access when %s returns 403, hides records, and retries without credentials', async (method) => {
     const client = makeClient();
-    vi.mocked(client.app[method]).mockRejectedValueOnce(
+    vi.mocked(client.operations[method]).mockRejectedValueOnce(
       new ApiCallError(403, PRIVATE, { code: 'forbidden' })
     );
     const { container } = renderScreen(client);
@@ -127,14 +127,14 @@ describe('Server audit administration', () => {
     expect(container.innerHTML).not.toContain(PRIVATE);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('server.inspect')).toBeInTheDocument();
-    expect(client.app[method]).toHaveBeenCalledTimes(2);
+    expect(client.operations[method]).toHaveBeenCalledTimes(2);
   });
 
   it('hides previously loaded records when a refetch loses session authority', async () => {
     const client = makeClient();
     const { queryClient, container } = renderScreen(client);
     expect(await screen.findByText('server.inspect')).toBeInTheDocument();
-    vi.mocked(client.app.listServerPermissionDecisions).mockRejectedValue(
+    vi.mocked(client.operations['permission.server-list']).mockRejectedValue(
       new ApiCallError(401, PRIVATE, { code: 'core.auth.unauthenticated' })
     );
     await queryClient.invalidateQueries({ queryKey: ['settings', 'server-audit'] });
@@ -146,7 +146,7 @@ describe('Server audit administration', () => {
 
   it('prefers occurredAt, falls back to createdAt, and marks missing time as not recorded', async () => {
     const client = makeClient({
-      listServerAuditEvents: vi.fn().mockResolvedValue({
+      'audit.server-list': vi.fn().mockResolvedValue({
         token: PRIVATE,
         auditEvents: [
           {
@@ -176,7 +176,7 @@ describe('Server audit administration', () => {
           },
         ],
       }),
-      listServerPermissionDecisions: vi.fn().mockResolvedValue({
+      'permission.server-list': vi.fn().mockResolvedValue({
         secret: PRIVATE,
         permissionDecisions: [
           {
@@ -230,7 +230,7 @@ describe('Server audit administration', () => {
 
   it('shows a safe load error and recovers on retry', async () => {
     const client = makeClient();
-    vi.mocked(client.app.listServerAuditEvents).mockRejectedValueOnce(new Error(PRIVATE));
+    vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(new Error(PRIVATE));
     renderScreen(client);
     expect(await screen.findByRole('alert')).toHaveTextContent(
       "Couldn't load server audit records."

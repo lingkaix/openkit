@@ -292,7 +292,7 @@ export function useCancelSchedulerAdmission() {
 }
 
 /**
- * Searches App read models through `searchApp` (`client.app.search`).
+ * Searches admitted App read models through `client.operations['app.search']`.
  *
  * @param query Submitted search string; the query stays idle until non-empty.
  * @returns TanStack query of product-safe hits.
@@ -302,7 +302,7 @@ export function useAppSearch(query: string) {
   return useQuery({
     queryKey: operationsKeys.search(query),
     queryFn: async (): Promise<AppSearchHit[]> => {
-      const payload = await client.app.search(query);
+      const payload = await client.operations['app.search']({ query });
       return payload.items.map((item) => ({
         kind: item.kind,
         id: safeText(item.id),

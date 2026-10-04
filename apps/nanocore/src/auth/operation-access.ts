@@ -111,16 +111,7 @@ const catalog: Record<string, PublicOperationAccess> = {};
 
 registerOperations(
   catalog,
-  [
-    'getAppDiagnostics',
-    'getSetupDiagnostics',
-    'listOpenKitAccessTokens',
-    'listServerAuditEvents',
-    'listServerPermissionDecisions',
-    'getAppUpdateStatus',
-    'getVaultAdminStatus',
-    'listServerVaultUseRecords',
-  ],
+  ['getAppDiagnostics', 'getSetupDiagnostics', 'listOpenKitAccessTokens', 'getAppUpdateStatus'],
   {
     authentication: 'deployment-admin',
     mutating: false,
@@ -138,10 +129,6 @@ registerOperations(
     'prepareWorkerEnvironment',
     'activateWorkerEnvironment',
     'startAppUpdate',
-    'unlockVaultAdminBackend',
-    'lockVaultAdminBackend',
-    'bootstrapCodexAuthJsonVaultReference',
-    'setProviderApiKey',
   ],
   {
     authentication: 'deployment-admin',
@@ -201,12 +188,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['searchApp'], {
-  mutating: false,
-  policyOperation: 'workspace.read',
-  resolver: 'authorized-workspace-set',
-  scope: 'workspace',
-});
 
 registerOperations(catalog, ['listWorkspaceMaterials'], {
   mutating: false,
@@ -221,45 +202,12 @@ registerOperations(catalog, ['createWorkspaceMaterial'], {
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(
-  catalog,
-  [
-    'getCapabilityUsage',
-    'listWorkspaceAuditEvents',
-    'listWorkspaceEvidenceBundles',
-    'listWorkspaceRuntimeEvidence',
-    'listWorkspacePermissionDecisions',
-    'listAgentEnvironmentPackageSnapshots',
-    'listWorkspaceVaultUseRecords',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'audit.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
 registerOperations(catalog, ['downloadWorkspaceExportArchive'], {
   mutating: false,
   policyOperation: 'workspace.export',
   resolver: 'path-workspace',
   scope: 'workspace',
 });
-registerOperations(
-  catalog,
-  [
-    'listWorkspaceVaultReferences',
-    'listWorkspaceVaultGrants',
-    'listWorkspaceVaultInjectionPlans',
-    'listWorkspaceVaultInjectionReceipts',
-  ],
-  {
-    mutating: false,
-    policyOperation: 'vault.admin',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
 registerOperations(
   catalog,
   ['listWorkerEnvironments', 'selectWorkerEnvironment', 'getWorkerEnvironmentStatus'],
@@ -315,35 +263,6 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['getAgentEnvironmentPackageSnapshot'], {
-  mutating: false,
-  policyOperation: 'audit.read',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  [
-    'createWorkspaceVaultSecret',
-    'rotateWorkspaceVaultSecret',
-    'revokeWorkspaceVaultSecret',
-    'createWorkspaceVaultGrant',
-    'revokeWorkspaceVaultGrant',
-  ],
-  {
-    authentication: 'deployment-admin',
-    mutating: true,
-    policyOperation: 'vault.admin',
-    resolver: 'workspace-child-lineage',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['rebindWorkspaceVaultReference'], {
-  mutating: true,
-  policyOperation: 'vault.admin',
-  resolver: 'workspace-child-lineage',
-  scope: 'workspace',
-});
 
 // Migrated declarations are projections, never a second contract or admission path.
 for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {

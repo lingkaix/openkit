@@ -3,6 +3,7 @@ import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { createAgentOperationImplementations } from './agents/agent-operations.js';
 import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
+import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
@@ -17,6 +18,7 @@ import {
   createRemainingKernelOperationImplementations,
 } from './generative-operations.js';
 import { createGoalOperationImplementations } from './goal-operation-implementations.js';
+import { createGovernanceOperationImplementations } from './governance-operation-implementations.js';
 import { createKernelOperationImplementations } from './kernel-operation-implementations.js';
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
@@ -26,6 +28,7 @@ import type { createConversationService, createTaskStartOperation } from './mode
 import type { OperationImplementations } from './operation-contract.js';
 import { createOperationEngine } from './operation-invocation.js';
 import { createPendingRequestOperationImplementations } from './pending-request-operations.js';
+import { createEnvironmentOperationImplementations } from './runtime/environment-operation-implementations.js';
 import type { GoalOwnerServices } from './runtime/goal-owner.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { createSchedulerAdmissionOperationImplementations } from './runtime/scheduler-admission-operations.js';
@@ -38,6 +41,8 @@ import { createWorkspaceTransferOperationImplementations } from './storage/works
 import { createThreadOperationImplementations } from './thread-operation-implementations.js';
 import { createTurnOperationImplementations } from './turn-operation-implementations.js';
 import type { TurnStartDependencies } from './turn-routes.js';
+import { createVaultOperationImplementations } from './vault/vault-operation-implementations.js';
+import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { createWorkspaceOperationImplementations } from './workspace-operation-implementations.js';
@@ -74,6 +79,8 @@ export interface OperationInvocationDependencies {
   >;
   readonly goalServices?: GoalOwnerServices;
   readonly runtimeConfigManager?: RuntimeConfigManager;
+  /** Existing app-owned process-local Vault backend unlock state. */
+  readonly vaultUnlockState?: VaultUnlockState;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
@@ -105,6 +112,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createAgentOperationImplementations(dependencies),
     createWorkerOperationImplementations(dependencies),
     createCatalogOperationImplementations(dependencies),
+    createVaultOperationImplementations(dependencies),
+    createAppSearchOperationImplementations(dependencies),
+    createEnvironmentOperationImplementations(dependencies),
+    createGovernanceOperationImplementations(dependencies),
     createAutomationOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),

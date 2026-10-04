@@ -1766,7 +1766,9 @@ describe('nanocore server', () => {
         ...operationRequest('workspace.export', { workspaceId: 'ws_demo' }, { method: 'POST' })
       );
       const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-      const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+      const usageRes = await app.request(
+        ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+      );
 
       expect(usageRes.status, await usageRes.clone().text()).toBe(200);
       const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
@@ -1838,7 +1840,7 @@ describe('nanocore server', () => {
       expect(importRes.status, await importRes.clone().text()).toBe(200);
       const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
       const usageRes = await app.request(
-        `/api/app/workspaces/${imported.importedWorkspaceId}/capability-usage`
+        ...operationRequest('usage.read', { workspaceId: imported.importedWorkspaceId }, {})
       );
 
       expect(usageRes.status, await usageRes.clone().text()).toBe(200);
@@ -3436,7 +3438,9 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/audit/events');
+    const res = await app.request(
+      ...operationRequest('audit.workspace-list', { workspaceId: 'ws_demo' }, {})
+    );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspaceAuditEventsResponseSchema.parse(await res.json());
@@ -3473,7 +3477,7 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/audit/events');
+    const res = await app.request(...operationRequest('audit.server-list', {}, {}));
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListServerAuditEventsResponseSchema.parse(await res.json());
@@ -3512,7 +3516,9 @@ describe('nanocore server', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
-    const listRes = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
+    const listRes = await app.request(
+      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+    );
 
     expect(createRes.status).toBe(404);
     expect(listRes.status, await listRes.clone().text()).toBe(200);
@@ -3563,7 +3569,9 @@ describe('nanocore server', () => {
       });
       const app = createApp({ coreDb, dataRoot, store });
 
-      const res = await app.request('/api/app/workspaces/ws_demo/runtime-evidence');
+      const res = await app.request(
+        ...operationRequest('evidence.runtime-list', { workspaceId: 'ws_demo' }, {})
+      );
 
       expect(res.status, await res.clone().text()).toBe(200);
       const body = ListWorkspaceRuntimeEvidenceResponseSchema.parse(await res.json());
@@ -3621,7 +3629,9 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/permission-decisions');
+    const res = await app.request(
+      ...operationRequest('permission.workspace-list', { workspaceId: 'ws_demo' }, {})
+    );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspacePermissionDecisionsResponseSchema.parse(await res.json());
@@ -3662,7 +3672,7 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/permission-decisions');
+    const res = await app.request(...operationRequest('permission.server-list', {}, {}));
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListServerPermissionDecisionsResponseSchema.parse(await res.json());
@@ -3706,7 +3716,9 @@ describe('nanocore server', () => {
     }
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/workspaces/ws_demo/vault/use-records');
+    const res = await app.request(
+      ...operationRequest('vault.use-list', { workspaceId: 'ws_demo' }, {})
+    );
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListWorkspaceVaultUseRecordsResponseSchema.parse(await res.json());
@@ -3746,7 +3758,7 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    const res = await app.request('/api/app/vault/use-records');
+    const res = await app.request(...operationRequest('vault.server-use-list', {}, {}));
 
     expect(res.status, await res.clone().text()).toBe(200);
     const payload = ListServerVaultUseRecordsResponseSchema.parse(await res.json());
@@ -4458,7 +4470,9 @@ describe('nanocore server', () => {
 
     expect(list.items.some((entry) => entry.id === knowledge.id)).toBe(false);
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -5160,7 +5174,9 @@ describe('nanocore server', () => {
         .find((turn) => turn.status === 'failed');
       expect(failedTurn).toBeDefined();
 
-      const evidenceResponse = await app.request('/api/app/workspaces/ws_demo/runtime-evidence');
+      const evidenceResponse = await app.request(
+        ...operationRequest('evidence.runtime-list', { workspaceId: 'ws_demo' }, {})
+      );
       expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
       const evidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
         await evidenceResponse.json()
@@ -8944,13 +8960,21 @@ describe('nanocore server', () => {
       }
 
       const list = await app.request(
-        `/api/app/workspaces/${workspace.id}/agent-environment/snapshots`
+        ...operationRequest('environment.snapshot-list', { workspaceId: workspace.id }, {})
       );
       const detail = await app.request(
-        `/api/app/workspaces/${workspace.id}/agent-environment/snapshots/${environmentPackage.snapshotId}`
+        ...operationRequest(
+          'environment.snapshot-read',
+          { workspaceId: workspace.id, snapshotId: environmentPackage.snapshotId },
+          {}
+        )
       );
       const missing = await app.request(
-        `/api/app/workspaces/${workspace.id}/agent-environment/snapshots/missing`
+        ...operationRequest(
+          'environment.snapshot-read',
+          { workspaceId: workspace.id, snapshotId: 'missing' },
+          {}
+        )
       );
 
       expect(list.status).toBe(200);
@@ -9294,10 +9318,18 @@ describe('nanocore server', () => {
       }
 
       const foreignRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/agent-environment/snapshots/${environmentPackage.snapshotId}`
+        ...operationRequest(
+          'environment.snapshot-read',
+          { workspaceId: authorizedWorkspace.id, snapshotId: environmentPackage.snapshotId },
+          {}
+        )
       );
       const missingRead = await app.request(
-        `/api/app/workspaces/${authorizedWorkspace.id}/agent-environment/snapshots/aep_missing_child_lineage`
+        ...operationRequest(
+          'environment.snapshot-read',
+          { workspaceId: authorizedWorkspace.id, snapshotId: 'aep_missing_child_lineage' },
+          {}
+        )
       );
       const foreignBody = await foreignRead.json();
       const missingBody = await missingRead.json();
@@ -10317,10 +10349,14 @@ describe('nanocore server', () => {
     });
     const app = createApp({ coreDb, store });
 
-    const grants = await app.request(`/api/app/workspaces/${workspace.id}/vault/grants`);
-    const plans = await app.request(`/api/app/workspaces/${workspace.id}/vault/injection-plans`);
+    const grants = await app.request(
+      ...operationRequest('vault.grant-list', { workspaceId: workspace.id }, {})
+    );
+    const plans = await app.request(
+      ...operationRequest('vault.injection-plan-list', { workspaceId: workspace.id }, {})
+    );
     const receipts = await app.request(
-      `/api/app/workspaces/${workspace.id}/vault/injection-receipts`
+      ...operationRequest('vault.injection-receipt-list', { workspaceId: workspace.id }, {})
     );
 
     expect(grants.status, await grants.clone().text()).toBe(200);

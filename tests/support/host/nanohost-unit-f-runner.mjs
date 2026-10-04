@@ -602,9 +602,9 @@ export async function readTurnRuntimeEvidence(config, lineage) {
 export async function readWorkspaceRuntimeEvidence(config, workspaceId) {
   const response = await appRequest(
     config,
-    'GET',
-    `/api/app/workspaces/${workspaceId}/runtime-evidence`,
-    undefined,
+    'POST',
+    '/api/app/operations/evidence.runtime-list',
+    { workspaceId },
     'product'
   );
   return response.runtimeEvidence ?? [];
@@ -615,9 +615,9 @@ async function waitForTaskLineage(task) {
   return task.config.waitFor(async () => {
     const response = await appRequest(
       task.config,
-      'GET',
-      `/api/app/workspaces/${task.workspaceId}/agent-environment/snapshots`,
-      undefined,
+      'POST',
+      '/api/app/operations/environment.snapshot-list',
+      { workspaceId: task.workspaceId },
       'product'
     );
     const records = (response.items ?? []).filter(

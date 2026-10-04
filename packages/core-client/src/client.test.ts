@@ -1859,7 +1859,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/sync.apply-result-read': {
         body: workspaceApplyResult(),
       },
-      'GET /api/app/workspaces/ws_demo/agent-environment/snapshots': {
+      'POST /api/app/operations/environment.snapshot-list': {
         body: {
           items: [
             {
@@ -1879,7 +1879,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/agent-environment/snapshots/aepsnap_1': {
+      'POST /api/app/operations/environment.snapshot-read': {
         body: {
           snapshotId: 'aepsnap_1',
           workspaceId: 'ws_demo',
@@ -2051,13 +2051,16 @@ describe('createCoreClient', () => {
         applyResultId: 'war_swr_1',
       })
     ).resolves.toEqual(workspaceApplyResult());
-    await expect(client.app.listAgentEnvironmentPackageSnapshots('ws_demo')).resolves.toMatchObject(
-      {
-        items: [{ snapshotId: 'aepsnap_1' }],
-      }
-    );
     await expect(
-      client.app.getAgentEnvironmentPackageSnapshot('ws_demo', 'aepsnap_1')
+      client.operations['environment.snapshot-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
+      items: [{ snapshotId: 'aepsnap_1' }],
+    });
+    await expect(
+      client.operations['environment.snapshot-read']({
+        workspaceId: 'ws_demo',
+        snapshotId: 'aepsnap_1',
+      })
     ).resolves.toMatchObject({
       snapshotId: 'aepsnap_1',
       snapshot: { snapshotId: 'aepsnap_1' },
@@ -2100,8 +2103,8 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/sync.quarantine-list',
       'POST /api/app/operations/sync.apply-result-list',
       'POST /api/app/operations/sync.apply-result-read',
-      'GET /api/app/workspaces/ws_demo/agent-environment/snapshots',
-      'GET /api/app/workspaces/ws_demo/agent-environment/snapshots/aepsnap_1',
+      'POST /api/app/operations/environment.snapshot-list',
+      'POST /api/app/operations/environment.snapshot-read',
       'POST /api/app/operations/thread.items',
     ]);
     expect(requests[2]?.body).toMatchObject({ status: 'archived' });
@@ -2737,7 +2740,7 @@ describe('createCoreClient', () => {
         body: workspaceImportDryRunResponse(),
       },
       'POST /api/app/operations/workspace.import': { body: workspaceImportResponse() },
-      'POST /api/app/workspaces/ws_demo/vault/references/vault_imported/rebind': {
+      'POST /api/app/operations/vault.reference-rebind': {
         body: {
           backendKind: 'encrypted-file',
           currentVersion: 1,
@@ -2748,7 +2751,7 @@ describe('createCoreClient', () => {
           workspaceId: 'ws_demo',
         },
       },
-      'GET /api/app/workspaces/ws_demo/vault/references': {
+      'POST /api/app/operations/vault.reference-list': {
         body: {
           items: [
             {
@@ -2764,16 +2767,16 @@ describe('createCoreClient', () => {
           workspaceId: 'ws_demo',
         },
       },
-      'GET /api/app/workspaces/ws_demo/vault/grants': {
+      'POST /api/app/operations/vault.grant-list': {
         body: workspaceVaultGrantsResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/vault/injection-plans': {
+      'POST /api/app/operations/vault.injection-plan-list': {
         body: workspaceInjectionPlansResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/vault/injection-receipts': {
+      'POST /api/app/operations/vault.injection-receipt-list': {
         body: workspaceInjectionReceiptsResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/vault/use-records': {
+      'POST /api/app/operations/vault.use-list': {
         body: workspaceVaultUseRecordsResponse(),
       },
       'POST /api/app/operations/chat.quick': {
@@ -3248,7 +3251,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/search?q=protocol%20design': {
+      'POST /api/app/operations/app.search': {
         body: { items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }] },
       },
       'POST /api/app/operations/agent.health-refresh': {
@@ -3296,28 +3299,28 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'GET /api/app/workspaces/ws_demo/capability-usage': {
+      'POST /api/app/operations/usage.read': {
         body: capabilityUsageResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/evidence-bundles': {
+      'POST /api/app/operations/evidence.bundle-list': {
         body: workspaceEvidenceBundlesResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/runtime-evidence': {
+      'POST /api/app/operations/evidence.runtime-list': {
         body: workspaceRuntimeEvidenceResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/audit/events': {
+      'POST /api/app/operations/audit.workspace-list': {
         body: workspaceAuditEventsResponse(),
       },
-      'GET /api/app/audit/events': {
+      'POST /api/app/operations/audit.server-list': {
         body: serverAuditEventsResponse(),
       },
-      'GET /api/app/workspaces/ws_demo/permission-decisions': {
+      'POST /api/app/operations/permission.workspace-list': {
         body: workspacePermissionDecisionsResponse(),
       },
-      'GET /api/app/permission-decisions': {
+      'POST /api/app/operations/permission.server-list': {
         body: serverPermissionDecisionsResponse(),
       },
-      'GET /api/app/vault/use-records': {
+      'POST /api/app/operations/vault.server-use-list': {
         body: serverVaultUseRecordsResponse(),
       },
     });
@@ -3388,49 +3391,57 @@ describe('createCoreClient', () => {
     expect(importRequest?.headers['x-openkit-request-id']).toBe('req_import');
     expect(importRequest?.body).toEqual({ sourceWorkspaceId: 'ws_demo', exportId: 'wsexp_demo' });
     await expect(
-      client.app.rebindWorkspaceVaultReference('ws_demo', 'vault_imported', {
-        materialBase64: Buffer.from('workspace-secret').toString('base64'),
+      client.operations['vault.reference-rebind']({
+        workspaceId: 'ws_demo',
+        referenceId: 'vault_imported',
+        ...{
+          materialBase64: Buffer.from('workspace-secret').toString('base64'),
+        },
       })
     ).resolves.toMatchObject({
       referenceId: 'vault_imported',
       status: 'active',
     });
-    await expect(client.app.listWorkspaceVaultReferences('ws_demo')).resolves.toMatchObject({
+    await expect(
+      client.operations['vault.reference-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toMatchObject({
       items: [{ referenceId: 'vault_imported', status: 'unbound' }],
       workspaceId: 'ws_demo',
     });
-    await expect(client.app.listWorkspaceVaultGrants('ws_demo')).resolves.toEqual(
-      workspaceVaultGrantsResponse()
-    );
-    await expect(client.app.listWorkspaceVaultInjectionPlans('ws_demo')).resolves.toEqual(
-      workspaceInjectionPlansResponse()
-    );
-    await expect(client.app.listWorkspaceVaultInjectionReceipts('ws_demo')).resolves.toEqual(
-      workspaceInjectionReceiptsResponse()
-    );
-    await expect(client.app.listWorkspaceVaultUseRecords('ws_demo')).resolves.toEqual(
+    await expect(
+      client.operations['vault.grant-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceVaultGrantsResponse());
+    await expect(
+      client.operations['vault.injection-plan-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceInjectionPlansResponse());
+    await expect(
+      client.operations['vault.injection-receipt-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceInjectionReceiptsResponse());
+    await expect(client.operations['vault.use-list']({ workspaceId: 'ws_demo' })).resolves.toEqual(
       workspaceVaultUseRecordsResponse()
     );
-    await expect(client.app.listServerVaultUseRecords()).resolves.toEqual(
+    await expect(client.operations['vault.server-use-list']({})).resolves.toEqual(
       serverVaultUseRecordsResponse()
     );
-    await expect(client.app.getCapabilityUsage('ws_demo')).resolves.toEqual(
+    await expect(client.operations['usage.read']({ workspaceId: 'ws_demo' })).resolves.toEqual(
       capabilityUsageResponse()
     );
-    await expect(client.app.listWorkspaceEvidenceBundles('ws_demo')).resolves.toEqual(
-      workspaceEvidenceBundlesResponse()
+    await expect(
+      client.operations['evidence.bundle-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceEvidenceBundlesResponse());
+    await expect(
+      client.operations['evidence.runtime-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceRuntimeEvidenceResponse());
+    await expect(
+      client.operations['audit.workspace-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspaceAuditEventsResponse());
+    await expect(client.operations['audit.server-list']({})).resolves.toEqual(
+      serverAuditEventsResponse()
     );
-    await expect(client.app.listWorkspaceRuntimeEvidence('ws_demo')).resolves.toEqual(
-      workspaceRuntimeEvidenceResponse()
-    );
-    await expect(client.app.listWorkspaceAuditEvents('ws_demo')).resolves.toEqual(
-      workspaceAuditEventsResponse()
-    );
-    await expect(client.app.listServerAuditEvents()).resolves.toEqual(serverAuditEventsResponse());
-    await expect(client.app.listWorkspacePermissionDecisions('ws_demo')).resolves.toEqual(
-      workspacePermissionDecisionsResponse()
-    );
-    await expect(client.app.listServerPermissionDecisions()).resolves.toEqual(
+    await expect(
+      client.operations['permission.workspace-list']({ workspaceId: 'ws_demo' })
+    ).resolves.toEqual(workspacePermissionDecisionsResponse());
+    await expect(client.operations['permission.server-list']({})).resolves.toEqual(
       serverPermissionDecisionsResponse()
     );
     await expect(client.operations['chat.quick']({ input: 'Hi' })).resolves.toMatchObject({
@@ -3694,7 +3705,7 @@ describe('createCoreClient', () => {
     ]) {
       expect(requests.find((request) => request.path === path)?.body).not.toHaveProperty('caller');
     }
-    await expect(client.app.search('protocol design')).resolves.toEqual({
+    await expect(client.operations['app.search']({ query: 'protocol design' })).resolves.toEqual({
       items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }],
     });
     await expect(
@@ -3765,20 +3776,20 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/workspace.export',
       'POST /api/app/operations/workspace.import-dry-run',
       'POST /api/app/operations/workspace.import',
-      'POST /api/app/workspaces/ws_demo/vault/references/vault_imported/rebind',
-      'GET /api/app/workspaces/ws_demo/vault/references',
-      'GET /api/app/workspaces/ws_demo/vault/grants',
-      'GET /api/app/workspaces/ws_demo/vault/injection-plans',
-      'GET /api/app/workspaces/ws_demo/vault/injection-receipts',
-      'GET /api/app/workspaces/ws_demo/vault/use-records',
-      'GET /api/app/vault/use-records',
-      'GET /api/app/workspaces/ws_demo/capability-usage',
-      'GET /api/app/workspaces/ws_demo/evidence-bundles',
-      'GET /api/app/workspaces/ws_demo/runtime-evidence',
-      'GET /api/app/workspaces/ws_demo/audit/events',
-      'GET /api/app/audit/events',
-      'GET /api/app/workspaces/ws_demo/permission-decisions',
-      'GET /api/app/permission-decisions',
+      'POST /api/app/operations/vault.reference-rebind',
+      'POST /api/app/operations/vault.reference-list',
+      'POST /api/app/operations/vault.grant-list',
+      'POST /api/app/operations/vault.injection-plan-list',
+      'POST /api/app/operations/vault.injection-receipt-list',
+      'POST /api/app/operations/vault.use-list',
+      'POST /api/app/operations/vault.server-use-list',
+      'POST /api/app/operations/usage.read',
+      'POST /api/app/operations/evidence.bundle-list',
+      'POST /api/app/operations/evidence.runtime-list',
+      'POST /api/app/operations/audit.workspace-list',
+      'POST /api/app/operations/audit.server-list',
+      'POST /api/app/operations/permission.workspace-list',
+      'POST /api/app/operations/permission.server-list',
       'POST /api/app/operations/chat.quick',
       'POST /api/app/operations/task.start',
       'POST /api/app/operations/conversation.submit',
@@ -3799,7 +3810,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.proposal.draft',
       'POST /api/app/operations/knowledge.repair.suggest',
       'POST /api/app/operations/knowledge.health.check',
-      'GET /api/app/search?q=protocol%20design',
+      'POST /api/app/operations/app.search',
       'POST /api/app/operations/agent.health-refresh',
       'POST /api/app/operations/agent.list',
       'POST /api/app/operations/agent.read',
@@ -3819,6 +3830,8 @@ describe('createCoreClient', () => {
       tokenExpiresAt: timestamp,
     });
     expect(requests[11]?.body).toEqual({
+      workspaceId: 'ws_demo',
+      referenceId: 'vault_imported',
       materialBase64: Buffer.from('workspace-secret').toString('base64'),
     });
     expect(requests.at(-6)?.body).toEqual({ workspaceId: 'ws_demo' });
@@ -3923,10 +3936,10 @@ describe('createCoreClient', () => {
     const authJsonBase64 = Buffer.from('{"tokens":{"openai":"secret"}}').toString('base64');
     const masterKeyBase64 = Buffer.alloc(32, 1).toString('base64');
     const { client, requests } = createFakeClient({
-      'GET /api/app/vault/status': { body: vaultAdminStatus('locked') },
-      'POST /api/app/vault/unlock': { body: vaultAdminStatus('available') },
-      'POST /api/app/vault/lock': { body: vaultAdminStatus('locked') },
-      'POST /api/app/vault/bootstrap/codex-auth-json': {
+      'POST /api/app/operations/vault.status': { body: vaultAdminStatus('locked') },
+      'POST /api/app/operations/vault.unlock': { body: vaultAdminStatus('available') },
+      'POST /api/app/operations/vault.lock': { body: vaultAdminStatus('locked') },
+      'POST /api/app/operations/vault.bootstrap-codex-auth': {
         body: {
           backendKind: 'encrypted-file',
           expiresAt: null,
@@ -3937,51 +3950,58 @@ describe('createCoreClient', () => {
           targetPath: '/sandbox/.codex/auth.json',
         },
       },
-      'PUT /api/app/providers/xai-api/api-key': {
+      'POST /api/app/operations/vault.provider-api-key-set': {
         body: { configured: true, providerId: 'xai-api' },
       },
     });
 
-    await expect(client.app.getVaultAdminStatus()).resolves.toMatchObject({
+    await expect(client.operations['vault.status']({})).resolves.toMatchObject({
       backendKind: 'encrypted-file',
       state: 'locked',
     });
-    await expect(client.app.unlockVaultAdminBackend({ masterKeyBase64 })).resolves.toMatchObject({
+    await expect(
+      client.operations['vault.unlock']({ ...{ masterKeyBase64 } })
+    ).resolves.toMatchObject({
       state: 'available',
     });
-    await expect(client.app.lockVaultAdminBackend()).resolves.toMatchObject({
+    await expect(client.operations['vault.lock']({})).resolves.toMatchObject({
       state: 'locked',
     });
     await expect(
-      client.app.bootstrapCodexAuthJsonVaultReference({ authJsonBase64 })
+      client.operations['vault.bootstrap-codex-auth']({ ...{ authJsonBase64 } })
     ).resolves.toMatchObject({
       grantId: 'grant_codex_auth_json',
       referenceId: 'vault_codex_auth_json',
     });
     await expect(
-      client.app.setProviderApiKey('xai-api', { apiKey: 'xai-secret' })
+      client.operations['vault.provider-api-key-set']({
+        providerId: 'xai-api',
+        ...{ apiKey: 'xai-secret' },
+      })
     ).resolves.toEqual({ configured: true, providerId: 'xai-api' });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'GET /api/app/vault/status',
-      'POST /api/app/vault/unlock',
-      'POST /api/app/vault/lock',
-      'POST /api/app/vault/bootstrap/codex-auth-json',
-      'PUT /api/app/providers/xai-api/api-key',
+      'POST /api/app/operations/vault.status',
+      'POST /api/app/operations/vault.unlock',
+      'POST /api/app/operations/vault.lock',
+      'POST /api/app/operations/vault.bootstrap-codex-auth',
+      'POST /api/app/operations/vault.provider-api-key-set',
     ]);
     expect(requests[1]?.body).toEqual({ masterKeyBase64 });
     expect(requests[3]?.body).toEqual({ authJsonBase64 });
-    expect(requests[4]?.body).toEqual({ apiKey: 'xai-secret' });
+    expect(requests[4]?.body).toEqual({ providerId: 'xai-api', apiKey: 'xai-secret' });
   });
 
   it('rejects an obsolete os-keychain vault response as a protocol violation', async () => {
     const { client } = createFakeClient({
-      'GET /api/app/vault/status': {
+      'POST /api/app/operations/vault.status': {
         body: { ...vaultAdminStatus('available'), backendKind: 'os-keychain' },
       },
     });
 
-    await expect(client.app.getVaultAdminStatus()).rejects.toBeInstanceOf(ProtocolValidationError);
+    await expect(client.operations['vault.status']({})).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
   });
 
   it('routes remaining App API and feedback methods through sub-clients', async () => {
@@ -4474,12 +4494,12 @@ describe('createCoreClient', () => {
       const payload = capabilityUsageResponse();
       payload.capabilityCalls[0] = { ...payload.capabilityCalls[0], [field]: value };
       const { client } = createFakeClient({
-        'GET /api/app/workspaces/ws_demo/capability-usage': { body: payload },
+        'POST /api/app/operations/usage.read': { body: payload },
       });
 
-      await expect(client.app.getCapabilityUsage('ws_demo')).rejects.toBeInstanceOf(
-        ProtocolValidationError
-      );
+      await expect(
+        client.operations['usage.read']({ workspaceId: 'ws_demo' })
+      ).rejects.toBeInstanceOf(ProtocolValidationError);
     }
   });
 
@@ -5485,27 +5505,50 @@ describe('workspace secret client', () => {
       workspaceId: 'ws_demo',
     };
     const grant = workspaceVaultGrantsResponse().items[0]!;
-    const root = '/api/app/workspaces/ws_demo/vault';
     const { client, requests } = createFakeClient({
-      [`POST ${root}/secrets`]: { body: reference },
-      [`POST ${root}/secrets/vault_test/rotate`]: { body: { ...reference, currentVersion: 2 } },
-      [`POST ${root}/secrets/vault_test/revoke`]: { body: { ...reference, status: 'revoked' } },
-      [`POST ${root}/grants`]: { body: grant },
-      [`POST ${root}/grants/grant_github/revoke`]: { body: { ...grant, status: 'revoked' } },
+      ['POST /api/app/operations/vault.secret-create']: { body: reference },
+      ['POST /api/app/operations/vault.secret-rotate']: {
+        body: { ...reference, currentVersion: 2 },
+      },
+      ['POST /api/app/operations/vault.secret-revoke']: {
+        body: { ...reference, status: 'revoked' },
+      },
+      ['POST /api/app/operations/vault.grant-create']: { body: grant },
+      ['POST /api/app/operations/vault.grant-revoke']: { body: { ...grant, status: 'revoked' } },
     });
     await expect(
-      client.app.createWorkspaceVaultSecret('ws_demo', {
-        secretKind: 'github-token',
-        material: 'test-canary',
+      client.operations['vault.secret-create']({
+        workspaceId: 'ws_demo',
+        ...{
+          secretKind: 'github-token',
+          material: 'test-canary',
+        },
       })
     ).resolves.toEqual(reference);
     await expect(
-      client.app.rotateWorkspaceVaultSecret('ws_demo', 'vault_test', { material: 'next-canary' })
+      client.operations['vault.secret-rotate']({
+        workspaceId: 'ws_demo',
+        referenceId: 'vault_test',
+        ...{ material: 'next-canary' },
+      })
     ).resolves.toMatchObject({ currentVersion: 2 });
-    await client.app.createWorkspaceVaultGrant('ws_demo', { referenceId: 'vault_test' });
-    await client.app.revokeWorkspaceVaultGrant('ws_demo', 'grant_github');
-    await client.app.revokeWorkspaceVaultSecret('ws_demo', 'vault_test');
-    expect(requests[0]?.body).toEqual({ secretKind: 'github-token', material: 'test-canary' });
+    await client.operations['vault.grant-create']({
+      workspaceId: 'ws_demo',
+      ...{ referenceId: 'vault_test' },
+    });
+    await client.operations['vault.grant-revoke']({
+      workspaceId: 'ws_demo',
+      grantId: 'grant_github',
+    });
+    await client.operations['vault.secret-revoke']({
+      workspaceId: 'ws_demo',
+      referenceId: 'vault_test',
+    });
+    expect(requests[0]?.body).toEqual({
+      workspaceId: 'ws_demo',
+      secretKind: 'github-token',
+      material: 'test-canary',
+    });
     expect(requests.map(({ path }) => path).join(' ')).not.toContain('canary');
   });
 });
@@ -5535,8 +5578,10 @@ describe('Gateway audit route lineage consumer', () => {
       })),
     };
     const { client } = createFakeClient({
-      'GET /api/app/workspaces/ws_demo/capability-usage': { body: payload },
+      'POST /api/app/operations/usage.read': { body: payload },
     });
-    await expect(client.app.getCapabilityUsage('ws_demo')).resolves.toEqual(payload);
+    await expect(client.operations['usage.read']({ workspaceId: 'ws_demo' })).resolves.toEqual(
+      payload
+    );
   });
 });

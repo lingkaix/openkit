@@ -430,16 +430,6 @@ function makeClient(
       ...overrides.core,
     },
     app: {
-      listWorkspaceVaultReferences: vi.fn().mockResolvedValue(VAULT_LIST),
-      listWorkspaceVaultGrants: vi
-        .fn()
-        .mockImplementation((workspaceId: string) =>
-          Promise.resolve(emptyVaultGrants(workspaceId))
-        ),
-      listWorkspaceVaultUseRecords: vi
-        .fn()
-        .mockImplementation((workspaceId: string) => Promise.resolve(emptyVaultUses(workspaceId))),
-      rebindWorkspaceVaultReference: vi.fn().mockResolvedValue(REBIND_MUTATION),
       downloadWorkspaceExportArchive: vi.fn(),
       dryRunWorkspaceArchiveImport: vi.fn().mockResolvedValue(DRY_RUN),
       importWorkspaceArchive: vi.fn().mockImplementation((_body: unknown, requestId?: string) =>
@@ -455,6 +445,18 @@ function makeClient(
     },
 
     operations: {
+      'vault.reference-list': vi.fn().mockResolvedValue(VAULT_LIST),
+      'vault.grant-list': vi
+        .fn()
+        .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve(emptyVaultGrants(workspaceId))
+        ),
+      'vault.use-list': vi
+        .fn()
+        .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+          Promise.resolve(emptyVaultUses(workspaceId))
+        ),
+      'vault.reference-rebind': vi.fn().mockResolvedValue(REBIND_MUTATION),
       'workspace.export': vi.fn().mockResolvedValue(EXPORT_RESULT),
       'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN),
       'workspace.import': vi
@@ -463,7 +465,6 @@ function makeClient(
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
-
       ...overrides.operations,
       'workspace.list': vi
         .fn()
@@ -771,10 +772,10 @@ function expectVaultUiAbsent(client: CoreClient) {
   expect(screen.queryByRole('button', { name: /rebind/i })).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
   expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-  expect(client.app.listWorkspaceVaultReferences).not.toHaveBeenCalled();
-  expect(client.app.listWorkspaceVaultGrants).not.toHaveBeenCalled();
-  expect(client.app.listWorkspaceVaultUseRecords).not.toHaveBeenCalled();
-  expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+  expect(client.operations['vault.reference-list']).not.toHaveBeenCalled();
+  expect(client.operations['vault.grant-list']).not.toHaveBeenCalled();
+  expect(client.operations['vault.use-list']).not.toHaveBeenCalled();
+  expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
 }
 
 /** User-scoped import of an unrelated external-deployment export the caller may inspect. */
@@ -904,18 +905,18 @@ describe('Portability', () => {
     assertNoLeakedInternals(queryClient);
 
     await waitFor(() => {
-      expect(vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls).toEqual([
-        [WORKSPACE.id],
+      expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
       ]);
     });
     expect(vaultQueryKeys(queryClient)).toEqual([settingsKeys.vault(WORKSPACE.id)]);
     expect(
-      vi.mocked(client.app.listWorkspaceVaultReferences).mock.invocationCallOrder[0]
+      vi.mocked(client.operations['vault.reference-list']).mock.invocationCallOrder[0]
     ).toBeGreaterThan(listWorkspaces.mock.invocationCallOrder[1]);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
     expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
   });
 
   it('does not use a stored or first cached Workspace while discovery is stale-errored', async () => {
@@ -988,9 +989,12 @@ describe('Portability', () => {
       .mockReturnValueOnce(reboundVault.promise);
     const client = makeClient({
       core: {},
-      app: { listWorkspaceVaultReferences },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1050,9 +1054,17 @@ describe('Portability', () => {
     expect(retainedPortabilityState(queryClient)).not.toContain(VAULT_MATERIAL_BASE64);
     await user.click(rebindControl());
     await confirmRebind(user);
-    await waitFor(() => expect(client.app.rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(client.app.rebindWorkspaceVaultReference).mock.calls).toEqual([
-      [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, REBIND_REQUEST],
+    await waitFor(() =>
+      expect(client.operations['vault.reference-rebind']).toHaveBeenCalledTimes(1)
+    );
+    expect(vi.mocked(client.operations['vault.reference-rebind']).mock.calls).toEqual([
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          referenceId: UNBOUND_REFERENCE.referenceId,
+          ...REBIND_REQUEST,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
     expect(vaultQueryKeys(queryClient)).toEqual([settingsKeys.vault(WORKSPACE.id)]);
@@ -1063,11 +1075,14 @@ describe('Portability', () => {
     reboundVault.resolve(REBOUND_LIST);
     expect(await screen.findByText('Active', { exact: true })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /rebind/i })).toBeNull();
-    expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(client.operations['workspace.export']).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.import']).toHaveBeenCalledTimes(1);
-    expect(client.app.rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1);
+    expect(client.operations['vault.reference-rebind']).toHaveBeenCalledTimes(1);
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1084,11 +1099,10 @@ describe('Portability', () => {
     });
     const client = makeClient({
       core: {},
-      app: {
-        listWorkspaceVaultReferences: vi.fn().mockResolvedValue(EMPTY_VAULT_B),
-      },
+      app: {},
 
       operations: {
+        'vault.reference-list': vi.fn().mockResolvedValue(EMPTY_VAULT_B),
         'workspace.import-dry-run': vi.fn().mockResolvedValue(DRY_RUN_AVAILABLE),
         'workspace.list': listWorkspaces,
       },
@@ -1228,7 +1242,7 @@ describe('Portability', () => {
     expect(screen.queryByRole('button', { name: /inspect/i })).not.toBeInTheDocument();
     expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
     expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1261,7 +1275,7 @@ describe('Portability', () => {
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
     expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
@@ -1273,7 +1287,7 @@ describe('Portability', () => {
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeDisabled();
     expect(client.operations['workspace.import']).not.toHaveBeenCalled();
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1308,7 +1322,7 @@ describe('Portability', () => {
     expect(importWorkspace.mock.calls).toEqual([[acceptedImport]]);
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeEnabled();
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
@@ -1318,7 +1332,7 @@ describe('Portability', () => {
     expect(screen.getByText(COLLISION.suggestedWorkspaceId)).toBeInTheDocument();
     expect(client.operations['workspace.import-dry-run']).toHaveBeenCalledTimes(1);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1329,7 +1343,11 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(privateFailure(400, 'vault_reference_rebind_failed'));
     const client = makeClient({
-      app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+      app: {},
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'vault.reference-rebind': rebindWorkspaceVaultReference,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1347,7 +1365,13 @@ describe('Portability', () => {
     expect(alert).not.toHaveTextContent('vault_reference_rebind_failed');
     expect(vaultMaterialInput()).toHaveValue('');
     expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-      [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          referenceId: UNBOUND_REFERENCE.referenceId,
+          ...ASCII_REBIND_REQUEST,
+        },
+      ],
     ]);
     expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
@@ -1362,8 +1386,20 @@ describe('Portability', () => {
     await confirmRebind(user);
     await waitFor(() =>
       expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-        [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
-        [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+        [
+          {
+            workspaceId: WORKSPACE.id,
+            referenceId: UNBOUND_REFERENCE.referenceId,
+            ...ASCII_REBIND_REQUEST,
+          },
+        ],
+        [
+          {
+            workspaceId: WORKSPACE.id,
+            referenceId: UNBOUND_REFERENCE.referenceId,
+            ...ASCII_REBIND_REQUEST,
+          },
+        ],
       ])
     );
     expect(vaultMaterialInput()).toHaveValue('');
@@ -1383,7 +1419,11 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(privateFailure(409, 'vault_reference_not_unbound'));
     const client = makeClient({
-      app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+      app: {},
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'vault.reference-rebind': rebindWorkspaceVaultReference,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1402,10 +1442,19 @@ describe('Portability', () => {
     expect(alert).not.toHaveTextContent('vault_reference_not_unbound');
     expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-      [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          referenceId: UNBOUND_REFERENCE.referenceId,
+          ...ASCII_REBIND_REQUEST,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
-    expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(vaultQueryKeys(queryClient)).toEqual([settingsKeys.vault(WORKSPACE.id)]);
     expect(await screen.findByText('Active', { exact: true })).toBeInTheDocument();
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
@@ -1428,7 +1477,11 @@ describe('Portability', () => {
       .fn()
       .mockRejectedValue(privateFailure(404, 'vault_reference_not_found'));
     const client = makeClient({
-      app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+      app: {},
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'vault.reference-rebind': rebindWorkspaceVaultReference,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1447,10 +1500,19 @@ describe('Portability', () => {
     expect(alert).not.toHaveTextContent('vault_reference_not_found');
     expect(within(alert).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-      [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          referenceId: UNBOUND_REFERENCE.referenceId,
+          ...ASCII_REBIND_REQUEST,
+        },
+      ],
     ]);
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
-    expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE.id]]);
+    expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
     expect(vaultQueryKeys(queryClient)).toEqual([settingsKeys.vault(WORKSPACE.id)]);
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('Active', { exact: true })).not.toBeInTheDocument();
@@ -1483,7 +1545,7 @@ describe('Portability', () => {
     });
     const listWorkspaceVaultReferences = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
     const importWorkspace = vi.fn().mockImplementation((input: unknown) => {
@@ -1497,9 +1559,11 @@ describe('Portability', () => {
       .mockReturnValue(operation === 'rebind' ? pending.promise : Promise.resolve(REBIND_MUTATION));
     const client = makeClient({
       core: {},
-      app: { listWorkspaceVaultReferences, rebindWorkspaceVaultReference },
+      app: {},
 
       operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'vault.reference-rebind': rebindWorkspaceVaultReference,
         'workspace.import': importWorkspace,
         'workspace.list': listWorkspaces,
       },
@@ -1522,14 +1586,23 @@ describe('Portability', () => {
       await confirmRebind(user);
       await waitFor(() =>
         expect(rebindWorkspaceVaultReference.mock.calls).toEqual([
-          [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+          [
+            {
+              workspaceId: WORKSPACE.id,
+              referenceId: UNBOUND_REFERENCE.referenceId,
+              ...ASCII_REBIND_REQUEST,
+            },
+          ],
         ])
       );
     }
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await waitFor(() =>
-      expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE_B.id]])
+      expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+        [{ workspaceId: WORKSPACE_B.id }],
+      ])
     );
     expect(await screen.findByText(WORKSPACE_B.name, { exact: true })).toBeInTheDocument();
     if (operation === 'import') {
@@ -1589,7 +1662,10 @@ describe('Portability', () => {
     expect(within(main).queryByText('Active', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText(/couldn't rebind/i)).not.toBeInTheDocument();
     expect(screen.queryByText('portability-private failure')).not.toBeInTheDocument();
-    expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE_B.id]]);
+    expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE_B.id }],
+    ]);
     expect(importWorkspace).toHaveBeenCalledTimes(operation === 'import' ? 1 : 0);
     expect(rebindWorkspaceVaultReference).toHaveBeenCalledTimes(operation === 'rebind' ? 1 : 0);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
@@ -1609,14 +1685,17 @@ describe('Portability', () => {
     });
     const listWorkspaceVaultReferences = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
     const client = makeClient({
       core: {},
-      app: { listWorkspaceVaultReferences },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'workspace.list': listWorkspaces,
+      },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1628,7 +1707,10 @@ describe('Portability', () => {
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await waitFor(() =>
-      expect(listWorkspaceVaultReferences.mock.calls).toEqual([[WORKSPACE.id], [WORKSPACE_B.id]])
+      expect(listWorkspaceVaultReferences.mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
+        [{ workspaceId: WORKSPACE_B.id }],
+      ])
     );
     expect(screen.queryByLabelText('Vault material')).not.toBeInTheDocument();
     assertNoLeakedInternals(queryClient);
@@ -1636,7 +1718,7 @@ describe('Portability', () => {
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE.id }));
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
     expect(vaultMaterialInput()).toHaveValue('');
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     assertNoLeakedInternals(queryClient);
   });
 
@@ -1750,7 +1832,8 @@ describe('Portability', () => {
 
   it('names each Rebind control from public-schema secretKind and a per-reference discriminator', async () => {
     const client = makeClient({
-      app: { listWorkspaceVaultReferences: vi.fn().mockResolvedValue(TWO_UNBOUND_VAULT) },
+      app: {},
+      operations: { 'vault.reference-list': vi.fn().mockResolvedValue(TWO_UNBOUND_VAULT) },
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1865,13 +1948,12 @@ describe('Portability', () => {
       .mockResolvedValue(REBIND_MUTATION);
     const client = makeClient({
       operations: {
+        'vault.reference-rebind': rebindWorkspaceVaultReference,
         'workspace.export': exportWorkspace,
         'workspace.import-dry-run': dryRunWorkspaceImport,
         'workspace.import': importWorkspace,
       },
-      app: {
-        rebindWorkspaceVaultReference,
-      },
+      app: {},
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
@@ -1966,15 +2048,16 @@ describe('Portability', () => {
     const importWorkspace = vi.fn().mockReturnValue(pendingImport.promise);
     const client = makeClient({
       operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
         'workspace.import': importWorkspace,
       },
-      app: { listWorkspaceVaultReferences },
+      app: {},
     });
     const { queryClient } = renderApp('/settings/portability', client);
 
     await waitFor(() =>
-      expect(vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls).toEqual([
-        [WORKSPACE.id],
+      expect(vi.mocked(client.operations['vault.reference-list']).mock.calls).toEqual([
+        [{ workspaceId: WORKSPACE.id }],
       ])
     );
     const importNode = await screen.findByRole('region', { name: 'Import' });
@@ -1993,7 +2076,7 @@ describe('Portability', () => {
     expectReviewSummary(DRY_RUN);
     expect(screen.getByRole('button', { name: 'Import workspace' })).toBeEnabled();
     expect(client.operations['workspace.import']).not.toHaveBeenCalled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Import workspace' }));
@@ -2002,7 +2085,7 @@ describe('Portability', () => {
     expect(vi.mocked(client.operations['workspace.import']).mock.calls).toEqual([[acceptedImport]]);
     expect(importSection()).toBe(importNode);
     expect(screen.queryByText('Unbound', { exact: true })).not.toBeInTheDocument();
-    expect(client.app.listWorkspaceVaultReferences).toHaveBeenCalledTimes(1);
+    expect(client.operations['vault.reference-list']).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       pendingImport.resolve(importResultFor(acceptedImport));
@@ -2026,14 +2109,14 @@ describe('Portability', () => {
     const { queryClient } = renderApp('/settings/portability', client);
 
     expect(await screen.findByText('Unbound', { exact: true })).toBeInTheDocument();
-    await waitFor(() => expect(client.app.listWorkspaceVaultReferences).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.operations['vault.reference-list']).toHaveBeenCalledTimes(1));
     await user.click(rebindControl());
     const emptyDialog = await screen.findByRole('dialog', {
       name: new RegExp(`confirm rebind ${UNBOUND_REFERENCE.secretKind}`, 'i'),
     });
     expect(emptyDialog).toHaveTextContent(UNBOUND_REFERENCE.referenceId);
     expect(within(emptyDialog).getByRole('button', { name: 'Confirm' })).toBeDisabled();
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
     await user.click(within(emptyDialog).getByRole('button', { name: 'Cancel' }));
     await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
     const readsAfterLoad = {
@@ -2041,17 +2124,17 @@ describe('Portability', () => {
       dryRunWorkspaceImport: vi.mocked(client.operations['workspace.import-dry-run']).mock.calls
         .length,
       importWorkspace: vi.mocked(client.operations['workspace.import']).mock.calls.length,
-      listWorkspaceVaultReferences: vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls
+      listWorkspaceVaultReferences: vi.mocked(client.operations['vault.reference-list']).mock.calls
         .length,
-      listWorkspaceVaultGrants: vi.mocked(client.app.listWorkspaceVaultGrants).mock.calls.length,
-      listWorkspaceVaultUseRecords: vi.mocked(client.app.listWorkspaceVaultUseRecords).mock.calls
+      listWorkspaceVaultGrants: vi.mocked(client.operations['vault.grant-list']).mock.calls.length,
+      listWorkspaceVaultUseRecords: vi.mocked(client.operations['vault.use-list']).mock.calls
         .length,
-      rebindWorkspaceVaultReference: vi.mocked(client.app.rebindWorkspaceVaultReference).mock.calls
-        .length,
+      rebindWorkspaceVaultReference: vi.mocked(client.operations['vault.reference-rebind']).mock
+        .calls.length,
     };
     expect(readsAfterLoad.rebindWorkspaceVaultReference).toBe(0);
     await user.click(rebindControl());
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
 
     const dialog = await screen.findByRole('dialog', { name: /confirm/i });
     expect(dialog).toHaveTextContent(UNBOUND_REFERENCE.secretKind);
@@ -2071,16 +2154,16 @@ describe('Portability', () => {
     expect(vi.mocked(client.operations['workspace.import']).mock.calls.length).toBe(
       readsAfterLoad.importWorkspace
     );
-    expect(vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['vault.reference-list']).mock.calls.length).toBe(
       readsAfterLoad.listWorkspaceVaultReferences
     );
-    expect(vi.mocked(client.app.listWorkspaceVaultGrants).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['vault.grant-list']).mock.calls.length).toBe(
       readsAfterLoad.listWorkspaceVaultGrants
     );
-    expect(vi.mocked(client.app.listWorkspaceVaultUseRecords).mock.calls.length).toBe(
+    expect(vi.mocked(client.operations['vault.use-list']).mock.calls.length).toBe(
       readsAfterLoad.listWorkspaceVaultUseRecords
     );
-    expect(client.app.rebindWorkspaceVaultReference).not.toHaveBeenCalled();
+    expect(client.operations['vault.reference-rebind']).not.toHaveBeenCalled();
 
     await user.clear(vaultMaterialInput());
     await user.type(vaultMaterialInput(), ASCII_VAULT_MATERIAL);
@@ -2089,9 +2172,17 @@ describe('Portability', () => {
     expect(confirmDialog).toHaveTextContent(/becomes active/i);
     expect(confirmDialog).toHaveTextContent(/cannot be rebound again/i);
     await user.click(within(confirmDialog).getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(client.app.rebindWorkspaceVaultReference).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(client.app.rebindWorkspaceVaultReference).mock.calls).toEqual([
-      [WORKSPACE.id, UNBOUND_REFERENCE.referenceId, ASCII_REBIND_REQUEST],
+    await waitFor(() =>
+      expect(client.operations['vault.reference-rebind']).toHaveBeenCalledTimes(1)
+    );
+    expect(vi.mocked(client.operations['vault.reference-rebind']).mock.calls).toEqual([
+      [
+        {
+          workspaceId: WORKSPACE.id,
+          referenceId: UNBOUND_REFERENCE.referenceId,
+          ...ASCII_REBIND_REQUEST,
+        },
+      ],
     ]);
     expect(client.operations['workspace.export']).not.toHaveBeenCalled();
     expect(client.operations['workspace.import-dry-run']).not.toHaveBeenCalled();
@@ -2482,14 +2573,17 @@ describe('Portability', () => {
     });
     const listWorkspaceVaultReferences = vi
       .fn()
-      .mockImplementation((workspaceId: string) =>
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
         Promise.resolve(workspaceId === WORKSPACE.id ? VAULT_LIST : EMPTY_VAULT_B)
       );
     const client = makeClient({
       core: {},
-      app: { listWorkspaceVaultReferences },
+      app: {},
 
-      operations: { 'workspace.list': listWorkspaces },
+      operations: {
+        'vault.reference-list': listWorkspaceVaultReferences,
+        'workspace.list': listWorkspaces,
+      },
     });
     renderApp('/settings/portability', client);
 

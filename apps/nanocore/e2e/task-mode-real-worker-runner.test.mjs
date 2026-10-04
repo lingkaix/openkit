@@ -100,8 +100,9 @@ function createPassingTaskModeFixture(options) {
         },
       },
       core: {
-        app: {
-          getCapabilityUsage: async () => ({
+        app: {},
+        operations: {
+          'usage.read': async () => ({
             capabilityCalls,
             usageRecords: capabilityCalls.map((call) => ({
               capabilityCallId: call.id,
@@ -109,7 +110,7 @@ function createPassingTaskModeFixture(options) {
               source: 'llm-gateway-adapter-reported:cache_read',
             })),
           }),
-          listAgentEnvironmentPackageSnapshots: async () => ({
+          'environment.snapshot-list': async () => ({
             items: [
               {
                 agentSessionId,
@@ -168,7 +169,7 @@ function createPassingTaskModeFixture(options) {
               },
             ],
           }),
-          listWorkspaceRuntimeEvidence: async () => ({
+          'evidence.runtime-list': async () => ({
             runtimeEvidence: [
               {
                 agentSessionId,
@@ -184,8 +185,6 @@ function createPassingTaskModeFixture(options) {
               },
             ],
           }),
-        },
-        operations: {
           'sync.review-decide': async ({
             workspaceId: receivedWorkspaceId,
             reviewId,
@@ -200,7 +199,6 @@ function createPassingTaskModeFixture(options) {
             state: 'completed',
             turn: { id: turnId },
           }),
-
           'thread.create': async () => ({ id: threadId }),
           'thread.items': async () => ({
             items: [
@@ -241,12 +239,7 @@ function createDistinctTaskModeActorClients(options) {
   };
   const originalGetDiagnostics = fixture.clients.admin.app.getDiagnostics;
   const admin = {
-    app: {
-      getCapabilityUsage: refuse('admin client must not read product capability usage'),
-      getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics'),
-      listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
-      listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
-    },
+    app: { getDiagnostics: track(originalGetDiagnostics, adminCalls, 'getDiagnostics') },
     operations: {
       'runtime.file-create': track(
         fixture.clients.admin.operations['runtime.file-create'],
@@ -258,6 +251,9 @@ function createDistinctTaskModeActorClients(options) {
         adminCalls,
         'reload'
       ),
+      'usage.read': refuse('admin client must not read product capability usage'),
+      'environment.snapshot-list': refuse('admin client must not list AEP snapshots'),
+      'evidence.runtime-list': refuse('admin client must not list runtime evidence'),
       'sync.review-decide': refuse('admin client must not submit review cleanup'),
       'workspace.create': refuse('admin client must not create a Workspace'),
       'task.start': refuse('admin client must not start Task Mode'),
@@ -266,20 +262,20 @@ function createDistinctTaskModeActorClients(options) {
     },
   };
   product.app.getDiagnostics = refuse('product client must not serve diagnostics');
-  product.app.getCapabilityUsage = track(
-    product.app.getCapabilityUsage,
+  product.operations['usage.read'] = track(
+    product.operations['usage.read'],
     productCalls,
-    'getCapabilityUsage'
+    'usage.read'
   );
-  product.app.listAgentEnvironmentPackageSnapshots = track(
-    product.app.listAgentEnvironmentPackageSnapshots,
+  product.operations['environment.snapshot-list'] = track(
+    product.operations['environment.snapshot-list'],
     productCalls,
-    'listAgentEnvironmentPackageSnapshots'
+    'environment.snapshot-list'
   );
-  product.app.listWorkspaceRuntimeEvidence = track(
-    product.app.listWorkspaceRuntimeEvidence,
+  product.operations['evidence.runtime-list'] = track(
+    product.operations['evidence.runtime-list'],
     productCalls,
-    'listWorkspaceRuntimeEvidence'
+    'evidence.runtime-list'
   );
   product.operations['task.start'] = track(
     product.operations['task.start'],
@@ -489,9 +485,9 @@ describe('real Task Mode worker L3 test policy', () => {
   it('rejects an AEP route that differs from the preflight-derived provider identity', async () => {
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
-    const aepRead = await fixture.clients.core.app.listAgentEnvironmentPackageSnapshots(
-      fixture.ids.workspaceId
-    );
+    const aepRead = await fixture.clients.core.operations['environment.snapshot-list']({
+      workspaceId: fixture.ids.workspaceId,
+    });
     assert.throws(
       () =>
         assertTaskModeAgentEnvironment({
@@ -510,9 +506,9 @@ describe('real Task Mode worker L3 test policy', () => {
   it('pins the real Task worker to the catalog-resolved Git source and declared worktree', async () => {
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
-    const aepRead = await fixture.clients.core.app.listAgentEnvironmentPackageSnapshots(
-      fixture.ids.workspaceId
-    );
+    const aepRead = await fixture.clients.core.operations['environment.snapshot-list']({
+      workspaceId: fixture.ids.workspaceId,
+    });
     const input = {
       aepRead,
       expectedGitCommit: TASK_MODE_GIT_COMMIT,
@@ -723,8 +719,8 @@ describe('real Task Mode worker L3 test policy', () => {
       const evidenceDir = join(tempRoot, 'evidence');
       const workerImageRef = 'example.invalid/openkit-worker:test';
       const fixture = createPassingTaskModeFixture({ workerImageRef });
-      const originalListEvidence = fixture.clients.core.app.listWorkspaceRuntimeEvidence;
-      fixture.clients.core.app.listWorkspaceRuntimeEvidence = async () => {
+      const originalListEvidence = fixture.clients.core.operations['evidence.runtime-list'];
+      fixture.clients.core.operations['evidence.runtime-list'] = async () => {
         const value = await originalListEvidence();
         return {
           runtimeEvidence: value.runtimeEvidence.map((record) => ({
@@ -759,14 +755,14 @@ describe('real Task Mode worker L3 test policy', () => {
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
     const derivedProviderId = 'a1-openai-codex';
-    const originalListAep = fixture.clients.core.app.listAgentEnvironmentPackageSnapshots;
-    fixture.clients.core.app.listAgentEnvironmentPackageSnapshots = async (...args) => {
+    const originalListAep = fixture.clients.core.operations['environment.snapshot-list'];
+    fixture.clients.core.operations['environment.snapshot-list'] = async (...args) => {
       const aepRead = await originalListAep(...args);
       aepRead.items[0].snapshot.llm.routes[0].providerInstanceId = derivedProviderId;
       return aepRead;
     };
-    const originalListEvidence = fixture.clients.core.app.listWorkspaceRuntimeEvidence;
-    fixture.clients.core.app.listWorkspaceRuntimeEvidence = async () => {
+    const originalListEvidence = fixture.clients.core.operations['evidence.runtime-list'];
+    fixture.clients.core.operations['evidence.runtime-list'] = async () => {
       const value = await originalListEvidence();
       return {
         runtimeEvidence: value.runtimeEvidence.map((record) => ({
@@ -823,10 +819,10 @@ describe('real Task Mode worker L3 test policy', () => {
         new Set([
           'createThread',
           'workspace.create',
-          'getCapabilityUsage',
-          'listAgentEnvironmentPackageSnapshots',
+          'usage.read',
+          'environment.snapshot-list',
           'listThreadItems',
-          'listWorkspaceRuntimeEvidence',
+          'evidence.runtime-list',
           'startTaskMode',
           'sync.review-decide',
         ])
@@ -1390,10 +1386,12 @@ describe('real Task Mode worker L3 test policy', () => {
     const evidenceDir = join(tempRoot, 'evidence');
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
-    const listed = await fixture.clients.core.app.listWorkspaceRuntimeEvidence();
+    const listed = await fixture.clients.core.operations['evidence.runtime-list']({
+      workspaceId: undefined,
+    });
     const turnEvidence = listed.runtimeEvidence[0];
     let runtimeEvidenceCalls = 0;
-    fixture.clients.core.app.listWorkspaceRuntimeEvidence = async () => {
+    fixture.clients.core.operations['evidence.runtime-list'] = async () => {
       runtimeEvidenceCalls += 1;
       return { runtimeEvidence: [turnEvidence, { ...turnEvidence, turnId: 'turn_other' }] };
     };
@@ -1433,9 +1431,11 @@ describe('real Task Mode worker L3 test policy', () => {
     const evidenceDir = join(tempRoot, 'evidence');
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
-    const listed = await fixture.clients.core.app.listWorkspaceRuntimeEvidence();
+    const listed = await fixture.clients.core.operations['evidence.runtime-list']({
+      workspaceId: undefined,
+    });
     let runtimeEvidenceCalls = 0;
-    fixture.clients.core.app.listWorkspaceRuntimeEvidence = async () => {
+    fixture.clients.core.operations['evidence.runtime-list'] = async () => {
       runtimeEvidenceCalls += 1;
       return listed;
     };
@@ -1474,7 +1474,7 @@ describe('real Task Mode worker L3 test policy', () => {
     const workerImageRef = 'example.invalid/openkit-worker:test';
     const fixture = createPassingTaskModeFixture({ workerImageRef });
     let runtimeEvidenceCalls = 0;
-    fixture.clients.core.app.listWorkspaceRuntimeEvidence = async () => {
+    fixture.clients.core.operations['evidence.runtime-list'] = async () => {
       runtimeEvidenceCalls += 1;
       throw new Error('Runtime evidence read failed.');
     };
@@ -1619,7 +1619,7 @@ describe('real Task Mode worker L3 test policy', () => {
         workerImageRef,
       });
       if (reviewPath === 'assertion failure') {
-        fixture.clients.core.app.getCapabilityUsage = async () => ({
+        fixture.clients.core.operations['usage.read'] = async () => ({
           capabilityCalls: [],
           usageRecords: [],
         });

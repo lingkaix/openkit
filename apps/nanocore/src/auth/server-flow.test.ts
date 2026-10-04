@@ -405,8 +405,11 @@ describe('server auth flow', () => {
         workspaceId: firstWorkspace.id,
       });
       const crossUserVaultReferences = await app.request(
-        `/api/app/workspaces/${firstWorkspace.id}/vault/references`,
-        { headers: { cookie: secondCookie } }
+        ...operationRequest(
+          'vault.reference-list',
+          { workspaceId: firstWorkspace.id },
+          { headers: { cookie: secondCookie } }
+        )
       );
 
       expect(crossUserVaultReferences.status).toBe(403);

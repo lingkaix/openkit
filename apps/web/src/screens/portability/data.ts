@@ -311,10 +311,9 @@ export function useImportWorkspaceArchive() {
 /**
  * Rebinds one unbound vault reference, then rereads the shared Settings Vault owner.
  *
- * Vault material is held in an ephemeral ref scoped to one workspace and reference
- * and is never copied into TanStack mutation variables or cache.
+ * Vault material is held in an ephemeral ref scoped to one workspace and reference and is never copied into TanStack mutation variables or cache.
  *
- * @returns Mutation over `rebindWorkspaceVaultReference` plus a submit helper.
+ * @returns Mutation over `client.operations['vault.reference-rebind']` plus a submit helper.
  */
 export function useRebindWorkspaceVaultReference() {
   const client = useCoreClient();
@@ -331,7 +330,9 @@ export function useRebindWorkspaceVaultReference() {
       ) {
         throw new Error('Vault material is no longer available.');
       }
-      return client.app.rebindWorkspaceVaultReference(target.workspaceId, target.referenceId, {
+      return client.operations['vault.reference-rebind']({
+        workspaceId: target.workspaceId,
+        referenceId: target.referenceId,
         materialBase64: prepared.materialBase64,
       });
     },

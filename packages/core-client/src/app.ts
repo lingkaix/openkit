@@ -9,16 +9,12 @@ import {
   ApplyAdministrationConfigurationRequestSchema,
   type ApplyAdministrationConfigurationResponse,
   ApplyAdministrationConfigurationResponseSchema,
-  type AppSearchResponse,
-  AppSearchResponseSchema,
   type AppUpdateStatusResponse,
   AppUpdateStatusResponseSchema,
   type BindThreadMaterialRequest,
   BindThreadMaterialRequestSchema,
   type BindThreadMaterialResponse,
   BindThreadMaterialResponseSchema,
-  type CapabilityUsageResponse,
-  CapabilityUsageResponseSchema,
   type ConsumeOpenKitBootstrapTokenRequest,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   type ConsumeOpenKitBootstrapTokenResponse,
@@ -31,16 +27,10 @@ import {
   CreateWorkspaceMaterialRequestSchema,
   type CreateWorkspaceMaterialResponse,
   CreateWorkspaceMaterialResponseSchema,
-  type CreateWorkspaceVaultGrantRequest,
-  CreateWorkspaceVaultGrantRequestSchema,
-  type CreateWorkspaceVaultSecretRequest,
-  CreateWorkspaceVaultSecretRequestSchema,
   type ExcludeThreadMaterialRequest,
   ExcludeThreadMaterialRequestSchema,
   type ExcludeThreadMaterialResponse,
   ExcludeThreadMaterialResponseSchema,
-  type GetAgentEnvironmentPackageSnapshotResponse,
-  GetAgentEnvironmentPackageSnapshotResponseSchema,
   type GetThreadMaterialResponse,
   GetThreadMaterialResponseSchema,
   type GetWorkerEnvironmentStatusResponse,
@@ -54,42 +44,18 @@ import {
   type KnowledgeManagerHealthCheckRequest,
   type KnowledgeManagerPrepareContextRequest,
   type KnowledgeManagerSuggestRepairRequest,
-  type ListAgentEnvironmentPackageSnapshotsResponse,
-  ListAgentEnvironmentPackageSnapshotsResponseSchema,
   type ListMyAdminAccessTokensResponse,
   ListMyAdminAccessTokensResponseSchema,
   type ListOpenKitAccessTokensResponse,
   ListOpenKitAccessTokensResponseSchema,
-  type ListServerAuditEventsResponse,
-  ListServerAuditEventsResponseSchema,
-  type ListServerPermissionDecisionsResponse,
-  ListServerPermissionDecisionsResponseSchema,
-  type ListServerVaultUseRecordsResponse,
-  ListServerVaultUseRecordsResponseSchema,
   type ListWorkerEnvironmentsQuery,
   ListWorkerEnvironmentsQuerySchema,
   type ListWorkerEnvironmentsResponse,
   ListWorkerEnvironmentsResponseSchema,
-  type ListWorkspaceAuditEventsResponse,
-  ListWorkspaceAuditEventsResponseSchema,
-  type ListWorkspaceEvidenceBundlesResponse,
-  ListWorkspaceEvidenceBundlesResponseSchema,
   type ListWorkspaceMaterialRevisionsResponse,
   ListWorkspaceMaterialRevisionsResponseSchema,
   type ListWorkspaceMaterialsResponse,
   ListWorkspaceMaterialsResponseSchema,
-  type ListWorkspacePermissionDecisionsResponse,
-  ListWorkspacePermissionDecisionsResponseSchema,
-  type ListWorkspaceRuntimeEvidenceResponse,
-  ListWorkspaceRuntimeEvidenceResponseSchema,
-  type ListWorkspaceVaultGrantsResponse,
-  ListWorkspaceVaultGrantsResponseSchema,
-  type ListWorkspaceVaultInjectionPlansResponse,
-  ListWorkspaceVaultInjectionPlansResponseSchema,
-  type ListWorkspaceVaultInjectionReceiptsResponse,
-  ListWorkspaceVaultInjectionReceiptsResponseSchema,
-  type ListWorkspaceVaultUseRecordsResponse,
-  ListWorkspaceVaultUseRecordsResponseSchema,
   type PrepareAppUpdateRequest,
   PrepareAppUpdateRequestSchema,
   type PrepareAppUpdateResponse,
@@ -119,8 +85,6 @@ import {
   RotateOpenKitAccessTokenRequestSchema,
   type RotateOpenKitAccessTokenResponse,
   RotateOpenKitAccessTokenResponseSchema,
-  type RotateWorkspaceVaultSecretRequest,
-  RotateWorkspaceVaultSecretRequestSchema,
   type SaveWorkspaceMaterialRevisionRequest,
   SaveWorkspaceMaterialRevisionRequestSchema,
   type SaveWorkspaceMaterialRevisionResponse,
@@ -133,10 +97,6 @@ import {
   SetMyAdminAccessTokenDefaultRequestSchema,
   type SetMyAdminAccessTokenDefaultResponse,
   SetMyAdminAccessTokenDefaultResponseSchema,
-  type SetProviderApiKeyRequest,
-  SetProviderApiKeyRequestSchema,
-  type SetProviderApiKeyResponse,
-  SetProviderApiKeyResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
   type StartAppUpdateRequest,
@@ -151,33 +111,13 @@ import {
   type UnbindThreadMaterialResponse,
   UnbindThreadMaterialResponseSchema,
   type VaultAdminBootstrapCodexAuthJsonRequest,
-  VaultAdminBootstrapCodexAuthJsonRequestSchema,
-  type VaultAdminBootstrapCodexAuthJsonResponse,
-  VaultAdminBootstrapCodexAuthJsonResponseSchema,
-  type VaultAdminListWorkspaceReferencesResponse,
-  VaultAdminListWorkspaceReferencesResponseSchema,
-  type VaultAdminLockResponse,
-  VaultAdminLockResponseSchema,
-  type VaultAdminRebindWorkspaceReferenceRequest,
-  VaultAdminRebindWorkspaceReferenceRequestSchema,
-  type VaultAdminRebindWorkspaceReferenceResponse,
-  VaultAdminRebindWorkspaceReferenceResponseSchema,
-  type VaultAdminStatusResponse,
-  VaultAdminStatusResponseSchema,
   type VaultAdminUnlockRequest,
-  VaultAdminUnlockRequestSchema,
-  type VaultAdminUnlockResponse,
-  VaultAdminUnlockResponseSchema,
-  type VaultAdminWorkspaceReference,
-  VaultAdminWorkspaceReferenceSchema,
   type WorkspaceImportDryRunResponse,
   WorkspaceImportDryRunResponseSchema,
   type WorkspaceImportResponse,
   WorkspaceImportResponseSchema,
   type WorkspaceSharingError,
   WorkspaceSharingErrorSchema,
-  type WorkspaceVaultGrant,
-  WorkspaceVaultGrantSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { ApiCallError } from './errors.js';
@@ -360,22 +300,8 @@ export interface AppApiClient {
     materialId: string,
     input: RestoreThreadMaterialInput
   ): Promise<RestoreThreadMaterialResponse>;
-  /** Lists durable Agent Environment Package snapshots for one workspace. */
-  listAgentEnvironmentPackageSnapshots(
-    workspaceId: string
-  ): Promise<ListAgentEnvironmentPackageSnapshotsResponse>;
-  /** Reads one durable Agent Environment Package snapshot by id. */
-  getAgentEnvironmentPackageSnapshot(
-    workspaceId: string,
-    snapshotId: string
-  ): Promise<GetAgentEnvironmentPackageSnapshotResponse>;
   /** Reads Settings diagnostics. */
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
-  /** Stores or replaces one authored provider profile's Vault-backed API key. */
-  setProviderApiKey(
-    providerId: string,
-    input: SetProviderApiKeyRequest
-  ): Promise<SetProviderApiKeyResponse>;
   /** Reads setup diagnostics. */
   getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
   /** Prepares one closed App-update source without replacing the running App. */
@@ -407,55 +333,6 @@ export interface AppApiClient {
   setMyAdminAccessTokenDefault(
     input: SetMyAdminAccessTokenDefaultInput
   ): Promise<SetMyAdminAccessTokenDefaultResponse>;
-  /** Creates a workspace secret using request-only material. */
-  createWorkspaceVaultSecret(
-    workspaceId: string,
-    input: CreateWorkspaceVaultSecretRequest
-  ): Promise<VaultAdminWorkspaceReference>;
-  /** Rotates material without changing reference or grant identity. */
-  rotateWorkspaceVaultSecret(
-    workspaceId: string,
-    referenceId: string,
-    input: RotateWorkspaceVaultSecretRequest
-  ): Promise<VaultAdminWorkspaceReference>;
-  /** Destroys material and revokes dependent grants. */
-  revokeWorkspaceVaultSecret(
-    workspaceId: string,
-    referenceId: string
-  ): Promise<VaultAdminWorkspaceReference>;
-  /** Creates a workspace grant for approved host-side Git push. */
-  createWorkspaceVaultGrant(
-    workspaceId: string,
-    input: CreateWorkspaceVaultGrantRequest
-  ): Promise<WorkspaceVaultGrant>;
-  /** Revokes a workspace grant and dependent injection state. */
-  revokeWorkspaceVaultGrant(workspaceId: string, grantId: string): Promise<WorkspaceVaultGrant>;
-  /** Reads redacted vault admin status. */
-  getVaultAdminStatus(): Promise<VaultAdminStatusResponse>;
-  /** Unlocks the configured vault backend. */
-  unlockVaultAdminBackend(input: VaultAdminUnlockInput): Promise<VaultAdminUnlockResponse>;
-  /** Locks the configured vault backend. */
-  lockVaultAdminBackend(): Promise<VaultAdminLockResponse>;
-  /** Bootstraps Codex auth JSON into the unlocked vault. */
-  bootstrapCodexAuthJsonVaultReference(
-    input: VaultAdminBootstrapCodexAuthJsonInput
-  ): Promise<VaultAdminBootstrapCodexAuthJsonResponse>;
-  /** Reads workspace capability-call and usage evidence. */
-  getCapabilityUsage(workspaceId: string): Promise<CapabilityUsageResponse>;
-  /** Lists workspace evidence bundles. */
-  listWorkspaceEvidenceBundles(workspaceId: string): Promise<ListWorkspaceEvidenceBundlesResponse>;
-  /** Lists workspace runtime evidence. */
-  listWorkspaceRuntimeEvidence(workspaceId: string): Promise<ListWorkspaceRuntimeEvidenceResponse>;
-  /** Lists workspace audit events. */
-  listWorkspaceAuditEvents(workspaceId: string): Promise<ListWorkspaceAuditEventsResponse>;
-  /** Lists server audit events. */
-  listServerAuditEvents(): Promise<ListServerAuditEventsResponse>;
-  /** Lists workspace permission decisions. */
-  listWorkspacePermissionDecisions(
-    workspaceId: string
-  ): Promise<ListWorkspacePermissionDecisionsResponse>;
-  /** Lists server permission decisions. */
-  listServerPermissionDecisions(): Promise<ListServerPermissionDecisionsResponse>;
   /** Downloads one verified Workspace export as a raw archive stream. */
   downloadWorkspaceExportArchive(
     workspaceId: string,
@@ -465,32 +342,6 @@ export interface AppApiClient {
   dryRunWorkspaceArchiveImport(body: BodyInit): Promise<WorkspaceImportDryRunResponse>;
   /** Imports one raw Workspace archive stream with a caller-selected or generated request id. */
   importWorkspaceArchive(body: BodyInit, requestId?: string): Promise<WorkspaceImportResponse>;
-  /** Lists redacted workspace vault references. */
-  listWorkspaceVaultReferences(
-    workspaceId: string
-  ): Promise<VaultAdminListWorkspaceReferencesResponse>;
-  /** Lists non-secret workspace vault grants. */
-  listWorkspaceVaultGrants(workspaceId: string): Promise<ListWorkspaceVaultGrantsResponse>;
-  /** Lists non-secret workspace injection plans. */
-  listWorkspaceVaultInjectionPlans(
-    workspaceId: string
-  ): Promise<ListWorkspaceVaultInjectionPlansResponse>;
-  /** Lists non-secret workspace injection receipts. */
-  listWorkspaceVaultInjectionReceipts(
-    workspaceId: string
-  ): Promise<ListWorkspaceVaultInjectionReceiptsResponse>;
-  /** Lists redacted workspace vault use records. */
-  listWorkspaceVaultUseRecords(workspaceId: string): Promise<ListWorkspaceVaultUseRecordsResponse>;
-  /** Lists redacted server vault use records. */
-  listServerVaultUseRecords(): Promise<ListServerVaultUseRecordsResponse>;
-  /** Rebinds one imported workspace vault reference to local vault material. */
-  rebindWorkspaceVaultReference(
-    workspaceId: string,
-    referenceId: string,
-    input: VaultAdminRebindWorkspaceReferenceRequest
-  ): Promise<VaultAdminRebindWorkspaceReferenceResponse>;
-  /** Searches App API read models. */
-  search(query: string): Promise<AppSearchResponse>;
 }
 
 /** Creates the NanoCore App API client. */
@@ -630,23 +481,7 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RestoreThreadMaterialResponseSchema
       );
     },
-    listAgentEnvironmentPackageSnapshots: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/agent-environment/snapshots`,
-        ListAgentEnvironmentPackageSnapshotsResponseSchema
-      ),
-    getAgentEnvironmentPackageSnapshot: (workspaceId, snapshotId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/agent-environment/snapshots/${snapshotId}`,
-        GetAgentEnvironmentPackageSnapshotResponseSchema
-      ),
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
-    setProviderApiKey: (providerId, input) =>
-      transport.putJson(
-        `/api/app/providers/${encodeURIComponent(providerId)}/api-key`,
-        SetProviderApiKeyRequestSchema.parse(input),
-        SetProviderApiKeyResponseSchema
-      ),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
     prepareAppUpdate: (input) =>
@@ -700,84 +535,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         SetMyAdminAccessTokenDefaultRequestSchema.parse(input),
         SetMyAdminAccessTokenDefaultResponseSchema
       ),
-    createWorkspaceVaultSecret: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets`,
-        CreateWorkspaceVaultSecretRequestSchema.parse(input),
-        VaultAdminWorkspaceReferenceSchema
-      ),
-    rotateWorkspaceVaultSecret: (workspaceId, referenceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets/${encodeURIComponent(referenceId)}/rotate`,
-        RotateWorkspaceVaultSecretRequestSchema.parse(input),
-        VaultAdminWorkspaceReferenceSchema
-      ),
-    revokeWorkspaceVaultSecret: (workspaceId, referenceId) =>
-      transport.postJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/secrets/${encodeURIComponent(referenceId)}/revoke`,
-        {},
-        VaultAdminWorkspaceReferenceSchema
-      ),
-    createWorkspaceVaultGrant: (workspaceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/grants`,
-        CreateWorkspaceVaultGrantRequestSchema.parse(input),
-        WorkspaceVaultGrantSchema
-      ),
-    revokeWorkspaceVaultGrant: (workspaceId, grantId) =>
-      transport.postJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/vault/grants/${encodeURIComponent(grantId)}/revoke`,
-        {},
-        WorkspaceVaultGrantSchema
-      ),
-    getVaultAdminStatus: () =>
-      transport.getJson('/api/app/vault/status', VaultAdminStatusResponseSchema),
-    unlockVaultAdminBackend: (input) =>
-      transport.postJson(
-        '/api/app/vault/unlock',
-        VaultAdminUnlockRequestSchema.parse(input),
-        VaultAdminUnlockResponseSchema
-      ),
-    lockVaultAdminBackend: () =>
-      transport.postJson('/api/app/vault/lock', {}, VaultAdminLockResponseSchema),
-    bootstrapCodexAuthJsonVaultReference: (input) =>
-      transport.postJson(
-        '/api/app/vault/bootstrap/codex-auth-json',
-        VaultAdminBootstrapCodexAuthJsonRequestSchema.parse(input),
-        VaultAdminBootstrapCodexAuthJsonResponseSchema
-      ),
-    getCapabilityUsage: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/capability-usage`,
-        CapabilityUsageResponseSchema
-      ),
-    listWorkspaceEvidenceBundles: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/evidence-bundles`,
-        ListWorkspaceEvidenceBundlesResponseSchema
-      ),
-    listWorkspaceRuntimeEvidence: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/runtime-evidence`,
-        ListWorkspaceRuntimeEvidenceResponseSchema
-      ),
-    listWorkspaceAuditEvents: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/audit/events`,
-        ListWorkspaceAuditEventsResponseSchema
-      ),
-    listServerAuditEvents: () =>
-      transport.getJson('/api/app/audit/events', ListServerAuditEventsResponseSchema),
-    listWorkspacePermissionDecisions: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/permission-decisions`,
-        ListWorkspacePermissionDecisionsResponseSchema
-      ),
-    listServerPermissionDecisions: () =>
-      transport.getJson(
-        '/api/app/permission-decisions',
-        ListServerPermissionDecisionsResponseSchema
-      ),
     downloadWorkspaceExportArchive: (workspaceId, exportId) =>
       transport.getStream(
         `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,
@@ -800,40 +557,5 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         },
         WorkspaceImportResponseSchema
       ),
-    listWorkspaceVaultReferences: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/vault/references`,
-        VaultAdminListWorkspaceReferencesResponseSchema
-      ),
-    listWorkspaceVaultGrants: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/vault/grants`,
-        ListWorkspaceVaultGrantsResponseSchema
-      ),
-    listWorkspaceVaultInjectionPlans: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/vault/injection-plans`,
-        ListWorkspaceVaultInjectionPlansResponseSchema
-      ),
-    listWorkspaceVaultInjectionReceipts: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/vault/injection-receipts`,
-        ListWorkspaceVaultInjectionReceiptsResponseSchema
-      ),
-    listWorkspaceVaultUseRecords: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${workspaceId}/vault/use-records`,
-        ListWorkspaceVaultUseRecordsResponseSchema
-      ),
-    listServerVaultUseRecords: () =>
-      transport.getJson('/api/app/vault/use-records', ListServerVaultUseRecordsResponseSchema),
-    rebindWorkspaceVaultReference: (workspaceId, referenceId, input) =>
-      transport.postJson(
-        `/api/app/workspaces/${workspaceId}/vault/references/${referenceId}/rebind`,
-        VaultAdminRebindWorkspaceReferenceRequestSchema.parse(input),
-        VaultAdminRebindWorkspaceReferenceResponseSchema
-      ),
-    search: (query) =>
-      transport.getJson(`/api/app/search?q=${encodeURIComponent(query)}`, AppSearchResponseSchema),
   };
 }

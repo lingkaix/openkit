@@ -740,34 +740,7 @@ function makeClient(
       listKnowledge: vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.core,
     },
-    app: {
-      getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS),
-      setProviderApiKey: vi
-        .fn()
-        .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
-
-      getVaultAdminStatus: vi.fn().mockResolvedValue(DEPLOYMENT_ADMIN_VAULT_STATUS),
-      listWorkspaceVaultReferences: vi.fn().mockResolvedValue(VAULT_REFERENCES),
-      listWorkspaceVaultGrants: vi.fn().mockResolvedValue(VAULT_GRANTS),
-      listWorkspaceVaultUseRecords: vi.fn().mockResolvedValue(VAULT_USE_RECORDS),
-      listWorkspaceVaultInjectionPlans: vi.fn().mockResolvedValue(VAULT_INJECTION_PLANS),
-      listWorkspaceVaultInjectionReceipts: vi.fn().mockResolvedValue(VAULT_INJECTION_RECEIPTS),
-      listServerVaultUseRecords: vi.fn(),
-      unlockVaultAdminBackend: vi.fn(),
-      lockVaultAdminBackend: vi.fn(),
-      bootstrapCodexAuthJsonVaultReference: vi.fn(),
-      rebindWorkspaceVaultReference: vi.fn(),
-      getCapabilityUsage: vi.fn().mockResolvedValue(CAPABILITY_USAGE),
-      listWorkspaceAuditEvents: vi.fn().mockResolvedValue(WORKSPACE_AUDIT_EVENTS),
-      listServerAuditEvents: vi.fn().mockResolvedValue(SERVER_AUDIT_EVENTS),
-      listWorkspacePermissionDecisions: vi.fn().mockResolvedValue(WORKSPACE_PERMISSION_DECISIONS),
-      listServerPermissionDecisions: vi.fn(),
-      listWorkspaceEvidenceBundles: vi.fn().mockResolvedValue(EVIDENCE_BUNDLES),
-      listWorkspaceRuntimeEvidence: vi.fn().mockResolvedValue(RUNTIME_EVIDENCE),
-      listAgentEnvironmentPackageSnapshots: vi.fn().mockResolvedValue(AEP_SNAPSHOTS),
-      getAgentEnvironmentPackageSnapshot: vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL),
-      ...overrides.app,
-    },
+    app: { getDiagnostics: vi.fn().mockResolvedValue(DIAGNOSTICS), ...overrides.app },
     auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn() } },
     capabilities: {
       refresh: vi.fn(),
@@ -854,6 +827,29 @@ function makeClient(
           ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
             Promise.resolve(providerId === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
         ),
+      'vault.provider-api-key-set': vi
+        .fn()
+        .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
+      'vault.status': vi.fn().mockResolvedValue(DEPLOYMENT_ADMIN_VAULT_STATUS),
+      'vault.reference-list': vi.fn().mockResolvedValue(VAULT_REFERENCES),
+      'vault.grant-list': vi.fn().mockResolvedValue(VAULT_GRANTS),
+      'vault.use-list': vi.fn().mockResolvedValue(VAULT_USE_RECORDS),
+      'vault.injection-plan-list': vi.fn().mockResolvedValue(VAULT_INJECTION_PLANS),
+      'vault.injection-receipt-list': vi.fn().mockResolvedValue(VAULT_INJECTION_RECEIPTS),
+      'vault.server-use-list': vi.fn(),
+      'vault.unlock': vi.fn(),
+      'vault.lock': vi.fn(),
+      'vault.bootstrap-codex-auth': vi.fn(),
+      'vault.reference-rebind': vi.fn(),
+      'usage.read': vi.fn().mockResolvedValue(CAPABILITY_USAGE),
+      'audit.workspace-list': vi.fn().mockResolvedValue(WORKSPACE_AUDIT_EVENTS),
+      'audit.server-list': vi.fn().mockResolvedValue(SERVER_AUDIT_EVENTS),
+      'permission.workspace-list': vi.fn().mockResolvedValue(WORKSPACE_PERMISSION_DECISIONS),
+      'permission.server-list': vi.fn(),
+      'evidence.bundle-list': vi.fn().mockResolvedValue(EVIDENCE_BUNDLES),
+      'evidence.runtime-list': vi.fn().mockResolvedValue(RUNTIME_EVIDENCE),
+      'environment.snapshot-list': vi.fn().mockResolvedValue(AEP_SNAPSHOTS),
+      'environment.snapshot-read': vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.read': vi.fn().mockResolvedValue(WORKSPACE),
       'workspace.update': vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
@@ -1196,23 +1192,23 @@ describe('Vault settings (board 15)', () => {
     expect(screen.queryAllByRole('button', { name: /more actions/i })).toHaveLength(0);
 
     for (const excludedRead of [
-      client.app.getVaultAdminStatus,
-      client.app.listServerVaultUseRecords,
+      client.operations['vault.status'],
+      client.operations['vault.server-use-list'],
     ]) {
       expect(excludedRead).not.toHaveBeenCalled();
     }
     expect({
-      plans: vi.mocked(client.app.listWorkspaceVaultInjectionPlans).mock.calls,
-      receipts: vi.mocked(client.app.listWorkspaceVaultInjectionReceipts).mock.calls,
+      plans: vi.mocked(client.operations['vault.injection-plan-list']).mock.calls,
+      receipts: vi.mocked(client.operations['vault.injection-receipt-list']).mock.calls,
     }).toEqual({
-      plans: [[WORKSPACE.id]],
-      receipts: [[WORKSPACE.id]],
+      plans: [[{ workspaceId: WORKSPACE.id }]],
+      receipts: [[{ workspaceId: WORKSPACE.id }]],
     });
     for (const mutation of [
-      client.app.unlockVaultAdminBackend,
-      client.app.lockVaultAdminBackend,
-      client.app.bootstrapCodexAuthJsonVaultReference,
-      client.app.rebindWorkspaceVaultReference,
+      client.operations['vault.unlock'],
+      client.operations['vault.lock'],
+      client.operations['vault.bootstrap-codex-auth'],
+      client.operations['vault.reference-rebind'],
     ]) {
       expect(mutation).not.toHaveBeenCalled();
     }
@@ -1246,29 +1242,29 @@ describe('Vault settings (board 15)', () => {
     expect(await screen.findByText('Done')).toBeInTheDocument();
     const validatedAt = listWorkspaces.mock.invocationCallOrder[1];
     expect({
-      deploymentAdminStatusCalls: vi.mocked(client.app.getVaultAdminStatus).mock.calls,
+      deploymentAdminStatusCalls: vi.mocked(client.operations['vault.status']).mock.calls,
       references: {
-        calls: vi.mocked(client.app.listWorkspaceVaultReferences).mock.calls,
+        calls: vi.mocked(client.operations['vault.reference-list']).mock.calls,
         afterValidation:
-          vi.mocked(client.app.listWorkspaceVaultReferences).mock.invocationCallOrder[0] >
+          vi.mocked(client.operations['vault.reference-list']).mock.invocationCallOrder[0] >
           validatedAt,
       },
       grants: {
-        calls: vi.mocked(client.app.listWorkspaceVaultGrants).mock.calls,
+        calls: vi.mocked(client.operations['vault.grant-list']).mock.calls,
         afterValidation:
-          vi.mocked(client.app.listWorkspaceVaultGrants).mock.invocationCallOrder[0] > validatedAt,
+          vi.mocked(client.operations['vault.grant-list']).mock.invocationCallOrder[0] >
+          validatedAt,
       },
       uses: {
-        calls: vi.mocked(client.app.listWorkspaceVaultUseRecords).mock.calls,
+        calls: vi.mocked(client.operations['vault.use-list']).mock.calls,
         afterValidation:
-          vi.mocked(client.app.listWorkspaceVaultUseRecords).mock.invocationCallOrder[0] >
-          validatedAt,
+          vi.mocked(client.operations['vault.use-list']).mock.invocationCallOrder[0] > validatedAt,
       },
     }).toEqual({
       deploymentAdminStatusCalls: [],
-      references: { calls: [[WORKSPACE.id]], afterValidation: true },
-      grants: { calls: [[WORKSPACE.id]], afterValidation: true },
-      uses: { calls: [[WORKSPACE.id]], afterValidation: true },
+      references: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
+      grants: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
+      uses: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
     });
   });
 
@@ -1277,10 +1273,11 @@ describe('Vault settings (board 15)', () => {
     renderApp(
       '/workspace/vault',
       makeClient({
-        app: {
-          listWorkspaceVaultReferences: vi.fn().mockReturnValue(pending),
-          listWorkspaceVaultGrants: vi.fn().mockReturnValue(pending),
-          listWorkspaceVaultUseRecords: vi.fn().mockReturnValue(pending),
+        app: {},
+        operations: {
+          'vault.reference-list': vi.fn().mockReturnValue(pending),
+          'vault.grant-list': vi.fn().mockReturnValue(pending),
+          'vault.use-list': vi.fn().mockReturnValue(pending),
         },
       })
     );
@@ -1290,14 +1287,11 @@ describe('Vault settings (board 15)', () => {
 
   it('shows an explicit empty state for each Workspace Vault record family', async () => {
     const client = makeClient({
-      app: {
-        listWorkspaceVaultReferences: vi
-          .fn()
-          .mockResolvedValue({ workspaceId: WORKSPACE.id, items: [] }),
-        listWorkspaceVaultGrants: vi
-          .fn()
-          .mockResolvedValue({ workspaceId: WORKSPACE.id, items: [] }),
-        listWorkspaceVaultUseRecords: vi
+      app: {},
+      operations: {
+        'vault.reference-list': vi.fn().mockResolvedValue({ workspaceId: WORKSPACE.id, items: [] }),
+        'vault.grant-list': vi.fn().mockResolvedValue({ workspaceId: WORKSPACE.id, items: [] }),
+        'vault.use-list': vi
           .fn()
           .mockResolvedValue({ workspaceId: WORKSPACE.id, vaultUseRecords: [] }),
       },
@@ -1317,7 +1311,10 @@ describe('Vault settings (board 15)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('workspace-vault-private failure'))
       .mockResolvedValue(VAULT_REFERENCES);
-    renderApp('/workspace/vault', makeClient({ app: { listWorkspaceVaultReferences } }));
+    renderApp(
+      '/workspace/vault',
+      makeClient({ app: {}, operations: { 'vault.reference-list': listWorkspaceVaultReferences } })
+    );
 
     const alert = await screen.findByRole('alert');
     expect(alert).not.toHaveTextContent('workspace-vault-private failure');
@@ -1339,7 +1336,13 @@ describe('Vault settings (board 15)', () => {
         })
       )
       .mockResolvedValue(VAULT_INJECTION_PLANS);
-    renderApp('/workspace/vault', makeClient({ app: { listWorkspaceVaultInjectionPlans } }));
+    renderApp(
+      '/workspace/vault',
+      makeClient({
+        app: {},
+        operations: { 'vault.injection-plan-list': listWorkspaceVaultInjectionPlans },
+      })
+    );
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load/i);
@@ -1348,7 +1351,7 @@ describe('Vault settings (board 15)', () => {
     expect(screen.queryByText('plan_release_worker', { exact: true })).not.toBeInTheDocument();
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledTimes(2));
-    expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id });
     const plans = await screen.findByRole('region', { name: 'Injection plans' });
     expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
     const references = screen.getByRole('region', { name: 'References' });
@@ -1391,36 +1394,36 @@ describe('Debug settings (board 11)', () => {
     expect(screen.getByText('aepsnap_1', { exact: true })).toBeInTheDocument();
     expect(screen.queryByText('coder', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('aepkg_1', { exact: true })).not.toBeInTheDocument();
-    expect(client.app.getAgentEnvironmentPackageSnapshot).not.toHaveBeenCalled();
+    expect(client.operations['environment.snapshot-read']).not.toHaveBeenCalled();
 
     const snapshotButton = screen.getByRole('button', { name: 'aepsnap_1' });
     expect(snapshotButton).not.toHaveAttribute('aria-pressed', 'true');
     await user.click(snapshotButton);
     await waitFor(() =>
-      expect(client.app.getAgentEnvironmentPackageSnapshot).toHaveBeenCalledWith(
-        WORKSPACE.id,
-        'aepsnap_1'
-      )
+      expect(client.operations['environment.snapshot-read']).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE.id,
+        snapshotId: 'aepsnap_1',
+      })
     );
     expect(await screen.findByText('coder', { exact: true })).toBeInTheDocument();
     expect(screen.getByText('aepkg_1', { exact: true })).toBeInTheDocument();
     expect(snapshotButton).toHaveAttribute('aria-pressed', 'true');
-    expect(client.app.getAgentEnvironmentPackageSnapshot).toHaveBeenCalledTimes(1);
+    expect(client.operations['environment.snapshot-read']).toHaveBeenCalledTimes(1);
 
     const serializedDom = document.documentElement.outerHTML;
     expect(serializedDom).not.toContain(POISON_SECRET);
     for (const poison of DEBUG_FIELD_POISONS) expect(serializedDom).not.toContain(poison);
     expect({
-      bundles: vi.mocked(client.app.listWorkspaceEvidenceBundles).mock.calls,
-      runtime: vi.mocked(client.app.listWorkspaceRuntimeEvidence).mock.calls,
-      snapshots: vi.mocked(client.app.listAgentEnvironmentPackageSnapshots).mock.calls,
+      bundles: vi.mocked(client.operations['evidence.bundle-list']).mock.calls,
+      runtime: vi.mocked(client.operations['evidence.runtime-list']).mock.calls,
+      snapshots: vi.mocked(client.operations['environment.snapshot-list']).mock.calls,
       diagnostics: vi.mocked(client.app.getDiagnostics).mock.calls,
-      serverAudit: vi.mocked(client.app.listServerAuditEvents).mock.calls,
-      vaultAdmin: vi.mocked(client.app.getVaultAdminStatus).mock.calls,
+      serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
+      vaultAdmin: vi.mocked(client.operations['vault.status']).mock.calls,
     }).toEqual({
-      bundles: [[WORKSPACE.id]],
-      runtime: [[WORKSPACE.id]],
-      snapshots: [[WORKSPACE.id]],
+      bundles: [[{ workspaceId: WORKSPACE.id }]],
+      runtime: [[{ workspaceId: WORKSPACE.id }]],
+      snapshots: [[{ workspaceId: WORKSPACE.id }]],
       diagnostics: [],
       serverAudit: [],
       vaultAdmin: [],
@@ -1437,7 +1440,10 @@ describe('Debug settings (board 11)', () => {
         })
       )
       .mockResolvedValue(EVIDENCE_BUNDLES);
-    const client = makeClient({ app: { listWorkspaceEvidenceBundles } });
+    const client = makeClient({
+      app: {},
+      operations: { 'evidence.bundle-list': listWorkspaceEvidenceBundles },
+    });
     renderApp('/settings/debug', client);
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
@@ -1460,7 +1466,7 @@ describe('Debug settings (board 11)', () => {
       within(evidenceAlert as HTMLElement).getByRole('button', { name: 'Try again' })
     );
     await waitFor(() => expect(listWorkspaceEvidenceBundles).toHaveBeenCalledTimes(2));
-    expect(listWorkspaceEvidenceBundles).toHaveBeenCalledWith(WORKSPACE.id);
+    expect(listWorkspaceEvidenceBundles).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id });
     expect(
       await screen.findByText('Goal evidence is ready with [redacted].', { exact: true })
     ).toBeInTheDocument();
@@ -1515,16 +1521,21 @@ describe('Debug settings (board 11)', () => {
   it('clears the selected AEP snapshot when the Workspace switches and does not reread the old id', async () => {
     const user = userEvent.setup();
     const workspaceB = { ...WORKSPACE, id: 'ws2', name: 'Second workspace' };
-    const listAgentEnvironmentPackageSnapshots = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        items: workspaceId === WORKSPACE.id ? [AEP_SNAPSHOT_LIST_ITEM] : [],
-      })
-    );
+    const listEnvironmentSnapshots = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          items: workspaceId === WORKSPACE.id ? [AEP_SNAPSHOT_LIST_ITEM] : [],
+        })
+      );
     const getAgentEnvironmentPackageSnapshot = vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL);
     const client = makeClient({
       core: {},
-      app: { listAgentEnvironmentPackageSnapshots, getAgentEnvironmentPackageSnapshot },
+      app: {},
+
       operations: {
+        'environment.snapshot-list': listEnvironmentSnapshots,
+        'environment.snapshot-read': getAgentEnvironmentPackageSnapshot,
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE, workspaceB].map((workspace) => ({
             workspace,
@@ -1541,16 +1552,26 @@ describe('Debug settings (board 11)', () => {
     const snapshotButton = await screen.findByRole('button', { name: 'aepsnap_1' });
     await user.click(snapshotButton);
     await waitFor(() =>
-      expect(getAgentEnvironmentPackageSnapshot).toHaveBeenCalledWith(WORKSPACE.id, 'aepsnap_1')
+      expect(getAgentEnvironmentPackageSnapshot).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE.id,
+        snapshotId: 'aepsnap_1',
+      })
     );
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: workspaceB.id }));
 
     await waitFor(() =>
-      expect(listAgentEnvironmentPackageSnapshots).toHaveBeenCalledWith(workspaceB.id)
+      expect(listEnvironmentSnapshots).toHaveBeenCalledWith({
+        workspaceId: workspaceB.id,
+      })
     );
-    expect(getAgentEnvironmentPackageSnapshot).not.toHaveBeenCalledWith(workspaceB.id, 'aepsnap_1');
-    expect(getAgentEnvironmentPackageSnapshot.mock.calls).toEqual([[WORKSPACE.id, 'aepsnap_1']]);
+    expect(getAgentEnvironmentPackageSnapshot).not.toHaveBeenCalledWith({
+      workspaceId: workspaceB.id,
+      snapshotId: 'aepsnap_1',
+    });
+    expect(getAgentEnvironmentPackageSnapshot.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id, snapshotId: 'aepsnap_1' }],
+    ]);
     expect(screen.queryByRole('button', { name: 'aepsnap_1' })).not.toBeInTheDocument();
     expect(screen.queryByText('coder', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText('aepkg_1', { exact: true })).not.toBeInTheDocument();
@@ -1562,8 +1583,9 @@ describe('Usage and audit settings (board 17)', () => {
     const user = userEvent.setup();
     const sources = ['input', 'output', 'cache_read', 'cache_write', 'total', 'cost_estimate'];
     const client = makeClient({
-      app: {
-        getCapabilityUsage: vi.fn().mockResolvedValue({
+      app: {},
+      operations: {
+        'usage.read': vi.fn().mockResolvedValue({
           ...CAPABILITY_USAGE,
           usageRecords: [
             ...sources.map((source, index) => ({
@@ -1652,15 +1674,15 @@ describe('Usage and audit settings (board 17)', () => {
     for (const field of USAGE_NON_DISPLAY_FIELDS) expect(serializedDom).not.toContain(field);
 
     expect({
-      usage: vi.mocked(client.app.getCapabilityUsage).mock.calls,
-      audit: vi.mocked(client.app.listWorkspaceAuditEvents).mock.calls,
-      decisions: vi.mocked(client.app.listWorkspacePermissionDecisions).mock.calls,
-      serverAudit: vi.mocked(client.app.listServerAuditEvents).mock.calls,
-      serverDecisions: vi.mocked(client.app.listServerPermissionDecisions).mock.calls,
+      usage: vi.mocked(client.operations['usage.read']).mock.calls,
+      audit: vi.mocked(client.operations['audit.workspace-list']).mock.calls,
+      decisions: vi.mocked(client.operations['permission.workspace-list']).mock.calls,
+      serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
+      serverDecisions: vi.mocked(client.operations['permission.server-list']).mock.calls,
     }).toEqual({
-      usage: [[WORKSPACE.id]],
-      audit: [[WORKSPACE.id]],
-      decisions: [[WORKSPACE.id]],
+      usage: [[{ workspaceId: WORKSPACE.id }]],
+      audit: [[{ workspaceId: WORKSPACE.id }]],
+      decisions: [[{ workspaceId: WORKSPACE.id }]],
       serverAudit: [],
       serverDecisions: [],
     });
@@ -1693,26 +1715,27 @@ describe('Usage and audit settings (board 17)', () => {
     const validatedAt = listWorkspaces.mock.invocationCallOrder[1];
     expect({
       usage: {
-        calls: vi.mocked(client.app.getCapabilityUsage).mock.calls,
+        calls: vi.mocked(client.operations['usage.read']).mock.calls,
         afterValidation:
-          vi.mocked(client.app.getCapabilityUsage).mock.invocationCallOrder[0] > validatedAt,
+          vi.mocked(client.operations['usage.read']).mock.invocationCallOrder[0] > validatedAt,
       },
       audit: {
-        calls: vi.mocked(client.app.listWorkspaceAuditEvents).mock.calls,
+        calls: vi.mocked(client.operations['audit.workspace-list']).mock.calls,
         afterValidation:
-          vi.mocked(client.app.listWorkspaceAuditEvents).mock.invocationCallOrder[0] > validatedAt,
-      },
-      decisions: {
-        calls: vi.mocked(client.app.listWorkspacePermissionDecisions).mock.calls,
-        afterValidation:
-          vi.mocked(client.app.listWorkspacePermissionDecisions).mock.invocationCallOrder[0] >
+          vi.mocked(client.operations['audit.workspace-list']).mock.invocationCallOrder[0] >
           validatedAt,
       },
-      serverAudit: vi.mocked(client.app.listServerAuditEvents).mock.calls,
+      decisions: {
+        calls: vi.mocked(client.operations['permission.workspace-list']).mock.calls,
+        afterValidation:
+          vi.mocked(client.operations['permission.workspace-list']).mock.invocationCallOrder[0] >
+          validatedAt,
+      },
+      serverAudit: vi.mocked(client.operations['audit.server-list']).mock.calls,
     }).toEqual({
-      usage: { calls: [[WORKSPACE.id]], afterValidation: true },
-      audit: { calls: [[WORKSPACE.id]], afterValidation: true },
-      decisions: { calls: [[WORKSPACE.id]], afterValidation: true },
+      usage: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
+      audit: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
+      decisions: { calls: [[{ workspaceId: WORKSPACE.id }]], afterValidation: true },
       serverAudit: [],
     });
   });
@@ -1722,10 +1745,11 @@ describe('Usage and audit settings (board 17)', () => {
     renderApp(
       '/workspace/usage',
       makeClient({
-        app: {
-          getCapabilityUsage: vi.fn().mockReturnValue(pending),
-          listWorkspaceAuditEvents: vi.fn().mockReturnValue(pending),
-          listWorkspacePermissionDecisions: vi.fn().mockReturnValue(pending),
+        app: {},
+        operations: {
+          'usage.read': vi.fn().mockReturnValue(pending),
+          'audit.workspace-list': vi.fn().mockReturnValue(pending),
+          'permission.workspace-list': vi.fn().mockReturnValue(pending),
         },
       })
     );
@@ -1737,16 +1761,17 @@ describe('Usage and audit settings (board 17)', () => {
     renderApp(
       '/workspace/usage',
       makeClient({
-        app: {
-          getCapabilityUsage: vi.fn().mockResolvedValue({
+        app: {},
+        operations: {
+          'usage.read': vi.fn().mockResolvedValue({
             workspaceId: WORKSPACE.id,
             capabilityCalls: [],
             usageRecords: [],
           }),
-          listWorkspaceAuditEvents: vi
+          'audit.workspace-list': vi
             .fn()
             .mockResolvedValue({ workspaceId: WORKSPACE.id, auditEvents: [] }),
-          listWorkspacePermissionDecisions: vi
+          'permission.workspace-list': vi
             .fn()
             .mockResolvedValue({ workspaceId: WORKSPACE.id, permissionDecisions: [] }),
         },
@@ -1764,7 +1789,10 @@ describe('Usage and audit settings (board 17)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('workspace-audit-private failure'))
       .mockResolvedValue(WORKSPACE_AUDIT_EVENTS);
-    const client = makeClient({ app: { listWorkspaceAuditEvents } });
+    const client = makeClient({
+      app: {},
+      operations: { 'audit.workspace-list': listWorkspaceAuditEvents },
+    });
     renderApp('/workspace/usage', client);
 
     const alert = await screen.findByRole('alert');

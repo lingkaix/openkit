@@ -1507,20 +1507,25 @@ describe('agent environment package resolver', () => {
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
     const app = createApp({ coreDb, dataRoot, vaultUnlockState });
-    const post = (path: string, body: unknown) =>
-      app.request(`/api/app/workspaces/ws_demo/vault/${path}`, {
+    const post = (
+      operation: 'vault.secret-create' | 'vault.grant-create',
+      body: Record<string, unknown>
+    ) =>
+      app.request(`/api/app/operations/${operation}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
     try {
-      const secretResponse = await post('secrets', {
+      const secretResponse = await post('vault.secret-create', {
+        workspaceId: 'ws_demo',
         secretKind: 'github-token',
         material: 'public-worker-canary',
       });
       expect(secretResponse.status).toBe(200);
       const reference = await secretResponse.json();
-      const grantResponse = await post('grants', {
+      const grantResponse = await post('vault.grant-create', {
+        workspaceId: 'ws_demo',
         referenceId: reference.referenceId,
         injectionPath: 'runtime-env',
       });

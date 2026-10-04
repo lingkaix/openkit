@@ -159,6 +159,30 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
   it.each([
+    ['omitted query', {}],
+    ['empty query', { query: '' }],
+    ['whitespace query', { query: ' \t\n ' }],
+  ] as const)('returns the exact empty search result for %s through authorized HTTP and remote MCP', async (_label, input) => {
+    const f = await fixture();
+    const bearer = f.token('workspace-readonly');
+    try {
+      const http = await f.app.request('/api/app/operations/app.search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer.secret}` },
+        body: JSON.stringify(input),
+      });
+      expect(http.status).toBe(200);
+      expect(await http.json()).toEqual({ items: [] });
+
+      const mcp = await f.call('call', { operation: 'app.search', input }, bearer.secret);
+      expect(mcp.isError).not.toBe(true);
+      expect(JSON.parse(mcp.content[0].text)).toEqual({ items: [] });
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     'missing',
     'private',
     'foreign',
@@ -301,6 +325,59 @@ describe('remote MCP App endpoint', () => {
     expect(JSON.parse(read.content[0].text).items).toEqual([
       expect.objectContaining({ workspace: expect.objectContaining({ id: 'ws_demo' }) }),
     ]);
+  });
+
+  it('gates all B6 Vault mutations on HTTP and MCP readiness without changing Vault rows', async () => {
+    let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b6_admission' });
+    const f = await fixture('server', () => readiness);
+    const token = f.token();
+    const rows = () => ({
+      references: f.coreDb.sqlite.prepare('SELECT * FROM vault_references').all(),
+      grants: f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all(),
+      audit: f.coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
+    });
+    const before = rows();
+    readiness = { ...readiness, acceptingProductWork: false };
+    try {
+      for (const [operation, input] of [
+        ['vault.unlock', { masterKeyBase64: Buffer.alloc(32, 9).toString('base64') }],
+        ['vault.lock', {}],
+        ['vault.bootstrap-codex-auth', { authJsonBase64: 'e30=' }],
+        ['vault.provider-api-key-set', { providerId: 'provider-b6', apiKey: 'synthetic-b6-key' }],
+        [
+          'vault.secret-create',
+          { workspaceId: 'ws_demo', secretKind: 'github-token', material: 'synthetic-b6-material' },
+        ],
+        [
+          'vault.secret-rotate',
+          { workspaceId: 'ws_demo', referenceId: 'vault_b6', material: 'synthetic-b6-next' },
+        ],
+        ['vault.secret-revoke', { workspaceId: 'ws_demo', referenceId: 'vault_b6' }],
+        ['vault.grant-create', { workspaceId: 'ws_demo', referenceId: 'vault_b6' }],
+        ['vault.grant-revoke', { workspaceId: 'ws_demo', grantId: 'grant_b6' }],
+        [
+          'vault.reference-rebind',
+          { workspaceId: 'ws_demo', referenceId: 'vault_b6', materialBase64: 'e30=' },
+        ],
+      ] as const) {
+        expect(OPERATION_DEFINITIONS[operation].mutating).toBe(true);
+        expect(OPERATION_DEFINITIONS[operation].returnsOneTimeSecret).toBe(false);
+        OPERATION_DEFINITIONS[operation].inputSchema.parse(input);
+        const http = await f.app.request(`/api/app/operations/${operation}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+        expect(http.status).toBe(503);
+        await expect(http.json()).resolves.toMatchObject({ code: 'product_work_unavailable' });
+        const mcp = await f.call('call', { operation, input }, token.secret);
+        expect(mcp.isError).toBe(true);
+        expect(JSON.parse(mcp.content[0].text)).toMatchObject({ code: 'product_work_unavailable' });
+        expect(rows()).toEqual(before);
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
   });
 
   it('gates every migrated mutation on HTTP and MCP readiness before the protected owner changes', async () => {

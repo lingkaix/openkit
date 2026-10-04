@@ -105,7 +105,11 @@ describe('nanocore e2e config loading', () => {
     );
 
     harness = await startNanoCoreHarness({ dataRoot, seedDemoWorkspace: false });
-    const available = await fetch(`${harness.baseUrl}/api/app/vault/status`);
+    const available = await fetch(`${harness.baseUrl}/api/app/operations/vault.status`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
 
     expect(available.status).toBe(200);
     await expect(available.json()).resolves.toMatchObject({
@@ -116,7 +120,11 @@ describe('nanocore e2e config loading', () => {
     await harness.stop();
     writeFileSync(vaultKeyFilePath, Buffer.alloc(32, 8));
     harness = await startNanoCoreHarness({ dataRoot, seedDemoWorkspace: false });
-    const locked = await fetch(`${harness.baseUrl}/api/app/vault/status`);
+    const locked = await fetch(`${harness.baseUrl}/api/app/operations/vault.status`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
 
     expect(locked.status).toBe(200);
     await expect(locked.json()).resolves.toMatchObject({

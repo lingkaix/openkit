@@ -7,11 +7,9 @@ import {
   AppDiagnosticsResponseSchema,
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
-  AppSearchResponseSchema,
   AppUpdateStatusResponseSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
-  CapabilityUsageResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
@@ -28,33 +26,20 @@ import {
   DisableUserResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
-  GetAgentEnvironmentPackageSnapshotResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkerEnvironmentStatusResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
   LeaveWorkspaceRequestSchema,
-  ListAgentEnvironmentPackageSnapshotsResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
-  ListServerAuditEventsResponseSchema,
-  ListServerPermissionDecisionsResponseSchema,
-  ListServerVaultUseRecordsResponseSchema,
   ListSkillCatalogResponseSchema,
   ListWorkerEnvironmentsResponseSchema,
-  ListWorkspaceAuditEventsResponseSchema,
-  ListWorkspaceEvidenceBundlesResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMaterialRevisionsResponseSchema,
   ListWorkspaceMaterialsResponseSchema,
   ListWorkspaceMembersResponseSchema,
-  ListWorkspacePermissionDecisionsResponseSchema,
-  ListWorkspaceRuntimeEvidenceResponseSchema,
-  ListWorkspaceVaultGrantsResponseSchema,
-  ListWorkspaceVaultInjectionPlansResponseSchema,
-  ListWorkspaceVaultInjectionReceiptsResponseSchema,
-  ListWorkspaceVaultUseRecordsResponseSchema,
   OPERATION_DEFINITIONS,
   type OperationId,
   operationHttpPath,
@@ -83,7 +68,6 @@ import {
   SetMyAdminAccessTokenDefaultRequestSchema,
   SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
-  SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
   StartAppUpdateRequestSchema,
   SubmitAdministrationConversationRequestSchema,
@@ -92,14 +76,8 @@ import {
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
-  VaultAdminBootstrapCodexAuthJsonResponseSchema,
-  VaultAdminListWorkspaceReferencesResponseSchema,
-  VaultAdminLockResponseSchema,
   VaultAdminRebindWorkspaceReferenceRequestSchema,
-  VaultAdminRebindWorkspaceReferenceResponseSchema,
-  VaultAdminStatusResponseSchema,
   VaultAdminUnlockRequestSchema,
-  VaultAdminUnlockResponseSchema,
   VaultAdminWorkspaceReferenceSchema,
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDeletionResponseSchema,
@@ -787,40 +765,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/search': {
-        get: {
-          operationId: 'searchApp',
-          tags: ['app-utils'],
-          summary: 'Search app-local read models.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'q',
-              in: 'query',
-              required: false,
-              schema: { type: 'string' },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Search results.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AppSearchResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/worker-environments': {
         get: {
           operationId: 'listWorkerEnvironments',
@@ -1127,261 +1071,6 @@ export function createAppOpenApiDocument() {
           responseSchema: 'RestoreThreadMaterialResponse',
         }),
       },
-      '/api/app/workspaces/{workspaceId}/capability-usage': {
-        get: {
-          operationId: 'getCapabilityUsage',
-          tags: ['diagnostics'],
-          summary: 'Read capability-call and usage evidence for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace capability-call and usage evidence.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CapabilityUsageResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/audit/events': {
-        get: {
-          operationId: 'listWorkspaceAuditEvents',
-          tags: ['diagnostics'],
-          summary: 'Read workspace audit events.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace audit events.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceAuditEventsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/evidence-bundles': {
-        get: {
-          operationId: 'listWorkspaceEvidenceBundles',
-          tags: ['diagnostics'],
-          summary: 'Read workspace evidence bundles.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace evidence bundles.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceEvidenceBundlesResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/runtime-evidence': {
-        get: {
-          operationId: 'listWorkspaceRuntimeEvidence',
-          tags: ['diagnostics'],
-          summary: 'Read workspace runtime evidence.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace runtime evidence.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListWorkspaceRuntimeEvidenceResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/audit/events': {
-        get: {
-          operationId: 'listServerAuditEvents',
-          tags: ['diagnostics'],
-          summary: 'Read server audit events.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Server audit events.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListServerAuditEventsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/permission-decisions': {
-        get: {
-          operationId: 'listWorkspacePermissionDecisions',
-          tags: ['diagnostics'],
-          summary: 'Read workspace permission decisions.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Workspace permission decisions.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspacePermissionDecisionsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/permission-decisions': {
-        get: {
-          operationId: 'listServerPermissionDecisions',
-          tags: ['diagnostics'],
-          summary: 'Read server permission decisions.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Server permission decisions.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListServerPermissionDecisionsResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/agent-environment/snapshots': {
-        get: {
-          operationId: 'listAgentEnvironmentPackageSnapshots',
-          tags: ['agent-environment'],
-          summary: 'List durable Agent Environment Package snapshots for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Agent Environment Package snapshots.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListAgentEnvironmentPackageSnapshotsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/agent-environment/snapshots/{snapshotId}': {
-        get: {
-          operationId: 'getAgentEnvironmentPackageSnapshot',
-          tags: ['agent-environment'],
-          summary: 'Read one durable Agent Environment Package snapshot.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'snapshotId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Agent Environment Package snapshot.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/GetAgentEnvironmentPackageSnapshotResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/app-update/prepare': {
         post: {
           operationId: 'prepareAppUpdate',
@@ -1587,568 +1276,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/vault/status': {
-        get: {
-          operationId: 'getVaultAdminStatus',
-          tags: ['vault'],
-          summary: 'Read redacted vault backend status.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted vault backend status.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminStatusResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/vault/unlock': {
-        post: {
-          operationId: 'unlockVaultAdminBackend',
-          tags: ['vault'],
-          summary: 'Unlock the configured vault backend.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/VaultAdminUnlockRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted vault backend status after unlock.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminUnlockResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/vault/lock': {
-        post: {
-          operationId: 'lockVaultAdminBackend',
-          tags: ['vault'],
-          summary: 'Lock the configured vault backend.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted vault backend status after lock.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminLockResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/vault/bootstrap/codex-auth-json': {
-        post: {
-          operationId: 'bootstrapCodexAuthJsonVaultReference',
-          tags: ['vault'],
-          summary: 'Store Codex auth JSON in the vault and create its runtime-file grant.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/VaultAdminBootstrapCodexAuthJsonRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted Codex auth JSON vault reference and grant metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/VaultAdminBootstrapCodexAuthJsonResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/secrets': {
-        post: {
-          operationId: 'createWorkspaceVaultSecret',
-          tags: ['vault'],
-          summary: 'Administer workspace Vault metadata and secret lifecycle.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateWorkspaceVaultSecretRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted Vault metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
-                },
-              },
-            },
-            default: {
-              description: 'Redacted error.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/secrets/{referenceId}/rotate': {
-        post: {
-          operationId: 'rotateWorkspaceVaultSecret',
-          tags: ['vault'],
-          summary: 'Administer workspace Vault metadata and secret lifecycle.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'referenceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RotateWorkspaceVaultSecretRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted Vault metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
-                },
-              },
-            },
-            default: {
-              description: 'Redacted error.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/secrets/{referenceId}/revoke': {
-        post: {
-          operationId: 'revokeWorkspaceVaultSecret',
-          tags: ['vault'],
-          summary: 'Administer workspace Vault metadata and secret lifecycle.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'referenceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Redacted Vault metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/VaultAdminWorkspaceReference' },
-                },
-              },
-            },
-            default: {
-              description: 'Redacted error.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/grants/{grantId}/revoke': {
-        post: {
-          operationId: 'revokeWorkspaceVaultGrant',
-          tags: ['vault'],
-          summary: 'Administer workspace Vault metadata and secret lifecycle.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'grantId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Redacted Vault metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceVaultGrant' },
-                },
-              },
-            },
-            default: {
-              description: 'Redacted error.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/providers/{providerId}/api-key': {
-        put: {
-          operationId: 'setProviderApiKey',
-          tags: ['providers', 'vault'],
-          summary: 'Store or replace the API key for an authored provider profile.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'providerId',
-              in: 'path',
-              required: true,
-              schema: {
-                type: 'string',
-                minLength: 1,
-                maxLength: 119,
-                pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*$',
-              },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/SetProviderApiKeyRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted provider API key configuration status.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/SetProviderApiKeyResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/references/{referenceId}/rebind': {
-        post: {
-          operationId: 'rebindWorkspaceVaultReference',
-          tags: ['vault'],
-          summary: 'Rebind one imported workspace vault reference to local secret material.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            WORKSPACE_ID_PARAMETER,
-            {
-              name: 'referenceId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: {
-                  $ref: '#/components/schemas/VaultAdminRebindWorkspaceReferenceRequest',
-                },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted rebound workspace vault reference metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/VaultAdminRebindWorkspaceReferenceResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/references': {
-        get: {
-          operationId: 'listWorkspaceVaultReferences',
-          tags: ['vault'],
-          summary: 'List redacted workspace vault references.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Redacted workspace vault references.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/VaultAdminListWorkspaceReferencesResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/grants': {
-        post: {
-          operationId: 'createWorkspaceVaultGrant',
-          tags: ['vault'],
-          summary: 'Administer workspace Vault metadata and secret lifecycle.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateWorkspaceVaultGrantRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Redacted Vault metadata.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceVaultGrant' },
-                },
-              },
-            },
-            default: {
-              description: 'Redacted error.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-        get: {
-          operationId: 'listWorkspaceVaultGrants',
-          tags: ['vault'],
-          summary: 'List non-secret workspace vault grants.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Non-secret workspace vault grants.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceVaultGrantsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/injection-plans': {
-        get: {
-          operationId: 'listWorkspaceVaultInjectionPlans',
-          tags: ['vault'],
-          summary: 'List non-secret workspace injection plans.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Non-secret workspace injection plans.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceVaultInjectionPlansResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/injection-receipts': {
-        get: {
-          operationId: 'listWorkspaceVaultInjectionReceipts',
-          tags: ['vault'],
-          summary: 'List non-secret workspace injection receipts.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Non-secret workspace injection receipts.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceVaultInjectionReceiptsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/vault/use-records': {
-        get: {
-          operationId: 'listWorkspaceVaultUseRecords',
-          tags: ['vault'],
-          summary: 'List redacted workspace vault use records.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Redacted workspace vault use records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListWorkspaceVaultUseRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/vault/use-records': {
-        get: {
-          operationId: 'listServerVaultUseRecords',
-          tags: ['vault'],
-          summary: 'List redacted server vault use records.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted server vault use records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: {
-                    $ref: '#/components/schemas/ListServerVaultUseRecordsResponse',
-                  },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
     } as const,
     components: {
       securitySchemes: {
@@ -2227,9 +1354,7 @@ export function createAppOpenApiDocument() {
         UnbindThreadMaterialRequest: toJsonSchema(UnbindThreadMaterialRequestSchema),
         UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
-        AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
-        CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
           ConsumeOpenKitBootstrapTokenRequestSchema
         ),
@@ -2238,42 +1363,11 @@ export function createAppOpenApiDocument() {
         ),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        GetAgentEnvironmentPackageSnapshotResponse: toJsonSchema(
-          GetAgentEnvironmentPackageSnapshotResponseSchema
-        ),
         GetWorkerEnvironmentStatusResponse: toJsonSchema(GetWorkerEnvironmentStatusResponseSchema),
-        ListAgentEnvironmentPackageSnapshotsResponse: toJsonSchema(
-          ListAgentEnvironmentPackageSnapshotsResponseSchema
-        ),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
-        ListServerAuditEventsResponse: toJsonSchema(ListServerAuditEventsResponseSchema),
-        ListServerPermissionDecisionsResponse: toJsonSchema(
-          ListServerPermissionDecisionsResponseSchema
-        ),
-        ListServerVaultUseRecordsResponse: toJsonSchema(ListServerVaultUseRecordsResponseSchema),
         ListSkillCatalogResponse: toJsonSchema(ListSkillCatalogResponseSchema),
-        ListWorkspaceAuditEventsResponse: toJsonSchema(ListWorkspaceAuditEventsResponseSchema),
-        ListWorkspaceEvidenceBundlesResponse: toJsonSchema(
-          ListWorkspaceEvidenceBundlesResponseSchema
-        ),
-        ListWorkspaceVaultGrantsResponse: toJsonSchema(ListWorkspaceVaultGrantsResponseSchema),
-        ListWorkspaceVaultInjectionPlansResponse: toJsonSchema(
-          ListWorkspaceVaultInjectionPlansResponseSchema
-        ),
-        ListWorkspaceVaultInjectionReceiptsResponse: toJsonSchema(
-          ListWorkspaceVaultInjectionReceiptsResponseSchema
-        ),
-        ListWorkspaceRuntimeEvidenceResponse: toJsonSchema(
-          ListWorkspaceRuntimeEvidenceResponseSchema
-        ),
-        ListWorkspacePermissionDecisionsResponse: toJsonSchema(
-          ListWorkspacePermissionDecisionsResponseSchema
-        ),
-        ListWorkspaceVaultUseRecordsResponse: toJsonSchema(
-          ListWorkspaceVaultUseRecordsResponseSchema
-        ),
         PurgeWorkerEnvironmentRequest: toJsonSchema(PurgeWorkerEnvironmentRequestSchema),
         PurgeWorkerEnvironmentResponse: toJsonSchema(PurgeWorkerEnvironmentResponseSchema),
         PrepareAppUpdateRequest: toJsonSchema(PrepareAppUpdateRequestSchema),
@@ -2297,7 +1391,6 @@ export function createAppOpenApiDocument() {
         VaultAdminWorkspaceReference: toJsonSchema(VaultAdminWorkspaceReferenceSchema),
         WorkspaceVaultGrant: toJsonSchema(WorkspaceVaultGrantSchema),
         SetProviderApiKeyRequest: toJsonSchema(SetProviderApiKeyRequestSchema),
-        SetProviderApiKeyResponse: toJsonSchema(SetProviderApiKeyResponseSchema),
         SetupDiagnosticsResponse: toJsonSchema(SetupDiagnosticsResponseSchema),
         SubmitAdministrationConversationRequest: toJsonSchema(
           SubmitAdministrationConversationRequestSchema
@@ -2319,22 +1412,10 @@ export function createAppOpenApiDocument() {
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(
           VaultAdminBootstrapCodexAuthJsonRequestSchema
         ),
-        VaultAdminBootstrapCodexAuthJsonResponse: toJsonSchema(
-          VaultAdminBootstrapCodexAuthJsonResponseSchema
-        ),
-        VaultAdminListWorkspaceReferencesResponse: toJsonSchema(
-          VaultAdminListWorkspaceReferencesResponseSchema
-        ),
-        VaultAdminLockResponse: toJsonSchema(VaultAdminLockResponseSchema),
         VaultAdminRebindWorkspaceReferenceRequest: toJsonSchema(
           VaultAdminRebindWorkspaceReferenceRequestSchema
         ),
-        VaultAdminRebindWorkspaceReferenceResponse: toJsonSchema(
-          VaultAdminRebindWorkspaceReferenceResponseSchema
-        ),
-        VaultAdminStatusResponse: toJsonSchema(VaultAdminStatusResponseSchema),
         VaultAdminUnlockRequest: toJsonSchema(VaultAdminUnlockRequestSchema),
-        VaultAdminUnlockResponse: toJsonSchema(VaultAdminUnlockResponseSchema),
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),

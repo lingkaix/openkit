@@ -704,7 +704,9 @@ describe('Core artifact routes', () => {
           expect(renamed.status, await renamed.clone().text()).toBe(200);
           expect(await renamed.json()).toMatchObject({ counts: { artifactCount: 1 } });
         }
-        const search = await app.request('/api/app/search?q=ar_review');
+        const search = await app.request(
+          ...operationRequest('app.search', { query: 'ar_review' }, {})
+        );
         expect(search.status).toBe(200);
         expect(
           (await search.json()).items

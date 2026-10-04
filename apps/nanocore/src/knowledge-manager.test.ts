@@ -367,7 +367,9 @@ describe('Knowledge Manager answer operation', () => {
       ],
     });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -478,7 +480,9 @@ describe('Knowledge Manager answer operation', () => {
       items: [{ id: recorded.observation.id, kind: 'retrieval' }],
     });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(usage.capabilityCalls).toEqual([
@@ -567,7 +571,9 @@ describe('Knowledge Manager answer operation', () => {
       items: [{ id: recorded.claim.id, statement: 'Release cadence is weekly.' }],
     });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(usage.capabilityCalls).toEqual([
@@ -696,7 +702,9 @@ describe('Knowledge Manager answer operation', () => {
       items: [{ id: recorded.conflict.id, status: 'resolved' }],
     });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(usage.capabilityCalls).toEqual([
@@ -962,7 +970,9 @@ describe('Knowledge Manager answer operation', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([body]);
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(usage.capabilityCalls).toEqual([
@@ -1076,7 +1086,9 @@ describe('Knowledge Manager answer operation', () => {
       workspaceId: 'ws_demo',
     });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -1366,7 +1378,9 @@ describe('Knowledge Manager answer operation', () => {
     expect(legacyRequest.status).toBe(400);
     await expect(legacyRequest.json()).resolves.toMatchObject({ code: 'invalid_request' });
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -1504,7 +1518,9 @@ describe('Knowledge Manager answer operation', () => {
       expect.objectContaining({ id: `knowledge:${first.proposal.id}` }),
     ]);
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -1591,7 +1607,9 @@ describe('Knowledge Manager answer operation', () => {
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(
@@ -1703,7 +1721,9 @@ describe('Knowledge Manager answer operation', () => {
     const actionCenter = (await actionCenterRes.json()) as { items: unknown[] };
     expect(actionCenter.items).toEqual([]);
 
-    const usageRes = await app.request('/api/app/workspaces/ws_demo/capability-usage');
+    const usageRes = await app.request(
+      ...operationRequest('usage.read', { workspaceId: 'ws_demo' }, {})
+    );
     expect(usageRes.status, await usageRes.clone().text()).toBe(200);
     const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
     expect(

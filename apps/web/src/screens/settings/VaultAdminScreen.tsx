@@ -34,7 +34,7 @@ export function VaultAdminScreen() {
     queryKey: ['settings', 'vault-admin'],
     queryFn: async () => {
       try {
-        const { backendKind, state, diagnostic } = await client.app.getVaultAdminStatus();
+        const { backendKind, state, diagnostic } = await client.operations['vault.status']({});
         return { backendKind, state, diagnostic: redactSecretShapedText(diagnostic) };
       } catch (error) {
         throw vaultRequestError(error);
@@ -49,9 +49,9 @@ export function VaultAdminScreen() {
       try {
         if (action === 'unlock') {
           if (!masterKeyBase64) throw new Error('Master key is required.');
-          await client.app.unlockVaultAdminBackend({ masterKeyBase64 });
+          await client.operations['vault.unlock']({ masterKeyBase64 });
         } else {
-          await client.app.lockVaultAdminBackend();
+          await client.operations['vault.lock']({});
         }
       } catch (error) {
         throw vaultRequestError(error);

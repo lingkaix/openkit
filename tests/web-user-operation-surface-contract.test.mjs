@@ -50,8 +50,8 @@ const WEB_OPERATION_GROUPS = {
     ])
   ),
   'Agent environment': {
-    getAgentEnvironmentPackageSnapshot: { disposition: 'live', surface: 'Debug' },
-    listAgentEnvironmentPackageSnapshots: { disposition: 'live', surface: 'Debug' },
+    'environment.snapshot-read': { disposition: 'live', surface: 'Debug' },
+    'environment.snapshot-list': { disposition: 'live', surface: 'Debug' },
   },
   Agents: {
     'agent.read': { disposition: 'workflow', surface: 'Agents' },
@@ -68,7 +68,7 @@ const WEB_OPERATION_GROUPS = {
   'App utilities': {
     'chat.quick': { disposition: 'workflow', surface: 'Chat' },
     'agent.health-refresh': { disposition: 'live', surface: 'Agents' },
-    searchApp: { disposition: 'workflow', surface: 'Overview' },
+    'app.search': { disposition: 'workflow', surface: 'Overview' },
     'turn.feedback': { disposition: 'live', surface: 'Chat' },
   },
   Artifacts: {
@@ -135,11 +135,11 @@ const WEB_OPERATION_GROUPS = {
     'thread.items': { disposition: 'live', surface: 'Chat' },
   },
   'Diagnostics and evidence': {
-    getCapabilityUsage: { disposition: 'live', surface: 'Usage & audit' },
-    listWorkspaceAuditEvents: { disposition: 'live', surface: 'Usage & audit' },
-    listWorkspaceEvidenceBundles: { disposition: 'live', surface: 'Debug' },
-    listWorkspacePermissionDecisions: { disposition: 'live', surface: 'Usage & audit' },
-    listWorkspaceRuntimeEvidence: { disposition: 'live', surface: 'Debug' },
+    'usage.read': { disposition: 'live', surface: 'Usage & audit' },
+    'audit.workspace-list': { disposition: 'live', surface: 'Usage & audit' },
+    'evidence.bundle-list': { disposition: 'live', surface: 'Debug' },
+    'permission.workspace-list': { disposition: 'live', surface: 'Usage & audit' },
+    'evidence.runtime-list': { disposition: 'live', surface: 'Debug' },
   },
   'Knowledge Manager': {
     'knowledge.answer': { disposition: 'live', surface: 'Knowledge' },
@@ -199,17 +199,17 @@ const WEB_OPERATION_GROUPS = {
     'workspace.import': { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
-    createWorkspaceVaultGrant: { disposition: 'live', surface: 'Vault backend' },
-    createWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
-    listWorkspaceVaultGrants: { disposition: 'live', surface: 'Vault' },
-    listWorkspaceVaultInjectionPlans: { disposition: 'live', surface: 'Vault' },
-    listWorkspaceVaultInjectionReceipts: { disposition: 'live', surface: 'Vault' },
-    listWorkspaceVaultReferences: { disposition: 'live', surface: 'Vault' },
-    listWorkspaceVaultUseRecords: { disposition: 'live', surface: 'Vault' },
-    rebindWorkspaceVaultReference: { disposition: 'live', surface: 'Portability' },
-    revokeWorkspaceVaultGrant: { disposition: 'live', surface: 'Vault backend' },
-    revokeWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
-    rotateWorkspaceVaultSecret: { disposition: 'live', surface: 'Vault backend' },
+    'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
+    'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
+    'vault.grant-list': { disposition: 'live', surface: 'Vault' },
+    'vault.injection-plan-list': { disposition: 'live', surface: 'Vault' },
+    'vault.injection-receipt-list': { disposition: 'live', surface: 'Vault' },
+    'vault.reference-list': { disposition: 'live', surface: 'Vault' },
+    'vault.use-list': { disposition: 'live', surface: 'Vault' },
+    'vault.reference-rebind': { disposition: 'live', surface: 'Portability' },
+    'vault.grant-revoke': { disposition: 'live', surface: 'Vault backend' },
+    'vault.secret-revoke': { disposition: 'live', surface: 'Vault backend' },
+    'vault.secret-rotate': { disposition: 'live', surface: 'Vault backend' },
   },
   'Workspace sharing': {
     'workspace.my-invitation-accept': { disposition: 'live', surface: 'Account' },

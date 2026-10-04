@@ -1,17 +1,18 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Hono } from 'hono';
 import { expect, it } from 'vitest';
-import type { AuthVariables } from './auth/middleware.js';
+import { ensureLocalUser } from './auth/identity.js';
 import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
-import { registerGovernanceRoutes } from './governance-routes.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { createVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 it.each([
   'syntax',
@@ -21,13 +22,11 @@ it.each([
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-error-'));
   const db = openWorkspaceDb(dataRoot, 'ws_demo');
   applyScopedMigrations(db);
-  const app = new Hono<{ Variables: AuthVariables }>();
-  registerGovernanceRoutes({
-    app,
-    coreDb: undefined,
-    repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
-    requestStore: () => createDemoStore(),
-  });
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
   try {
     recordWorkspaceEvidenceBundle(db, {
       id: 'evb_probe',
@@ -48,7 +47,9 @@ it.each([
       requiredFeatures: [],
       createdAt: '2026-07-18T01:00:07.000Z',
     });
-    const healthy = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
+    const healthy = await app.request(
+      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+    );
     expect(healthy.status).toBe(200);
     expect(await healthy.json()).toMatchObject({ evidenceBundles: [{ id: 'evb_probe' }] });
     const bytes =
@@ -56,7 +57,9 @@ it.each([
         ? marker
         : JSON.stringify([{ kind: 'artifact', ref: 'artifact:ar_demo', [marker]: 'private' }]);
     db.sqlite.prepare('UPDATE evidence_bundles SET raw_evidence_refs_json = ?').run(bytes);
-    const response = await app.request('/api/app/workspaces/ws_demo/evidence-bundles');
+    const response = await app.request(
+      ...operationRequest('evidence.bundle-list', { workspaceId: 'ws_demo' }, {})
+    );
     expect(response.status).toBe(404);
     const body = await response.json();
     expect(body).toMatchObject({
@@ -69,6 +72,8 @@ it.each([
     ).toEqual({ bytes });
   } finally {
     db.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 
@@ -78,13 +83,9 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
 
   try {
     applyMigrations(coreDb);
-    const app = new Hono<{ Variables: AuthVariables }>();
-    registerGovernanceRoutes({
-      app,
-      coreDb,
-      repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
-      requestStore: () => createDemoStore(),
-    });
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',
@@ -111,7 +112,9 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       targetEnvVarName: 'GITHUB_TOKEN',
     });
 
-    const response = await app.request('/api/app/workspaces/ws_demo/vault/injection-plans');
+    const response = await app.request(
+      ...operationRequest('vault.injection-plan-list', { workspaceId: 'ws_demo' })
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ workspaceId: 'ws_demo', items: [plan] });
