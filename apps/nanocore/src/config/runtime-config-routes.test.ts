@@ -6,14 +6,16 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AuthVariables } from '../auth/middleware.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './runtime-config.js';
-import { registerRuntimeConfigRoutes } from './runtime-config-routes.js';
 
-describe('runtime config routes', () => {
+describe('canonical runtime configuration registration', () => {
   it('does not mutate a foreign AgentSession when the retired restart route is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-session-lineage-'));
     const store = createDemoStore({ dataRoot });
@@ -43,15 +45,20 @@ describe('runtime config routes', () => {
       });
       await next();
     });
-    registerRuntimeConfigRoutes({
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    registerOperationJsonRoutes({
       app,
       requestStore: () => store,
-      runtimeConfigFileService: () => {
-        throw new Error('Runtime config file service is not used by this test.');
+      coreDb,
+      runtimeConfigOperations: {
+        filesForActor: () => {
+          throw new Error('Runtime config file service is not used by this test.');
+        },
+        manager: createRuntimeConfigManager({
+          initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot, version: 2 }),
+        }),
       },
-      runtimeConfigManager: createRuntimeConfigManager({
-        initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot, version: 2 }),
-      }),
     });
 
     const foreign = await app.request(
@@ -71,5 +78,6 @@ describe('runtime config routes', () => {
       status: 'busy',
       workspaceId: foreignWorkspace.id,
     });
+    coreDb.sqlite.close();
   });
 });

@@ -16,6 +16,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -108,7 +109,7 @@ describe('runtime config file API', () => {
     writeServerConfig(dataRoot);
     const app = createApp({ dataRoot, store: createDemoStore({ dataRoot }) });
 
-    const listRes = await app.request('/api/admin/config/files');
+    const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as {
       files: Array<{ id: string; kind: string; revision: string | null }>;
     };
@@ -122,7 +123,9 @@ describe('runtime config file API', () => {
       })
     );
 
-    const readRes = await app.request('/api/admin/config/file?id=server.jsonc');
+    const readRes = await app.request(
+      ...operationRequest('runtime.file-read', { id: 'server.jsonc' })
+    );
     const read = (await readRes.json()) as { content: string; file: { id: string } };
 
     expect(read.file.id).toBe('server.jsonc');
@@ -148,23 +151,29 @@ describe('runtime config file API', () => {
     );
     const app = createApp({ dataRoot, store });
 
-    const listRes = await app.request('/api/admin/config/files');
+    const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as {
       files: Array<{ id: string; kind: string; revision: string | null }>;
     };
     const fileId = 'workspaces/ws_demo/workspace.jsonc';
-    const readRes = await app.request(`/api/admin/config/file?id=${encodeURIComponent(fileId)}`);
+    const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
     const read = (await readRes.json()) as { file: { revision: string }; content: string };
-    const updateRes = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: fileId,
-        kind: 'workspace',
-        content: read.content.replace('"roots": []', '"roots": [] // saved'),
-        expectedRevision: read.file.revision,
-      }),
-    });
+    const updateRes = await app.request(
+      ...operationRequest(
+        'runtime.file-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: fileId,
+            kind: 'workspace',
+            content: read.content.replace('"roots": []', '"roots": [] // saved'),
+            expectedRevision: read.file.revision,
+          }),
+        }
+      )
+    );
 
     expect(list.files).toContainEqual(expect.objectContaining({ id: fileId, kind: 'workspace' }));
     expect(readRes.status).toBe(200);
@@ -187,29 +196,41 @@ describe('runtime config file API', () => {
     const app = createApp({ dataRoot, store });
 
     const fileId = 'workspaces/ws_demo/data-sources.jsonc';
-    const listRes = await app.request('/api/admin/config/files');
+    const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as { files: Array<{ id: string; kind: string }> };
-    const readRes = await app.request(`/api/admin/config/file?id=${encodeURIComponent(fileId)}`);
+    const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
     expect(readRes.status).toBe(200);
     const read = (await readRes.json()) as { file: { revision: string }; content: string };
-    const validateRes = await app.request('/api/admin/config/validate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        files: [{ id: fileId, content: read.content }],
-      }),
-    });
-    const updateRes = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: fileId,
-        kind: 'data-source',
-        content: read.content.replace('"sources": []', '"sources": [] // saved'),
-        expectedRevision: read.file.revision,
-      }),
-    });
-    const schemasRes = await app.request('/api/admin/config/schemas');
+    const validateRes = await app.request(
+      ...operationRequest(
+        'runtime.validate',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            files: [{ id: fileId, content: read.content }],
+          }),
+        }
+      )
+    );
+    const updateRes = await app.request(
+      ...operationRequest(
+        'runtime.file-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: fileId,
+            kind: 'data-source',
+            content: read.content.replace('"sources": []', '"sources": [] // saved'),
+            expectedRevision: read.file.revision,
+          }),
+        }
+      )
+    );
+    const schemasRes = await app.request(...operationRequest('runtime.schemas', {}));
     const schemas = (await schemasRes.json()) as { schemas: Array<{ kind: string }> };
 
     expect(list.files).toContainEqual(expect.objectContaining({ id: fileId, kind: 'data-source' }));
@@ -250,18 +271,24 @@ describe('runtime config file API', () => {
     try {
       const app = createApp({ coreDb, dataRoot, store });
       const fileId = 'workspaces/ws_demo/data-sources.jsonc';
-      const readRes = await app.request(`/api/admin/config/file?id=${encodeURIComponent(fileId)}`);
+      const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
       const read = (await readRes.json()) as { file: { revision: string }; content: string };
-      const updateRes = await app.request('/api/admin/config/file', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: fileId,
-          kind: 'data-source',
-          content: read.content.replace('"access": "read-only"', '"access": "read-write"'),
-          expectedRevision: read.file.revision,
-        }),
-      });
+      const updateRes = await app.request(
+        ...operationRequest(
+          'runtime.file-update',
+          {},
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: fileId,
+              kind: 'data-source',
+              content: read.content.replace('"access": "read-only"', '"access": "read-write"'),
+              expectedRevision: read.file.revision,
+            }),
+          }
+        )
+      );
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       applyScopedMigrations(workspaceDb);
 
@@ -317,7 +344,7 @@ describe('runtime config file API', () => {
         }),
       });
       const listed = await app.request('/api/app/workspaces/ws_demo/catalog/mcp');
-      const files = await app.request('/api/admin/config/files');
+      const files = await app.request(...operationRequest('runtime.file-list', {}));
       const fileList = (await files.json()) as { files: Array<{ id: string; kind: string }> };
 
       expect(created.status).toBe(201);
@@ -336,22 +363,34 @@ describe('runtime config file API', () => {
     writeServerConfig(dataRoot);
     const app = createApp({ dataRoot });
 
-    const providerRes = await app.request('/api/admin/config/file', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'providers/new-openrouter.provider.jsonc',
-        kind: 'provider',
-      }),
-    });
-    const agentRes = await app.request('/api/admin/config/file', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'agents/new-agent.agent.jsonc',
-        kind: 'agent',
-      }),
-    });
+    const providerRes = await app.request(
+      ...operationRequest(
+        'runtime.file-create',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'providers/new-openrouter.provider.jsonc',
+            kind: 'provider',
+          }),
+        }
+      )
+    );
+    const agentRes = await app.request(
+      ...operationRequest(
+        'runtime.file-create',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'agents/new-agent.agent.jsonc',
+            kind: 'agent',
+          }),
+        }
+      )
+    );
 
     expect(providerRes.status).toBe(200);
     expect(agentRes.status).toBe(200);
@@ -387,30 +426,44 @@ describe('runtime config file API', () => {
       chmodSync(serverPath, 0o600);
       expect(statSync(serverPath).mode & 0o777).toBe(0o600);
       const app = createApp({ dataRoot });
-      const readRes = await app.request('/api/admin/config/file?id=server.jsonc');
+      const readRes = await app.request(
+        ...operationRequest('runtime.file-read', { id: 'server.jsonc' })
+      );
       const read = (await readRes.json()) as { file: { revision: string }; content: string };
       const nextContent = read.content.replace('agent_codex', 'agent_pi');
 
-      const okRes = await app.request('/api/admin/config/file', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: 'server.jsonc',
-          kind: 'server',
-          content: nextContent,
-          expectedRevision: read.file.revision,
-        }),
-      });
-      const staleRes = await app.request('/api/admin/config/file', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          id: 'server.jsonc',
-          kind: 'server',
-          content: read.content,
-          expectedRevision: read.file.revision,
-        }),
-      });
+      const okRes = await app.request(
+        ...operationRequest(
+          'runtime.file-update',
+          {},
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: 'server.jsonc',
+              kind: 'server',
+              content: nextContent,
+              expectedRevision: read.file.revision,
+            }),
+          }
+        )
+      );
+      const staleRes = await app.request(
+        ...operationRequest(
+          'runtime.file-update',
+          {},
+          {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: 'server.jsonc',
+              kind: 'server',
+              content: read.content,
+              expectedRevision: read.file.revision,
+            }),
+          }
+        )
+      );
 
       expect(okRes.status).toBe(200);
       expect(readFileSync(serverPath, 'utf8')).toBe(nextContent);
@@ -426,17 +479,25 @@ describe('runtime config file API', () => {
     writeServerConfig(dataRoot);
     const app = createApp({ dataRoot });
 
-    const traversalRes = await app.request('/api/admin/config/file?id=../server.jsonc');
-    const invalidRes = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'server.jsonc',
-        kind: 'server',
-        content: '{',
-        expectedRevision: 'sha256:not-current',
-      }),
-    });
+    const traversalRes = await app.request(
+      ...operationRequest('runtime.file-read', { id: '../server.jsonc' })
+    );
+    const invalidRes = await app.request(
+      ...operationRequest(
+        'runtime.file-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'server.jsonc',
+            kind: 'server',
+            content: '{',
+            expectedRevision: 'sha256:not-current',
+          }),
+        }
+      )
+    );
 
     expect(traversalRes.status).toBe(400);
     expect(invalidRes.status).toBe(400);
@@ -450,27 +511,39 @@ describe('runtime config file API', () => {
     const providerPath = join(dataRoot, 'config', providerFileId);
     const original = readFileSync(providerPath, 'utf8');
 
-    const invalidRes = await app.request('/api/admin/config/validate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        files: [{ id: 'server.jsonc', content: '{' }],
-        mode: 'safe',
-      }),
-    });
-    const changedRes = await app.request('/api/admin/config/validate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        files: [
-          {
-            id: providerFileId,
-            content: original.replace('openrouter.ai', 'openrouter.example.com'),
-          },
-        ],
-        mode: 'safe',
-      }),
-    });
+    const invalidRes = await app.request(
+      ...operationRequest(
+        'runtime.validate',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            files: [{ id: 'server.jsonc', content: '{' }],
+            mode: 'safe',
+          }),
+        }
+      )
+    );
+    const changedRes = await app.request(
+      ...operationRequest(
+        'runtime.validate',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            files: [
+              {
+                id: providerFileId,
+                content: original.replace('openrouter.ai', 'openrouter.example.com'),
+              },
+            ],
+            mode: 'safe',
+          }),
+        }
+      )
+    );
     const invalid = (await invalidRes.json()) as {
       valid: boolean;
       diagnostics: Array<{ range: { startLine: number } | null }>;
@@ -499,7 +572,7 @@ describe('runtime config file API', () => {
       dataRoot,
       mode: 'server',
     });
-    const listRes = await app.request('/api/admin/config/files');
+    const listRes = await app.request(...operationRequest('runtime.file-list', {}));
 
     expect(listRes.status).toBe(401);
   });
@@ -511,23 +584,35 @@ describe('runtime config file API', () => {
     const providerFileId = 'providers/agent-openrouter.provider.jsonc';
     const original = readFileSync(join(dataRoot, 'config', providerFileId), 'utf8');
 
-    await app.request('/api/admin/config/validate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        files: [
-          {
-            id: providerFileId,
-            content: original.replace('openrouter.ai', 'openrouter.example.com'),
-          },
-        ],
-      }),
-    });
-    const reloadRes = await app.request('/api/admin/config/reload', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ dryRun: true, mode: 'safe' }),
-    });
+    await app.request(
+      ...operationRequest(
+        'runtime.validate',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            files: [
+              {
+                id: providerFileId,
+                content: original.replace('openrouter.ai', 'openrouter.example.com'),
+              },
+            ],
+          }),
+        }
+      )
+    );
+    const reloadRes = await app.request(
+      ...operationRequest(
+        'runtime.reload',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ dryRun: true, mode: 'safe' }),
+        }
+      )
+    );
     const reload = (await reloadRes.json()) as { plan: { applied: unknown[] } };
 
     expect(existsSync(join(dataRoot, 'config', 'server.jsonc'))).toBe(true);

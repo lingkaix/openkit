@@ -37,7 +37,7 @@ export const REAL_CODEX_MODEL_ID = 'openai-codex/gpt-5.6-sol';
  * @throws {Error} When the subscription account, runtime profile, agent, model, or reload state differs.
  */
 export async function verifyRealCodexRuntime(core) {
-  const agentRead = await core.runtimeConfig.getFile(AGENT_FILE_ID);
+  const agentRead = await core.operations['runtime.file-read']({ id: AGENT_FILE_ID });
   const agent = parseConfig(agentRead.content, 'Codex agent profile');
   const providerRef = agent.provider?.ref;
   assert(
@@ -51,7 +51,9 @@ export async function verifyRealCodexRuntime(core) {
     'Prepared Codex agent or model selection is incorrect.'
   );
 
-  const providerRead = await core.runtimeConfig.getFile(`providers/${providerRef}.provider.jsonc`);
+  const providerRead = await core.operations['runtime.file-read']({
+    id: `providers/${providerRef}.provider.jsonc`,
+  });
   const provider = parseConfig(providerRead.content, 'Codex provider profile');
   const accountSlotId = provider.extensions?.openkit?.subscriptionAccount?.accountSlotId;
   assert(
@@ -65,7 +67,9 @@ export async function verifyRealCodexRuntime(core) {
     'Prepared Codex provider profile does not match the required subscription configuration.'
   );
 
-  const accounts = await core.providerSubscriptions.listAccounts(SUBSCRIPTION_PROVIDER_ID);
+  const accounts = await core.operations['provider-subscription.account-list']({
+    subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
+  });
   assert(
     accounts.accounts?.some(
       (account) =>
@@ -76,10 +80,10 @@ export async function verifyRealCodexRuntime(core) {
     'Prepared Codex subscription account is not logged in.'
   );
 
-  const account = await core.providerSubscriptions.getAccountStatus(
-    SUBSCRIPTION_PROVIDER_ID,
-    accountSlotId
-  );
+  const account = await core.operations['provider-subscription.account-status']({
+    subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
+    accountSlotId,
+  });
   assert(
     account.subscriptionProviderId === SUBSCRIPTION_PROVIDER_ID &&
       account.accountSlotId === accountSlotId &&
@@ -87,7 +91,7 @@ export async function verifyRealCodexRuntime(core) {
     'Prepared Codex subscription account is not logged in.'
   );
 
-  const reload = await core.runtimeConfig.reload({ dryRun: true, mode: 'strict' });
+  const reload = await core.operations['runtime.reload']({ dryRun: true, mode: 'strict' });
   assert(isStrictNoOp(reload), 'Strict runtime config reload verification did not return a no-op.');
   return { providerId: provider.id };
 }

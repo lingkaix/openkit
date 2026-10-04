@@ -8,6 +8,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -20,6 +21,7 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAgentNativeEnvironmentService } from './agent-native-environment.js';
 import {
@@ -27,7 +29,6 @@ import {
   createRuntimeConfigManager,
 } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
-import { registerRuntimeConfigRoutes } from './runtime-config-routes.js';
 
 const roots: string[] = [];
 const dbs: CoreDb[] = [];
@@ -309,7 +310,7 @@ describe('Agent public native environment administration', () => {
     ]);
   });
 
-  it('publishes typed private GET/PUT routes and refuses non-administrators before reading values', async () => {
+  it('publishes typed private runtime environment operations and refuses non-administrators before reading values', async () => {
     const f = fixture();
     f.admit();
     let viewer = actor as import('../auth/identity.js').Actor;
@@ -318,31 +319,52 @@ describe('Agent public native environment administration', () => {
       c.set('actor', viewer);
       await next();
     });
-    registerRuntimeConfigRoutes({
+    registerOperationJsonRoutes({
       app,
-      agentNativeEnvironment: f.service,
-      runtimeConfigManager: f.manager,
-      runtimeConfigFileService: () => f.files,
+      coreDb: f.db,
+      requestStore: () => f.store,
+      runtimeConfigOperations: {
+        nativeEnvironment: f.service,
+        manager: f.manager,
+        filesForActor: () => f.files,
+      },
     });
-    const url = `/api/admin/config/agent-environment?fileId=${encodeURIComponent(f.fileId)}`;
-    expect((await app.request(url)).status).toBe(200);
-    const response = await app.request('/api/admin/config/agent-environment', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        fileId: f.fileId,
-        expectedRevision: f.files.readFile(f.fileId).file.revision,
-        imageDigest,
-        defaultsDigest,
-        environment: { EMPTY: '' },
-        note: 'inert request metadata',
-      }),
-    });
+    expect(
+      (
+        await app.request(
+          ...operationRequest('runtime.agent-environment-read', { fileId: f.fileId })
+        )
+      ).status
+    ).toBe(200);
+    const response = await app.request(
+      ...operationRequest(
+        'runtime.agent-environment-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            fileId: f.fileId,
+            expectedRevision: f.files.readFile(f.fileId).file.revision,
+            imageDigest,
+            defaultsDigest,
+            environment: { EMPTY: '' },
+            note: 'inert request metadata',
+          }),
+        }
+      )
+    );
     expect(response.status).toBe(200);
     expect((await response.json()).overrides).toEqual({ EMPTY: '' });
     expect(readFileSync(f.path, 'utf8')).not.toContain('inert request metadata');
     viewer = { kind: 'session', userId: 'foreign' };
-    expect((await app.request(url)).status).toBe(403);
+    expect(
+      (
+        await app.request(
+          ...operationRequest('runtime.agent-environment-read', { fileId: f.fileId })
+        )
+      ).status
+    ).toBe(403);
   });
 
   it('persists literal overrides/removals through real CAS without claiming a failed reload or native application', () => {

@@ -86,11 +86,22 @@ const POST_LOGOUT_BODY = {
  */
 function scriptedFetcher(script) {
   let index = 0;
-  const fetcher = async (url) => {
+  const fetcher = async (url, init) => {
     assert.ok(index < script.length, `unexpected extra request: ${url}`);
     const [suffix, status, body] = script[index];
     index += 1;
     assert.ok(String(url).endsWith(suffix), `expected ${suffix}, received ${url}`);
+    if (String(url).includes('/operations/provider-subscription.')) {
+      assert.equal(init.method, 'POST');
+      assert.equal(init.headers['content-type'], 'application/json');
+      const input = JSON.parse(init.body);
+      const expected = suffix.endsWith('provider-list')
+        ? {}
+        : suffix.endsWith('account-list')
+          ? { subscriptionProviderId: PROVIDER }
+          : { subscriptionProviderId: PROVIDER, accountSlotId: SLOT };
+      assert.deepEqual(input, expected);
+    }
     const text = typeof body === 'string' ? body : JSON.stringify(body);
     return { status, text: async () => text };
   };
@@ -99,7 +110,7 @@ function scriptedFetcher(script) {
 
 const HAPPY_SCRIPT = () => [
   [
-    '/api/app/provider-subscriptions',
+    '/api/app/operations/provider-subscription.provider-list',
     200,
     {
       providers: [
@@ -113,15 +124,15 @@ const HAPPY_SCRIPT = () => [
     },
   ],
   [
-    `/provider-subscriptions/${PROVIDER}/accounts`,
+    '/api/app/operations/provider-subscription.account-list',
     200,
     { accounts: [accountDescriptor('logged_in')] },
   ],
-  [`/accounts/${SLOT}/status`, 200, accountDescriptor('logged_in')],
+  ['/api/app/operations/provider-subscription.account-status', 200, accountDescriptor('logged_in')],
   ['/api/app/diagnostics', 200, { gateway: { defaultModelId: MODEL } }],
   ['/v1/responses', 200, SSE_OK],
   [
-    `/accounts/${SLOT}/quota`,
+    '/api/app/operations/provider-subscription.account-quota',
     200,
     {
       accountSlotId: SLOT,
@@ -130,9 +141,17 @@ const HAPPY_SCRIPT = () => [
       subscriptionProviderId: PROVIDER,
     },
   ],
-  [`/accounts/${SLOT}/logout`, 200, accountDescriptor('logged_out')],
+  [
+    '/api/app/operations/provider-subscription.account-logout',
+    200,
+    accountDescriptor('logged_out'),
+  ],
   ['/v1/responses', 401, POST_LOGOUT_BODY],
-  [`/accounts/${SLOT}/status`, 200, accountDescriptor('logged_out')],
+  [
+    '/api/app/operations/provider-subscription.account-status',
+    200,
+    accountDescriptor('logged_out'),
+  ],
 ];
 
 test('keeps the fake real-use provider inventory Codex-only', () => {
@@ -253,10 +272,10 @@ function passingLifecycleSeams(script) {
   let nextPid = 9_700;
   return {
     options: {
-      fetchImpl: async (url) =>
+      fetchImpl: async (url, init) =>
         String(url).endsWith('/api/health')
           ? { ok: true, status: 200, text: async () => '{"status":"ok"}' }
-          : fetcher(url),
+          : fetcher(url, init),
       killProcess: (_target, signal) => {
         if (signal === 'SIGTERM') return true;
         if (signal === 0)
@@ -326,7 +345,7 @@ test('C05 response-text rejection retains the observed HTTP status and null term
         ...enabledRunnerEnv(authPlaceholderPath, evidenceDir),
         OPENKIT_E2E_LIFECYCLE_RUN_COUNT: '1',
       },
-      fetchImpl: async (url) => {
+      fetchImpl: async (url, init) => {
         if (String(url).endsWith('/api/health')) {
           return { ok: true, status: 200, text: async () => '{"status":"ok"}' };
         }
@@ -339,7 +358,7 @@ test('C05 response-text rejection retains the observed HTTP status and null term
             },
           };
         }
-        return fetcher(url);
+        return fetcher(url, init);
       },
       killProcess: (_target, signal) => {
         if (signal === 'SIGTERM') return true;
@@ -511,15 +530,15 @@ test('C05 evidence contract: preserves the first lifecycle failure after cleanup
   try {
     const outcome = await runProviderSubscriptionRealLifecycleTest({
       env: enabledRunnerEnv(source.path, evidenceDir),
-      fetchImpl: async (url) => {
+      fetchImpl: async (url, init) => {
         if (String(url).endsWith('/api/health')) {
           return { ok: true, status: 200, text: async () => '{"status":"ok"}' };
         }
-        if (String(url).endsWith(`/accounts/${SLOT}/status`)) {
+        if (String(url).endsWith('/api/app/operations/provider-subscription.account-status')) {
           statusReads += 1;
           if (statusReads === 2) throw lifecycleFailure;
         }
-        return fetcher(url);
+        return fetcher(url, init);
       },
       killProcess: (_target, signal) => {
         if (signal === 'SIGTERM') throw cleanupFailure;
@@ -976,10 +995,10 @@ test('reports unchanged auth-source metadata after a completed fake run', async 
   try {
     const result = await runProviderSubscriptionRealLifecycleTest({
       env: enabledRunnerEnv(source.path, evidenceDir),
-      fetchImpl: async (url) =>
+      fetchImpl: async (url, init) =>
         String(url).endsWith('/api/health')
           ? { ok: true, status: 200, text: async () => '{"status":"ok"}' }
-          : fetcher(url),
+          : fetcher(url, init),
       killProcess: (_target, signal) => {
         if (signal === 'SIGTERM') return true;
         if (signal === 0)
@@ -1058,7 +1077,7 @@ test('fails closed with redacted evidence when fake auth metadata changes after 
   try {
     const outcome = await runProviderSubscriptionRealLifecycleTest({
       env: enabledRunnerEnv(source.path, evidenceDir),
-      fetchImpl: async (url) => {
+      fetchImpl: async (url, init) => {
         if (String(url).endsWith('/api/health')) {
           if (!metadataMutated) {
             const changedAt = new Date(before.mtimeMs + 60_000);
@@ -1067,7 +1086,7 @@ test('fails closed with redacted evidence when fake auth metadata changes after 
           }
           return { ok: true, status: 200, text: async () => '{"status":"ok"}' };
         }
-        return fetcher(url);
+        return fetcher(url, init);
       },
       killProcess: (_target, signal) => {
         if (signal === 'SIGTERM') return true;
@@ -1208,10 +1227,10 @@ test('bounds macOS EPERM to the first post-TERM liveness probe', async () => {
     try {
       const outcome = await runProviderSubscriptionRealLifecycleTest({
         env: enabledRunnerEnv(source.path, evidenceDir),
-        fetchImpl: async (url) =>
+        fetchImpl: async (url, init) =>
           String(url).endsWith('/api/health')
             ? { ok: true, status: 200, text: async () => '{"status":"ok"}' }
-            : fetcher(url),
+            : fetcher(url, init),
         killProcess: (target, signal) => {
           signalCalls.push([target, signal]);
           const groupId = -target;

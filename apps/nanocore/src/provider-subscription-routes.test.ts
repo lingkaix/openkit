@@ -1,8 +1,8 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
+  PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
   ProviderSubscriptionAccountSchema,
   ProviderSubscriptionAccountsResponseSchema,
   ProviderSubscriptionAutoTopupSchema,
@@ -26,6 +26,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { type CreateAppOptions, createApp } from './test-support/app.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 const NOW = '2026-07-24T00:00:00.000Z';
 const MAX_CODEX_QUOTA_BODY_BYTES = 65_536;
@@ -143,7 +144,7 @@ const SECONDARY_QUOTA_WINDOW = {
   resetsAt: '2026-08-08T00:00:00.000Z',
   usedPercent: 100,
 } as const;
-const OPERATION_ROUTES = [
+const FORMER_OPERATION_ROUTES = [
   {
     method: 'GET',
     operationId: 'listSubscriptionProviders',
@@ -200,6 +201,13 @@ const OPERATION_ROUTES = [
     path: '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup',
   },
 ] as const;
+const OPERATION_ROUTES = Object.keys(PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS).map(
+  (operationId) => ({
+    method: 'POST',
+    operationId,
+    path: `/api/app/operations/${operationId}`,
+  })
+);
 const LEGACY_CODEX_OPERATION_IDS = [
   'listOpenAICodexOAuthAccounts',
   'createOpenAICodexOAuthAccount',
@@ -562,12 +570,14 @@ describe('provider-subscription app API', () => {
         ({ operationId, path }) =>
           operationIds.has(operationId) ||
           legacyOperationIds.has(operationId) ||
+          path.startsWith('/api/app/operations/provider-subscription.') ||
           path.startsWith('/api/app/provider-subscriptions') ||
           path.startsWith('/api/app/oauth/openai-codex')
       );
       const providerRuntimeRoutes = fixture.app.routes
         .filter(
           ({ path }) =>
+            path.startsWith('/api/app/operations/provider-subscription.') ||
             path.startsWith('/api/app/provider-subscriptions') ||
             path.startsWith('/api/app/oauth/openai-codex')
         )
@@ -589,7 +599,9 @@ describe('provider-subscription app API', () => {
       );
       expect(appSource).not.toMatch(/\b(?:CodexOAuthAccountManager|codexOAuthAccountManager)\b/);
 
-      const response = await fixture.app.request('/api/app/provider-subscriptions');
+      const response = await fixture.app.request(
+        ...operationRequest('provider-subscription.provider-list', {})
+      );
       const body = ProviderSubscriptionsResponseSchema.parse(await response.json());
 
       expect(response.status).toBe(200);
@@ -609,6 +621,15 @@ describe('provider-subscription app API', () => {
           },
         ],
       });
+      for (const former of FORMER_OPERATION_ROUTES) {
+        const response = await fixture.app.request(
+          former.path
+            .replace('{subscriptionProviderId}', 'xai')
+            .replace('{accountSlotId}', 'default'),
+          { method: former.method }
+        );
+        expect(response.status).toBe(404);
+      }
       expectNoProviderStateIo(fixture);
     } finally {
       fixture.close();
@@ -621,17 +642,14 @@ describe('provider-subscription app API', () => {
     async (subscriptionProviderId) => {
       const fixture = createFixture();
       const slot = subscriptionProviderId === 'openai-codex' ? 'codex_team' : 'xai_team';
-      const basePath = `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts`;
 
       try {
-        const listResponse = await fixture.app.request(basePath);
+        const listResponse = await fixture.app.request(...operationRequest('provider-subscription.account-list', { subscriptionProviderId: subscriptionProviderId }));
         expect(listResponse.status).toBe(200);
         ProviderSubscriptionAccountsResponseSchema.parse(await listResponse.json());
         expect(fixture.spies.listAccounts).toHaveBeenLastCalledWith(subscriptionProviderId);
 
-        const createResponse = await fixture.app.request(
-          basePath,
-          jsonRequest('POST', { accountSlotId: slot, displayName: 'Team' })
+        const createResponse = await fixture.app.request(...operationRequest('provider-subscription.account-create', { subscriptionProviderId: subscriptionProviderId }, jsonRequest('POST', { accountSlotId: slot, displayName: 'Team' }))
         );
         expect(createResponse.status).toBe(200);
         ProviderSubscriptionAccountSchema.parse(await createResponse.json());
@@ -641,9 +659,7 @@ describe('provider-subscription app API', () => {
           subscriptionProviderId,
         });
 
-        const updateResponse = await fixture.app.request(
-          `${basePath}/${slot}`,
-          jsonRequest('PATCH', { displayName: 'Team Updated' })
+        const updateResponse = await fixture.app.request(...operationRequest('provider-subscription.account-update', { subscriptionProviderId: subscriptionProviderId, accountSlotId: slot }, jsonRequest('PATCH', { displayName: 'Team Updated' }))
         );
         expect(updateResponse.status).toBe(200);
         ProviderSubscriptionAccountSchema.parse(await updateResponse.json());
@@ -652,7 +668,7 @@ describe('provider-subscription app API', () => {
           { displayName: 'Team Updated' }
         );
 
-        const statusResponse = await fixture.app.request(`${basePath}/${slot}/status`);
+        const statusResponse = await fixture.app.request(...operationRequest('provider-subscription.account-status', { subscriptionProviderId: subscriptionProviderId, accountSlotId: slot }));
         expect(statusResponse.status).toBe(200);
         ProviderSubscriptionAccountSchema.parse(await statusResponse.json());
         expect(fixture.spies.getStatus).toHaveBeenLastCalledWith({
@@ -661,9 +677,9 @@ describe('provider-subscription app API', () => {
         });
         expect(fixture.spies.reconcileAccount).not.toHaveBeenCalled();
 
-        const deleteResponse = await fixture.app.request(`${basePath}/${slot}`, {
+        const deleteResponse = await fixture.app.request(...operationRequest('provider-subscription.account-delete', { subscriptionProviderId: subscriptionProviderId, accountSlotId: slot }, {
           method: 'DELETE',
-        });
+        }));
         expect(deleteResponse.status).toBe(204);
         expect(await deleteResponse.text()).toBe('');
         expect(deleteResponse.headers.get('content-type')).toBeNull();
@@ -692,8 +708,11 @@ describe('provider-subscription app API', () => {
     const fixture = createFixture(registry);
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/bound_slot',
-        { method: 'DELETE' }
+        ...operationRequest(
+          'provider-subscription.account-delete',
+          { subscriptionProviderId: 'xai', accountSlotId: 'bound_slot' },
+          { method: 'DELETE' }
+        )
       );
       expect(response.status).toBe(204);
       expect(await response.text()).toBe('');
@@ -710,60 +729,75 @@ describe('provider-subscription app API', () => {
     const fixture = createFixture();
     const cases = [
       {
-        body: undefined,
         code: 'provider_subscription_provider_not_found',
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/anthropic/accounts',
         status: 404,
+        path: '/api/app/operations/provider-subscription.account-list',
+        method: 'POST',
+        body: { ...undefined, ...{ subscriptionProviderId: 'anthropic' } },
       },
       {
-        body: undefined,
         code: 'provider_subscription_account_slot_invalid',
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/Bad%20Slot/status',
         status: 400,
-      },
-      {
-        body: { accountSlotId: 'default', unexpected: true },
-        code: 'invalid_request',
+        path: '/api/app/operations/provider-subscription.account-status',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts',
-        status: 400,
+        body: { ...undefined, ...{ subscriptionProviderId: 'xai', accountSlotId: 'Bad Slot' } },
       },
       {
-        body: { displayName: 'Updated', unexpected: true },
         code: 'invalid_request',
-        method: 'PATCH',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
         status: 400,
-      },
-      {
-        body: {},
-        code: 'invalid_request',
+        path: '/api/app/operations/provider-subscription.account-create',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login',
-        status: 400,
+        body: {
+          ...{ accountSlotId: 'default', unexpected: true },
+          ...{ subscriptionProviderId: 'xai' },
+        },
       },
       {
-        body: { mode: 'browser' },
         code: 'invalid_request',
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/openai-codex/accounts/default/login',
         status: 400,
+        path: '/api/app/operations/provider-subscription.account-update',
+        method: 'POST',
+        body: {
+          ...{ displayName: 'Updated', unexpected: true },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
-        body: { loginId: 'legacy-login-id' },
         code: 'invalid_request',
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login/cancel',
         status: 400,
+        path: '/api/app/operations/provider-subscription.account-login-start',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        body: { unexpected: true },
         code: 'invalid_request',
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/logout',
         status: 400,
+        path: '/api/app/operations/provider-subscription.account-login-start',
+        method: 'POST',
+        body: {
+          ...{ mode: 'browser' },
+          ...{ subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        },
+      },
+      {
+        code: 'invalid_request',
+        status: 400,
+        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        method: 'POST',
+        body: {
+          ...{ loginId: 'legacy-login-id' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
+      },
+      {
+        code: 'invalid_request',
+        status: 400,
+        path: '/api/app/operations/provider-subscription.account-logout',
+        method: 'POST',
+        body: {
+          ...{ unexpected: true },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
     ] as const;
 
@@ -781,7 +815,7 @@ describe('provider-subscription app API', () => {
               ? 'Subscription provider not found.'
               : testCase.code === 'provider_subscription_account_slot_invalid'
                 ? 'Account slot id is invalid.'
-                : 'Invalid provider subscription request.',
+                : 'Invalid operation input.',
         });
       }
       expectNoProviderStateIo(fixture);
@@ -795,12 +829,9 @@ describe('provider-subscription app API', () => {
     'projects delegated %s device-code login, cancellation, and local logout without private fields',
     async (subscriptionProviderId) => {
       const fixture = createFixture();
-      const path = `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/default`;
 
       try {
-        const startResponse = await fixture.app.request(
-          `${path}/login`,
-          jsonRequest('POST', { mode: 'device_code' })
+        const startResponse = await fixture.app.request(...operationRequest('provider-subscription.account-login-start', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { mode: 'device_code' }))
         );
         const pending = ProviderSubscriptionAccountSchema.parse(await startResponse.json());
 
@@ -822,9 +853,7 @@ describe('provider-subscription app API', () => {
 
         const interactionId =
           pending.status === 'pending' ? pending.interaction.interactionId : 'unreachable';
-        const cancelResponse = await fixture.app.request(
-          `${path}/login/cancel`,
-          jsonRequest('POST', { interactionId })
+        const cancelResponse = await fixture.app.request(...operationRequest('provider-subscription.account-login-cancel', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { interactionId }))
         );
         const cancelled = ProviderSubscriptionAccountSchema.parse(await cancelResponse.json());
         expect(cancelResponse.status).toBe(200);
@@ -834,7 +863,7 @@ describe('provider-subscription app API', () => {
           interactionId
         );
 
-        const logoutResponse = await fixture.app.request(`${path}/logout`, { method: 'POST' });
+        const logoutResponse = await fixture.app.request(...operationRequest('provider-subscription.account-logout', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, { method: 'POST' }));
         const loggedOut = ProviderSubscriptionAccountSchema.parse(await logoutResponse.json());
         expect(logoutResponse.status).toBe(200);
         expect(loggedOut).toMatchObject({ status: 'logged_out', subscriptionProviderId });
@@ -856,7 +885,7 @@ describe('provider-subscription app API', () => {
     }
   );
 
-  it('maps manager failures to fixed route errors without exposing caught messages', async () => {
+  it('projects known manager failures and delegates unknown failures to the common HTTP handler without exposing caught messages', async () => {
     const cases = [
       {
         error: () =>
@@ -864,24 +893,25 @@ describe('provider-subscription app API', () => {
             'provider_subscription_provider_not_found',
             'Bearer private provider failure'
           ),
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts',
         spy: 'listAccounts',
         status: 404,
         message: 'Subscription provider not found.',
+        path: '/api/app/operations/provider-subscription.account-list',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai' } },
       },
       {
-        body: { accountSlotId: 'default' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_account_slot_invalid',
             'Bearer private slot failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts',
         spy: 'createAccount',
         status: 400,
         message: 'Account slot id is invalid.',
+        path: '/api/app/operations/provider-subscription.account-create',
+        method: 'POST',
+        body: { ...{ accountSlotId: 'default' }, ...{ subscriptionProviderId: 'xai' } },
       },
       {
         error: () =>
@@ -889,63 +919,73 @@ describe('provider-subscription app API', () => {
             'provider_subscription_account_not_found',
             'Bearer private account failure'
           ),
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/status',
         spy: 'getStatus',
         status: 404,
         message: 'Provider subscription account not found.',
+        path: '/api/app/operations/provider-subscription.account-status',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        body: { accountSlotId: 'default' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_account_exists',
             'Bearer private duplicate failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts',
         spy: 'createAccount',
         status: 409,
         message: 'Provider subscription account already exists.',
+        path: '/api/app/operations/provider-subscription.account-create',
+        method: 'POST',
+        body: { ...{ accountSlotId: 'default' }, ...{ subscriptionProviderId: 'xai' } },
       },
       {
-        body: { mode: 'device_code' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_login_active' as never,
             'Bearer private active-login failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login',
         spy: 'startLogin',
         status: 409,
         message: 'A login interaction is already active for this account.',
+        path: '/api/app/operations/provider-subscription.account-login-start',
+        method: 'POST',
+        body: {
+          ...{ mode: 'device_code' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
-        body: { interactionId: 'missing-interaction' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_login_not_active' as never,
             'Bearer private inactive-login failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login/cancel',
         spy: 'cancelLogin',
         status: 409,
         message: 'No login interaction is active for this account.',
+        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        method: 'POST',
+        body: {
+          ...{ interactionId: 'missing-interaction' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
-        body: { interactionId: 'different-interaction' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_login_interaction_mismatch' as never,
             'Bearer private interaction failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login/cancel',
         spy: 'cancelLogin',
         status: 409,
         message: 'Login interaction does not match the active interaction.',
+        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        method: 'POST',
+        body: {
+          ...{ interactionId: 'different-interaction' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
         error: () =>
@@ -953,11 +993,12 @@ describe('provider-subscription app API', () => {
             'provider_subscription_vault_locked',
             'Bearer private locked failure'
           ),
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/status',
         spy: 'getStatus',
         status: 503,
         message: 'Provider subscription Vault is locked.',
+        path: '/api/app/operations/provider-subscription.account-status',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
         error: () =>
@@ -965,77 +1006,87 @@ describe('provider-subscription app API', () => {
             'provider_subscription_vault_unavailable',
             'Bearer private unavailable failure'
           ),
-        method: 'DELETE',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
         spy: 'deleteAccount',
         status: 503,
         message: 'Provider subscription Vault is unavailable.',
+        path: '/api/app/operations/provider-subscription.account-delete',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        body: { mode: 'device_code' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_provider_unavailable' as never,
             'Bearer private provider availability failure'
           ),
-        method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login',
         spy: 'startLogin',
         status: 503,
         message: 'Subscription provider is unavailable.',
+        path: '/api/app/operations/provider-subscription.account-login-start',
+        method: 'POST',
+        body: {
+          ...{ mode: 'device_code' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
-        body: { displayName: 'Updated' },
         error: () =>
           new ProviderSubscriptionAccountError(
             'provider_subscription_projection_failed',
             'Bearer private projection failure'
           ),
-        method: 'PATCH',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
         spy: 'updateAccount',
         status: 500,
         message: 'Provider subscription projection failed.',
+        path: '/api/app/operations/provider-subscription.account-update',
+        method: 'POST',
+        body: {
+          ...{ displayName: 'Updated' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
-        body: { displayName: 'Updated' },
         error: () => new Error('Bearer private unknown failure'),
-        method: 'PATCH',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
         spy: 'updateAccount',
         status: 500,
-        message: 'Provider subscription request failed.',
+        message: 'Internal Server Error',
+        path: '/api/app/operations/provider-subscription.account-update',
+        method: 'POST',
+        body: {
+          ...{ displayName: 'Updated' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
     ] as const;
 
     const fixture = createFixture();
     try {
       for (const testCase of cases) {
-        fixture.spies[testCase.spy].mockRejectedValueOnce(testCase.error() as never);
+        const error = testCase.error();
+        fixture.spies[testCase.spy].mockRejectedValueOnce(error as never);
         const response = await fixture.app.request(
           testCase.path,
           jsonRequest(testCase.method, 'body' in testCase ? testCase.body : undefined)
         );
-        const body = await response.json();
+        const body = await response.text();
 
         expect(response.status, `${testCase.method} ${testCase.path}`).toBe(testCase.status);
-        expect(body).toMatchObject({
-          code:
-            testCase.message === 'Provider subscription request failed.'
-              ? 'internal_error'
-              : testCase.error() instanceof ProviderSubscriptionAccountError
-                ? (testCase.error() as ProviderSubscriptionAccountError).code
-                : 'internal_error',
-          message: testCase.message,
-        });
-        expect(JSON.stringify(body)).not.toContain('Bearer private');
+        if (error instanceof ProviderSubscriptionAccountError) {
+          expect(JSON.parse(body)).toMatchObject({
+            code: error.code,
+            message: testCase.message,
+          });
+        } else {
+          expect(body).toBe(testCase.message);
+        }
+        expect(body).not.toContain('Bearer private');
       }
     } finally {
       fixture.close();
     }
   });
 
-  it('gives whole-operation persistence failure precedence across all nine account operations', async () => {
+  it('gives whole-operation persistence failure precedence across all ten account operations', async () => {
     const fixture = createFixture();
     const persistence = new ProviderSubscriptionAccountError(
       'provider_subscription_persistence_failed',
@@ -1043,48 +1094,63 @@ describe('provider-subscription app API', () => {
     );
     const operations = [
       {
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts',
-      },
-      {
-        body: { accountSlotId: 'default' },
+        path: '/api/app/operations/provider-subscription.account-list',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai' } },
       },
       {
-        body: { displayName: 'Updated' },
-        method: 'PATCH',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
-      },
-      {
-        method: 'DELETE',
-        path: '/api/app/provider-subscriptions/xai/accounts/default',
-      },
-      {
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/status',
-      },
-      {
-        body: { mode: 'device_code' },
+        path: '/api/app/operations/provider-subscription.account-create',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login',
+        body: { ...{ accountSlotId: 'default' }, ...{ subscriptionProviderId: 'xai' } },
       },
       {
-        body: { interactionId: 'missing-interaction' },
+        path: '/api/app/operations/provider-subscription.account-update',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/login/cancel',
+        body: {
+          ...{ displayName: 'Updated' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
       },
       {
+        path: '/api/app/operations/provider-subscription.account-delete',
         method: 'POST',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/logout',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/quota',
+        path: '/api/app/operations/provider-subscription.account-status',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
       {
-        method: 'GET',
-        path: '/api/app/provider-subscriptions/xai/accounts/default/auto-topup',
+        path: '/api/app/operations/provider-subscription.account-login-start',
+        method: 'POST',
+        body: {
+          ...{ mode: 'device_code' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
+      },
+      {
+        path: '/api/app/operations/provider-subscription.account-login-cancel',
+        method: 'POST',
+        body: {
+          ...{ interactionId: 'missing-interaction' },
+          ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' },
+        },
+      },
+      {
+        path: '/api/app/operations/provider-subscription.account-logout',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
+      },
+      {
+        path: '/api/app/operations/provider-subscription.account-quota',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
+      },
+      {
+        path: '/api/app/operations/provider-subscription.account-auto-topup',
+        method: 'POST',
+        body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },
     ] as const;
 
@@ -1150,10 +1216,16 @@ describe('provider-subscription app API', () => {
 
     try {
       const firstQuotaPromise = fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/backup/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'backup',
+        })
       );
       const secondQuotaPromise = fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/backup/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'backup',
+        })
       );
 
       await vi.waitFor(() => {
@@ -1214,7 +1286,10 @@ describe('provider-subscription app API', () => {
       });
 
       const thirdQuotaPromise = fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/backup/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'backup',
+        })
       );
       await vi.waitFor(() => {
         expect(fetchSpy).toHaveBeenCalledTimes(3);
@@ -1354,7 +1429,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1394,7 +1472,10 @@ describe('provider-subscription app API', () => {
     );
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
       expect(response.status).toBe(200);
@@ -1421,7 +1502,10 @@ describe('provider-subscription app API', () => {
       .mockResolvedValue(new Response('token_expired Bearer upstream-private-canary', { status }));
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({
@@ -1451,7 +1535,10 @@ describe('provider-subscription app API', () => {
       .mockResolvedValue(new Response('token_expired', { status: 401 }));
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       expect(await response.json()).toEqual({
         accountSlotId: 'default',
@@ -1473,7 +1560,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1537,7 +1627,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/auto-topup'
+        ...operationRequest('provider-subscription.account-auto-topup', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const body = ProviderSubscriptionAutoTopupSchema.parse(await response.json());
 
@@ -1571,7 +1664,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/auto-topup'
+        ...operationRequest('provider-subscription.account-auto-topup', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const body = await response.json();
 
@@ -1603,7 +1699,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1646,7 +1745,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1677,7 +1779,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1701,7 +1806,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1845,7 +1953,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1904,7 +2015,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1947,7 +2061,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -1992,7 +2109,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const responsePromise = fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       let settled = false;
       void responsePromise.finally(() => {
@@ -2039,7 +2159,10 @@ describe('provider-subscription app API', () => {
       expect(new TextEncoder().encode(body)).toHaveLength(MAX_CODEX_QUOTA_BODY_BYTES);
 
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -2085,7 +2208,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -2474,7 +2600,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const responsePromise = fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       if ('timeout' in testCase) {
         let settled = false;
@@ -2549,7 +2678,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const quota = ProviderSubscriptionQuotaSchema.parse(await response.json());
 
@@ -2611,7 +2743,10 @@ describe('provider-subscription app API', () => {
 
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/openai-codex/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
       );
       const body = await response.json();
 
@@ -2653,7 +2788,10 @@ describe('quota observation clearing wiring', () => {
             .mockResolvedValue(new Response(JSON.stringify(CODEX_USAGE)));
     try {
       const response = await fixture.app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/default/quota`
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'default',
+        })
       );
       expect(response.status).toBe(200);
       const quota = await response.json();
@@ -2679,7 +2817,10 @@ describe('quota observation clearing wiring', () => {
       .mockResolvedValueOnce(new Response('', { status: 503 }));
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       expect(await response.json()).toEqual({ ...unavailableXaiQuota(), ...XAI_DISCOVERY });
       expect(fixture.spies.observeQuota).toHaveBeenCalledWith(
@@ -2707,7 +2848,10 @@ describe('quota observation clearing wiring', () => {
       .mockResolvedValue(new Response('', { status: 401 }));
     try {
       const response = await fixture.app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/default/quota`
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'default',
+        })
       );
       expect((await response.json()).availability).toBe('temporarily_unavailable');
       expect(fixture.spies.observeQuota).not.toHaveBeenCalled();
@@ -2724,7 +2868,10 @@ describe('quota observation clearing wiring', () => {
       .mockResolvedValue(new Response('', { status: 401 }));
     try {
       const response = await fixture.app.request(
-        '/api/app/provider-subscriptions/xai/accounts/default/quota'
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+        })
       );
       expect(await response.json()).toEqual({
         ...unavailableXaiQuota(),

@@ -79,8 +79,8 @@ The public client is grouped by boundary:
 
 - `client.core`: meta, workspaces, knowledge, threads, turns, items, approvals, artifacts, and turn SSE.
 - `client.app`: dashboards, Goal reads and the Goal operations, search, quick chat, diagnostics, setup diagnostics, and feedback.
-- `client.runtimeConfig`: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
-- `client.providerSubscriptions`: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
+- `client.operations[id]` for the runtime family: runtime config file list, read, create, update, validate, reload, and schema catalog routes.
+- `client.operations[id]` for the provider-subscription family: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, get, and health refresh routes.
@@ -101,22 +101,9 @@ It must remain runtime-neutral and must not import NanoCore services, filesystem
 
 ## Provider Subscription Slice
 
-`client.providerSubscriptions` is the only provider-subscription client namespace. It exposes exactly these methods in public operation order:
+The eleven provider-subscription operations use `client.operations[id](input)` with their canonical `provider-subscription.*` identities and complete logical provider and slot selectors. `provider-subscription.provider-list` takes `{}`; account list takes `{ subscriptionProviderId }`; addressed account operations take `{ subscriptionProviderId, accountSlotId }` plus the existing strict mutation payload fields. The family includes the separate auto-top-up read. Deletion maps the empty HTTP 204 response to logical `null`; every other operation validates its complete response schema. There is no provider-subscription namespace or alias.
 
-```ts
-listProviders()
-listAccounts(subscriptionProviderId)
-createAccount(subscriptionProviderId, input)
-updateAccount(subscriptionProviderId, accountSlotId, input)
-deleteAccount(subscriptionProviderId, accountSlotId)
-getAccountStatus(subscriptionProviderId, accountSlotId)
-startAccountLogin(subscriptionProviderId, accountSlotId, input)
-cancelAccountLogin(subscriptionProviderId, accountSlotId, input)
-logoutAccount(subscriptionProviderId, accountSlotId)
-getAccountQuota(subscriptionProviderId, accountSlotId)
-```
-
-The methods map one-to-one and in the same order to `listSubscriptionProviders`, `listProviderSubscriptionAccounts`, `createProviderSubscriptionAccount`, `updateProviderSubscriptionAccount`, `deleteProviderSubscriptionAccount`, `getProviderSubscriptionAccountStatus`, `startProviderSubscriptionAccountLogin`, `cancelProviderSubscriptionAccountLogin`, `logoutProviderSubscriptionAccount`, and `getProviderSubscriptionAccountQuota`. `listProviders()` returns `ProviderSubscriptionsResponse`; `listAccounts()` returns `ProviderSubscriptionAccountsResponse`; create, update, status, login, cancel, and logout return the strict `ProviderSubscriptionAccount` status union; delete returns `Promise<void>` from the `204` empty response; and quota returns `ProviderSubscriptionQuota`. The four `input` parameters use the strict create, update, login, and cancel request objects defined by the provider-subscription specification. Request and response types come directly from `@openkit/app-api-schemas`; the client adds no defaults, aliases, provider-family inference, credential handling, or alternate response shapes.
+Provider inventory returns `ProviderSubscriptionsResponse`; account list returns `ProviderSubscriptionAccountsResponse`; account create, update, status, login start, login cancel, and logout return the strict `ProviderSubscriptionAccount` union; account delete returns `Promise<null>`; account quota returns `ProviderSubscriptionQuota`; account auto-top-up returns `ProviderSubscriptionAutoTopup`. Create, update, login-start, and login-cancel inputs retain the strict request objects defined by the provider-subscription specification, extended with their logical selectors. These input and response types come directly from `@openkit/app-api-schemas`; the client adds no defaults, aliases, provider-family inference, credential handling, or alternate response shapes.
 
 For this slice, a non-success `ApiError` becomes `ApiCallError` while preserving its HTTP status, stable code, and fixed sanitized message. A malformed successful payload becomes `ProtocolValidationError`; the client never accepts unknown response fields or repairs a response into another union branch.
 
@@ -194,7 +181,7 @@ This is a breaking change to release-coupled surfaces.
 
 Removed aliases and old NanoCore response shapes are not preserved.
 
-Provider diagnostics use the strict current object shape but do not duplicate provider-subscription account state. The legacy `oauth.openaiCodexAccounts` field is removed rather than renamed, and account status and quota remain available only through `client.providerSubscriptions`.
+Provider diagnostics use the strict current object shape but do not duplicate provider-subscription account state. The legacy `oauth.openaiCodexAccounts` field is removed rather than renamed, and account status and quota remain available only through `client.operations[id]` for the provider-subscription family.
 
 Runtime config, diagnostics, and provider-specific OAuth fields that existed only for earlier placeholder responses are removed from the typed surface.
 
@@ -228,9 +215,9 @@ The eleven ordinary Workspace, Thread and Turn commands, Workspace dashboard, op
 
 Web's [built browser package graph regression](../../apps/web/test/browser-package-boundary.test.ts) follows the shipped schema and client entries with browser package resolution and rejects reachable Node imports and globals, including delayed schema refinements.
 
-The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.providerSubscriptions` with exactly the ten accepted methods, strict request and response validation, `void` handling for the empty delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
+The composed `@openkit/core-client` surface and shared `@openkit/app-api-schemas` package include `client.operations[id]` for the provider-subscription family with exactly the eleven accepted operations, strict request and response validation, logical `null` handling for the empty HTTP 204 delete response, and stable `ApiCallError` conversion. The prior `client.oauth.openaiCodex` namespace and Codex-specific provider-subscription schemas are absent; no alias or second client remains. The unified conversation slice is implemented through `client.operations['conversation.targets']` and `client.operations['conversation.submit']` with strict target-catalog, Artifact-reference, logical-model, structured request, and response schemas. The removed `client.app.startChatMode` and text-only `/chat` App route have no compatibility surface.
 
-NanoCore's ten checked App API operations, the generated OpenAPI projection, the Core Client methods, and the bundled Skill's ten generic catalog mappings share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Those hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention and Pending Request operations now use the definition-derived `client.operations` map; their former `client.app` and `client.core` mappings are absent.
+NanoCore's checked App API catalog, generated OpenAPI projection, Core Client methods, and bundled Skill catalog share the same schema owners and operation identities. Package tests keep App API schemas runtime-neutral, and OpenAPI tests prevent first-party clients from reversing direction and consuming the generated artifact as source contract. Hand-maintained mappings remain for families awaiting cutover under Operation Definition Projection. Artifact, Knowledge, retained Knowledge Entry, Conversation, Task, Attention, Pending Request, Runtime Configuration, and Provider Subscription operations now use the definition-derived `client.operations` map; their former family mappings are absent.
 
 Provider-neutral Web consumption is now complete. This spec remains `Partial` only because the items named in Future Slices stay outside this spec until their owning specifications, NanoCore routes, schemas, and client methods land.
 

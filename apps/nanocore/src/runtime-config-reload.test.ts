@@ -101,11 +101,17 @@ describe('runtime config reload API', () => {
         workspace: { name: 'Reloaded Workspace', defaultAgentId: null },
       })
     );
-    const response = await app.request('/api/admin/config/reload', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'safe' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'runtime.reload',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'safe' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(response.status).toBe(200);
     expect(store.getWorkspace('ws_demo').name).toBe('Reloaded Workspace');
@@ -120,11 +126,17 @@ describe('runtime config reload API', () => {
     });
 
     writeServerConfig(dataRoot, 'openai/gpt-5.2');
-    const reloadRes = await app.request('/api/admin/config/reload', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'safe' }),
-      headers: { 'content-type': 'application/json' },
-    });
+    const reloadRes = await app.request(
+      ...operationRequest(
+        'runtime.reload',
+        {},
+        {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'safe' }),
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
 
     expect(reloadRes.status).toBe(200);
     const reload = (await reloadRes.json()) as {
@@ -235,11 +247,17 @@ describe('runtime config reload API', () => {
       ]);
 
       writeServerConfig(dataRoot, 'openai/gpt-5.2');
-      const reloadRes = await app.request('/api/admin/config/reload', {
-        method: 'POST',
-        body: JSON.stringify({ mode: 'safe' }),
-        headers: { 'content-type': 'application/json' },
-      });
+      const reloadRes = await app.request(
+        ...operationRequest(
+          'runtime.reload',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({ mode: 'safe' }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
       expect(reloadRes.status).toBe(200);
       const reload = (await reloadRes.json()) as {

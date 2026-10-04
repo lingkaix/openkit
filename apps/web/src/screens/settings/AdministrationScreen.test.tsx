@@ -249,7 +249,7 @@ const CONFIG_OUTCOME_ARTIFACT = {
 function makeClient(
   app: Partial<CoreClient['app'] & CoreClient['operations']> = {},
   core: Partial<CoreClient['core'] & CoreClient['operations']> = {},
-  runtimeConfig: Partial<CoreClient['runtimeConfig']> = {}
+  operations: Partial<CoreClient['operations']> = {}
 ): CoreClient {
   return {
     app: {
@@ -262,13 +262,10 @@ function makeClient(
       meta: vi.fn().mockResolvedValue({}),
       ...core,
     },
-    runtimeConfig: {
-      listFiles: vi.fn().mockResolvedValue({ files: [] }),
-      getFile: vi.fn(),
-      ...runtimeConfig,
-    },
-
     operations: {
+      'runtime.file-list': vi.fn().mockResolvedValue({ files: [] }),
+      'runtime.file-read': vi.fn(),
+      ...operations,
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'thread.read': vi
         .fn()
@@ -839,7 +836,7 @@ describe('Administration', () => {
         ),
       },
       {
-        getFile: vi.fn().mockResolvedValue({
+        'runtime.file-read': vi.fn().mockResolvedValue({
           file: {
             exists: true,
             id: 'agents/codex.agent.jsonc',
@@ -859,7 +856,7 @@ describe('Administration', () => {
             },
           }),
         }),
-        listFiles: vi.fn().mockResolvedValue({
+        'runtime.file-list': vi.fn().mockResolvedValue({
           files: [
             {
               exists: true,

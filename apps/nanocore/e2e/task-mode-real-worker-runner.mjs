@@ -512,7 +512,7 @@ async function executeTaskModeRealWorkerTest({
 
   assert(typeof threadId === 'string' && threadId.length > 0, 'Thread id was not returned.');
 
-  const catalogCreate = await clients.admin.runtimeConfig.createFile({
+  const catalogCreate = await clients.admin.operations['runtime.file-create']({
     content: `${JSON.stringify(
       {
         schemaVersion: 1,
@@ -542,7 +542,7 @@ async function executeTaskModeRealWorkerTest({
     catalogCreate?.file?.exists === true && catalogCreate?.diagnostics?.length === 0,
     'Task Mode workspace data source catalog was not created cleanly.'
   );
-  const reload = await clients.admin.runtimeConfig.reload({ mode: 'safe' });
+  const reload = await clients.admin.operations['runtime.reload']({ mode: 'safe' });
   const deferredPaths = reload?.plan?.deferred?.map((change) => change.path);
   assert(
     deferredPaths?.length === 1 &&

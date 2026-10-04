@@ -48,7 +48,7 @@ Public native environment administration uses `runtime.agent-environment-read` a
 
 `question.answer` and `pending-request.withdraw` project the existing Core pending-request commands with their protocol schemas. Answer or withdraw only with explicit direction from the responsible user or from the user of a currently usable administrator credential under the administrator eligibility rule in [Core Permissions](../docs/core/permissions.md). The recorded actor is the person who decided. A secret question cannot be answered. NanoCore owns response authority and later-Turn delivery.
 
-`runtime.file-delete` projects deployment-admin Provider profile removal through `client.runtimeConfig.deleteFile`. It requires the exact file ID, `kind: provider` and current revision. Subscription account removal remains a separate operation. Both preserve configuration references; Provider activation follows the existing reload and restart workflow.
+`runtime.file-delete` projects deployment-admin Provider profile removal through `client.operations['runtime.file-delete']`. It requires the exact file ID, `kind: provider` and current revision. Subscription account removal remains a separate operation. Both preserve configuration references; Provider activation follows the existing reload and restart workflow.
 
 The Workspace, Thread and Turn JSON operations are derived from `OPERATION_DEFINITIONS`, including their strict inputs, output codecs and `client.operations[id]` handlers. Their settled CLI ids are unchanged; no handwritten catalog entries, old SDK method aliases or lower-fidelity Workspace list exclusion remain. Turn streaming remains a transport exclusion.
 

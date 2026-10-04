@@ -10,6 +10,7 @@ import {
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -17,12 +18,16 @@ import {
   resolveLogicalModelCatalog,
 } from '../llm/logical-models.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
+import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
+import { openCoreDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { loadProviderProfiles } from './providers-loader.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
-import { registerRuntimeConfigRoutes } from './runtime-config-routes.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -385,7 +390,7 @@ describe('deployment model extension catalog', () => {
   it.each([
     { kind: 'session', userId: 'member' },
     { kind: 'token', userId: 'member', tokenScope: 'workspace', tokenWorkspaceIds: ['workspace'] },
-    { kind: 'token', userId: 'admin', tokenScope: 'server-admin' },
+    { kind: 'token', userId: 'admin', tokenId: 'admin-token', tokenScope: 'server-admin' },
     { kind: 'session', userId: 'admin', adminTokenId: 'admin-token' },
   ] as Actor[])('enforces deployment authority before generic catalog access for %j', async (actor) => {
     const { root, path } = fixture();
@@ -402,28 +407,54 @@ describe('deployment model extension catalog', () => {
       context.set('actor', actor);
       await next();
     });
-    registerRuntimeConfigRoutes({
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    for (const userId of ['admin', 'member'])
+      coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, 0, ?, ?, 'human')"
+        )
+        .run(userId, userId, `${userId}@example.test`, Date.now(), Date.now());
+    createOpenKitAccessTokenRecord(coreDb, {
+      tokenId: 'admin-token',
+      ownerUserId: 'admin',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const store = createDemoStore();
+    registerOperationJsonRoutes({
       app,
-      runtimeConfigFileService: () => service,
-      runtimeConfigManager: manager,
+      coreDb,
+      requestStore: () => store,
+      runtimeConfigOperations: { filesForActor: () => service, manager },
     });
     const authorized = actor.tokenScope === 'server-admin' || actor.adminTokenId !== undefined;
-    const read = await app.request('/api/admin/config/file?id=model-catalog.jsonc');
+    const read = await app.request(
+      ...operationRequest('runtime.file-read', { id: 'model-catalog.jsonc' })
+    );
     expect(read.status).toBe(authorized ? 200 : 403);
     const before = readFileSync(path, 'utf8');
     const content = '{"schemaVersion":1,"providers":{}}';
-    const response = await app.request('/api/admin/config/file', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: 'model-catalog.jsonc',
-        kind: 'model-catalog',
-        content,
-        expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
-      }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'runtime.file-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'model-catalog.jsonc',
+            kind: 'model-catalog',
+            content,
+            expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
+          }),
+        }
+      )
+    );
     expect(response.status).toBe(authorized ? 200 : 403);
     expect(readFileSync(path, 'utf8')).toBe(authorized ? content : before);
+    coreDb.sqlite.close();
   });
 });
 

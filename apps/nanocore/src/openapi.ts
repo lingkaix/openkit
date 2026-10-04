@@ -5,7 +5,6 @@ import {
   ActivateWorkerEnvironmentRequestSchema,
   ActivateWorkerEnvironmentResponseSchema,
   AgentHealthRefreshResponseSchema,
-  AgentNativeEnvironmentResponseSchema,
   AppDiagnosticsResponseSchema,
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
@@ -13,7 +12,6 @@ import {
   AppUpdateStatusResponseSchema,
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
-  CancelProviderSubscriptionAccountLoginRequestSchema,
   CapabilityUsageResponseSchema,
   CatalogMutationResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
@@ -23,7 +21,6 @@ import {
   CreateMcpConfigResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
-  CreateProviderSubscriptionAccountRequestSchema,
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceMaterialRequestSchema,
   CreateWorkspaceMaterialResponseSchema,
@@ -79,11 +76,6 @@ import {
   PrepareAppUpdateResponseSchema,
   PrepareWorkerEnvironmentRequestSchema,
   PrepareWorkerEnvironmentResponseSchema,
-  ProviderSubscriptionAccountSchema,
-  ProviderSubscriptionAccountsResponseSchema,
-  ProviderSubscriptionAutoTopupSchema,
-  ProviderSubscriptionQuotaSchema,
-  ProviderSubscriptionsResponseSchema,
   PurgeWorkerEnvironmentRequestSchema,
   PurgeWorkerEnvironmentResponseSchema,
   RecoverDeletedWorkspaceRequestSchema,
@@ -97,16 +89,6 @@ import {
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
-  RuntimeConfigFileDeleteRequestSchema,
-  RuntimeConfigFileListResponseSchema,
-  RuntimeConfigFileReadResponseSchema,
-  RuntimeConfigFileWriteRequestSchema,
-  RuntimeConfigFileWriteResponseSchema,
-  RuntimeConfigReloadRequestSchema,
-  RuntimeConfigReloadResponseSchema,
-  RuntimeConfigSchemaCatalogResponseSchema,
-  RuntimeConfigValidationRequestSchema,
-  RuntimeConfigValidationResponseSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
   SelectMcpVersionRequestSchema,
@@ -120,17 +102,13 @@ import {
   SetupDiagnosticsResponseSchema,
   SkillCandidateResponseSchema,
   StartAppUpdateRequestSchema,
-  StartProviderSubscriptionAccountLoginRequestSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
   SubmitSkillCandidateRequestSchema,
-  SubscriptionProviderIdSchema,
   TransferWorkspaceOwnershipRequestSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
-  UpdateAgentNativeEnvironmentRequestSchema,
   UpdateMcpBindingRequestSchema,
-  UpdateProviderSubscriptionAccountRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
   VaultAdminListWorkspaceReferencesResponseSchema,
@@ -248,18 +226,6 @@ const REVISION_ID_PARAMETER = {
   required: true,
   schema: { type: 'string', minLength: 1 },
 } as const;
-const SUBSCRIPTION_PROVIDER_ID_PARAMETER = {
-  name: 'subscriptionProviderId',
-  in: 'path',
-  required: true,
-  schema: toInlineJsonSchema(SubscriptionProviderIdSchema),
-};
-const ACCOUNT_SLOT_ID_PARAMETER = {
-  name: 'accountSlotId',
-  in: 'path',
-  required: true,
-  schema: toInlineJsonSchema(CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId),
-};
 const SKILL_ID_PARAMETER = {
   name: 'skillId',
   in: 'path',
@@ -780,302 +746,6 @@ export function createAppOpenApiDocument() {
           security: SESSION_COOKIE_SECURITY,
         }),
       },
-      '/api/admin/config/agent-environment': {
-        get: {
-          operationId: 'getAgentNativeEnvironment',
-          tags: ['runtime-config'],
-          summary: 'View an Agent native environment.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [{ in: 'query', name: 'fileId', required: true, schema: { type: 'string' } }],
-          responses: {
-            '200': {
-              description: 'Private desired, reloaded and acknowledged applied configuration.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AgentNativeEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-        put: {
-          operationId: 'updateAgentNativeEnvironment',
-          tags: ['runtime-config'],
-          summary: 'Edit the Agent native environment for later Turns.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/UpdateAgentNativeEnvironmentRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Persisted revision and distinct application states.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AgentNativeEnvironmentResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/admin/config/reload': {
-        post: {
-          operationId: 'reloadRuntimeConfig',
-          tags: ['runtime-config'],
-          summary: 'Reload NanoCore runtime config.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RuntimeConfigReloadRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Runtime config reload result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigReloadResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/admin/config/files': {
-        get: {
-          operationId: 'listRuntimeConfigFiles',
-          tags: ['runtime-config'],
-          summary: 'List editable runtime config files.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Runtime config file summaries.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigFileListResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/admin/config/file': {
-        get: {
-          operationId: 'getRuntimeConfigFile',
-          tags: ['runtime-config'],
-          summary: 'Read one runtime config file.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'id',
-              in: 'query',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Runtime config file source.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigFileReadResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'createRuntimeConfigFile',
-          tags: ['runtime-config'],
-          summary: 'Create one runtime config file.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RuntimeConfigFileWriteRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Written runtime config file summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigFileWriteResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        put: {
-          operationId: 'updateRuntimeConfigFile',
-          tags: ['runtime-config'],
-          summary: 'Update one runtime config file.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RuntimeConfigFileWriteRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Updated runtime config file summary.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigFileWriteResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        delete: {
-          operationId: 'deleteRuntimeConfigFile',
-          tags: ['runtime-config'],
-          summary: 'Delete one exact Provider profile and revoke its key reference.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RuntimeConfigFileDeleteRequest' },
-              },
-            },
-          },
-          responses: {
-            '204': { description: 'Provider profile removed; empty response body.' },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/admin/config/schemas': {
-        get: {
-          operationId: 'getRuntimeConfigSchemas',
-          tags: ['runtime-config'],
-          summary: 'Read runtime config JSON Schema catalog.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Runtime config schema catalog.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigSchemaCatalogResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/admin/config/validate': {
-        post: {
-          operationId: 'validateRuntimeConfig',
-          tags: ['runtime-config'],
-          summary: 'Validate draft runtime config source.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RuntimeConfigValidationRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Runtime config validation result.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RuntimeConfigValidationResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/workspaces/{workspaceId}/agents/health/refresh': {
         post: {
           operationId: 'refreshAgentHealth',
@@ -1163,149 +833,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/provider-subscriptions': {
-        get: appJsonOperation({
-          operationId: 'listSubscriptionProviders',
-          tag: 'provider-subscriptions',
-          summary: 'List supported provider subscriptions.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionsResponse',
-          responseDescription: 'Fixed supported provider-subscription inventory.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts': {
-        get: appJsonOperation({
-          operationId: 'listProviderSubscriptionAccounts',
-          tag: 'provider-subscriptions',
-          summary: 'List provider-subscription account slots.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccountsResponse',
-          responseDescription: 'Sanitized provider-subscription account slots.',
-        }),
-        post: appJsonOperation({
-          operationId: 'createProviderSubscriptionAccount',
-          tag: 'provider-subscriptions',
-          summary: 'Create one provider-subscription account slot.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER],
-          requestSchema: 'CreateProviderSubscriptionAccountRequest',
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccount',
-          responseDescription: 'Created provider-subscription account slot.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}': {
-        patch: appJsonOperation({
-          operationId: 'updateProviderSubscriptionAccount',
-          tag: 'provider-subscriptions',
-          summary: 'Update one provider-subscription account slot.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          requestSchema: 'UpdateProviderSubscriptionAccountRequest',
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccount',
-          responseDescription: 'Updated provider-subscription account slot.',
-        }),
-        delete: {
-          operationId: 'deleteProviderSubscriptionAccount',
-          tags: ['provider-subscriptions'],
-          summary: 'Delete one provider-subscription account slot.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          responses: {
-            '204': {
-              description: 'Provider-subscription account deleted.',
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status': {
-        get: appJsonOperation({
-          operationId: 'getProviderSubscriptionAccountStatus',
-          tag: 'provider-subscriptions',
-          summary: 'Read one provider-subscription account status.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccount',
-          responseDescription: 'Sanitized provider-subscription account status.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login': {
-        post: appJsonOperation({
-          operationId: 'startProviderSubscriptionAccountLogin',
-          tag: 'provider-subscriptions',
-          summary: 'Start one provider-subscription device-code login.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          requestSchema: 'StartProviderSubscriptionAccountLoginRequest',
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccount',
-          responseDescription: 'Accepted provider-subscription login interaction.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel':
-        {
-          post: appJsonOperation({
-            operationId: 'cancelProviderSubscriptionAccountLogin',
-            tag: 'provider-subscriptions',
-            summary: 'Cancel one provider-subscription login interaction.',
-            security: DEPLOYMENT_ADMIN_SECURITY,
-            parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-            requestSchema: 'CancelProviderSubscriptionAccountLoginRequest',
-            responseStatus: '200',
-            responseSchema: 'ProviderSubscriptionAccount',
-            responseDescription: 'Provider-subscription account after cancellation.',
-          }),
-        },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout': {
-        post: appJsonOperation({
-          operationId: 'logoutProviderSubscriptionAccount',
-          tag: 'provider-subscriptions',
-          summary: 'Log out one provider-subscription account locally.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionAccount',
-          responseDescription: 'Provider-subscription account after local logout.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota': {
-        get: appJsonOperation({
-          operationId: 'getProviderSubscriptionAccountQuota',
-          tag: 'provider-subscriptions',
-          summary: 'Read bounded provider-subscription quota availability.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-          responseStatus: '200',
-          responseSchema: 'ProviderSubscriptionQuota',
-          responseDescription: 'Bounded provider-subscription quota projection.',
-        }),
-      },
-      '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup':
-        {
-          get: appJsonOperation({
-            operationId: 'getProviderSubscriptionAccountAutoTopup',
-            tag: 'provider-subscriptions',
-            summary: 'Read bounded xAI auto-top-up observation.',
-            security: DEPLOYMENT_ADMIN_SECURITY,
-            parameters: [SUBSCRIPTION_PROVIDER_ID_PARAMETER, ACCOUNT_SLOT_ID_PARAMETER],
-            responseStatus: '200',
-            responseSchema: 'ProviderSubscriptionAutoTopup',
-            responseDescription: 'Bounded xAI auto-top-up observation.',
-          }),
-        },
       '/api/app/administration/configuration/apply': {
         post: {
           operationId: 'applyAdministrationConfiguration',
@@ -2997,9 +2524,6 @@ export function createAppOpenApiDocument() {
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
-        CancelProviderSubscriptionAccountLoginRequest: toJsonSchema(
-          CancelProviderSubscriptionAccountLoginRequestSchema
-        ),
         CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
         CatalogMutationResponse: toJsonSchema(CatalogMutationResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
@@ -3013,9 +2537,6 @@ export function createAppOpenApiDocument() {
         DecideSkillCandidateRequest: toJsonSchema(DecideSkillCandidateRequestSchema),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        CreateProviderSubscriptionAccountRequest: toJsonSchema(
-          CreateProviderSubscriptionAccountRequestSchema
-        ),
         GetAgentCatalogEntryResponse: toJsonSchema(GetAgentCatalogEntryResponseSchema),
         GetAgentEnvironmentPackageSnapshotResponse: toJsonSchema(
           GetAgentEnvironmentPackageSnapshotResponseSchema
@@ -3062,30 +2583,9 @@ export function createAppOpenApiDocument() {
         PrepareAppUpdateResponse: toJsonSchema(PrepareAppUpdateResponseSchema),
         PrepareWorkerEnvironmentRequest: toJsonSchema(PrepareWorkerEnvironmentRequestSchema),
         PrepareWorkerEnvironmentResponse: toJsonSchema(PrepareWorkerEnvironmentResponseSchema),
-        ProviderSubscriptionAccount: toJsonSchema(ProviderSubscriptionAccountSchema),
-        ProviderSubscriptionAccountsResponse: toJsonSchema(
-          ProviderSubscriptionAccountsResponseSchema
-        ),
-        ProviderSubscriptionAutoTopup: toJsonSchema(ProviderSubscriptionAutoTopupSchema),
-        ProviderSubscriptionQuota: toJsonSchema(ProviderSubscriptionQuotaSchema),
-        ProviderSubscriptionsResponse: toJsonSchema(ProviderSubscriptionsResponseSchema),
         RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
         RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),
         RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
-        RuntimeConfigFileListResponse: toJsonSchema(RuntimeConfigFileListResponseSchema),
-        RuntimeConfigFileReadResponse: toJsonSchema(RuntimeConfigFileReadResponseSchema),
-        AgentNativeEnvironmentResponse: toJsonSchema(AgentNativeEnvironmentResponseSchema),
-        UpdateAgentNativeEnvironmentRequest: toJsonSchema(
-          UpdateAgentNativeEnvironmentRequestSchema
-        ),
-        RuntimeConfigFileDeleteRequest: toJsonSchema(RuntimeConfigFileDeleteRequestSchema),
-        RuntimeConfigFileWriteRequest: toJsonSchema(RuntimeConfigFileWriteRequestSchema),
-        RuntimeConfigFileWriteResponse: toJsonSchema(RuntimeConfigFileWriteResponseSchema),
-        RuntimeConfigReloadRequest: toJsonSchema(RuntimeConfigReloadRequestSchema),
-        RuntimeConfigReloadResponse: toJsonSchema(RuntimeConfigReloadResponseSchema),
-        RuntimeConfigSchemaCatalogResponse: toJsonSchema(RuntimeConfigSchemaCatalogResponseSchema),
-        RuntimeConfigValidationRequest: toJsonSchema(RuntimeConfigValidationRequestSchema),
-        RuntimeConfigValidationResponse: toJsonSchema(RuntimeConfigValidationResponseSchema),
         SelectWorkerEnvironmentRequest: toJsonSchema(SelectWorkerEnvironmentRequestSchema),
         SelectWorkerEnvironmentResponse: toJsonSchema(SelectWorkerEnvironmentResponseSchema),
         SetMyAdminAccessTokenDefaultRequest: toJsonSchema(
@@ -3117,17 +2617,11 @@ export function createAppOpenApiDocument() {
         ActivateWorkerEnvironmentRequest: toJsonSchema(ActivateWorkerEnvironmentRequestSchema),
         ActivateWorkerEnvironmentResponse: toJsonSchema(ActivateWorkerEnvironmentResponseSchema),
         StartAppUpdateRequest: toJsonSchema(StartAppUpdateRequestSchema),
-        StartProviderSubscriptionAccountLoginRequest: toJsonSchema(
-          StartProviderSubscriptionAccountLoginRequestSchema
-        ),
         SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
         SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
         UpdateMcpBindingRequest: toJsonSchema(UpdateMcpBindingRequestSchema),
-        UpdateProviderSubscriptionAccountRequest: toJsonSchema(
-          UpdateProviderSubscriptionAccountRequestSchema
-        ),
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(
           VaultAdminBootstrapCodexAuthJsonRequestSchema
         ),
@@ -3172,18 +2666,6 @@ export const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
  */
 function toJsonSchema(schema: z.ZodType): JsonValue {
   return z.toJSONSchema(schema) as JsonValue;
-}
-
-/**
- * Converts a shared Zod schema into an inline OpenAPI schema fragment.
- *
- * @param schema - Source Zod schema from a shared contract package.
- * @returns JSON Schema projection without the root dialect declaration.
- */
-function toInlineJsonSchema(schema: z.ZodType): JsonValue {
-  const projection = z.toJSONSchema(schema);
-  delete projection.$schema;
-  return projection as JsonValue;
 }
 
 /**

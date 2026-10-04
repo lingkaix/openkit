@@ -31,25 +31,19 @@ function makeClient(): CoreClient {
     core: {
       meta: vi.fn().mockResolvedValue({}),
     },
-    runtimeConfig: {
-      listFiles: vi.fn().mockRejectedValue(
-        new ApiCallError(403, 'deployment admin required', {
-          code: 'runtime_config_admin_forbidden',
-        })
-      ),
-    },
-    providerSubscriptions: {
-      listProviders: vi.fn().mockRejectedValue(
-        new ApiCallError(403, 'Deployment-admin authority is required.', {
-          code: 'forbidden',
-        })
-      ),
-    },
-
     operations: {
+      'runtime.file-list': vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'Current deployment administrator authority is required.', {
+          code: 'deployment_admin_required',
+        })
+      ),
+      'provider-subscription.provider-list': vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'Current deployment administrator authority is required.', {
+          code: 'deployment_admin_required',
+        })
+      ),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
-
       'workspace.list': vi.fn().mockResolvedValue({
         items: [{ id: 'ws1', name: 'Market research' }].map((workspace) => ({
           workspace,

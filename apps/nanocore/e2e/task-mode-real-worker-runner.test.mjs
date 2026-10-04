@@ -84,9 +84,9 @@ function createPassingTaskModeFixture(options) {
         app: {
           getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
         },
-        runtimeConfig: {
-          createFile: async () => ({ diagnostics: [], file: { exists: true } }),
-          reload: async () => ({
+        operations: {
+          'runtime.file-create': async () => ({ diagnostics: [], file: { exists: true } }),
+          'runtime.reload': async () => ({
             plan: {
               applied: [],
               deferred: [{ path: 'workspaceDataSources' }],
@@ -247,15 +247,20 @@ function createDistinctTaskModeActorClients(options) {
       listAgentEnvironmentPackageSnapshots: refuse('admin client must not list AEP snapshots'),
       listWorkspaceRuntimeEvidence: refuse('admin client must not list runtime evidence'),
     },
-    runtimeConfig: {
-      createFile: track(fixture.clients.admin.runtimeConfig.createFile, adminCalls, 'createFile'),
-      reload: track(fixture.clients.admin.runtimeConfig.reload, adminCalls, 'reload'),
-    },
     operations: {
+      'runtime.file-create': track(
+        fixture.clients.admin.operations['runtime.file-create'],
+        adminCalls,
+        'createFile'
+      ),
+      'runtime.reload': track(
+        fixture.clients.admin.operations['runtime.reload'],
+        adminCalls,
+        'reload'
+      ),
       'sync.review-decide': refuse('admin client must not submit review cleanup'),
       'workspace.create': refuse('admin client must not create a Workspace'),
       'task.start': refuse('admin client must not start Task Mode'),
-
       'thread.create': refuse('admin client must not create a Thread'),
       'thread.items': refuse('admin client must not list thread items'),
     },
@@ -301,10 +306,10 @@ function createDistinctTaskModeActorClients(options) {
     productCalls,
     'listThreadItems'
   );
-  product.runtimeConfig = {
-    createFile: refuse('product client must not create runtime config'),
-    reload: refuse('product client must not reload runtime config'),
-  };
+  Object.assign(product.operations, {
+    'runtime.file-create': refuse('product client must not create runtime config'),
+    'runtime.reload': refuse('product client must not reload runtime config'),
+  });
   return { admin, adminCalls, core: product, productCalls };
 }
 
@@ -564,7 +569,7 @@ describe('real Task Mode worker L3 test policy', () => {
       calls.push('createThread');
       return originalCreateThread(...args);
     };
-    fixture.clients.admin.runtimeConfig.createFile = async (input) => {
+    fixture.clients.admin.operations['runtime.file-create'] = async (input) => {
       calls.push('createFile');
       assert.equal(input.id, `workspaces/${fixture.ids.workspaceId}/data-sources.jsonc`);
       assert.equal(input.kind, 'data-source');
@@ -585,7 +590,7 @@ describe('real Task Mode worker L3 test policy', () => {
       });
       return { diagnostics: [], file: { exists: true } };
     };
-    fixture.clients.admin.runtimeConfig.reload = async (input) => {
+    fixture.clients.admin.operations['runtime.reload'] = async (input) => {
       calls.push('reload');
       assert.deepEqual(input, { mode: 'safe' });
       return {
@@ -675,7 +680,7 @@ describe('real Task Mode worker L3 test policy', () => {
         workerImageRef: 'example.invalid/openkit-worker:test',
       });
       let startTaskModeCalls = 0;
-      fixture.clients.admin.runtimeConfig.reload = async () => ({
+      fixture.clients.admin.operations['runtime.reload'] = async () => ({
         plan: { applied: [], warnings: [], ...plan },
         runtimeConfig: { pendingRestart: plan.requiresRestart },
         status: 'applied',
@@ -1104,10 +1109,10 @@ describe('real Task Mode worker L3 test policy', () => {
       let reloadCalls = 0;
       let startTaskModeCalls = 0;
       const stdout = [];
-      fixture.clients.admin.runtimeConfig.createFile = async () => {
+      fixture.clients.admin.operations['runtime.file-create'] = async () => {
         createFileCalls += 1;
       };
-      fixture.clients.admin.runtimeConfig.reload = async () => {
+      fixture.clients.admin.operations['runtime.reload'] = async () => {
         reloadCalls += 1;
       };
       fixture.clients.core.operations['task.start'] = async () => {

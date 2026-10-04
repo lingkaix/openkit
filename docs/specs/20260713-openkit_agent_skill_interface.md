@@ -282,18 +282,19 @@ The provider-subscription projection freezes these exact transport-neutral ident
 
 | Agent operation id | App API `operationId` | Core Client method |
 | --- | --- | --- |
-| `provider-subscription.provider-list` | `listSubscriptionProviders` | `providerSubscriptions.listProviders` |
-| `provider-subscription.account-list` | `listProviderSubscriptionAccounts` | `providerSubscriptions.listAccounts` |
-| `provider-subscription.account-create` | `createProviderSubscriptionAccount` | `providerSubscriptions.createAccount` |
-| `provider-subscription.account-update` | `updateProviderSubscriptionAccount` | `providerSubscriptions.updateAccount` |
-| `provider-subscription.account-delete` | `deleteProviderSubscriptionAccount` | `providerSubscriptions.deleteAccount` |
-| `provider-subscription.account-status` | `getProviderSubscriptionAccountStatus` | `providerSubscriptions.getAccountStatus` |
-| `provider-subscription.account-login-start` | `startProviderSubscriptionAccountLogin` | `providerSubscriptions.startAccountLogin` |
-| `provider-subscription.account-login-cancel` | `cancelProviderSubscriptionAccountLogin` | `providerSubscriptions.cancelAccountLogin` |
-| `provider-subscription.account-logout` | `logoutProviderSubscriptionAccount` | `providerSubscriptions.logoutAccount` |
-| `provider-subscription.account-quota` | `getProviderSubscriptionAccountQuota` | `providerSubscriptions.getAccountQuota` |
+| `provider-subscription.provider-list` | `provider-subscription.provider-list` | `operations['provider-subscription.provider-list']` |
+| `provider-subscription.account-list` | `provider-subscription.account-list` | `operations['provider-subscription.account-list']` |
+| `provider-subscription.account-create` | `provider-subscription.account-create` | `operations['provider-subscription.account-create']` |
+| `provider-subscription.account-update` | `provider-subscription.account-update` | `operations['provider-subscription.account-update']` |
+| `provider-subscription.account-delete` | `provider-subscription.account-delete` | `operations['provider-subscription.account-delete']` |
+| `provider-subscription.account-status` | `provider-subscription.account-status` | `operations['provider-subscription.account-status']` |
+| `provider-subscription.account-login-start` | `provider-subscription.account-login-start` | `operations['provider-subscription.account-login-start']` |
+| `provider-subscription.account-login-cancel` | `provider-subscription.account-login-cancel` | `operations['provider-subscription.account-login-cancel']` |
+| `provider-subscription.account-logout` | `provider-subscription.account-logout` | `operations['provider-subscription.account-logout']` |
+| `provider-subscription.account-quota` | `provider-subscription.account-quota` | `operations['provider-subscription.account-quota']` |
+| `provider-subscription.account-auto-topup` | `provider-subscription.account-auto-topup` | `operations['provider-subscription.account-auto-topup']` |
 
-These ten `app-api` entries use the existing generic literal catalog and `openkit ops call` path. They add no provider-specific CLI branch, convenience command, exclusion, alias, or new Skill narrative.
+These eleven `app-api` entries use the definition-derived catalog and existing `openkit ops call` path. They add no provider-specific CLI branch, convenience command, exclusion, alias, or new Skill narrative.
 
 ### Output and error envelopes
 
@@ -416,7 +417,7 @@ The first-release retirement coverage condition above is decided and not yet imp
 
 The base mechanism is implemented by `skills/openkit/`, `skills/openkit-cli.mjs`, `skills/openkit-operations.mjs`, and `skills/openkit-secrets.mjs`. The checked operation catalog references public App API or typed Core Client owners, the bundled CLI provides JSON-only discovery and invocation, and the Skill progressively routes agents to one-level references.
 
-All ten provider-subscription operations are present in the existing literal `app-api` catalog under the frozen transport-neutral identities. They map one-to-one to the checked App API operation ids and `client.providerSubscriptions` methods, use the shared strict input schemas through the generic `openkit ops call` path, and add no provider-specific command, alias, exclusion, workflow, or duplicated route contract. The bundled executable is regenerated from that source and passes the existing reachability and interface checks.
+All eleven provider-subscription operations are derived in the `app-api` catalog under the frozen transport-neutral identities. They derive the same canonical ids for the JSON, CLI and Core Client operation maps, use the shared strict input schemas through the generic `openkit ops call` path, and add no provider-specific command, alias, exclusion, workflow, or duplicated route contract. The bundled executable is regenerated from that source and passes the existing reachability and interface checks.
 
 The seven NanoHost transport operations map through that same generic path to `client.app` methods and shared App API schemas. They write secrets only to named execution-host slots and return redacted inventory; they add no CLI credential destination, alias, or second delivery path.
 

@@ -502,7 +502,7 @@ function EnvironmentPreparation({
   const [prompt, setPrompt] = useState('');
   const configFiles = useQuery({
     queryKey: ['settings', 'administration', 'agent-config-files'],
-    queryFn: () => client.runtimeConfig.listFiles(),
+    queryFn: () => client.operations['runtime.file-list']({}),
     retry: false,
   });
   const agentFiles = useMemo(
@@ -534,7 +534,7 @@ function EnvironmentPreparation({
 
   const configFile = useQuery({
     queryKey: ['settings', 'administration', 'agent-config-file', selectedFileId],
-    queryFn: () => client.runtimeConfig.getFile(selectedFileId as string),
+    queryFn: () => client.operations['runtime.file-read']({ id: selectedFileId as string }),
     enabled: Boolean(selectedFileId),
     retry: false,
   });

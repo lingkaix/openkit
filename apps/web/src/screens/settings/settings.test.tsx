@@ -731,13 +731,7 @@ type MethodOverrides = Partial<Record<string, unknown>>;
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: {
-    operations?: MethodOverrides;
-    core?: MethodOverrides;
-    app?: MethodOverrides;
-    runtimeConfig?: MethodOverrides;
-    providerSubscriptions?: MethodOverrides;
-  } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -774,8 +768,21 @@ function makeClient(
       getAgentEnvironmentPackageSnapshot: vi.fn().mockResolvedValue(AEP_SNAPSHOT_DETAIL),
       ...overrides.app,
     },
-    runtimeConfig: {
-      listFiles: vi.fn().mockResolvedValue({
+    auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn() } },
+    capabilities: {
+      refresh: vi.fn(),
+      snapshot: vi.fn().mockReturnValue(META),
+      supports: vi.fn().mockReturnValue(true),
+      require: vi.fn(),
+    },
+    agents: {
+      list: vi.fn().mockResolvedValue({ items: [] }),
+      get: vi.fn(),
+      refreshHealth: vi.fn(),
+    },
+    repositories: {},
+    operations: {
+      'runtime.file-list': vi.fn().mockResolvedValue({
         files: [
           {
             id: 'server',
@@ -795,7 +802,7 @@ function makeClient(
           },
         ],
       }),
-      getFile: vi.fn().mockResolvedValue({
+      'runtime.file-read': vi.fn().mockResolvedValue({
         file: {
           id: 'server',
           kind: 'server',
@@ -806,54 +813,47 @@ function makeClient(
         },
         content: JSON.stringify({ apiKey: POISON_SECRET }),
       }),
-      createFile: vi.fn(),
-      validate: vi.fn(),
-      updateFile: vi.fn(),
-      reload: vi.fn(),
-      ...overrides.runtimeConfig,
-    },
-    providerSubscriptions: {
-      listProviders: vi.fn().mockResolvedValue(PROVIDERS),
-      listAccounts: vi.fn().mockImplementation((providerId: string) =>
-        Promise.resolve({
-          accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [XAI_ACCOUNT],
-        })
-      ),
-      createAccount: vi.fn(),
-      updateAccount: vi.fn(),
-      deleteAccount: vi.fn(),
-      getAccountStatus: vi.fn().mockImplementation((provider: string, slot: string) =>
-        Promise.resolve({
-          ...(provider === 'xai' ? XAI_ACCOUNT : CODEX_ACCOUNT),
-          subscriptionProviderId: provider,
-          accountSlotId: slot,
-        })
-      ),
-      startAccountLogin: vi.fn(),
-      cancelAccountLogin: vi.fn(),
-      logoutAccount: vi.fn(),
-      getAccountQuota: vi
+      'runtime.file-create': vi.fn(),
+      'runtime.validate': vi.fn(),
+      'runtime.file-update': vi.fn(),
+      'runtime.reload': vi.fn(),
+      'provider-subscription.provider-list': vi.fn().mockResolvedValue(PROVIDERS),
+      'provider-subscription.account-list': vi
         .fn()
-        .mockImplementation((providerId: string) =>
-          Promise.resolve(providerId === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
+        .mockImplementation(
+          ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [XAI_ACCOUNT],
+            })
         ),
-      ...overrides.providerSubscriptions,
-    },
-    auth: { email: { signUp: vi.fn(), signIn: vi.fn(), signOut: vi.fn() } },
-    capabilities: {
-      refresh: vi.fn(),
-      snapshot: vi.fn().mockReturnValue(META),
-      supports: vi.fn().mockReturnValue(true),
-      require: vi.fn(),
-    },
-    agents: {
-      list: vi.fn().mockResolvedValue({ items: [] }),
-      get: vi.fn(),
-      refreshHealth: vi.fn(),
-    },
-    repositories: {},
-
-    operations: {
+      'provider-subscription.account-create': vi.fn(),
+      'provider-subscription.account-update': vi.fn(),
+      'provider-subscription.account-delete': vi.fn(),
+      'provider-subscription.account-status': vi
+        .fn()
+        .mockImplementation(
+          ({
+            subscriptionProviderId: provider,
+            accountSlotId: slot,
+          }: {
+            subscriptionProviderId: string;
+            accountSlotId: string;
+          }) =>
+            Promise.resolve({
+              ...(provider === 'xai' ? XAI_ACCOUNT : CODEX_ACCOUNT),
+              subscriptionProviderId: provider,
+              accountSlotId: slot,
+            })
+        ),
+      'provider-subscription.account-login-start': vi.fn(),
+      'provider-subscription.account-login-cancel': vi.fn(),
+      'provider-subscription.account-logout': vi.fn(),
+      'provider-subscription.account-quota': vi
+        .fn()
+        .mockImplementation(
+          ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+            Promise.resolve(providerId === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
+        ),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.read': vi.fn().mockResolvedValue(WORKSPACE),
       'workspace.update': vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Renamed workspace' }),
@@ -868,7 +868,6 @@ function makeClient(
         attentionNeeded: [],
       }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
-
       'workspace.resources': vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
       ...overrides.operations,
       'workspace.list': vi
@@ -1477,7 +1476,6 @@ describe('Debug settings (board 11)', () => {
       '/settings/debug',
       makeClient({
         core: {},
-
         operations: { 'workspace.list': vi.fn().mockReturnValue(new Promise(() => {})) },
       })
     );
@@ -1493,7 +1491,6 @@ describe('Debug settings (board 11)', () => {
       '/settings/debug',
       makeClient({
         core: {},
-
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
             items: [].map((workspace) => ({
@@ -1527,7 +1524,6 @@ describe('Debug settings (board 11)', () => {
     const client = makeClient({
       core: {},
       app: { listAgentEnvironmentPackageSnapshots, getAgentEnvironmentPackageSnapshot },
-
       operations: {
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE, workspaceB].map((workspace) => ({
@@ -1802,7 +1798,7 @@ describe('General settings (board 10)', () => {
     expect(
       screen.queryByRole('heading', { name: 'Diagnostics', level: 2 })
     ).not.toBeInTheDocument();
-    expect(client.runtimeConfig.listFiles).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-list']).not.toHaveBeenCalled();
     expect(client.app.getDiagnostics).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: /Appearance/i })).toHaveAttribute(
       'href',
@@ -1812,8 +1808,8 @@ describe('General settings (board 10)', () => {
 
   it('shows a skeleton while workspace settings load', async () => {
     const client = makeClient({
-      operations: { 'workspace.read': vi.fn().mockReturnValue(new Promise(() => {})) },
       core: {},
+      operations: { 'workspace.read': vi.fn().mockReturnValue(new Promise(() => {})) },
     });
     renderApp('/workspace', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
@@ -1825,10 +1821,7 @@ describe('General settings (board 10)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(WORKSPACE);
-    const client = makeClient({
-      operations: { 'workspace.read': getWorkspace },
-      core: {},
-    });
+    const client = makeClient({ core: {}, operations: { 'workspace.read': getWorkspace } });
     renderApp('/workspace', client);
     expect(await screen.findByText(/Couldn't load settings/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
@@ -1838,10 +1831,7 @@ describe('General settings (board 10)', () => {
   it('saves the workspace display name', async () => {
     const user = userEvent.setup();
     const updateWorkspace = vi.fn().mockResolvedValue({ ...WORKSPACE, name: 'Team workspace' });
-    const client = makeClient({
-      operations: { 'workspace.update': updateWorkspace },
-      core: {},
-    });
+    const client = makeClient({ core: {}, operations: { 'workspace.update': updateWorkspace } });
     renderApp('/workspace', client);
 
     const nameField = await screen.findByLabelText(/Display name/i);
@@ -1857,10 +1847,10 @@ describe('General settings (board 10)', () => {
 
   it('disables Save when disconnected', async () => {
     const client = makeClient({
-      operations: { 'workspace.read': vi.fn().mockResolvedValue(WORKSPACE) },
       core: {
         meta: vi.fn().mockRejectedValue(new Error('down')),
       },
+      operations: { 'workspace.read': vi.fn().mockResolvedValue(WORKSPACE) },
     });
     renderApp('/workspace', client);
     expect(await screen.findByLabelText(/Display name/i)).toBeInTheDocument();
@@ -1903,18 +1893,26 @@ describe('Gateway (board 20)', () => {
 
   it('renders the fixed provider inventory, provider-scoped slots, and quota posture', async () => {
     const listProviders = vi.fn().mockResolvedValue(PROVIDERS);
-    const listAccounts = vi.fn().mockImplementation((providerId: string) =>
-      Promise.resolve({
-        accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [XAI_ACCOUNT],
-      })
-    );
+    const listAccounts = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [XAI_ACCOUNT],
+          })
+      );
     const getAccountQuota = vi
       .fn()
-      .mockImplementation((providerId: string) =>
-        Promise.resolve(providerId === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve(providerId === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
       );
     const client = makeClient({
-      providerSubscriptions: { listProviders, listAccounts, getAccountQuota },
+      operations: {
+        'provider-subscription.provider-list': listProviders,
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-quota': getAccountQuota,
+      },
     });
 
     renderApp('/settings/ai-interface', client);
@@ -1940,34 +1938,60 @@ describe('Gateway (board 20)', () => {
 
     expect(listProviders).toHaveBeenCalledTimes(1);
     expect(listAccounts).toHaveBeenCalledTimes(2);
-    expect(listAccounts).toHaveBeenCalledWith('openai-codex');
-    expect(listAccounts).toHaveBeenCalledWith('xai');
+    expect(listAccounts).toHaveBeenCalledWith({ subscriptionProviderId: 'openai-codex' });
+    expect(listAccounts).toHaveBeenCalledWith({ subscriptionProviderId: 'xai' });
     expect(getAccountQuota).toHaveBeenCalledTimes(2);
-    expect(getAccountQuota).toHaveBeenCalledWith('openai-codex', 'primary');
-    expect(getAccountQuota).toHaveBeenCalledWith('xai', 'primary');
+    expect(getAccountQuota).toHaveBeenCalledWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+    });
+    expect(getAccountQuota).toHaveBeenCalledWith({
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'primary',
+    });
   });
 
   it('renders all five provider-neutral account lifecycle states and pending device-code details', async () => {
     const listAccounts = vi
       .fn()
-      .mockImplementation((providerId: string) =>
-        Promise.resolve({ accounts: providerId === 'openai-codex' ? LIFECYCLE_ACCOUNTS : [] })
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({ accounts: providerId === 'openai-codex' ? LIFECYCLE_ACCOUNTS : [] })
       );
     const getAccountQuota = vi
       .fn()
-      .mockImplementation((_providerId: string, accountSlotId: string) =>
-        Promise.resolve({ ...CODEX_QUOTA, accountSlotId })
+      .mockImplementation(
+        ({
+          subscriptionProviderId: _providerId,
+          accountSlotId,
+        }: {
+          subscriptionProviderId: string;
+          accountSlotId: string;
+        }) => Promise.resolve({ ...CODEX_QUOTA, accountSlotId })
       );
     const getAccountStatus = vi
       .fn()
-      .mockImplementation((_providerId: string, accountSlotId: string) =>
-        Promise.resolve(
-          LIFECYCLE_ACCOUNTS.find((account) => account.accountSlotId === accountSlotId)
-        )
+      .mockImplementation(
+        ({
+          subscriptionProviderId: _providerId,
+          accountSlotId,
+        }: {
+          subscriptionProviderId: string;
+          accountSlotId: string;
+        }) =>
+          Promise.resolve(
+            LIFECYCLE_ACCOUNTS.find((account) => account.accountSlotId === accountSlotId)
+          )
       );
     renderApp(
       '/settings/ai-interface',
-      makeClient({ providerSubscriptions: { listAccounts, getAccountQuota, getAccountStatus } })
+      makeClient({
+        operations: {
+          'provider-subscription.account-list': listAccounts,
+          'provider-subscription.account-quota': getAccountQuota,
+          'provider-subscription.account-status': getAccountStatus,
+        },
+      })
     );
 
     expect(await screen.findByText('Logged out account')).toBeInTheDocument();
@@ -1988,19 +2012,25 @@ describe('Gateway (board 20)', () => {
   });
 
   it('renders Codex quota as temporarily unavailable without changing account status', async () => {
-    const getAccountQuota = vi.fn().mockImplementation((providerId: string) =>
-      Promise.resolve(
-        providerId === 'openai-codex'
-          ? {
-              subscriptionProviderId: 'openai-codex',
-              accountSlotId: 'primary',
-              availability: 'temporarily_unavailable',
-              observedAt: TIMESTAMP,
-            }
-          : XAI_QUOTA
-      )
+    const getAccountQuota = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve(
+            providerId === 'openai-codex'
+              ? {
+                  subscriptionProviderId: 'openai-codex',
+                  accountSlotId: 'primary',
+                  availability: 'temporarily_unavailable',
+                  observedAt: TIMESTAMP,
+                }
+              : XAI_QUOTA
+          )
+      );
+    renderApp(
+      '/settings/ai-interface',
+      makeClient({ operations: { 'provider-subscription.account-quota': getAccountQuota } })
     );
-    renderApp('/settings/ai-interface', makeClient({ providerSubscriptions: { getAccountQuota } }));
     expect(await screen.findByText('Quota query failed')).toBeInTheDocument();
     expect(screen.getByText('Login saved')).toBeInTheDocument();
     expect(screen.getAllByText('Connected')).toHaveLength(1);
@@ -2017,23 +2047,27 @@ describe('Gateway (board 20)', () => {
       displayName: 'Poisoned app',
     };
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi
+      operations: {
+        'provider-subscription.account-list': vi
           .fn()
-          .mockImplementation((providerId: string) =>
-            Promise.resolve({ accounts: providerId === 'openai-codex' ? [poisonedAccount] : [] })
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({ accounts: providerId === 'openai-codex' ? [poisonedAccount] : [] })
           ),
-        getAccountQuota: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve(
-            providerId === 'openai-codex'
-              ? {
-                  ...CODEX_QUOTA,
-                  planType: POISON_SECRET,
-                  rawQuotaResponse: 'raw-quota-should-never-render',
-                }
-              : XAI_QUOTA
-          )
-        ),
+        'provider-subscription.account-quota': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve(
+                providerId === 'openai-codex'
+                  ? {
+                      ...CODEX_QUOTA,
+                      planType: POISON_SECRET,
+                      rawQuotaResponse: 'raw-quota-should-never-render',
+                    }
+                  : XAI_QUOTA
+              )
+          ),
       },
     });
     renderApp('/settings/ai-interface', client);
@@ -2051,7 +2085,9 @@ describe('Gateway (board 20)', () => {
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue(PROVIDERS);
-    const client = makeClient({ providerSubscriptions: { listProviders } });
+    const client = makeClient({
+      operations: { 'provider-subscription.provider-list': listProviders },
+    });
     renderApp('/settings/ai-interface', client);
     expect(await screen.findByText(/Couldn't load Gateway/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));

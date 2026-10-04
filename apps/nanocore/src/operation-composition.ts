@@ -7,6 +7,7 @@ import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transpor
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
+import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
 import { createTaskConversationOperationImplementations } from './conversation-operation-implementations.js';
 import {
   createGenerativeUiOperationImplementations,
@@ -17,6 +18,7 @@ import { createKernelOperationImplementations } from './kernel-operation-impleme
 import { createKnowledgeOperationImplementations } from './knowledge-operations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import type { FsStore } from './lib/store.js';
+import { createProviderSubscriptionOperationImplementations } from './llm/provider-subscription-operation-implementations.js';
 import type { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import type { OperationImplementations } from './operation-contract.js';
 import { createOperationEngine } from './operation-invocation.js';
@@ -40,6 +42,14 @@ import { createWorkspaceSharingOperationImplementations } from './workspace-shar
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
   readonly coreDb: CoreDb | undefined;
+  /** Existing deployment configuration family services. */
+  readonly runtimeConfigOperations?: Parameters<
+    typeof createRuntimeConfigOperationImplementations
+  >[0];
+  /** Existing pair-scoped subscription account and observation services. */
+  readonly providerSubscriptionOperations?: Parameters<
+    typeof createProviderSubscriptionOperationImplementations
+  >[0];
   /** Existing process-local automation owner, shared across public projections. */
   readonly automationStore?: AutomationStore;
   /** Closes existing Worker MCP sessions when deletion fences a Workspace. */
@@ -87,6 +97,8 @@ export interface OperationInvocationDependencies {
 /** Supplies only executable bindings, with no repeated declarative contract facts. */
 export function createOperationImplementations(dependencies: OperationInvocationDependencies) {
   return composeOperationTables(
+    createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
+    createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
     createAutomationOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),

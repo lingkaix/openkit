@@ -29,19 +29,19 @@ export const settingsKeys = {
 /** Re-export workspace selection for General settings. */
 export { useCurrentWorkspaceId, useWorkspaces };
 
-/** Fixed provider-subscription inventory from `providerSubscriptions.listProviders`. */
+/** Fixed provider-subscription inventory from `operations['provider-subscription.provider-list']`. */
 export type ProviderSubscriptionsPayload = Awaited<
-  ReturnType<CoreClient['providerSubscriptions']['listProviders']>
+  ReturnType<CoreClient['operations']['provider-subscription.provider-list']>
 >;
 /** One descriptor from the fixed provider-subscription inventory. */
 export type ProviderSubscriptionDescriptor = ProviderSubscriptionsPayload['providers'][number];
-/** Provider-scoped account list from `providerSubscriptions.listAccounts`. */
+/** Provider-scoped account list from `operations['provider-subscription.account-list']`. */
 export type ProviderSubscriptionAccountsPayload = Awaited<
-  ReturnType<CoreClient['providerSubscriptions']['listAccounts']>
+  ReturnType<CoreClient['operations']['provider-subscription.account-list']>
 >;
-/** Bounded account quota from `providerSubscriptions.getAccountQuota`. */
+/** Bounded account quota from `operations['provider-subscription.account-quota']`. */
 export type ProviderSubscriptionQuotaPayload = Awaited<
-  ReturnType<CoreClient['providerSubscriptions']['getAccountQuota']>
+  ReturnType<CoreClient['operations']['provider-subscription.account-quota']>
 >;
 type AvailableQuotaPayload = Extract<
   ProviderSubscriptionQuotaPayload,

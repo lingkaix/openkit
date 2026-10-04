@@ -319,7 +319,7 @@ The owning design is [NanoCore Configuration and Identity Contract](https://gith
 
 ## Model Not In models.dev
 
-A deployment admin can register metadata in `DATA_ROOT/config/model-catalog.jsonc` without changing the vendored snapshot or NanoCore code. Open Settings → Configuration, select `model-catalog.jsonc`, and use its generic JSONC editor and schema reference. Startup seeds an empty file when absent. An authorized host operator may also create the file directly; the generic runtime-config API accepts `POST /api/admin/config/file` with `id: "model-catalog.jsonc"`, `kind: "model-catalog"` and source `content` when the file does not yet exist. Reads and writes require deployment-admin authority, such as a server-admin Token or a session with an active admin Token.
+A deployment admin can register metadata in `DATA_ROOT/config/model-catalog.jsonc` without changing the vendored snapshot or NanoCore code. Open Settings → Configuration, select `model-catalog.jsonc`, and use its generic JSONC editor and schema reference. Startup seeds an empty file when absent. An authorized host operator may also create the file directly; the generic runtime-config API accepts `POST /api/app/operations/runtime.file-create` with `id: "model-catalog.jsonc"`, `kind: "model-catalog"` and source `content` when the file does not yet exist. Reads and writes require deployment-admin authority, such as a server-admin Token or a session with an active admin Token.
 
 For example, with a Provider whose `vendor` is `openai`, add the exact native model ID under that vendor:
 

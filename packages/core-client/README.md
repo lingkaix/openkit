@@ -34,8 +34,8 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.core`: metadata discovery and the Thread event stream.
 - `client.app`: dashboards, diagnostics, setup diagnostics, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership plus session-user redacted admin Token inventory and default selection, vault admin status/unlock/lock/Codex auth JSON bootstrap and authored provider API-key store or replacement, raw portable archive download, dry-run, and import streams, Workspace Material reads and mutations, workspace vault reference discovery and re-binding, capability usage evidence, server and workspace audit events, search, and redacted Agent Environment Package snapshot readback.
 - `client.app` also exposes current-administrator Worker environment list, select, prepare, activate, status, and purge methods plus the private administration conversation entry. The client validates every payload and keeps the path and body storage reference identical for destructive purge.
-- `client.runtimeConfig`: runtime config editor and reload routes.
-- `client.providerSubscriptions`: fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
+- `client.operations[id]`: the ten `runtime.*` configuration editor and reload operations.
+- `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
 - `client.agents`: Agent Catalog list, detail, and health refresh routes.
@@ -66,11 +66,11 @@ Deprecated flat aliases are not exported.
 
 ## Native Environment Administration
 
-`client.runtimeConfig.getAgentNativeEnvironment(fileId)` reads the private administration projection; `updateAgentNativeEnvironment` sends literal overrides/removals with the existing file revision and exact image/default identities. Both validate the shared App API contract. Persisted, reloaded and acknowledged native state remain separate; an edit applies to later Turns through a successor.
+`client.operations['runtime.agent-environment-read']({ fileId })` reads the private administration projection; `client.operations['runtime.agent-environment-update']` sends literal overrides/removals with the existing file revision and exact image/default identities. Both validate the shared App API contract. Persisted, reloaded and acknowledged native state remain separate; an edit applies to later Turns through a successor.
 
 The private native environment configuration client discards inert additive response metadata, including nested status and environment identities, through the shared App API readers before returning the owned core.
 
-`runtimeConfig.deleteFile` sends the strict Provider deletion command through the existing JSON DELETE transport. It requires an exact Provider file ID and existing revision and accepts the empty successful response. NanoCore owns revocation and restart-required activation.
+`operations['runtime.file-delete']` sends the strict Provider deletion command through the definition-derived JSON POST transport. It requires an exact Provider file ID and existing revision and maps the empty HTTP 204 response to logical `null`. NanoCore owns revocation and restart-required activation.
 
 `client.app.getCapabilityUsage` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The Skill `usage.read` operation returns that same reader result without rebuilding private Provider lineage.
 

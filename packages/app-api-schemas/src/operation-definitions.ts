@@ -20,7 +20,9 @@ import {
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
 import { composeOperationTables } from './operation-contract.js';
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
+import { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
 import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
+import { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
@@ -54,6 +56,8 @@ export type {
 } from './operation-contract.js';
 export { composeOperationTables, operationMcpEligible } from './operation-contract.js';
 export { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
+export { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
+export { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
 export { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 export { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
 export { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
@@ -66,6 +70,8 @@ export const ADMINISTRATION_OPERATION_DEFINITIONS = composeOperationTables(
 
 /** Statically composed product contracts. */
 export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
+  RUNTIME_CONFIG_OPERATION_DEFINITIONS,
+  PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
   AUTOMATION_OPERATION_DEFINITIONS,
   SCHEDULER_OPERATION_DEFINITIONS,
   RECOVERY_OPERATION_DEFINITIONS,

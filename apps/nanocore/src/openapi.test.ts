@@ -2,14 +2,14 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   CapabilityUsageResponseSchema,
-  CreateProviderSubscriptionAccountRequestSchema,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
   KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
   operationHttpPath,
-  SubscriptionProviderIdSchema,
+  PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
+  RUNTIME_CONFIG_OPERATION_DEFINITIONS,
   SYNC_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import {
@@ -270,80 +270,46 @@ describe('app api openapi projection', () => {
     }
   });
 
-  it('sources provider-subscription path parameters from shared schemas', () => {
+  it('projects all runtime and provider-subscription logical schemas and bodyless success dispositions', () => {
     const document = createAppOpenApiDocument();
-    const operation = jsonObject(
-      document.paths[
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}'
-      ]?.patch
-    );
-    const providerSchema = z.toJSONSchema(SubscriptionProviderIdSchema);
-    const accountSlotSchema = z.toJSONSchema(
-      CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId
-    );
-    delete providerSchema.$schema;
-    delete accountSlotSchema.$schema;
-
-    expect(operation?.parameters).toEqual([
-      {
-        name: 'subscriptionProviderId',
-        in: 'path',
-        required: true,
-        schema: providerSchema,
-      },
-      {
-        name: 'accountSlotId',
-        in: 'path',
-        required: true,
-        schema: accountSlotSchema,
-      },
-    ]);
-
-    const source = readFileSync(new URL('./openapi.ts', import.meta.url), 'utf8');
-    const providerParameterSource = source.match(
-      /const SUBSCRIPTION_PROVIDER_ID_PARAMETER = \{[\s\S]*?\n\};/u
-    )?.[0];
-    const accountSlotParameterSource = source.match(
-      /const ACCOUNT_SLOT_ID_PARAMETER = \{[\s\S]*?\n\};/u
-    )?.[0];
-    const providerSchemaValue =
-      /\bschema:\s*[A-Za-z_$][\w$]*\(\s*SubscriptionProviderIdSchema\s*\)\s*,?/u;
-    const accountSlotSchemaValue =
-      /\bschema:\s*[A-Za-z_$][\w$]*\(\s*CreateProviderSubscriptionAccountRequestSchema\.shape\.accountSlotId\s*\)\s*,?/u;
-    const localProviderSchema = /\bz\.enum\s*\(/u;
-    const localAccountSlotSchema = /\.regex\s*\(/u;
-    const inlineProviderEnum = /\benum\s*:\s*\[\s*['"]openai-codex['"]\s*,\s*['"]xai['"]\s*\]/u;
-    const inlineAccountSlotPattern = /\bpattern\s*:\s*(['"])\^\[a-z0-9\]\[a-z0-9_-\]\{0,63\}\$\1/u;
-    const adversarialProviderParameter =
-      "schema: project(z.enum(['openai-codex', 'xai'])), // SubscriptionProviderIdSchema";
-    const adversarialAccountSlotParameter =
-      'schema: project(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/)), // CreateProviderSubscriptionAccountRequestSchema.shape.accountSlotId';
-
-    expect({
-      accountSlot:
-        accountSlotSchemaValue.test(adversarialAccountSlotParameter) &&
-        !localAccountSlotSchema.test(adversarialAccountSlotParameter) &&
-        !inlineAccountSlotPattern.test(adversarialAccountSlotParameter),
-      provider:
-        providerSchemaValue.test(adversarialProviderParameter) &&
-        !localProviderSchema.test(adversarialProviderParameter) &&
-        !inlineProviderEnum.test(adversarialProviderParameter),
-    }).toEqual({ accountSlot: false, provider: false });
-
-    expect({
-      accountSlot: Boolean(
-        accountSlotParameterSource &&
-          accountSlotSchemaValue.test(accountSlotParameterSource) &&
-          !localAccountSlotSchema.test(accountSlotParameterSource) &&
-          !inlineAccountSlotPattern.test(accountSlotParameterSource)
-      ),
-      provider: Boolean(
-        providerParameterSource &&
-          providerSchemaValue.test(providerParameterSource) &&
-          !localProviderSchema.test(providerParameterSource) &&
-          !inlineProviderEnum.test(providerParameterSource)
-      ),
-    }).toEqual({ accountSlot: true, provider: true });
+    const definitions = {
+      ...RUNTIME_CONFIG_OPERATION_DEFINITIONS,
+      ...PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
+    };
+    expect(Object.keys(definitions)).toHaveLength(21);
+    for (const [id, definition] of Object.entries(definitions)) {
+      const operation = jsonObject(document.paths[operationHttpPath(id)]?.post);
+      expect(operation).toMatchObject({
+        operationId: id,
+        tags: [id.split('.')[0]],
+        requestBody: {
+          required: true,
+          content: { 'application/json': { schema: { $ref: `#/components/schemas/${id}.input` } } },
+        },
+      });
+      expect(operation?.parameters ?? []).toEqual([]);
+      const input = z.toJSONSchema(definition.inputSchema);
+      const output = z.toJSONSchema(definition.outputSchema);
+      expect(document.components.schemas[`${id}.input`]).toEqual(input);
+      expect(document.components.schemas[`${id}.output`]).toEqual(output);
+      const responses = jsonObject(operation?.responses);
+      if (definition.successStatus === 204) {
+        expect(responses?.['204']).toEqual({ description: expect.any(String) });
+        expect(responses).not.toHaveProperty('200');
+      } else {
+        expect(responses?.['200']).toMatchObject({
+          content: {
+            'application/json': { schema: { $ref: `#/components/schemas/${id}.output` } },
+          },
+        });
+      }
+    }
+    expect(
+      Object.keys(document.paths).filter(
+        (path) =>
+          path.startsWith('/api/admin/config') || path.startsWith('/api/app/provider-subscriptions')
+      )
+    ).toEqual([]);
   });
 
   it('projects the storage layout report route from shared schemas', () => {
@@ -461,11 +427,13 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.components.schemas.ProviderSubscriptionsResponse).toMatchObject({
-      type: 'object',
-      required: ['providers'],
-    });
-    expect(document.components.schemas.ProviderSubscriptionAccountsResponse).toMatchObject({
+    expect(document.components.schemas['provider-subscription.provider-list.output']).toMatchObject(
+      {
+        type: 'object',
+        required: ['providers'],
+      }
+    );
+    expect(document.components.schemas['provider-subscription.account-list.output']).toMatchObject({
       type: 'object',
       required: ['accounts'],
     });
@@ -480,267 +448,6 @@ describe('app api openapi projection', () => {
     ]) {
       expect(document.components.schemas).not.toHaveProperty(schemaName);
     }
-    for (const [path, method, operationId, requestSchema, responseSchema] of [
-      [
-        '/api/app/provider-subscriptions',
-        'get',
-        'listSubscriptionProviders',
-        null,
-        'ProviderSubscriptionsResponse',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
-        'get',
-        'listProviderSubscriptionAccounts',
-        null,
-        'ProviderSubscriptionAccountsResponse',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts',
-        'post',
-        'createProviderSubscriptionAccount',
-        'CreateProviderSubscriptionAccountRequest',
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
-        'patch',
-        'updateProviderSubscriptionAccount',
-        'UpdateProviderSubscriptionAccountRequest',
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}',
-        'delete',
-        'deleteProviderSubscriptionAccount',
-        null,
-        null,
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/status',
-        'get',
-        'getProviderSubscriptionAccountStatus',
-        null,
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login',
-        'post',
-        'startProviderSubscriptionAccountLogin',
-        'StartProviderSubscriptionAccountLoginRequest',
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/login/cancel',
-        'post',
-        'cancelProviderSubscriptionAccountLogin',
-        'CancelProviderSubscriptionAccountLoginRequest',
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/logout',
-        'post',
-        'logoutProviderSubscriptionAccount',
-        null,
-        'ProviderSubscriptionAccount',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/quota',
-        'get',
-        'getProviderSubscriptionAccountQuota',
-        null,
-        'ProviderSubscriptionQuota',
-      ],
-      [
-        '/api/app/provider-subscriptions/{subscriptionProviderId}/accounts/{accountSlotId}/auto-topup',
-        'get',
-        'getProviderSubscriptionAccountAutoTopup',
-        null,
-        'ProviderSubscriptionAutoTopup',
-      ],
-    ] as const) {
-      const operation = jsonObject(document.paths[path]?.[method]);
-      const expectedParameterNames = [...path.matchAll(/\{([^}]+)\}/g)].map(([, name]) => name);
-
-      expect(operation?.parameters ?? []).toEqual(
-        expectedParameterNames.map((name) =>
-          expect.objectContaining({ in: 'path', name, required: true })
-        )
-      );
-      expect(operation).toMatchObject({
-        operationId,
-        tags: ['provider-subscriptions'],
-        ...(requestSchema
-          ? {
-              requestBody: {
-                content: {
-                  'application/json': {
-                    schema: {
-                      $ref: `#/components/schemas/${requestSchema}`,
-                    },
-                  },
-                },
-              },
-            }
-          : {}),
-        responses: responseSchema
-          ? {
-              '200': {
-                content: {
-                  'application/json': {
-                    schema: {
-                      $ref: `#/components/schemas/${responseSchema}`,
-                    },
-                  },
-                },
-              },
-            }
-          : {
-              '204': {
-                description: 'Provider-subscription account deleted.',
-              },
-            },
-      });
-    }
-    expect(document.components.schemas.RuntimeConfigReloadResponse).toMatchObject({
-      type: 'object',
-      required: ['status', 'runtimeConfig', 'plan'],
-    });
-    expect(document.paths['/api/admin/config/reload']?.post).toMatchObject({
-      operationId: 'reloadRuntimeConfig',
-      tags: ['runtime-config'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/RuntimeConfigReloadRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigReloadResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/admin/config/files']?.get).toMatchObject({
-      operationId: 'listRuntimeConfigFiles',
-      tags: ['runtime-config'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigFileListResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/admin/config/file']?.get).toMatchObject({
-      operationId: 'getRuntimeConfigFile',
-      tags: ['runtime-config'],
-      parameters: [expect.objectContaining({ name: 'id', in: 'query', required: true })],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigFileReadResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/admin/config/file']?.delete).toMatchObject({
-      operationId: 'deleteRuntimeConfigFile',
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: { $ref: '#/components/schemas/RuntimeConfigFileDeleteRequest' },
-          },
-        },
-      },
-      responses: { '204': { description: expect.any(String) } },
-    });
-    for (const route of [
-      ['post', 'createRuntimeConfigFile'],
-      ['put', 'updateRuntimeConfigFile'],
-    ] as const) {
-      expect(document.paths['/api/admin/config/file']?.[route[0]]).toMatchObject({
-        operationId: route[1],
-        tags: ['runtime-config'],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigFileWriteRequest',
-              },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            content: {
-              'application/json': {
-                schema: {
-                  $ref: '#/components/schemas/RuntimeConfigFileWriteResponse',
-                },
-              },
-            },
-          },
-        },
-      });
-    }
-    expect(document.paths['/api/admin/config/schemas']?.get).toMatchObject({
-      operationId: 'getRuntimeConfigSchemas',
-      tags: ['runtime-config'],
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigSchemaCatalogResponse',
-              },
-            },
-          },
-        },
-      },
-    });
-    expect(document.paths['/api/admin/config/validate']?.post).toMatchObject({
-      operationId: 'validateRuntimeConfig',
-      tags: ['runtime-config'],
-      requestBody: {
-        content: {
-          'application/json': {
-            schema: {
-              $ref: '#/components/schemas/RuntimeConfigValidationRequest',
-            },
-          },
-        },
-      },
-      responses: {
-        '200': {
-          content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/RuntimeConfigValidationResponse',
-              },
-            },
-          },
-        },
-      },
-    });
     expect(document.paths['/api/app/quick-chat']).toBeUndefined();
     expect(document.paths['/api/app/operations/chat.quick']?.post).toMatchObject({
       operationId: 'chat.quick',
@@ -2340,17 +2047,6 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultReferences',
       'listWorkspaceVaultUseRecords',
       'lockVaultAdminBackend',
-      'listSubscriptionProviders',
-      'listProviderSubscriptionAccounts',
-      'createProviderSubscriptionAccount',
-      'updateProviderSubscriptionAccount',
-      'deleteProviderSubscriptionAccount',
-      'getProviderSubscriptionAccountStatus',
-      'startProviderSubscriptionAccountLogin',
-      'cancelProviderSubscriptionAccountLogin',
-      'logoutProviderSubscriptionAccount',
-      'getProviderSubscriptionAccountQuota',
-      'getProviderSubscriptionAccountAutoTopup',
       'getAppDiagnostics',
       'getSetupDiagnostics',
       'prepareAppUpdate',
@@ -2359,16 +2055,6 @@ describe('app api openapi projection', () => {
       'downloadWorkspaceExportArchive',
       'dryRunWorkspaceArchiveImport',
       'importWorkspaceArchive',
-      'getAgentNativeEnvironment',
-      'updateAgentNativeEnvironment',
-      'reloadRuntimeConfig',
-      'listRuntimeConfigFiles',
-      'getRuntimeConfigFile',
-      'createRuntimeConfigFile',
-      'updateRuntimeConfigFile',
-      'deleteRuntimeConfigFile',
-      'getRuntimeConfigSchemas',
-      'validateRuntimeConfig',
       'applyAdministrationConfiguration',
       'submitAdministrationConversation',
       'listWorkspaceMaterials',

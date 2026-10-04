@@ -21,6 +21,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { createVaultReference, getVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 
@@ -145,17 +146,23 @@ function fixture(subscription = false) {
   });
   /** Obtain the real revision then send the contained deletion command. */
   const deletion = async (expectedRevision?: string) => {
-    const read = await app.request(`/api/admin/config/file?id=${encodeURIComponent(id)}`);
+    const read = await app.request(...operationRequest('runtime.file-read', { id: id }));
     const file = await read.json();
-    return app.request('/api/admin/config/file', {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id,
-        kind: 'provider',
-        expectedRevision: expectedRevision ?? file.file.revision,
-      }),
-    });
+    return app.request(
+      ...operationRequest(
+        'runtime.file-delete',
+        {},
+        {
+          method: 'DELETE',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id,
+            kind: 'provider',
+            expectedRevision: expectedRevision ?? file.file.revision,
+          }),
+        }
+      )
+    );
   };
   return {
     app,
@@ -270,13 +277,22 @@ describe('provider profile removal', () => {
       auth: { api: { getSession: async () => null }, handler: async () => Response.json({}) },
     });
     const before = readFileSync(join(f.dataRoot, 'config', f.id));
-    const response = await app.request('/api/admin/config/file', {
-      method: 'DELETE',
-      headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ id: f.id, kind: 'provider', expectedRevision: 'irrelevant' }),
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'runtime.file-delete',
+        {},
+        {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ id: f.id, kind: 'provider', expectedRevision: 'irrelevant' }),
+        }
+      )
+    );
     expect(response.status).toBe(403);
-    expect((await response.json()).code).toBe('runtime_config_admin_forbidden');
+    await expect(response.json()).resolves.toMatchObject({
+      code: 'deployment_admin_required',
+      message: 'Current deployment administrator authority is required.',
+    });
     expect(readFileSync(join(f.dataRoot, 'config', f.id))).toEqual(before);
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
   });
@@ -313,11 +329,17 @@ describe('provider profile removal', () => {
     writeFileSync(outside, bytes);
     rmSync(target);
     symlinkSync(outside, target);
-    const response = await f.app.request('/api/admin/config/file', {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: f.id, kind: 'provider', expectedRevision: 'irrelevant' }),
-    });
+    const response = await f.app.request(
+      ...operationRequest(
+        'runtime.file-delete',
+        {},
+        {
+          method: 'DELETE',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: f.id, kind: 'provider', expectedRevision: 'irrelevant' }),
+        }
+      )
+    );
     expect(response.status).toBe(400);
     expect(readFileSync(outside)).toEqual(bytes);
     expect(f.backend.listReferences()[0]?.revoked).toBe(false);
@@ -325,11 +347,17 @@ describe('provider profile removal', () => {
   it('refuses non-Provider and escaped file identities before effects', async () => {
     const f = fixture();
     for (const id of ['server.jsonc', '../outside.provider.jsonc']) {
-      const response = await f.app.request('/api/admin/config/file', {
-        method: 'DELETE',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id, kind: 'provider', expectedRevision: 'irrelevant' }),
-      });
+      const response = await f.app.request(
+        ...operationRequest(
+          'runtime.file-delete',
+          {},
+          {
+            method: 'DELETE',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id, kind: 'provider', expectedRevision: 'irrelevant' }),
+          }
+        )
+      );
       expect(response.status).toBe(400);
       expect(f.backend.listReferences()[0]?.revoked).toBe(false);
       expect(existsSync(join(f.dataRoot, 'config', f.id))).toBe(true);

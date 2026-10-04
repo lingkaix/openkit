@@ -17,7 +17,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   type AuthInteraction,
   fauxAssistantMessage,
@@ -44,6 +43,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -1265,7 +1265,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     );
   });
 
-  it('rejects invalid records, raw bytes, paths, symlinks, and residue without repair', async () => {
+  describe('invalid records, raw bytes, paths, symlinks, and residue', () => {
     const invalidRecords: Array<{
       readonly name: string;
       readonly pair: ProviderSubscriptionAccountPair;
@@ -1416,7 +1416,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       },
     ];
 
-    for (const invalid of invalidRecords) {
+    it.each(invalidRecords)('rejects invalid record: $name without repair', async (invalid) => {
       const fixture = createFixture();
       writeAccountJson(fixture.dataRoot, invalid.pair, invalid.record);
       const before = authoritySnapshot(fixture);
@@ -1426,7 +1426,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         PERSISTENCE_ERROR
       );
       expect(authoritySnapshot(fixture), invalid.name).toEqual(before);
-    }
+    });
 
     const malformedUtf8Pair = accountPair('bad_utf8');
     const malformedUtf8Prefix = Buffer.from(
@@ -1452,7 +1452,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       },
     ];
 
-    for (const rawCase of rawCases) {
+    it.each(rawCases)('rejects raw bytes: $name without repair', async (rawCase) => {
       const fixture = createFixture();
       writeRawAccount(fixture.dataRoot, rawCase.pair, rawCase.bytes);
       const before = authoritySnapshot(fixture);
@@ -1462,100 +1462,108 @@ describe('ProviderSubscriptionAccountManager', () => {
         PERSISTENCE_ERROR
       );
       expect(authoritySnapshot(fixture), rawCase.name).toEqual(before);
-    }
-
-    const symlinkFixture = createFixture();
-    const symlinkPair = accountPair('symlink_record');
-    const externalRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-subscription-external-'));
-    extraTemporaryRoots.add(externalRoot);
-    const externalPath = join(externalRoot, 'account.json');
-    const externalBytes = `${JSON.stringify(validAccountRecord(symlinkPair))}\n`;
-    mkdirSync(accountDirectory(symlinkFixture.dataRoot, symlinkPair), { recursive: true });
-    writeFileSync(externalPath, externalBytes);
-    symlinkSync(externalPath, accountPath(symlinkFixture.dataRoot, symlinkPair));
-    const symlinkBefore = authoritySnapshot(symlinkFixture);
-
-    await expectAccountError(
-      () => symlinkFixture.manager.listAccounts('openai-codex'),
-      PERSISTENCE_ERROR
-    );
-    expect(lstatSync(accountPath(symlinkFixture.dataRoot, symlinkPair)).isSymbolicLink()).toBe(
-      true
-    );
-    expect(readFileSync(externalPath, 'utf8')).toBe(externalBytes);
-    expect(authoritySnapshot(symlinkFixture)).toEqual(symlinkBefore);
-
-    const slotSymlinkFixture = createFixture();
-    const slotSymlinkPair = accountPair('symlink_slot');
-    const slotSymlinkExternalRoot = mkdtempSync(
-      join(tmpdir(), 'openkit-provider-subscription-slot-external-')
-    );
-    extraTemporaryRoots.add(slotSymlinkExternalRoot);
-    const slotSymlinkExternalPath = join(slotSymlinkExternalRoot, 'account.json');
-    const slotSymlinkExternalBytes = `${JSON.stringify(validAccountRecord(slotSymlinkPair))}\n`;
-    mkdirSync(join(accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair), '..'), {
-      recursive: true,
     });
-    writeFileSync(slotSymlinkExternalPath, slotSymlinkExternalBytes);
-    symlinkSync(
-      slotSymlinkExternalRoot,
-      accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair)
-    );
-    const slotSymlinkCoreBefore = slotSymlinkFixture.coreDb.sqlite
-      .prepare('SELECT * FROM vault_references ORDER BY reference_id ASC')
-      .all();
-    const slotSymlinkVaultBefore = slotSymlinkFixture.backend().listReferences();
 
-    await expectAccountError(
-      () => slotSymlinkFixture.manager.listAccounts('openai-codex'),
-      PERSISTENCE_ERROR
-    );
-    expect(
-      lstatSync(accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair)).isSymbolicLink()
-    ).toBe(true);
-    expect(readFileSync(slotSymlinkExternalPath, 'utf8')).toBe(slotSymlinkExternalBytes);
-    expect(
-      slotSymlinkFixture.coreDb.sqlite
+    it('rejects symlinked account records without repair', async () => {
+      const symlinkFixture = createFixture();
+      const symlinkPair = accountPair('symlink_record');
+      const externalRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-subscription-external-'));
+      extraTemporaryRoots.add(externalRoot);
+      const externalPath = join(externalRoot, 'account.json');
+      const externalBytes = `${JSON.stringify(validAccountRecord(symlinkPair))}\n`;
+      mkdirSync(accountDirectory(symlinkFixture.dataRoot, symlinkPair), { recursive: true });
+      writeFileSync(externalPath, externalBytes);
+      symlinkSync(externalPath, accountPath(symlinkFixture.dataRoot, symlinkPair));
+      const symlinkBefore = authoritySnapshot(symlinkFixture);
+
+      await expectAccountError(
+        () => symlinkFixture.manager.listAccounts('openai-codex'),
+        PERSISTENCE_ERROR
+      );
+      expect(lstatSync(accountPath(symlinkFixture.dataRoot, symlinkPair)).isSymbolicLink()).toBe(
+        true
+      );
+      expect(readFileSync(externalPath, 'utf8')).toBe(externalBytes);
+      expect(authoritySnapshot(symlinkFixture)).toEqual(symlinkBefore);
+    });
+
+    it('rejects symlinked account directories without repair', async () => {
+      const slotSymlinkFixture = createFixture();
+      const slotSymlinkPair = accountPair('symlink_slot');
+      const slotSymlinkExternalRoot = mkdtempSync(
+        join(tmpdir(), 'openkit-provider-subscription-slot-external-')
+      );
+      extraTemporaryRoots.add(slotSymlinkExternalRoot);
+      const slotSymlinkExternalPath = join(slotSymlinkExternalRoot, 'account.json');
+      const slotSymlinkExternalBytes = `${JSON.stringify(validAccountRecord(slotSymlinkPair))}\n`;
+      mkdirSync(join(accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair), '..'), {
+        recursive: true,
+      });
+      writeFileSync(slotSymlinkExternalPath, slotSymlinkExternalBytes);
+      symlinkSync(
+        slotSymlinkExternalRoot,
+        accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair)
+      );
+      const slotSymlinkCoreBefore = slotSymlinkFixture.coreDb.sqlite
         .prepare('SELECT * FROM vault_references ORDER BY reference_id ASC')
-        .all()
-    ).toEqual(slotSymlinkCoreBefore);
-    expect(slotSymlinkFixture.backend().listReferences()).toEqual(slotSymlinkVaultBefore);
+        .all();
+      const slotSymlinkVaultBefore = slotSymlinkFixture.backend().listReferences();
 
-    const residueFixture = createFixture();
-    const residuePair = accountPair('directory_residue');
-    mkdirSync(accountDirectory(residueFixture.dataRoot, residuePair), { recursive: true });
-    writeFileSync(
-      join(accountDirectory(residueFixture.dataRoot, residuePair), 'residue.txt'),
-      'keep'
-    );
-    const residueBefore = authoritySnapshot(residueFixture);
+      await expectAccountError(
+        () => slotSymlinkFixture.manager.listAccounts('openai-codex'),
+        PERSISTENCE_ERROR
+      );
+      expect(
+        lstatSync(accountDirectory(slotSymlinkFixture.dataRoot, slotSymlinkPair)).isSymbolicLink()
+      ).toBe(true);
+      expect(readFileSync(slotSymlinkExternalPath, 'utf8')).toBe(slotSymlinkExternalBytes);
+      expect(
+        slotSymlinkFixture.coreDb.sqlite
+          .prepare('SELECT * FROM vault_references ORDER BY reference_id ASC')
+          .all()
+      ).toEqual(slotSymlinkCoreBefore);
+      expect(slotSymlinkFixture.backend().listReferences()).toEqual(slotSymlinkVaultBefore);
+    });
 
-    await expectAccountError(
-      () => residueFixture.manager.listAccounts('openai-codex'),
-      PERSISTENCE_ERROR
-    );
-    expect(authoritySnapshot(residueFixture)).toEqual(residueBefore);
+    it('rejects directory residue without repair', async () => {
+      const residueFixture = createFixture();
+      const residuePair = accountPair('directory_residue');
+      mkdirSync(accountDirectory(residueFixture.dataRoot, residuePair), { recursive: true });
+      writeFileSync(
+        join(accountDirectory(residueFixture.dataRoot, residuePair), 'residue.txt'),
+        'keep'
+      );
+      const residueBefore = authoritySnapshot(residueFixture);
 
-    const pathFixture = createFixture();
-    const pathBefore = authoritySnapshot(pathFixture);
+      await expectAccountError(
+        () => residueFixture.manager.listAccounts('openai-codex'),
+        PERSISTENCE_ERROR
+      );
+      expect(authoritySnapshot(residueFixture)).toEqual(residueBefore);
+    });
 
-    await expectAccountError(
-      () =>
-        pathFixture.manager.createAccount({
-          accountSlotId: '../escape',
-          subscriptionProviderId: 'openai-codex',
-        }),
-      SLOT_ERROR
-    );
-    await expectAccountError(
-      () =>
-        pathFixture.manager.createAccount({
-          accountSlotId: '/tmp/escape',
-          subscriptionProviderId: 'openai-codex',
-        }),
-      SLOT_ERROR
-    );
-    expect(authoritySnapshot(pathFixture)).toEqual(pathBefore);
+    it('rejects escaping account paths without repair', async () => {
+      const pathFixture = createFixture();
+      const pathBefore = authoritySnapshot(pathFixture);
+
+      await expectAccountError(
+        () =>
+          pathFixture.manager.createAccount({
+            accountSlotId: '../escape',
+            subscriptionProviderId: 'openai-codex',
+          }),
+        SLOT_ERROR
+      );
+      await expectAccountError(
+        () =>
+          pathFixture.manager.createAccount({
+            accountSlotId: '/tmp/escape',
+            subscriptionProviderId: 'openai-codex',
+          }),
+        SLOT_ERROR
+      );
+      expect(authoritySnapshot(pathFixture)).toEqual(pathBefore);
+    });
   });
 
   describe('pair authority classification', () => {
@@ -4447,10 +4455,15 @@ describe('public inference observation read model', () => {
     const read = async () => {
       fixture.clock.use(DEFAULT_TIME);
       const list = await app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts`
+        ...operationRequest('provider-subscription.account-list', {
+          subscriptionProviderId: subscriptionProviderId,
+        })
       );
       const detail = await app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/public/status`
+        ...operationRequest('provider-subscription.account-status', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'public',
+        })
       );
       expect(list.status).toBe(200);
       expect(detail.status).toBe(200);
@@ -4540,8 +4553,12 @@ describe('live quota and inference observations', () => {
     const upstream = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('', { status: 503 }));
-    const path = `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/live_quota/quota`;
-    const failed = await app.request(path);
+    const failed = await app.request(
+      ...operationRequest('provider-subscription.account-quota', {
+        subscriptionProviderId: subscriptionProviderId,
+        accountSlotId: 'live_quota',
+      })
+    );
     expect(failed.status).toBe(200);
     expect(await failed.json()).toEqual({
       ...pair,
@@ -4555,7 +4572,12 @@ describe('live quota and inference observations', () => {
           new Response(JSON.stringify({ userId: 'private-user', subscriptionTier: 'SuperGrok' }))
         )
         .mockResolvedValueOnce(new Response('', { status: 503 }));
-      const partial = await app.request(path);
+      const partial = await app.request(
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'live_quota',
+        })
+      );
       expect((await partial.json()).availability).toBe('temporarily_unavailable');
       expect(await handle.getObservation()).toEqual({
         quotaExhausted: { observedAt: DEFAULT_TIME },
@@ -4572,7 +4594,12 @@ describe('live quota and inference observations', () => {
         new Response(JSON.stringify({ plan_type: 'pro', rate_limit: null }))
       );
     }
-    const available = await app.request(path);
+    const available = await app.request(
+      ...operationRequest('provider-subscription.account-quota', {
+        subscriptionProviderId: subscriptionProviderId,
+        accountSlotId: 'live_quota',
+      })
+    );
     expect(available.status).toBe(200);
     expect((await available.json()).availability).toBe('available');
     expect(await handle.getObservation()).toBeUndefined();
@@ -4818,10 +4845,15 @@ describe('inference route same-credential rejection', () => {
           expect(await f.handle.getCredentialVersion()).not.toBe(presented.version);
         if (scenario === 'deadline') expect(Date.now()).toBeGreaterThan(deadline!);
         const list = await f.app.request(
-          `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts`
+          ...operationRequest('provider-subscription.account-list', {
+            subscriptionProviderId: subscriptionProviderId,
+          })
         );
         const detail = await f.app.request(
-          `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/${f.pair.accountSlotId}/status`
+          ...operationRequest('provider-subscription.account-status', {
+            subscriptionProviderId: subscriptionProviderId,
+            accountSlotId: f.pair.accountSlotId,
+          })
         );
         expect(list.status).toBe(200);
         expect(detail.status).toBe(200);
@@ -5020,10 +5052,15 @@ describe('subscription refresh inference ownership', () => {
         .spyOn(globalThis, 'fetch')
         .mockRejectedValue(new Error('No quota request allowed.'));
       const detail = await app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts/refresh/status`
+        ...operationRequest('provider-subscription.account-status', {
+          subscriptionProviderId: subscriptionProviderId,
+          accountSlotId: 'refresh',
+        })
       );
       const list = await app.request(
-        `/api/app/provider-subscriptions/${subscriptionProviderId}/accounts`
+        ...operationRequest('provider-subscription.account-list', {
+          subscriptionProviderId: subscriptionProviderId,
+        })
       );
       expect(detail.status).toBe(200);
       expect(list.status).toBe(200);

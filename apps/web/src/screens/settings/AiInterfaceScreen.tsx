@@ -35,7 +35,7 @@ import { projectSafeValue, providerSubscriptionAccountStatusLabel } from './secr
 
 type SubscriptionProviderId = ConnectedAppProviderRow['subscriptionProviderId'];
 type ProviderSubscriptionAccount = Awaited<
-  ReturnType<CoreClient['providerSubscriptions']['getAccountStatus']>
+  ReturnType<CoreClient['operations']['provider-subscription.account-status']>
 >;
 type ProviderRegistryEntry = Awaited<
   ReturnType<CoreClient['app']['getDiagnostics']>
@@ -78,7 +78,7 @@ export function AiInterfaceScreen() {
 
   const inventory = useQuery({
     queryKey: [...settingsKeys.aiInterface, 'inventory'],
-    queryFn: () => client.providerSubscriptions.listProviders(),
+    queryFn: () => client.operations['provider-subscription.provider-list']({}),
     gcTime: 0,
     retry: false,
   });
@@ -86,9 +86,9 @@ export function AiInterfaceScreen() {
     queries: (inventory.data?.providers ?? []).map((provider) => ({
       queryKey: [...accountsKey, provider.subscriptionProviderId],
       queryFn: async () => {
-        const listed = await client.providerSubscriptions.listAccounts(
-          provider.subscriptionProviderId
-        );
+        const listed = await client.operations['provider-subscription.account-list']({
+          subscriptionProviderId: provider.subscriptionProviderId,
+        });
         return projectConnectedApps(
           provider,
           listed,
@@ -428,7 +428,8 @@ function ProviderAccounts({
   const headingId = `provider-${provider.subscriptionProviderId}`;
   const create = useMutation({
     mutationFn: () =>
-      client.providerSubscriptions.createAccount(provider.subscriptionProviderId, {
+      client.operations['provider-subscription.account-create']({
+        subscriptionProviderId: provider.subscriptionProviderId,
         accountSlotId: slotId.trim(),
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
       }),
@@ -543,7 +544,11 @@ function AccountControls({
   const shouldPoll = overlay.status === 'pending';
   const status = useQuery({
     queryKey: statusKey,
-    queryFn: () => client.providerSubscriptions.getAccountStatus(providerId, account.accountSlotId),
+    queryFn: () =>
+      client.operations['provider-subscription.account-status']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+      }),
     enabled: true,
     refetchInterval: shouldPoll ? STATUS_POLL_MS : false,
     gcTime: 0,
@@ -595,18 +600,26 @@ function AccountControls({
 
   const rename = useMutation({
     mutationFn: () =>
-      client.providerSubscriptions.updateAccount(providerId, account.accountSlotId, {
+      client.operations['provider-subscription.account-update']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
         displayName: displayName.trim(),
       }),
     onSuccess: onAccountsChanged,
   });
   const remove = useMutation({
-    mutationFn: () => client.providerSubscriptions.deleteAccount(providerId, account.accountSlotId),
+    mutationFn: () =>
+      client.operations['provider-subscription.account-delete']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+      }),
     onSuccess: onAccountsChanged,
   });
   const login = useMutation({
     mutationFn: () =>
-      client.providerSubscriptions.startAccountLogin(providerId, account.accountSlotId, {
+      client.operations['provider-subscription.account-login-start']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
         mode: 'device_code',
       }),
     onSuccess: (next) => {
@@ -617,7 +630,9 @@ function AccountControls({
   });
   const cancel = useMutation({
     mutationFn: () =>
-      client.providerSubscriptions.cancelAccountLogin(providerId, account.accountSlotId, {
+      client.operations['provider-subscription.account-login-cancel']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
         interactionId: live.interactionId as string,
       }),
     onSuccess: (next) => {
@@ -626,7 +641,11 @@ function AccountControls({
     },
   });
   const logout = useMutation({
-    mutationFn: () => client.providerSubscriptions.logoutAccount(providerId, account.accountSlotId),
+    mutationFn: () =>
+      client.operations['provider-subscription.account-logout']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+      }),
     onSuccess: (next) => {
       setSnapshot(next);
       onAccountsChanged();
@@ -645,10 +664,10 @@ function AccountControls({
 
   const autoTopup = useMutation({
     mutationFn: async () => {
-      const result = await client.providerSubscriptions.getAccountAutoTopup(
-        providerId,
-        account.accountSlotId
-      );
+      const result = await client.operations['provider-subscription.account-auto-topup']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+      });
       if (
         result.subscriptionProviderId !== providerId ||
         result.accountSlotId !== account.accountSlotId
@@ -1323,7 +1342,7 @@ function ProviderProfileForm({
         }
       }
       const content = `${JSON.stringify(profile, null, 2)}\n`;
-      return client.runtimeConfig.createFile({
+      return client.operations['runtime.file-create']({
         id: `providers/${id.trim()}.provider.jsonc`,
         kind: 'provider',
         content,
@@ -1444,7 +1463,10 @@ async function readAccountQuota(
   providerId: SubscriptionProviderId,
   slot: string
 ) {
-  const result = await client.providerSubscriptions.getAccountQuota(providerId, slot);
+  const result = await client.operations['provider-subscription.account-quota']({
+    subscriptionProviderId: providerId,
+    accountSlotId: slot,
+  });
   if (result.subscriptionProviderId !== providerId || result.accountSlotId !== slot)
     throw new Error('Provider subscription projection failed.');
   return result;

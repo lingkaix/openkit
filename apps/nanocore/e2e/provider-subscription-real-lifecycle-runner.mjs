@@ -618,8 +618,13 @@ async function waitForHealth(fetcher, port, wait) {
  */
 export async function runPublicSequence(fetcher, port, streamFacts) {
   const base = `http://127.0.0.1:${port}`;
-  const providerPath = `${base}/api/app/provider-subscriptions/${SUBSCRIPTION_PROVIDER_ID}`;
-  const accountPath = `${providerPath}/accounts/${ACCOUNT_SLOT_ID}`;
+  const invoke = (id, input) =>
+    fetchJson(fetcher, `${base}/api/app/operations/provider-subscription.${id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  const pair = { subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID, accountSlotId: ACCOUNT_SLOT_ID };
   const gatewayInit = {
     body: JSON.stringify({
       input: 'Reply with only OK.',
@@ -631,9 +636,11 @@ export async function runPublicSequence(fetcher, port, streamFacts) {
     method: 'POST',
   };
 
-  const providers = await fetchJson(fetcher, `${base}/api/app/provider-subscriptions`);
-  const accounts = await fetchJson(fetcher, `${providerPath}/accounts`);
-  const initialStatus = await fetchJson(fetcher, `${accountPath}/status`);
+  const providers = await invoke('provider-list', {});
+  const accounts = await invoke('account-list', {
+    subscriptionProviderId: SUBSCRIPTION_PROVIDER_ID,
+  });
+  const initialStatus = await invoke('account-status', pair);
   const diagnostics = await fetchJson(fetcher, `${base}/api/app/diagnostics`);
   const inferenceResponse = await fetcher(`${base}/v1/responses`, {
     redirect: 'error',
@@ -649,10 +656,10 @@ export async function runPublicSequence(fetcher, port, streamFacts) {
     streamFacts.outputNonEmpty = inferenceSummary.outputNonEmpty;
     streamFacts.terminalFailureCode = inferenceSummary.terminalFailureCode ?? 'unknown';
   }
-  const quota = await fetchJson(fetcher, `${accountPath}/quota`);
-  const logout = await fetchJson(fetcher, `${accountPath}/logout`, { method: 'POST' });
+  const quota = await invoke('account-quota', pair);
+  const logout = await invoke('account-logout', pair);
   const postLogout = await fetchJson(fetcher, `${base}/v1/responses`, gatewayInit);
-  const finalStatus = await fetchJson(fetcher, `${accountPath}/status`);
+  const finalStatus = await invoke('account-status', pair);
 
   return {
     accountListed: (accounts.json?.accounts ?? []).some(

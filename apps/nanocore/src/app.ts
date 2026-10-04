@@ -78,7 +78,6 @@ import {
   RuntimeConfigFileService,
   RuntimeConfigFileServiceError,
 } from './config/runtime-config-files.js';
-import { registerRuntimeConfigRoutes } from './config/runtime-config-routes.js';
 import { createProcessDiagnosticsSample } from './diagnostics/process-sample.js';
 import { createSetupDiagnostics } from './diagnostics/setup.js';
 import { createDiagnosticsSnapshot } from './diagnostics/snapshot.js';
@@ -93,7 +92,6 @@ import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { registerProviderSubscriptionRoutes } from './llm/provider-subscription-routes.js';
 import { registerMaterialRoutes } from './material-routes.js';
 import { createConversationService, createTaskStartOperation } from './mode-entry-routes.js';
 import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
@@ -1420,12 +1418,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     repositoryWorkspaceDb,
     vaultUnlockState,
   });
-  registerProviderSubscriptionRoutes({
-    accountManager: providerSubscriptionAccountManager,
-    app,
-    boundProviderIds: boundProviderIdsForSubscriptionAccount,
-  });
-
   app.get('/api/diagnostics', (c) => {
     const adminError = requireDiagnosticsAdminActor(c.get('actor'));
     if (adminError) {
@@ -1547,9 +1539,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         workspaceId,
       }))
     );
-  registerRuntimeConfigRoutes({
-    app,
-    agentNativeEnvironment: options.coreDb
+  const runtimeConfigOperations: NonNullable<
+    OperationInvocationDependencies['runtimeConfigOperations']
+  > = {
+    nativeEnvironment: options.coreDb
       ? createAgentNativeEnvironmentService({
           coreDb: options.coreDb,
           store: sharedStore,
@@ -1559,9 +1552,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })
       : undefined,
     onReloadApplied: onRuntimeConfigReloadApplied,
-    runtimeConfigFileService,
-    runtimeConfigManager,
-  });
+    filesForActor: (actor) => runtimeConfigFileService({ get: () => actor }),
+    manager: runtimeConfigManager,
+  };
+  const providerSubscriptionOperations = {
+    accountManager: providerSubscriptionAccountManager,
+    boundProviderIds: boundProviderIdsForSubscriptionAccount,
+  };
 
   registerLlmGatewayRoutes({
     app,
@@ -1939,6 +1936,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     workspaceMutationAdmission,
     inflightCommands,
     runtimeConfigManager,
+    runtimeConfigOperations,
+    providerSubscriptionOperations,
     repositoryWorkspaceDb,
     requestStore,
     goalServices: goalServices(),
@@ -1978,6 +1977,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     taskStart,
     pendingRequestServices,
     runtimeConfigManager,
+    runtimeConfigOperations,
+    providerSubscriptionOperations,
     goalServices: goalServices(),
     startModeWorkerTurn,
     repositoryWorkspaceDb,

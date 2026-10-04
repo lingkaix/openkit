@@ -194,10 +194,10 @@ function createRelayStandIn(options = {}) {
   let defaultAgentId = null;
   const configCalls = [];
   const configuration = {
-    listFiles: async () => ({
+    'runtime.file-list': async () => ({
       files: [{ id: `workspaces/${workspaceId}/workspace.jsonc`, exists: configExists }],
     }),
-    createFile: async (input) => {
+    'runtime.file-create': async (input) => {
       assert.equal(configExists, false);
       assert.equal(input.id, `workspaces/${workspaceId}/workspace.jsonc`);
       assert.equal(input.kind, 'workspace');
@@ -206,12 +206,12 @@ function createRelayStandIn(options = {}) {
       configExists = true;
       return { file: { id: input.id, revision: String(revision) }, diagnostics: [] };
     },
-    getFile: async (id) => {
+    'runtime.file-read': async ({ id }) => {
       assert.equal(configExists, true);
       configCalls.push({ operation: 'getFile', id, revision });
       return { file: { id, revision: String(revision) }, content: configContent };
     },
-    updateFile: async (input) => {
+    'runtime.file-update': async (input) => {
       assert.equal(input.id, `workspaces/${workspaceId}/workspace.jsonc`);
       assert.equal(input.kind, 'workspace');
       assert.equal(input.expectedRevision, String(revision));
@@ -222,7 +222,7 @@ function createRelayStandIn(options = {}) {
       revision += 1;
       return { file: { id: input.id, revision: String(revision) }, diagnostics: [] };
     },
-    reload: async () => {
+    'runtime.reload': async () => {
       configCalls.push({ operation: 'reload' });
       defaultAgentId = JSON.parse(configContent).workspace.defaultAgentId;
       selectedTurn = turns.find((turn) => turn.agentId === defaultAgentId) ?? selectedTurn;
@@ -330,7 +330,7 @@ function createRelayStandIn(options = {}) {
     configCalls,
     clients: {
       admin: {
-        runtimeConfig: configuration,
+        operations: configuration,
         app: {
           getDiagnostics: async () => ({ boot: { acceptingProductWork: true } }),
         },

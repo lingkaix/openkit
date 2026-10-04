@@ -77,7 +77,7 @@ The Thread dashboard pending-request projection includes derived `approvalEffect
 
 ## Native Environment Administration
 
-The private administration GET/PUT projection exposes admitted defaults, literal authored overrides, managed names, desired image/default identities, file revision, reload agreement and audience-scoped native acknowledgement. PUT binds the existing configuration CAS to the current image/default identities. Preparation carries names, classification and defaults digest only; activation confirmation explicitly names the image/default digests. Raw defaults enter Core evidence only after fresh exact-image inspection at confirmed activation.
+The private `runtime.agent-environment-read` and `runtime.agent-environment-update` projection exposes admitted defaults, literal authored overrides, managed names, desired image/default identities, file revision, reload agreement and audience-scoped native acknowledgement. The update binds the existing configuration CAS to the current image/default identities. Preparation carries names, classification and defaults digest only; activation confirmation explicitly names the image/default digests. Raw defaults enter Core evidence only after fresh exact-image inspection at confirmed activation.
 
 Native environment administration request and response readers, including nested identities and application status, discard inert additive envelope metadata. Image inspection readers likewise discard metadata and emit only the owned image, layout and names-only defaults core. Optional envelope keys are ignored regardless of their name; known core fields, literal maps and identity bounds remain validated. Measured native environment records retain their declared exclusions.
 
@@ -116,3 +116,5 @@ The eleven ordinary Workspace, Thread and Turn commands and Quick Chat operation
 Addressed ordinary Turn targets declare the closed `not-found` or `interrupt-failed` missing policy. Recovery checkpoint targets retain their distinct strategy and cannot declare the interrupt policy; opaque feedback derives its Workspace from the existing minimum Turn-map lineage. These facts preserve the native refusal without transport or operation-name dispatch.
 
 `turn.start` keeps its existing Product Turn schema and HTTP 202 binding; its definition describes the durable admission response and current-owner replay. Worker completion is observed through existing product reads and exact replay.
+
+`runtime-config-operations.ts` and `provider-subscription-operations.ts` declare ten configuration and eleven subscription operations. Their complete inputs preserve CAS, exact provider-slot selectors and native environment extension tolerance. Both deletion definitions declare bodyless HTTP 204 with logical `null`; all other results reuse the complete existing public schemas.

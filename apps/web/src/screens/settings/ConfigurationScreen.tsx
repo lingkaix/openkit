@@ -17,10 +17,10 @@ import {
   StatusChip,
 } from '../../primitives';
 
-type RuntimeConfigFileList = Awaited<ReturnType<CoreClient['runtimeConfig']['listFiles']>>;
+type RuntimeConfigFileList = Awaited<ReturnType<CoreClient['operations']['runtime.file-list']>>;
 type RuntimeConfigFileSummary = RuntimeConfigFileList['files'][number];
-type RuntimeConfigValidation = Awaited<ReturnType<CoreClient['runtimeConfig']['validate']>>;
-type RuntimeConfigReload = Awaited<ReturnType<CoreClient['runtimeConfig']['reload']>>;
+type RuntimeConfigValidation = Awaited<ReturnType<CoreClient['operations']['runtime.validate']>>;
+type RuntimeConfigReload = Awaited<ReturnType<CoreClient['operations']['runtime.reload']>>;
 
 /** One relative-path entry in the authorized configuration tree. */
 interface ConfigTreeNode {
@@ -51,7 +51,7 @@ export function ConfigurationScreen() {
 
   const files = useQuery({
     queryKey: ['settings', 'configuration', 'files'],
-    queryFn: () => client.runtimeConfig.listFiles(),
+    queryFn: () => client.operations['runtime.file-list']({}),
     gcTime: 0,
     retry: false,
   });
@@ -66,7 +66,7 @@ export function ConfigurationScreen() {
   const selectedFile = files.data?.files.find((file) => file.id === selectedId) ?? null;
   const file = useQuery({
     queryKey: ['settings', 'configuration', 'file', selectedId],
-    queryFn: () => client.runtimeConfig.getFile(selectedId as string),
+    queryFn: () => client.operations['runtime.file-read']({ id: selectedId as string }),
     enabled: Boolean(selectedId && files.isSuccess),
     gcTime: 0,
     retry: false,
@@ -84,7 +84,7 @@ export function ConfigurationScreen() {
   const dirty = draft !== savedContent;
   const validateDraft = useMutation({
     mutationFn: () =>
-      client.runtimeConfig.validate({
+      client.operations['runtime.validate']({
         files: [{ id: selectedId as string, content: draft }],
         mode: 'safe',
       }),
@@ -93,12 +93,12 @@ export function ConfigurationScreen() {
   const saveFile = useMutation({
     mutationFn: async () => {
       const content = draft;
-      const checked = await client.runtimeConfig.validate({
+      const checked = await client.operations['runtime.validate']({
         files: [{ id: selectedId as string, content }],
         mode: 'safe',
       });
       if (!checked.valid) return { checked, content, written: null };
-      const written = await client.runtimeConfig.updateFile({
+      const written = await client.operations['runtime.file-update']({
         id: selectedId as string,
         kind: selectedFile?.kind as RuntimeConfigFileSummary['kind'],
         content,
@@ -121,7 +121,7 @@ export function ConfigurationScreen() {
     },
   });
   const applyConfiguration = useMutation({
-    mutationFn: () => client.runtimeConfig.reload({ dryRun: false, mode: 'safe' }),
+    mutationFn: () => client.operations['runtime.reload']({ dryRun: false, mode: 'safe' }),
     onSuccess: setReload,
   });
   const tree = useMemo(() => buildConfigTree(files.data?.files ?? []), [files.data?.files]);
@@ -328,7 +328,7 @@ function SchemaReference({ kind }: { kind: RuntimeConfigFileSummary['kind'] }) {
   const [expanded, setExpanded] = useState(false);
   const catalog = useQuery({
     queryKey: ['settings', 'configuration', 'schemas'],
-    queryFn: () => client.runtimeConfig.getSchemas(),
+    queryFn: () => client.operations['runtime.schemas']({}),
     enabled: expanded,
     gcTime: 0,
     retry: false,

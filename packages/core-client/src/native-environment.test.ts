@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRuntimeConfigClient } from './runtime-config.js';
+import { ZodError } from 'zod';
+import { createOperationClient } from './operations.js';
 import { createClientTransport } from './transport.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
@@ -40,10 +41,10 @@ describe('native environment configuration client', () => {
           { headers: { 'content-type': 'application/json' } }
         )
     );
-    const client = createRuntimeConfigClient(
+    const client = createOperationClient(
       createClientTransport({ baseUrl: 'http://127.0.0.1:9', fetch })
     );
-    expect(await client.getAgentNativeEnvironment(view.fileId)).toEqual({
+    expect(await client['runtime.agent-environment-read']({ fileId: view.fileId })).toEqual({
       ...view,
       applied: [
         {
@@ -57,17 +58,17 @@ describe('native environment configuration client', () => {
     });
   });
 
-  it('uses encoded private administration GET and exact typed CAS PUT', async () => {
+  it('uses canonical runtime environment operations and exact typed CAS input', async () => {
     const fetch = vi.fn(
       async () =>
         new Response(JSON.stringify(view), { headers: { 'content-type': 'application/json' } })
     );
-    const client = createRuntimeConfigClient(
+    const client = createOperationClient(
       createClientTransport({ baseUrl: 'http://127.0.0.1:9', fetch })
     );
-    expect(await client.getAgentNativeEnvironment(view.fileId)).toEqual(view);
+    expect(await client['runtime.agent-environment-read']({ fileId: view.fileId })).toEqual(view);
     expect(fetch.mock.calls[0]?.[0]).toBe(
-      'http://127.0.0.1:9/api/admin/config/agent-environment?fileId=agents%2Fa%20b.agent.jsonc'
+      'http://127.0.0.1:9/api/app/operations/runtime.agent-environment-read'
     );
     const request = {
       fileId: view.fileId,
@@ -76,15 +77,15 @@ describe('native environment configuration client', () => {
       defaultsDigest: digest,
       environment: { A: null, EMPTY: '' },
     };
-    await client.updateAgentNativeEnvironment(request);
+    await client['runtime.agent-environment-update'](request);
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({
-      method: 'PUT',
+      method: 'POST',
       body: JSON.stringify(request),
       credentials: 'include',
     });
-    expect(() =>
-      client.updateAgentNativeEnvironment({ ...request, environment: { 'BAD-NAME': 'x' } })
-    ).toThrow();
+    await expect(
+      client['runtime.agent-environment-update']({ ...request, environment: { 'BAD-NAME': 'x' } })
+    ).rejects.toBeInstanceOf(ZodError);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

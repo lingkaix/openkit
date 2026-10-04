@@ -100,13 +100,16 @@ test('verifies the prepared real Codex account, profiles, and strict no-op reloa
   let listedAccountSlotId = 'a1-codex-slot';
   let reportedAccountSlotId;
   const core = {
-    providerSubscriptions: {
-      getAccountStatus: async (subscriptionProviderId, accountSlotId) => ({
+    operations: {
+      'provider-subscription.account-status': async ({
+        subscriptionProviderId,
+        accountSlotId,
+      }) => ({
         accountSlotId: reportedAccountSlotId ?? accountSlotId,
         status: accountStatus,
         subscriptionProviderId,
       }),
-      listAccounts: async () => ({
+      'provider-subscription.account-list': async () => ({
         accounts: [
           {
             accountSlotId: listedAccountSlotId,
@@ -115,16 +118,14 @@ test('verifies the prepared real Codex account, profiles, and strict no-op reloa
           },
         ],
       }),
-    },
-    runtimeConfig: {
-      getFile: async (id) => {
+      'runtime.file-read': async ({ id }) => {
         requestedFiles.push(id);
         return {
           content: JSON.stringify(id.startsWith('providers/') ? provider : agent),
           file: { revision: 'prepared-1' },
         };
       },
-      reload: async () => reload,
+      'runtime.reload': async () => reload,
     },
   };
 

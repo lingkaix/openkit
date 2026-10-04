@@ -11,63 +11,74 @@ import type {
 } from '@openkit/app-api-schemas';
 import type { CoreClient } from './client.js';
 
-/** Exact public provider-subscription namespace required on the composed Core Client. */
-interface ExpectedProviderSubscriptionsClient {
+/** Exact canonical provider-subscription operations required on the composed Core Client. */
+interface ExpectedProviderSubscriptionOperations {
   /** Returns the fixed supported provider-subscription inventory. */
-  listProviders(): Promise<ProviderSubscriptionsResponse>;
+  'provider-subscription.provider-list'(
+    input: Record<string, never>
+  ): Promise<ProviderSubscriptionsResponse>;
   /** Returns accounts for one supported provider subscription. */
-  listAccounts(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId']
-  ): Promise<ProviderSubscriptionAccountsResponse>;
+  'provider-subscription.account-list'(input: {
+    subscriptionProviderId: string;
+  }): Promise<ProviderSubscriptionAccountsResponse>;
   /** Creates one provider-scoped account slot. */
-  createAccount(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    input: CreateProviderSubscriptionAccountRequest
+  'provider-subscription.account-create'(
+    input: { subscriptionProviderId: string } & CreateProviderSubscriptionAccountRequest
   ): Promise<ProviderSubscriptionAccount>;
   /** Updates one provider-scoped account slot. */
-  updateAccount(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string,
-    input: UpdateProviderSubscriptionAccountRequest
+  'provider-subscription.account-update'(
+    input: {
+      subscriptionProviderId: string;
+      accountSlotId: string;
+    } & UpdateProviderSubscriptionAccountRequest
   ): Promise<ProviderSubscriptionAccount>;
   /** Deletes one provider-scoped account slot. */
-  deleteAccount(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string
-  ): Promise<void>;
+  'provider-subscription.account-delete'(input: {
+    subscriptionProviderId: string;
+    accountSlotId: string;
+  }): Promise<null>;
   /** Returns the sanitized status of one provider-scoped account slot. */
-  getAccountStatus(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string
-  ): Promise<ProviderSubscriptionAccount>;
+  'provider-subscription.account-status'(input: {
+    subscriptionProviderId: string;
+    accountSlotId: string;
+  }): Promise<ProviderSubscriptionAccount>;
   /** Starts device-code login for one provider-scoped account slot. */
-  startAccountLogin(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string,
-    input: StartProviderSubscriptionAccountLoginRequest
+  'provider-subscription.account-login-start'(
+    input: {
+      subscriptionProviderId: string;
+      accountSlotId: string;
+    } & StartProviderSubscriptionAccountLoginRequest
   ): Promise<ProviderSubscriptionAccount>;
   /** Cancels one active provider-scoped login interaction. */
-  cancelAccountLogin(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string,
-    input: CancelProviderSubscriptionAccountLoginRequest
+  'provider-subscription.account-login-cancel'(
+    input: {
+      subscriptionProviderId: string;
+      accountSlotId: string;
+    } & CancelProviderSubscriptionAccountLoginRequest
   ): Promise<ProviderSubscriptionAccount>;
   /** Logs out one provider-scoped account slot. */
-  logoutAccount(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string
-  ): Promise<ProviderSubscriptionAccount>;
+  'provider-subscription.account-logout'(input: {
+    subscriptionProviderId: string;
+    accountSlotId: string;
+  }): Promise<ProviderSubscriptionAccount>;
   /** Returns the bounded quota projection for one provider-scoped account slot. */
-  getAccountQuota(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string
-  ): Promise<ProviderSubscriptionQuota>;
+  'provider-subscription.account-quota'(input: {
+    subscriptionProviderId: string;
+    accountSlotId: string;
+  }): Promise<ProviderSubscriptionQuota>;
   /** Returns the bounded xAI auto-top-up observation for one provider-scoped account slot. */
-  getAccountAutoTopup(
-    subscriptionProviderId: ProviderSubscriptionAccount['subscriptionProviderId'],
-    accountSlotId: string
-  ): Promise<ProviderSubscriptionAutoTopup>;
+  'provider-subscription.account-auto-topup'(input: {
+    subscriptionProviderId: string;
+    accountSlotId: string;
+  }): Promise<ProviderSubscriptionAutoTopup>;
 }
+
+/** Flattens selector intersections and makes operation-map mutability explicit for exact comparison. */
+type CanonicalMethods<Surface extends { [Key in keyof Surface]: (input: never) => unknown }> = {
+  readonly [Key in keyof Surface]: (
+    input: { [Field in keyof Parameters<Surface[Key]>[0]]: Parameters<Surface[Key]>[0][Field] }
+  ) => ReturnType<Surface[Key]>;
+};
 
 /** Resolves to true only when both types have identical assignability. */
 type IsIdentical<Left, Right> =
@@ -82,5 +93,8 @@ type AssertTrue<Value extends true> = Value;
 
 /** Compile-time proof that Core Client exposes exactly the accepted provider-subscription surface. */
 export type CoreClientProviderSubscriptionsContract = AssertTrue<
-  IsIdentical<CoreClient['providerSubscriptions'], ExpectedProviderSubscriptionsClient>
+  IsIdentical<
+    CanonicalMethods<Pick<CoreClient['operations'], keyof ExpectedProviderSubscriptionOperations>>,
+    CanonicalMethods<ExpectedProviderSubscriptionOperations>
+  >
 >;

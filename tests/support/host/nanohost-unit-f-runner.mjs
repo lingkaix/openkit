@@ -811,7 +811,7 @@ export async function startRealTaskAttempt(config, scenarioId) {
   const created = await appRequest(
     config,
     'POST',
-    '/api/admin/config/file',
+    '/api/app/operations/runtime.file-create',
     {
       content: catalog,
       id: `workspaces/${workspace.id}/data-sources.jsonc`,
@@ -825,7 +825,7 @@ export async function startRealTaskAttempt(config, scenarioId) {
   const reload = await appRequest(
     config,
     'POST',
-    '/api/admin/config/reload',
+    '/api/app/operations/runtime.reload',
     { mode: 'safe' },
     'admin'
   );

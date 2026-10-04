@@ -84,7 +84,7 @@ test('Provider removal forwards exact file identity and revision through the exi
     kind: 'provider',
     expectedRevision: 'exact-revision',
   };
-  assert.equal(operation.appOperationId, 'deleteRuntimeConfigFile');
+  assert.equal(operation.appOperationId, 'runtime.file-delete');
   assert.equal(operation.mutating, true);
   assert.deepEqual(operation.inputSchema.parse(input), input);
   assert.equal(operation.inputSchema.safeParse({ ...input, force: true }).success, false);
@@ -92,8 +92,8 @@ test('Provider removal forwards exact file identity and revision through the exi
   await operation.handler(
     {
       client: {
-        runtimeConfig: {
-          deleteFile: async (command) => {
+        operations: {
+          'runtime.file-delete': async (command) => {
             calls.push(command);
           },
         },
@@ -110,8 +110,8 @@ test('native environment administration maps exact public reads and revision-bou
   const update = operationCatalog.find((entry) => entry.id === 'runtime.agent-environment-update');
   assert.ok(read);
   assert.ok(update);
-  assert.equal(read.appOperationId, 'getAgentNativeEnvironment');
-  assert.equal(update.appOperationId, 'updateAgentNativeEnvironment');
+  assert.equal(read.appOperationId, 'runtime.agent-environment-read');
+  assert.equal(update.appOperationId, 'runtime.agent-environment-update');
   assert.equal(read.mutating, false);
   assert.equal(update.mutating, true);
   const readInput = read.inputSchema.parse({ fileId: 'agents/codex.agent.jsonc' });
@@ -125,12 +125,12 @@ test('native environment administration maps exact public reads and revision-bou
   const calls = [];
   const response = { persistedRevision: 'updated' };
   const client = {
-    runtimeConfig: {
-      getAgentNativeEnvironment: async (...args) => {
+    operations: {
+      'runtime.agent-environment-read': async (...args) => {
         calls.push(['read', ...args]);
         return response;
       },
-      updateAgentNativeEnvironment: async (...args) => {
+      'runtime.agent-environment-update': async (...args) => {
         calls.push(['update', ...args]);
         return response;
       },
@@ -139,7 +139,7 @@ test('native environment administration maps exact public reads and revision-bou
   assert.equal(await read.handler({ client }, readInput), response);
   assert.equal(await update.handler({ client }, updateInput), response);
   assert.deepEqual(calls, [
-    ['read', readInput.fileId],
+    ['read', readInput],
     ['update', updateInput],
   ]);
   assert.equal(
@@ -477,7 +477,7 @@ test('the OpenKit Skill ships only the accepted release tree', () => {
   assert.equal(statSync(cliPath).mode & 0o111, 0o111);
 });
 
-test('provider-subscription operations reuse the App API provider-id schema', async () => {
+test('provider-subscription CLI selectors reuse the canonical family definition schemas', async () => {
   const { operationCatalog } = await operations();
   const [providerList, ...accountOperations] = operationCatalog.filter((entry) =>
     entry.id.startsWith('provider-subscription.')
@@ -488,7 +488,8 @@ test('provider-subscription operations reuse the App API provider-id schema', as
   for (const entry of accountOperations) {
     assert.strictEqual(
       entry.inputSchema.shape.subscriptionProviderId,
-      appSchemas.SubscriptionProviderIdSchema,
+      appSchemas.PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS[entry.id].inputSchema.shape
+        .subscriptionProviderId,
       entry.id
     );
   }
@@ -558,78 +559,78 @@ test('one catalog covers the checked App API and public Core projection', async 
     [
       [
         'provider-subscription.provider-list',
-        'listSubscriptionProviders',
-        'providerSubscriptions.listProviders',
+        'provider-subscription.provider-list',
+        'operations.provider-subscription.provider-list',
         false,
         [],
       ],
       [
         'provider-subscription.account-list',
-        'listProviderSubscriptionAccounts',
-        'providerSubscriptions.listAccounts',
+        'provider-subscription.account-list',
+        'operations.provider-subscription.account-list',
         false,
         ['subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-create',
-        'createProviderSubscriptionAccount',
-        'providerSubscriptions.createAccount',
+        'provider-subscription.account-create',
+        'operations.provider-subscription.account-create',
         true,
         ['accountSlotId', 'displayName', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-update',
-        'updateProviderSubscriptionAccount',
-        'providerSubscriptions.updateAccount',
+        'provider-subscription.account-update',
+        'operations.provider-subscription.account-update',
         true,
         ['accountSlotId', 'displayName', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-delete',
-        'deleteProviderSubscriptionAccount',
-        'providerSubscriptions.deleteAccount',
+        'provider-subscription.account-delete',
+        'operations.provider-subscription.account-delete',
         true,
         ['accountSlotId', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-status',
-        'getProviderSubscriptionAccountStatus',
-        'providerSubscriptions.getAccountStatus',
+        'provider-subscription.account-status',
+        'operations.provider-subscription.account-status',
         false,
         ['accountSlotId', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-login-start',
-        'startProviderSubscriptionAccountLogin',
-        'providerSubscriptions.startAccountLogin',
+        'provider-subscription.account-login-start',
+        'operations.provider-subscription.account-login-start',
         true,
         ['accountSlotId', 'mode', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-login-cancel',
-        'cancelProviderSubscriptionAccountLogin',
-        'providerSubscriptions.cancelAccountLogin',
+        'provider-subscription.account-login-cancel',
+        'operations.provider-subscription.account-login-cancel',
         true,
         ['accountSlotId', 'interactionId', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-logout',
-        'logoutProviderSubscriptionAccount',
-        'providerSubscriptions.logoutAccount',
+        'provider-subscription.account-logout',
+        'operations.provider-subscription.account-logout',
         true,
         ['accountSlotId', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-quota',
-        'getProviderSubscriptionAccountQuota',
-        'providerSubscriptions.getAccountQuota',
+        'provider-subscription.account-quota',
+        'operations.provider-subscription.account-quota',
         false,
         ['accountSlotId', 'subscriptionProviderId'],
       ],
       [
         'provider-subscription.account-auto-topup',
-        'getProviderSubscriptionAccountAutoTopup',
-        'providerSubscriptions.getAccountAutoTopup',
+        'provider-subscription.account-auto-topup',
+        'operations.provider-subscription.account-auto-topup',
         false,
         ['accountSlotId', 'subscriptionProviderId'],
       ],

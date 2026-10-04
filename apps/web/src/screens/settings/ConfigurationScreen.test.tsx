@@ -44,11 +44,11 @@ const FILES = {
   ],
 };
 
-function makeClient(listFiles: CoreClient['runtimeConfig']['listFiles']): CoreClient {
+function makeClient(listFiles: CoreClient['operations']['runtime.file-list']): CoreClient {
   return {
-    runtimeConfig: {
-      listFiles,
-      getSchemas: vi.fn().mockResolvedValue({
+    operations: {
+      'runtime.file-list': listFiles,
+      'runtime.schemas': vi.fn().mockResolvedValue({
         schemas: [
           {
             kind: 'server',
@@ -62,21 +62,21 @@ function makeClient(listFiles: CoreClient['runtimeConfig']['listFiles']): CoreCl
           },
         ],
       }),
-      getFile: vi.fn().mockResolvedValue({
+      'runtime.file-read': vi.fn().mockResolvedValue({
         file: FILES.files[0],
         content: '{\n  // Public URL\n  "mode": "server"\n}\n',
       }),
-      validate: vi.fn().mockResolvedValue({
+      'runtime.validate': vi.fn().mockResolvedValue({
         valid: true,
         diagnostics: [],
         plan: PLAN,
         runtimeConfig: RUNTIME_CONFIG,
       }),
-      updateFile: vi.fn().mockResolvedValue({
+      'runtime.file-update': vi.fn().mockResolvedValue({
         file: { ...FILES.files[0], revision: 'revision-2' },
         diagnostics: [],
       }),
-      reload: vi.fn().mockResolvedValue({
+      'runtime.reload': vi.fn().mockResolvedValue({
         status: 'applied',
         plan: PLAN,
         runtimeConfig: RUNTIME_CONFIG,
@@ -105,7 +105,7 @@ describe('Configuration settings', () => {
   it('shows located warnings after applying otherwise valid configuration', async () => {
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
     const message = 'DATA_ROOT/config/server.jsonc: Unknown key futureOption is ignored.';
-    vi.mocked(client.runtimeConfig.reload).mockResolvedValue({
+    vi.mocked(client.operations['runtime.reload']).mockResolvedValue({
       status: 'applied',
       plan: { ...PLAN, warnings: [{ code: 'authored_config.unknown_key', message }] },
       runtimeConfig: RUNTIME_CONFIG,
@@ -132,7 +132,7 @@ describe('Configuration settings', () => {
     fireEvent.change(editor, { target: { value: draft } });
     await user.click(screen.getByRole('button', { name: 'Validate draft' }));
     await waitFor(() =>
-      expect(client.runtimeConfig.validate).toHaveBeenLastCalledWith({
+      expect(client.operations['runtime.validate']).toHaveBeenLastCalledWith({
         files: [{ id: 'server.jsonc', content: draft }],
         mode: 'safe',
       })
@@ -141,7 +141,7 @@ describe('Configuration settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Save file' }));
     await waitFor(() =>
-      expect(client.runtimeConfig.updateFile).toHaveBeenCalledWith({
+      expect(client.operations['runtime.file-update']).toHaveBeenCalledWith({
         id: 'server.jsonc',
         kind: 'server',
         content: draft,
@@ -152,7 +152,10 @@ describe('Configuration settings', () => {
 
     await user.click(screen.getByRole('button', { name: 'Apply saved configuration' }));
     await waitFor(() =>
-      expect(client.runtimeConfig.reload).toHaveBeenCalledWith({ dryRun: false, mode: 'safe' })
+      expect(client.operations['runtime.reload']).toHaveBeenCalledWith({
+        dryRun: false,
+        mode: 'safe',
+      })
     );
     expect(await screen.findByText('Configuration applied')).toBeInTheDocument();
   });
@@ -182,8 +185,8 @@ describe('Configuration settings', () => {
     await user.keyboard('{ArrowRight}{ArrowDown}');
     expect(screen.getByRole('row', { name: 'openai.provider.jsonc' })).toHaveFocus();
     expect(editor).toHaveValue('// Keep this draft\n{}');
-    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-read']).toHaveBeenCalledTimes(1);
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
   });
 
   it('hides and restores the file pane while retaining folder state and the draft', async () => {
@@ -207,7 +210,7 @@ describe('Configuration settings', () => {
       'false'
     );
     expect(editor).toHaveValue('// Unsaved\n{}');
-    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
+    expect(client.operations['runtime.file-read']).toHaveBeenCalledTimes(1);
   });
 
   it('keeps identically named nested folders independent', async () => {
@@ -223,7 +226,7 @@ describe('Configuration settings', () => {
     const client = makeClient(
       vi.fn().mockResolvedValue({ files: [FILES.files[0], ...nestedFiles] })
     );
-    vi.mocked(client.runtimeConfig.getFile).mockImplementation(async (id) => ({
+    vi.mocked(client.operations['runtime.file-read']).mockImplementation(async ({ id }) => ({
       file: [FILES.files[0], ...nestedFiles].find((file) => file.id === id)!,
       content: '{}',
     }));
@@ -235,7 +238,9 @@ describe('Configuration settings', () => {
     expect(
       await screen.findByRole('textbox', { name: 'providers/shared/config.jsonc source' })
     ).toBeInTheDocument();
-    expect(client.runtimeConfig.getFile).toHaveBeenLastCalledWith('providers/shared/config.jsonc');
+    expect(client.operations['runtime.file-read']).toHaveBeenLastCalledWith({
+      id: 'providers/shared/config.jsonc',
+    });
     await user.click(screen.getByRole('button', { name: 'Expand shared' }));
     expect(screen.getAllByRole('row', { name: 'config.jsonc' })).toHaveLength(2);
   });
@@ -243,7 +248,7 @@ describe('Configuration settings', () => {
   it('keeps selection when discarding is cancelled and opens the exact nested file after confirmation', async () => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
-    vi.mocked(client.runtimeConfig.getFile).mockImplementation(async (id) => ({
+    vi.mocked(client.operations['runtime.file-read']).mockImplementation(async ({ id }) => ({
       file: FILES.files.find((file) => file.id === id)!,
       content: id === 'server.jsonc' ? '{}' : '// Provider\n{}',
     }));
@@ -258,7 +263,7 @@ describe('Configuration settings', () => {
       'aria-selected',
       'true'
     );
-    expect(client.runtimeConfig.getFile).toHaveBeenCalledTimes(1);
+    expect(client.operations['runtime.file-read']).toHaveBeenCalledTimes(1);
 
     confirm.mockReturnValue(true);
     await user.click(screen.getByRole('row', { name: 'openai.provider.jsonc' }));
@@ -272,9 +277,9 @@ describe('Configuration settings', () => {
       'aria-selected',
       'true'
     );
-    expect(client.runtimeConfig.getFile).toHaveBeenLastCalledWith(
-      'providers/openai.provider.jsonc'
-    );
+    expect(client.operations['runtime.file-read']).toHaveBeenLastCalledWith({
+      id: 'providers/openai.provider.jsonc',
+    });
     expect(screen.getByRole('link', { name: 'Open Administration' })).toHaveAttribute(
       'href',
       '/settings/administration'
@@ -285,8 +290,8 @@ describe('Configuration settings', () => {
   it('shows access denied with retry and never asks for a server-admin token', async () => {
     const user = userEvent.setup();
     const listFiles = vi.fn().mockRejectedValue(
-      new ApiCallError(403, 'Server-admin authority is required.', {
-        code: 'runtime_config_admin_forbidden',
+      new ApiCallError(403, 'Current deployment administrator authority is required.', {
+        code: 'deployment_admin_required',
       })
     );
     const client = makeClient(listFiles);
@@ -295,7 +300,7 @@ describe('Configuration settings', () => {
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Show schema' })).not.toBeInTheDocument();
-    expect(client.runtimeConfig.getSchemas).not.toHaveBeenCalled();
+    expect(client.operations['runtime.schemas']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(listFiles).toHaveBeenCalledTimes(2));
   });
@@ -303,7 +308,7 @@ describe('Configuration settings', () => {
   it('keeps a conflicting draft until the user explicitly reloads the file', async () => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
-    const getFile = vi.mocked(client.runtimeConfig.getFile);
+    const getFile = vi.mocked(client.operations['runtime.file-read']);
     getFile
       .mockResolvedValueOnce({
         file: FILES.files[0],
@@ -313,7 +318,7 @@ describe('Configuration settings', () => {
         file: { ...FILES.files[0], revision: 'revision-remote' },
         content: '{\n  "mode": "remote"\n}\n',
       });
-    vi.mocked(client.runtimeConfig.updateFile).mockRejectedValueOnce(
+    vi.mocked(client.operations['runtime.file-update']).mockRejectedValueOnce(
       new ApiCallError(409, 'revision conflict', { code: 'config_file_revision_conflict' })
     );
     vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -342,15 +347,15 @@ describe('Configuration settings', () => {
     renderScreen(client);
 
     await screen.findByRole('textbox', { name: 'server.jsonc source' });
-    expect(client.runtimeConfig.getSchemas).not.toHaveBeenCalled();
+    expect(client.operations['runtime.schemas']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Show schema' }));
     expect(
       await screen.findByRole('heading', { name: 'Server configuration' })
     ).toBeInTheDocument();
     expect(screen.getByLabelText('server JSON Schema')).toHaveTextContent('"bind"');
-    expect(client.runtimeConfig.getSchemas).toHaveBeenCalledWith();
+    expect(client.operations['runtime.schemas']).toHaveBeenCalledWith({});
 
-    vi.mocked(client.runtimeConfig.getFile).mockResolvedValue({
+    vi.mocked(client.operations['runtime.file-read']).mockResolvedValue({
       file: FILES.files[1],
       content: '{}',
     });
@@ -362,8 +367,8 @@ describe('Configuration settings', () => {
     expect(screen.queryByLabelText('server JSON Schema')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Hide schema' }));
     expect(screen.queryByLabelText('provider JSON Schema')).not.toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -371,7 +376,7 @@ describe('Configuration settings', () => {
   ])('retries a schema failure (%s) without losing the configuration draft', async (status) => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
-    vi.mocked(client.runtimeConfig.getSchemas).mockRejectedValueOnce(
+    vi.mocked(client.operations['runtime.schemas']).mockRejectedValueOnce(
       new ApiCallError(status, 'Unavailable')
     );
     renderScreen(client);
@@ -391,13 +396,13 @@ describe('Configuration settings', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByLabelText('server JSON Schema')).toHaveTextContent('"bind"');
     expect(editor).toHaveValue('{"mode":"local"}');
-    expect(client.runtimeConfig.getSchemas).toHaveBeenCalledTimes(2);
+    expect(client.operations['runtime.schemas']).toHaveBeenCalledTimes(2);
   });
 
   it('reports a missing file-kind schema without inventing one', async () => {
     const user = userEvent.setup();
     const client = makeClient(vi.fn().mockResolvedValue(FILES));
-    vi.mocked(client.runtimeConfig.getSchemas).mockResolvedValue({ schemas: [] });
+    vi.mocked(client.operations['runtime.schemas']).mockResolvedValue({ schemas: [] });
     renderScreen(client);
     await user.click(await screen.findByRole('button', { name: 'Show schema' }));
     expect(await screen.findByText('No schema available for server.')).toBeInTheDocument();

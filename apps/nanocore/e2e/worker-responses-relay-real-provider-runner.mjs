@@ -342,7 +342,7 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
       'Workspace id was not returned.'
     );
 
-    const codex = await runSelectedAgentRelay(clients.core, clients.admin.runtimeConfig, {
+    const codex = await runSelectedAgentRelay(clients.core, clients.admin.operations, {
       agentId: CODEX_AGENT_ID,
       effectfulTimeout,
       expectedImageRef: prerequisites.config.codexImageRef,
@@ -350,7 +350,7 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
       timeoutMs,
       workspaceId,
     });
-    const opencode = await runSelectedAgentRelay(clients.core, clients.admin.runtimeConfig, {
+    const opencode = await runSelectedAgentRelay(clients.core, clients.admin.operations, {
       agentId: OPENCODE_AGENT_ID,
       effectfulTimeout,
       expectedImageRef: prerequisites.config.opencodeImageRef,
@@ -428,21 +428,28 @@ export async function runWorkerResponsesRelayRealProviderTest(options = {}) {
  */
 async function runSelectedAgentRelay(client, configuration, input) {
   const fileId = `workspaces/${input.workspaceId}/workspace.jsonc`;
-  const files = await awaitRelayDeadline(configuration.listFiles(), input.timeoutMs);
+  const files = await awaitRelayDeadline(configuration['runtime.file-list']({}), input.timeoutMs);
   if (!files.files.some((file) => file.id === fileId && file.exists)) {
     await awaitRelayDeadline(
-      configuration.createFile({ id: fileId, kind: 'workspace', expectedRevision: null }),
+      configuration['runtime.file-create']({
+        id: fileId,
+        kind: 'workspace',
+        expectedRevision: null,
+      }),
       input.timeoutMs,
       input.effectfulTimeout
     );
   }
-  const source = await awaitRelayDeadline(configuration.getFile(fileId), input.timeoutMs);
+  const source = await awaitRelayDeadline(
+    configuration['runtime.file-read']({ id: fileId }),
+    input.timeoutMs
+  );
   assert(
     typeof source.file.revision === 'string' && source.file.revision.length > 0,
     'Workspace configuration revision is missing.'
   );
   const updated = await awaitRelayDeadline(
-    configuration.updateFile({
+    configuration['runtime.file-update']({
       id: fileId,
       kind: 'workspace',
       expectedRevision: source.file.revision,
@@ -459,7 +466,7 @@ async function runSelectedAgentRelay(client, configuration, input) {
     'Workspace configuration update was not valid.'
   );
   const reload = await awaitRelayDeadline(
-    configuration.reload({ mode: 'safe' }),
+    configuration['runtime.reload']({ mode: 'safe' }),
     input.timeoutMs,
     input.effectfulTimeout
   );
@@ -470,7 +477,10 @@ async function runSelectedAgentRelay(client, configuration, input) {
       reload.runtimeConfig.pendingRestart.length === 0,
     'Workspace agent configuration did not activate for subsequent Turns.'
   );
-  const readback = await awaitRelayDeadline(configuration.getFile(fileId), input.timeoutMs);
+  const readback = await awaitRelayDeadline(
+    configuration['runtime.file-read']({ id: fileId }),
+    input.timeoutMs
+  );
   assert(
     readback.file.revision === updated.file.revision,
     'Workspace configuration revision changed before readback.'

@@ -1,9 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it, vi } from 'vitest';
-
 import { type CreateAppOptions, createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -15,6 +13,7 @@ import {
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { operationRequest } from './test-support/operation-request.js';
 
 const ACCOUNT_STATUS: ProviderSubscriptionAccountSnapshot = {
   accountSlotId: 'default',
@@ -28,50 +27,107 @@ const ADMIN_ROUTE_CASES = [
   { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/diagnostics' },
   { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/app/diagnostics' },
   { code: 'diagnostics_admin_forbidden', method: 'GET', path: '/api/setup/diagnostics' },
-  { code: 'runtime_config_admin_forbidden', method: 'POST', path: '/api/admin/config/reload' },
-  { code: 'runtime_config_admin_forbidden', method: 'GET', path: '/api/admin/config/files' },
-  { code: 'runtime_config_admin_forbidden', method: 'GET', path: '/api/admin/config/file' },
-  { code: 'runtime_config_admin_forbidden', method: 'POST', path: '/api/admin/config/file' },
-  { code: 'runtime_config_admin_forbidden', method: 'PUT', path: '/api/admin/config/file' },
-  { code: 'runtime_config_admin_forbidden', method: 'GET', path: '/api/admin/config/schemas' },
-  { code: 'runtime_config_admin_forbidden', method: 'POST', path: '/api/admin/config/validate' },
-  { code: 'forbidden', method: 'GET', path: '/api/app/provider-subscriptions' },
-  { code: 'forbidden', method: 'GET', path: '/api/app/provider-subscriptions/xai/accounts' },
-  { code: 'forbidden', method: 'POST', path: '/api/app/provider-subscriptions/xai/accounts' },
   {
-    code: 'forbidden',
-    method: 'PATCH',
-    path: '/api/app/provider-subscriptions/xai/accounts/default',
-  },
-  {
-    code: 'forbidden',
-    method: 'DELETE',
-    path: '/api/app/provider-subscriptions/xai/accounts/default',
-  },
-  {
-    code: 'forbidden',
-    method: 'GET',
-    path: '/api/app/provider-subscriptions/xai/accounts/default/status',
-  },
-  {
-    code: 'forbidden',
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.reload',
     method: 'POST',
-    path: '/api/app/provider-subscriptions/xai/accounts/default/login',
+    body: {},
   },
   {
-    code: 'forbidden',
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.file-list',
     method: 'POST',
-    path: '/api/app/provider-subscriptions/xai/accounts/default/login/cancel',
+    body: {},
   },
   {
-    code: 'forbidden',
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.file-read',
     method: 'POST',
-    path: '/api/app/provider-subscriptions/xai/accounts/default/logout',
+    body: { id: 'server' },
   },
   {
-    code: 'forbidden',
-    method: 'GET',
-    path: '/api/app/provider-subscriptions/xai/accounts/default/quota',
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.file-create',
+    method: 'POST',
+    body: { id: 'server', kind: 'server', content: '{}' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.file-update',
+    method: 'POST',
+    body: { id: 'server', kind: 'server', content: '{}' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.schemas',
+    method: 'POST',
+    body: {},
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/runtime.validate',
+    method: 'POST',
+    body: { files: [] },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.provider-list',
+    method: 'POST',
+    body: {},
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-list',
+    method: 'POST',
+    body: { ...{}, ...{ subscriptionProviderId: 'xai' } },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-create',
+    method: 'POST',
+    body: { subscriptionProviderId: 'xai', accountSlotId: 'default' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-update',
+    method: 'POST',
+    body: { subscriptionProviderId: 'xai', accountSlotId: 'default', displayName: 'Renamed' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-delete',
+    method: 'POST',
+    body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-status',
+    method: 'POST',
+    body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-login-start',
+    method: 'POST',
+    body: { subscriptionProviderId: 'xai', accountSlotId: 'default', mode: 'device_code' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-login-cancel',
+    method: 'POST',
+    body: { subscriptionProviderId: 'xai', accountSlotId: 'default', interactionId: 'interaction' },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-logout',
+    method: 'POST',
+    body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
+  },
+  {
+    code: 'deployment_admin_required',
+    path: '/api/app/operations/provider-subscription.account-quota',
+    method: 'POST',
+    body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
   },
   { code: 'server_audit_admin_forbidden', method: 'GET', path: '/api/app/audit/events' },
   {
@@ -190,14 +246,17 @@ describe('deployment-admin routes', () => {
               'content-type': 'application/json',
               ...(authorization ? { authorization } : {}),
             },
-            body: route.method === 'GET' ? undefined : '{',
+            body:
+              route.method === 'GET'
+                ? undefined
+                : JSON.stringify('body' in route ? route.body : {}),
           });
 
           expect(response.status, `${route.method} ${route.path}`).toBe(403);
           await expect(response.json()).resolves.toMatchObject({
             code: route.code,
-            ...(route.code === 'forbidden'
-              ? { message: 'Deployment-admin authority is required.' }
+            ...(route.code === 'deployment_admin_required'
+              ? { message: 'Current deployment administrator authority is required.' }
               : {}),
           });
         }
@@ -243,9 +302,15 @@ describe('deployment-admin routes', () => {
           app.request('/api/diagnostics', { headers }),
           app.request('/api/app/diagnostics', { headers }),
           app.request('/api/setup/diagnostics', { headers }),
-          app.request('/api/admin/config/files', { headers }),
-          app.request('/api/app/provider-subscriptions', { headers }),
-          app.request('/api/app/provider-subscriptions/xai/accounts', { headers }),
+          app.request(...operationRequest('runtime.file-list', {}, { headers })),
+          app.request(...operationRequest('provider-subscription.provider-list', {}, { headers })),
+          app.request(
+            ...operationRequest(
+              'provider-subscription.account-list',
+              { subscriptionProviderId: 'xai' },
+              { headers }
+            )
+          ),
           app.request('/api/app/audit/events', { headers }),
           app.request('/api/app/permission-decisions', { headers }),
         ]);

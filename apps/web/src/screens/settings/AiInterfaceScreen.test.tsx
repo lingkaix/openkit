@@ -168,9 +168,8 @@ const DIAGNOSTICS = {
 function makeClient(
   overrides: {
     app?: Record<string, unknown>;
-    runtimeConfig?: Record<string, unknown>;
-    providerSubscriptions?: Record<string, unknown>;
-    listProviders?: CoreClient['providerSubscriptions']['listProviders'];
+    operations?: Record<string, unknown>;
+    listProviders?: CoreClient['operations']['provider-subscription.provider-list'];
   } = {}
 ): CoreClient {
   let currentServerContent = SERVER_JSONC;
@@ -186,8 +185,8 @@ function makeClient(
         .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
       ...overrides.app,
     },
-    runtimeConfig: {
-      getFile: vi.fn().mockImplementation(() =>
+    operations: {
+      'runtime.file-read': vi.fn().mockImplementation(() =>
         Promise.resolve({
           file: {
             id: 'server.jsonc',
@@ -200,13 +199,13 @@ function makeClient(
           content: currentServerContent,
         })
       ),
-      validate: vi.fn().mockResolvedValue({
+      'runtime.validate': vi.fn().mockResolvedValue({
         valid: true,
         diagnostics: [],
         plan: PLAN,
         runtimeConfig: RUNTIME_CONFIG,
       }),
-      updateFile: vi.fn().mockImplementation((input: { content: string }) => {
+      'runtime.file-update': vi.fn().mockImplementation((input: { content: string }) => {
         currentServerContent = input.content;
         currentServerRevision = 'revision-2';
         return Promise.resolve({
@@ -221,7 +220,7 @@ function makeClient(
           diagnostics: [],
         });
       }),
-      createFile: vi.fn().mockResolvedValue({
+      'runtime.file-create': vi.fn().mockResolvedValue({
         file: {
           id: 'providers/openrouter.provider.jsonc',
           kind: 'provider',
@@ -232,50 +231,67 @@ function makeClient(
         },
         diagnostics: [],
       }),
-      reload: vi.fn().mockResolvedValue({
+      'runtime.reload': vi.fn().mockResolvedValue({
         status: 'applied',
         plan: PLAN,
         runtimeConfig: RUNTIME_CONFIG,
       }),
-      ...overrides.runtimeConfig,
-    },
-    providerSubscriptions: {
-      listProviders: overrides.listProviders ?? vi.fn().mockResolvedValue(PROVIDERS),
-      listAccounts: vi.fn().mockImplementation((providerId: string) =>
-        Promise.resolve({
-          accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
-        })
-      ),
-      createAccount: vi.fn().mockResolvedValue({
+      'provider-subscription.provider-list':
+        overrides.listProviders ?? vi.fn().mockResolvedValue(PROVIDERS),
+      'provider-subscription.account-list': vi
+        .fn()
+        .mockImplementation(
+          ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+            Promise.resolve({
+              accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+            })
+        ),
+      'provider-subscription.account-create': vi.fn().mockResolvedValue({
         ...CODEX_ACCOUNT,
         accountSlotId: 'secondary',
         displayName: 'Codex secondary',
       }),
-      updateAccount: vi.fn().mockResolvedValue({
+      'provider-subscription.account-update': vi.fn().mockResolvedValue({
         ...CODEX_ACCOUNT,
         displayName: 'Renamed Codex',
       }),
-      deleteAccount: vi.fn().mockResolvedValue(undefined),
-      getAccountStatus: vi.fn().mockImplementation((provider: string, slot: string) =>
-        Promise.resolve({
-          ...(provider === 'xai' ? CODEX_ACCOUNT : CODEX_ACCOUNT),
-          subscriptionProviderId: provider,
-          accountSlotId: slot,
-        })
-      ),
-      startAccountLogin: vi.fn().mockResolvedValue(PENDING_ACCOUNT),
-      cancelAccountLogin: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
-      logoutAccount: vi.fn().mockResolvedValue(CODEX_ACCOUNT),
-      getAccountQuota: vi
+      'provider-subscription.account-delete': vi.fn().mockResolvedValue(null),
+      'provider-subscription.account-status': vi
         .fn()
-        .mockImplementation((providerId: string, accountSlotId: string) =>
-          Promise.resolve(
-            providerId === 'xai'
-              ? { ...XAI_QUOTA, accountSlotId }
-              : { ...CODEX_QUOTA, accountSlotId }
-          )
+        .mockImplementation(
+          ({
+            subscriptionProviderId: provider,
+            accountSlotId: slot,
+          }: {
+            subscriptionProviderId: string;
+            accountSlotId: string;
+          }) =>
+            Promise.resolve({
+              ...(provider === 'xai' ? CODEX_ACCOUNT : CODEX_ACCOUNT),
+              subscriptionProviderId: provider,
+              accountSlotId: slot,
+            })
         ),
-      ...overrides.providerSubscriptions,
+      'provider-subscription.account-login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
+      'provider-subscription.account-login-cancel': vi.fn().mockResolvedValue(CODEX_ACCOUNT),
+      'provider-subscription.account-logout': vi.fn().mockResolvedValue(CODEX_ACCOUNT),
+      'provider-subscription.account-quota': vi
+        .fn()
+        .mockImplementation(
+          ({
+            subscriptionProviderId: providerId,
+            accountSlotId,
+          }: {
+            subscriptionProviderId: string;
+            accountSlotId: string;
+          }) =>
+            Promise.resolve(
+              providerId === 'xai'
+                ? { ...XAI_QUOTA, accountSlotId }
+                : { ...CODEX_QUOTA, accountSlotId }
+            )
+        ),
+      ...overrides.operations,
     },
   } as unknown as CoreClient;
 }
@@ -331,17 +347,20 @@ describe('AI interface deployment-admin workflow', () => {
       });
       const getAccountQuota = vi.fn().mockResolvedValue(quotaResponse);
       const client = makeClient({
-        providerSubscriptions: {
-          listAccounts: vi.fn().mockImplementation((id: string) =>
-            Promise.resolve(
-              ProviderSubscriptionAccountsResponseSchema.parse({
-                accounts: id === providerId ? [account] : [],
-              })
-            )
-          ),
-          getAccountStatus: vi.fn().mockResolvedValue(account),
-          getAccountQuota,
-          startAccountLogin: vi.fn().mockResolvedValue(
+        operations: {
+          'provider-subscription.account-list': vi
+            .fn()
+            .mockImplementation(
+              ({ subscriptionProviderId: id }: { subscriptionProviderId: string }) =>
+                Promise.resolve(
+                  ProviderSubscriptionAccountsResponseSchema.parse({
+                    accounts: id === providerId ? [account] : [],
+                  })
+                )
+            ),
+          'provider-subscription.account-status': vi.fn().mockResolvedValue(account),
+          'provider-subscription.account-quota': getAccountQuota,
+          'provider-subscription.account-login-start': vi.fn().mockResolvedValue(
             ProviderSubscriptionAccountSchema.parse({
               ...PENDING_ACCOUNT,
               subscriptionProviderId: providerId,
@@ -357,7 +376,9 @@ describe('AI interface deployment-admin workflow', () => {
       );
       renderScreen(client, queryClient);
       const card = await screen.findByRole('region', { name: providerName });
-      await waitFor(() => expect(client.providerSubscriptions.getAccountStatus).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(client.operations['provider-subscription.account-status']).toHaveBeenCalled()
+      );
       expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
       expect(card.querySelector(`time[datetime="${TIMESTAMP}"]`)).toBeInTheDocument();
       if (access) expect(within(card).queryByText('Inference access rejected')).toBeInTheDocument();
@@ -377,11 +398,11 @@ describe('AI interface deployment-admin workflow', () => {
           within(card).queryByRole('button', { name: 'Sign in again' })
         ).not.toBeInTheDocument();
       expect(getAccountQuota).not.toHaveBeenCalled();
-      expect(client.providerSubscriptions.logoutAccount).not.toHaveBeenCalled();
-      expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+      expect(client.operations['provider-subscription.account-logout']).not.toHaveBeenCalled();
+      expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
       await user.click(screen.getByRole('button', { name: 'Refresh status' }));
       await waitFor(() =>
-        expect(client.providerSubscriptions.listAccounts).toHaveBeenCalledTimes(4)
+        expect(client.operations['provider-subscription.account-list']).toHaveBeenCalledTimes(4)
       );
       expect(getAccountQuota).not.toHaveBeenCalled();
       if (access) {
@@ -389,19 +410,26 @@ describe('AI interface deployment-admin workflow', () => {
           within(card).getByText(/Inference was rejected for the current credential/)
         ).toBeInTheDocument();
         await user.click(within(card).getByRole('button', { name: 'Sign in again' }));
-        expect(client.providerSubscriptions.startAccountLogin).toHaveBeenCalledExactlyOnceWith(
-          providerId,
-          'primary',
-          { mode: 'device_code' }
-        );
+        expect(
+          client.operations['provider-subscription.account-login-start']
+        ).toHaveBeenCalledExactlyOnceWith({
+          subscriptionProviderId: providerId,
+          accountSlotId: 'primary',
+          ...{ mode: 'device_code' },
+        });
         expect(getAccountQuota).not.toHaveBeenCalled();
       } else {
-        expect(client.providerSubscriptions.startAccountLogin).not.toHaveBeenCalled();
+        expect(
+          client.operations['provider-subscription.account-login-start']
+        ).not.toHaveBeenCalled();
       }
       if (exhausted) {
         await user.click(within(card).getByRole('button', { name: 'Refresh quota' }));
         await waitFor(() =>
-          expect(getAccountQuota).toHaveBeenCalledExactlyOnceWith(providerId, 'primary')
+          expect(getAccountQuota).toHaveBeenCalledExactlyOnceWith({
+            subscriptionProviderId: providerId,
+            accountSlotId: 'primary',
+          })
         );
         expect(within(card).getByText(quotaLabel)).toBeInTheDocument();
       }
@@ -434,16 +462,19 @@ describe('AI interface deployment-admin workflow', () => {
         .mockResolvedValue(cleared);
       const getAccountQuota = vi.fn();
       const client = makeClient({
-        providerSubscriptions: {
-          listAccounts: vi.fn().mockImplementation((id: string) =>
-            Promise.resolve(
-              ProviderSubscriptionAccountsResponseSchema.parse({
-                accounts: id === providerId ? [account] : [],
-              })
-            )
-          ),
-          getAccountStatus,
-          getAccountQuota,
+        operations: {
+          'provider-subscription.account-list': vi
+            .fn()
+            .mockImplementation(
+              ({ subscriptionProviderId: id }: { subscriptionProviderId: string }) =>
+                Promise.resolve(
+                  ProviderSubscriptionAccountsResponseSchema.parse({
+                    accounts: id === providerId ? [account] : [],
+                  })
+                )
+            ),
+          'provider-subscription.account-status': getAccountStatus,
+          'provider-subscription.account-quota': getAccountQuota,
         },
       });
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -479,20 +510,23 @@ describe('AI interface deployment-admin workflow', () => {
     const user = userEvent.setup();
     const startAccountLogin = vi.fn().mockResolvedValue(PENDING_ACCOUNT);
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
-          })
-        ),
-        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
-        getAccountQuota: vi.fn().mockResolvedValue({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-status': vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
+        'provider-subscription.account-quota': vi.fn().mockResolvedValue({
           subscriptionProviderId: 'openai-codex',
           accountSlotId: 'primary',
           availability: 'authentication_required',
           observedAt: TIMESTAMP,
         }),
-        startAccountLogin,
+        'provider-subscription.account-login-start': startAccountLogin,
       },
     });
     renderScreen(client);
@@ -503,21 +537,28 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(codex).queryByRole('meter')).not.toBeInTheDocument();
     expect(within(codex).getByText(/Last checked/)).toBeInTheDocument();
     await user.click(within(codex).getByRole('button', { name: 'Sign in again' }));
-    expect(startAccountLogin).toHaveBeenCalledExactlyOnceWith('openai-codex', 'primary', {
-      mode: 'device_code',
+    expect(startAccountLogin).toHaveBeenCalledExactlyOnceWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+      ...{
+        mode: 'device_code',
+      },
     });
   });
 
   it('keeps a temporary Codex quota failure separate from rejected authentication', async () => {
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
-          })
-        ),
-        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
-        getAccountQuota: vi.fn().mockResolvedValue({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-status': vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
+        'provider-subscription.account-quota': vi.fn().mockResolvedValue({
           subscriptionProviderId: 'openai-codex',
           accountSlotId: 'primary',
           availability: 'temporarily_unavailable',
@@ -541,8 +582,8 @@ describe('AI interface deployment-admin workflow', () => {
     { seconds: undefined, label: 'Primary' },
   ])('labels Codex with only the supplied duration ($label)', async ({ seconds, label }) => {
     const client = makeClient({
-      providerSubscriptions: {
-        getAccountQuota: vi.fn().mockResolvedValue({
+      operations: {
+        'provider-subscription.account-quota': vi.fn().mockResolvedValue({
           ...CODEX_QUOTA,
           windows: [
             {
@@ -569,12 +610,15 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('shows one percentage per quota window for Codex and xAI', async () => {
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
-          })
-        ),
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+              })
+          ),
       },
     });
     renderScreen(client);
@@ -589,18 +633,22 @@ describe('AI interface deployment-admin workflow', () => {
   it('keeps account management available when one quota read fails without an observation', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
-          })
-        ),
-        getAccountQuota: vi
+      operations: {
+        'provider-subscription.account-list': vi
           .fn()
-          .mockImplementation((providerId: string) =>
-            providerId === 'xai'
-              ? Promise.reject(new ApiCallError(500, 'private-quota-error-canary'))
-              : Promise.resolve(CODEX_QUOTA)
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: providerId }],
+              })
+          ),
+        'provider-subscription.account-quota': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              providerId === 'xai'
+                ? Promise.reject(new ApiCallError(500, 'private-quota-error-canary'))
+                : Promise.resolve(CODEX_QUOTA)
           ),
       },
     });
@@ -617,8 +665,10 @@ describe('AI interface deployment-admin workflow', () => {
   it.each([401, 403])('keeps quota HTTP %s access denial global', async (status) => {
     renderScreen(
       makeClient({
-        providerSubscriptions: {
-          getAccountQuota: vi.fn().mockRejectedValue(new ApiCallError(status, 'private-denial')),
+        operations: {
+          'provider-subscription.account-quota': vi
+            .fn()
+            .mockRejectedValue(new ApiCallError(status, 'private-denial')),
         },
       })
     );
@@ -633,7 +683,9 @@ describe('AI interface deployment-admin workflow', () => {
       .fn()
       .mockResolvedValueOnce(CODEX_QUOTA)
       .mockRejectedValue(new ApiCallError(status, 'private-denial'));
-    renderScreen(makeClient({ providerSubscriptions: { getAccountQuota } }));
+    renderScreen(
+      makeClient({ operations: { 'provider-subscription.account-quota': getAccountQuota } })
+    );
     await user.click(await screen.findByRole('button', { name: 'Refresh quota' }));
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByText('Account settings')).not.toBeInTheDocument();
@@ -645,8 +697,8 @@ describe('AI interface deployment-admin workflow', () => {
   it('shows access denied with retry and never asks for a server-admin token', async () => {
     const user = userEvent.setup();
     const listProviders = vi.fn().mockRejectedValue(
-      new ApiCallError(403, 'Deployment-admin authority is required.', {
-        code: 'forbidden',
+      new ApiCallError(403, 'Current deployment administrator authority is required.', {
+        code: 'deployment_admin_required',
       })
     );
     const client = makeClient({ listProviders });
@@ -670,9 +722,12 @@ describe('AI interface deployment-admin workflow', () => {
     await user.click(within(codex).getByRole('button', { name: 'Create account slot' }));
 
     await waitFor(() =>
-      expect(client.providerSubscriptions.createAccount).toHaveBeenCalledWith('openai-codex', {
-        accountSlotId: 'secondary',
-        displayName: 'Codex secondary',
+      expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        ...{
+          accountSlotId: 'secondary',
+          displayName: 'Codex secondary',
+        },
       })
     );
 
@@ -682,20 +737,20 @@ describe('AI interface deployment-admin workflow', () => {
     await user.type(rename, 'Renamed Codex');
     await user.click(within(codex).getByRole('button', { name: 'Rename account' }));
     await waitFor(() =>
-      expect(client.providerSubscriptions.updateAccount).toHaveBeenCalledWith(
-        'openai-codex',
-        'primary',
-        { displayName: 'Renamed Codex' }
-      )
+      expect(client.operations['provider-subscription.account-update']).toHaveBeenCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        ...{ displayName: 'Renamed Codex' },
+      })
     );
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(within(codex).getByRole('button', { name: 'Remove account' }));
     await waitFor(() =>
-      expect(client.providerSubscriptions.deleteAccount).toHaveBeenCalledWith(
-        'openai-codex',
-        'primary'
-      )
+      expect(client.operations['provider-subscription.account-delete']).toHaveBeenCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+      })
     );
   });
 
@@ -706,14 +761,17 @@ describe('AI interface deployment-admin workflow', () => {
       .mockResolvedValueOnce(CODEX_ACCOUNT)
       .mockResolvedValue(PENDING_ACCOUNT);
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
-          })
-        ),
-        getAccountStatus,
-        startAccountLogin: vi.fn().mockResolvedValue(PENDING_ACCOUNT),
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-status': getAccountStatus,
+        'provider-subscription.account-login-start': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
       },
     });
     renderScreen(client);
@@ -724,22 +782,25 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await screen.findByText('ABCD-EFGH')).toBeInTheDocument();
     const verification = screen.getByRole('link', { name: 'https://example.com/device' });
     expect(verification).toHaveAttribute('href', 'https://example.com/device');
-    expect(client.providerSubscriptions.startAccountLogin).toHaveBeenCalledWith(
-      'openai-codex',
-      'primary',
-      { mode: 'device_code' }
-    );
+    expect(client.operations['provider-subscription.account-login-start']).toHaveBeenCalledWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+      ...{ mode: 'device_code' },
+    });
 
     await waitFor(() => expect(getAccountStatus).toHaveBeenCalled(), { timeout: 4000 });
-    expect(getAccountStatus).toHaveBeenCalledWith('openai-codex', 'primary');
+    expect(getAccountStatus).toHaveBeenCalledWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+    });
 
     await user.click(within(codex).getByRole('button', { name: 'Cancel login' }));
     await waitFor(() =>
-      expect(client.providerSubscriptions.cancelAccountLogin).toHaveBeenCalledWith(
-        'openai-codex',
-        'primary',
-        { interactionId: 'interaction-pending' }
-      )
+      expect(client.operations['provider-subscription.account-login-cancel']).toHaveBeenCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        ...{ interactionId: 'interaction-pending' },
+      })
     );
   });
 
@@ -750,13 +811,16 @@ describe('AI interface deployment-admin workflow', () => {
       .mockRejectedValueOnce(new ApiCallError(500, 'Status failed.'))
       .mockResolvedValue(PENDING_ACCOUNT);
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [PENDING_ACCOUNT] : [],
-          })
-        ),
-        getAccountStatus,
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [PENDING_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-status': getAccountStatus,
       },
     });
     renderScreen(client);
@@ -770,17 +834,20 @@ describe('AI interface deployment-admin workflow', () => {
     const user = userEvent.setup();
     const logoutAccount = vi
       .fn()
-      .mockRejectedValueOnce(new ApiCallError(500, 'Provider subscription request failed.'))
+      .mockRejectedValueOnce(new ApiCallError(500, 'Internal Server Error'))
       .mockResolvedValue(CODEX_ACCOUNT);
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
-          })
-        ),
-        getAccountStatus: vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
-        logoutAccount,
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-status': vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
+        'provider-subscription.account-logout': logoutAccount,
       },
     });
     renderScreen(client);
@@ -797,40 +864,54 @@ describe('AI interface deployment-admin workflow', () => {
   it('refreshes only the selected quota pair and updates last checked and reset times', async () => {
     const user = userEvent.setup();
     const listProviders = vi.fn().mockResolvedValue(PROVIDERS);
-    const listAccounts = vi.fn().mockImplementation((providerId: string) =>
-      Promise.resolve({
-        accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
-      })
-    );
+    const listAccounts = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+          })
+      );
     let codexQuotaReads = 0;
     const getAccountQuota = vi
       .fn()
-      .mockImplementation((providerId: string, accountSlotId: string) => {
-        if (providerId === 'openai-codex' && accountSlotId === 'primary') {
-          codexQuotaReads += 1;
-          return Promise.resolve(
-            codexQuotaReads === 1
-              ? CODEX_QUOTA
-              : {
-                  ...CODEX_QUOTA,
-                  observedAt: REFRESHED_AT,
-                  windows: [
-                    {
-                      id: 'primary',
-                      usedPercent: 40.4,
-                      remainingPercent: 59.6,
-                      resetsAt: REFRESHED_AT,
-                    },
-                    { id: 'secondary', usedPercent: 99.6, remainingPercent: 0.4 },
-                  ],
-                }
-          );
+      .mockImplementation(
+        ({
+          subscriptionProviderId: providerId,
+          accountSlotId,
+        }: {
+          subscriptionProviderId: string;
+          accountSlotId: string;
+        }) => {
+          if (providerId === 'openai-codex' && accountSlotId === 'primary') {
+            codexQuotaReads += 1;
+            return Promise.resolve(
+              codexQuotaReads === 1
+                ? CODEX_QUOTA
+                : {
+                    ...CODEX_QUOTA,
+                    observedAt: REFRESHED_AT,
+                    windows: [
+                      {
+                        id: 'primary',
+                        usedPercent: 40.4,
+                        remainingPercent: 59.6,
+                        resetsAt: REFRESHED_AT,
+                      },
+                      { id: 'secondary', usedPercent: 99.6, remainingPercent: 0.4 },
+                    ],
+                  }
+            );
+          }
+          return Promise.resolve({ ...XAI_QUOTA, accountSlotId });
         }
-        return Promise.resolve({ ...XAI_QUOTA, accountSlotId });
-      });
+      );
     const client = makeClient({
       listProviders,
-      providerSubscriptions: { listAccounts, getAccountQuota },
+      operations: {
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-quota': getAccountQuota,
+      },
     });
     renderScreen(client);
 
@@ -856,7 +937,10 @@ describe('AI interface deployment-admin workflow', () => {
     });
     expect(codexQuotaReads).toBe(2);
     expect(getAccountQuota).toHaveBeenCalledTimes(quotaAfterLoad + 1);
-    expect(getAccountQuota).toHaveBeenLastCalledWith('openai-codex', 'primary');
+    expect(getAccountQuota).toHaveBeenLastCalledWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+    });
     expect(listAccounts.mock.calls.length).toBe(accountsAfterLoad);
     expect(listProviders).toHaveBeenCalledTimes(1);
   });
@@ -869,8 +953,8 @@ describe('AI interface deployment-admin workflow', () => {
     expect(screen.getAllByText('gpt-strong').length).toBeGreaterThan(0);
     expect(screen.getByText('Default: default')).toBeInTheDocument();
     expect(screen.getByText(/Provider is ready\./)).toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 
   it('creates an oauth provider profile bound to an existing subscription account slot', async () => {
@@ -896,8 +980,8 @@ describe('AI interface deployment-admin workflow', () => {
     await user.type(screen.getByLabelText('Default model'), 'gpt-5');
     await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
 
-    await waitFor(() => expect(client.runtimeConfig.createFile).toHaveBeenCalled());
-    const created = vi.mocked(client.runtimeConfig.createFile).mock.calls[0]?.[0];
+    await waitFor(() => expect(client.operations['runtime.file-create']).toHaveBeenCalled());
+    const created = vi.mocked(client.operations['runtime.file-create']).mock.calls[0]?.[0];
     expect(created).toMatchObject({
       id: 'providers/codex-work.provider.jsonc',
       kind: 'provider',
@@ -927,8 +1011,8 @@ describe('AI interface deployment-admin workflow', () => {
     await user.type(screen.getByLabelText('Default model'), 'openai/gpt-5.1');
     await user.click(screen.getByRole('button', { name: 'Create provider profile' }));
 
-    await waitFor(() => expect(client.runtimeConfig.createFile).toHaveBeenCalled());
-    const created = vi.mocked(client.runtimeConfig.createFile).mock.calls[0]?.[0];
+    await waitFor(() => expect(client.operations['runtime.file-create']).toHaveBeenCalled());
+    const created = vi.mocked(client.operations['runtime.file-create']).mock.calls[0]?.[0];
     expect(created).toMatchObject({
       id: 'providers/openrouter.provider.jsonc',
       kind: 'provider',
@@ -959,7 +1043,7 @@ describe('AI interface deployment-admin workflow', () => {
     await user.clear(id);
     await user.type(id, 'openrouter');
     expect(screen.getByRole('button', { name: 'Create provider profile' })).toBeEnabled();
-    expect(client.runtimeConfig.createFile).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-create']).not.toHaveBeenCalled();
   });
 
   it('submits a masked API key through setProviderApiKey and never keeps it in query or rendered state', async () => {
@@ -1008,22 +1092,30 @@ describe('AI interface deployment-admin workflow', () => {
   });
 
   it('does not refetch the account inventory in a loop after login status becomes terminal', async () => {
-    const listAccounts = vi.fn().mockImplementation((providerId: string) =>
-      Promise.resolve({
-        accounts: providerId === 'openai-codex' ? [PENDING_ACCOUNT] : [],
-      })
-    );
+    const listAccounts = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: providerId === 'openai-codex' ? [PENDING_ACCOUNT] : [],
+          })
+      );
     const getAccountStatus = vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT);
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts,
-        getAccountStatus,
+      operations: {
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-status': getAccountStatus,
       },
     });
     renderScreen(client);
 
     const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
-    await waitFor(() => expect(getAccountStatus).toHaveBeenCalledWith('openai-codex', 'primary'));
+    await waitFor(() =>
+      expect(getAccountStatus).toHaveBeenCalledWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+      })
+    );
     const settled = listAccounts.mock.calls.length;
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(listAccounts.mock.calls.length).toBe(settled);
@@ -1057,13 +1149,16 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('formats remaining percents without rounding tiny or near-full values to 0 or 100', async () => {
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
-          })
-        ),
-        getAccountQuota: vi.fn().mockResolvedValue({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: providerId === 'openai-codex' ? [CODEX_ACCOUNT] : [],
+              })
+          ),
+        'provider-subscription.account-quota': vi.fn().mockResolvedValue({
           ...CODEX_QUOTA,
           windows: [
             { id: 'primary', remainingPercent: 99.996 },
@@ -1090,34 +1185,40 @@ describe('AI interface deployment-admin workflow', () => {
 
   it('shows unknown usage with reset and last checked when xAI omits credit percent', async () => {
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts:
-              providerId === 'openai-codex'
-                ? [CODEX_ACCOUNT]
-                : [
-                    {
-                      ...CODEX_ACCOUNT,
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts:
+                  providerId === 'openai-codex'
+                    ? [CODEX_ACCOUNT]
+                    : [
+                        {
+                          ...CODEX_ACCOUNT,
+                          subscriptionProviderId: 'xai' as const,
+                          displayName: 'xAI primary',
+                        },
+                      ],
+              })
+          ),
+        'provider-subscription.account-quota': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve(
+                providerId === 'xai'
+                  ? {
                       subscriptionProviderId: 'xai' as const,
-                      displayName: 'xAI primary',
-                    },
-                  ],
-          })
-        ),
-        getAccountQuota: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve(
-            providerId === 'xai'
-              ? {
-                  subscriptionProviderId: 'xai' as const,
-                  accountSlotId: 'primary',
-                  availability: 'available' as const,
-                  observedAt: TIMESTAMP,
-                  windows: [{ id: 'included', periodType: 'weekly', resetsAt: TIMESTAMP }],
-                }
-              : CODEX_QUOTA
-          )
-        ),
+                      accountSlotId: 'primary',
+                      availability: 'available' as const,
+                      observedAt: TIMESTAMP,
+                      windows: [{ id: 'included', periodType: 'weekly', resetsAt: TIMESTAMP }],
+                    }
+                  : CODEX_QUOTA
+              )
+          ),
       },
     });
     renderScreen(client);
@@ -1164,47 +1265,57 @@ describe('AI interface deployment-admin workflow', () => {
             finishAutoTopup = () => resolve(autoTopupResponse);
           })
       );
-    const getAccountQuota = vi.fn().mockImplementation((providerId: string) =>
-      providerId === 'xai'
-        ? Promise.resolve({
-            subscriptionProviderId: 'xai' as const,
-            accountSlotId: 'primary',
-            availability: 'available' as const,
-            observedAt: TIMESTAMP,
-            planType: 'SuperGrok',
-            subscriptionActive: true,
-            accountObservedAt: TIMESTAMP,
-            windows: [
-              {
-                id: 'included',
-                usedPercent: 0,
-                remainingPercent: 100,
-                periodType: 'weekly',
-                resetsAt: TIMESTAMP,
-              },
-            ],
-            billing: { currency: 'USD' as const, prepaidBalanceCents: 0, sharedAllowance: true },
-          })
-        : Promise.resolve(CODEX_QUOTA)
-    );
+    const getAccountQuota = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+          providerId === 'xai'
+            ? Promise.resolve({
+                subscriptionProviderId: 'xai' as const,
+                accountSlotId: 'primary',
+                availability: 'available' as const,
+                observedAt: TIMESTAMP,
+                planType: 'SuperGrok',
+                subscriptionActive: true,
+                accountObservedAt: TIMESTAMP,
+                windows: [
+                  {
+                    id: 'included',
+                    usedPercent: 0,
+                    remainingPercent: 100,
+                    periodType: 'weekly',
+                    resetsAt: TIMESTAMP,
+                  },
+                ],
+                billing: {
+                  currency: 'USD' as const,
+                  prepaidBalanceCents: 0,
+                  sharedAllowance: true,
+                },
+              })
+            : Promise.resolve(CODEX_QUOTA)
+      );
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi.fn().mockImplementation((providerId: string) =>
-          Promise.resolve({
-            accounts:
-              providerId === 'openai-codex'
-                ? [CODEX_ACCOUNT]
-                : [
-                    {
-                      ...CODEX_ACCOUNT,
-                      subscriptionProviderId: 'xai' as const,
-                      displayName: 'xAI primary',
-                    },
-                  ],
-          })
-        ),
-        getAccountQuota,
-        getAccountAutoTopup,
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts:
+                  providerId === 'openai-codex'
+                    ? [CODEX_ACCOUNT]
+                    : [
+                        {
+                          ...CODEX_ACCOUNT,
+                          subscriptionProviderId: 'xai' as const,
+                          displayName: 'xAI primary',
+                        },
+                      ],
+              })
+          ),
+        'provider-subscription.account-quota': getAccountQuota,
+        'provider-subscription.account-auto-topup': getAccountAutoTopup,
       },
     });
     renderScreen(client);
@@ -1225,15 +1336,19 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(xai).queryByText('Auto top-up not reported')).not.toBeInTheDocument();
     expect(within(xai).queryByText(/exhaust/i)).not.toBeInTheDocument();
     await waitFor(() => expect(getAccountAutoTopup).toHaveBeenCalledTimes(1));
-    expect(getAccountAutoTopup).toHaveBeenCalledWith('xai', 'primary');
+    expect(getAccountAutoTopup).toHaveBeenCalledWith({
+      subscriptionProviderId: 'xai',
+      accountSlotId: 'primary',
+    });
     finishAutoTopup();
     expect(await within(xai).findByText('Auto top-up not reported')).toBeInTheDocument();
     expect(within(xai).queryByText('Checking auto top-up…')).not.toBeInTheDocument();
 
-    getAccountQuota.mockImplementation((providerId: string) =>
-      providerId === 'xai'
-        ? Promise.reject(new ApiCallError(500, 'private-refresh-canary'))
-        : Promise.resolve(CODEX_QUOTA)
+    getAccountQuota.mockImplementation(
+      ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+        providerId === 'xai'
+          ? Promise.reject(new ApiCallError(500, 'private-refresh-canary'))
+          : Promise.resolve(CODEX_QUOTA)
     );
     await user.click(within(xai).getByRole('button', { name: 'Refresh quota' }));
     expect(await within(xai).findByText('Quota query failed')).toBeInTheDocument();
@@ -1242,7 +1357,9 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(xai).queryByText(/private-refresh-canary/)).not.toBeInTheDocument();
     await waitFor(() => expect(getAccountAutoTopup).toHaveBeenCalledTimes(2));
     expect(
-      getAccountQuota.mock.calls.filter(([provider]) => provider === 'openai-codex')
+      getAccountQuota.mock.calls.filter(
+        ([{ subscriptionProviderId: provider }]) => provider === 'openai-codex'
+      )
     ).toHaveLength(1);
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
 
@@ -1340,15 +1457,17 @@ describe('Unified Gateway acceptance', () => {
       within(logical).getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
     ).toBeInTheDocument();
     expect(within(logical).getByText(/Backup 1.*provider_demo.*Available/)).toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 
   it('discovers pending status on mount and leaves Log out and Remove enabled with references', async () => {
     const user = userEvent.setup();
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      providerSubscriptions: { getAccountStatus: vi.fn().mockResolvedValue(PENDING_ACCOUNT) },
+      operations: {
+        'provider-subscription.account-status': vi.fn().mockResolvedValue(PENDING_ACCOUNT),
+      },
     });
     renderScreen(client);
     const card = await screen.findByRole('region', { name: 'Codex work' });
@@ -1358,11 +1477,11 @@ describe('Unified Gateway acceptance', () => {
     expect(within(card).getByRole('button', { name: 'Remove account' })).toBeEnabled();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(within(card).getByRole('button', { name: 'Remove account' }));
-    expect(client.providerSubscriptions.deleteAccount).toHaveBeenCalledWith(
-      'openai-codex',
-      'primary'
-    );
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.operations['provider-subscription.account-delete']).toHaveBeenCalledWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+    });
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
   });
 
   it('reports completed setup steps after profile failure and retries only the failed step', async () => {
@@ -1371,7 +1490,7 @@ describe('Unified Gateway acceptance', () => {
       .fn()
       .mockRejectedValueOnce(new ApiCallError(403, 'private-canary'))
       .mockResolvedValue({ file: { revision: 'profile-2' } });
-    const client = makeClient({ runtimeConfig: { createFile } });
+    const client = makeClient({ operations: { 'runtime.file-create': createFile } });
     renderScreen(client);
     await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
     await user.type(screen.getByLabelText('Setup account slot'), 'secondary');
@@ -1379,11 +1498,11 @@ describe('Unified Gateway acceptance', () => {
     await user.click(screen.getByRole('button', { name: 'Add subscription Provider' }));
     expect(await screen.findByText(/Slot creation: completed/)).toBeInTheDocument();
     expect(await screen.findByText(/Profile creation: Access denied/)).toBeInTheDocument();
-    expect(client.providerSubscriptions.startAccountLogin).not.toHaveBeenCalled();
+    expect(client.operations['provider-subscription.account-login-start']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
     expect(await screen.findByText(/Profile persisted revision: profile-2/)).toBeInTheDocument();
-    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
-    expect(client.providerSubscriptions.startAccountLogin).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.account-login-start']).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Provider activation: restart required/)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('private-canary');
   });
@@ -1392,11 +1511,11 @@ describe('Unified Gateway acceptance', () => {
     const user = userEvent.setup();
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      runtimeConfig: {
-        listFiles: vi.fn().mockResolvedValue({
+      operations: {
+        'runtime.file-list': vi.fn().mockResolvedValue({
           files: [{ id: 'providers/provider_demo.provider.jsonc', kind: 'provider' }],
         }),
-        getFile: vi.fn().mockResolvedValue({
+        'runtime.file-read': vi.fn().mockResolvedValue({
           file: {
             id: 'providers/provider_demo.provider.jsonc',
             kind: 'provider',
@@ -1404,7 +1523,7 @@ describe('Unified Gateway acceptance', () => {
           },
           content: '{"id":"provider_demo"}',
         }),
-        deleteFile: vi.fn().mockResolvedValue(undefined),
+        'runtime.file-delete': vi.fn().mockResolvedValue(null),
       },
     });
     renderScreen(client);
@@ -1412,35 +1531,35 @@ describe('Unified Gateway acceptance', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(within(card).getByRole('button', { name: 'Remove Provider' }));
     await waitFor(() =>
-      expect(client.runtimeConfig.deleteFile).toHaveBeenCalledWith({
+      expect(client.operations['runtime.file-delete']).toHaveBeenCalledWith({
         id: 'providers/provider_demo.provider.jsonc',
         kind: 'provider',
         expectedRevision: 'profile-read',
       })
     );
     expect(await screen.findByText(/Profile removed.*restart required/)).toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
   });
 
   it('validates an exact extension key, saves with the read revision and distinguishes persistence, reload and restart', async () => {
     const user = userEvent.setup();
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      runtimeConfig: {
-        getFile: vi.fn().mockResolvedValue({
+      operations: {
+        'runtime.file-read': vi.fn().mockResolvedValue({
           file: { id: 'model-catalog.jsonc', kind: 'model-catalog', revision: 'catalog-read' },
           content: '{\n// preserve\n"schemaVersion":1,"providers":{}}',
         }),
-        updateFile: vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } }),
-        reload: vi.fn().mockResolvedValue({
+        'runtime.file-update': vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } }),
+        'runtime.reload': vi.fn().mockResolvedValue({
           status: 'applied',
-          runtimeConfig: {
-            ...RUNTIME_CONFIG,
-            pendingRestart: [{ path: 'modelCatalog', summary: 'Catalog needs restart' }],
-          },
           plan: {
             ...PLAN,
             requiresRestart: [{ path: 'modelCatalog', summary: 'Catalog needs restart' }],
+          },
+          runtimeConfig: {
+            ...RUNTIME_CONFIG,
+            pendingRestart: [{ path: 'modelCatalog', summary: 'Catalog needs restart' }],
           },
         }),
       },
@@ -1453,17 +1572,17 @@ describe('Unified Gateway acceptance', () => {
     await user.clear(metadata);
     await user.paste('{"cost":{"input":0},"reasoning":false,"modalities":{"input":[]}}');
     await user.click(screen.getByRole('button', { name: 'Save extension' }));
-    await waitFor(() => expect(client.runtimeConfig.updateFile).toHaveBeenCalled());
-    const request = vi.mocked(client.runtimeConfig.updateFile).mock.calls[0]![0];
+    await waitFor(() => expect(client.operations['runtime.file-update']).toHaveBeenCalled());
+    const request = vi.mocked(client.operations['runtime.file-update']).mock.calls[0]![0];
     expect(request.expectedRevision).toBe('catalog-read');
     expect(request.content).toContain('// preserve');
     expect(request.content).toContain('"gpt-demo"');
     expect(request.content).toContain('"input": 0');
-    expect(client.runtimeConfig.validate).toHaveBeenCalledBefore(
-      vi.mocked(client.runtimeConfig.updateFile)
+    expect(client.operations['runtime.validate']).toHaveBeenCalledBefore(
+      vi.mocked(client.operations['runtime.file-update'])
     );
     expect(screen.getByText('Persisted revision: catalog-saved')).toBeInTheDocument();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Apply saved Gateway configuration' }));
     expect(await screen.findByText(/Reload application: applied/)).toBeInTheDocument();
     expect(screen.getByText(/Restart-required activation: modelCatalog/)).toBeInTheDocument();
@@ -1490,12 +1609,12 @@ describe('Gateway dependency and routing completion', () => {
     const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'routes-saved' } });
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      runtimeConfig: {
-        getFile: vi.fn().mockResolvedValue({
+      operations: {
+        'runtime.file-read': vi.fn().mockResolvedValue({
           file: { id: 'gateway.jsonc', kind: 'gateway', revision: 'routes-read' },
           content: JSON.stringify(original),
         }),
-        updateFile,
+        'runtime.file-update': updateFile,
       },
     });
     renderScreen(client);
@@ -1520,8 +1639,8 @@ describe('Gateway dependency and routing completion', () => {
       routes: edited,
       routing: { autoFailover: true },
     });
-    expect(client.runtimeConfig.validate).toHaveBeenCalledBefore(updateFile);
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.validate']).toHaveBeenCalledBefore(updateFile);
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
     expect(
       screen.getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
     ).toBeInTheDocument();
@@ -1540,7 +1659,7 @@ describe('Gateway dependency and routing completion', () => {
       .mockResolvedValue({ file: { revision: 'saved-3' } });
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      runtimeConfig: { getFile: read, updateFile: write },
+      operations: { 'runtime.file-read': read, 'runtime.file-update': write },
     });
     renderScreen(client);
     await user.click(
@@ -1571,19 +1690,22 @@ describe('Gateway dependency and routing completion', () => {
     const user = userEvent.setup();
     let created = false;
     const createdAccount = { ...CODEX_ACCOUNT, accountSlotId: 'secondary' };
-    const listAccounts = vi.fn().mockImplementation((provider: string) =>
-      Promise.resolve({
-        accounts:
-          provider === 'openai-codex'
-            ? created
-              ? [CODEX_ACCOUNT, createdAccount]
-              : [CODEX_ACCOUNT]
-            : [],
-      })
-    );
+    const listAccounts = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts:
+              provider === 'openai-codex'
+                ? created
+                  ? [CODEX_ACCOUNT, createdAccount]
+                  : [CODEX_ACCOUNT]
+                : [],
+          })
+      );
     const status = vi
       .fn()
-      .mockImplementation((_provider: string, slot: string) =>
+      .mockImplementation(({ accountSlotId: slot }: { accountSlotId: string }) =>
         slot === 'secondary'
           ? Promise.reject(new ApiCallError(403, 'private-status-denial'))
           : Promise.resolve(CODEX_ACCOUNT)
@@ -1592,14 +1714,14 @@ describe('Gateway dependency and routing completion', () => {
       .fn()
       .mockResolvedValue({ ...PENDING_ACCOUNT, accountSlotId: 'secondary' });
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts,
-        createAccount: vi.fn().mockImplementation(() => {
+      operations: {
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-create': vi.fn().mockImplementation(() => {
           created = true;
           return Promise.resolve(createdAccount);
         }),
-        getAccountStatus: status,
-        startAccountLogin,
+        'provider-subscription.account-status': status,
+        'provider-subscription.account-login-start': startAccountLogin,
       },
     });
     renderScreen(client);
@@ -1614,8 +1736,8 @@ describe('Gateway dependency and routing completion', () => {
     await user.click(screen.getByRole('button', { name: 'Retry login observation' }));
     expect(await screen.findByText('Login observation: completed')).toBeInTheDocument();
     expect(startAccountLogin).toHaveBeenCalledTimes(1);
-    expect(client.runtimeConfig.createFile).toHaveBeenCalledTimes(1);
-    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
+    expect(client.operations['runtime.file-create']).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
   });
 
   it('keeps typed diagnostics denial visible and retries only that read', async () => {
@@ -1632,7 +1754,7 @@ describe('Gateway dependency and routing completion', () => {
     );
     expect(await screen.findByRole('heading', { name: 'Models', level: 2 })).toBeInTheDocument();
     expect(getDiagnostics).toHaveBeenCalledTimes(2);
-    expect(client.providerSubscriptions.listProviders).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.provider-list']).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).not.toContain('private-diagnostics-denial');
   });
 
@@ -1640,29 +1762,36 @@ describe('Gateway dependency and routing completion', () => {
     const user = userEvent.setup();
     const quota = vi
       .fn()
-      .mockImplementation((provider: string) =>
-        provider === 'openai-codex'
-          ? Promise.reject(new ApiCallError(403, 'private-quota-denial'))
-          : Promise.resolve(XAI_QUOTA)
+      .mockImplementation(
+        ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+          provider === 'openai-codex'
+            ? Promise.reject(new ApiCallError(403, 'private-quota-denial'))
+            : Promise.resolve(XAI_QUOTA)
       );
     const client = makeClient({
-      providerSubscriptions: {
-        listAccounts: vi
+      operations: {
+        'provider-subscription.account-list': vi
           .fn()
-          .mockImplementation((provider: string) =>
-            Promise.resolve({ accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: provider }] })
+          .mockImplementation(
+            ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: [{ ...CODEX_ACCOUNT, subscriptionProviderId: provider }],
+              })
           ),
-        getAccountQuota: quota,
+        'provider-subscription.account-quota': quota,
       },
     });
     renderScreen(client);
     const retry = await screen.findByRole('button', { name: 'Retry quota OpenAI Codex / primary' });
-    quota.mockImplementation((provider: string) =>
-      Promise.resolve(provider === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
+    quota.mockImplementation(
+      ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+        Promise.resolve(provider === 'openai-codex' ? CODEX_QUOTA : XAI_QUOTA)
     );
     await user.click(retry);
     expect(await screen.findByText('Primary 59.6% remaining')).toBeInTheDocument();
-    expect(quota.mock.calls.filter(([provider]) => provider === 'xai')).toHaveLength(1);
+    expect(
+      quota.mock.calls.filter(([{ subscriptionProviderId: provider }]) => provider === 'xai')
+    ).toHaveLength(1);
   });
 });
 
@@ -1680,7 +1809,7 @@ it('retries the source observation after a successful save without repeating the
   const updateFile = vi.fn().mockResolvedValue({ file: { revision: 'catalog-saved' } });
   const client = makeClient({
     app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-    runtimeConfig: { getFile, updateFile },
+    operations: { 'runtime.file-read': getFile, 'runtime.file-update': updateFile },
   });
   renderScreen(client);
   await user.click(await screen.findByRole('button', { name: 'Edit metadata openai / gpt-demo' }));
@@ -1720,10 +1849,11 @@ describe('Round 2 Gateway dependency recovery', () => {
     let slotCreated = false;
     const listAccounts = vi
       .fn()
-      .mockImplementation((provider: string) =>
-        dependency === 'accounts' && slotCreated
-          ? Promise.reject(new ApiCallError(403, 'private-account-list-refresh'))
-          : Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+      .mockImplementation(
+        ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+          dependency === 'accounts' && slotCreated
+            ? Promise.reject(new ApiCallError(403, 'private-account-list-refresh'))
+            : Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
       );
     const createAccount = vi.fn().mockImplementation(() => {
       slotCreated = true;
@@ -1732,8 +1862,11 @@ describe('Round 2 Gateway dependency recovery', () => {
     const createFile = vi.fn().mockRejectedValue(new ApiCallError(403, 'private-profile-create'));
     const client = makeClient({
       app: { getDiagnostics },
-      runtimeConfig: { createFile },
-      providerSubscriptions: { listAccounts, createAccount },
+      operations: {
+        'runtime.file-create': createFile,
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-create': createAccount,
+      },
     });
     renderScreen(client);
     await user.type(await screen.findByLabelText('Setup Provider id'), 'codex-new');
@@ -1753,8 +1886,9 @@ describe('Round 2 Gateway dependency recovery', () => {
     expect(screen.getByText(/Profile creation: Access denied/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry profile creation' })).toBeDisabled();
     getDiagnostics.mockResolvedValue(GATEWAY_DIAGNOSTICS);
-    listAccounts.mockImplementation((provider: string) =>
-      Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
+    listAccounts.mockImplementation(
+      ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+        Promise.resolve({ accounts: provider === 'openai-codex' ? [CODEX_ACCOUNT] : [] })
     );
     await user.click(
       dependency === 'diagnostics'
@@ -1770,7 +1904,7 @@ describe('Round 2 Gateway dependency recovery', () => {
     await user.click(screen.getByRole('button', { name: 'Retry profile creation' }));
     expect(await screen.findByText('Profile creation: completed')).toBeInTheDocument();
     expect(screen.getByText(/Profile persisted revision: profile-recovered/)).toBeInTheDocument();
-    expect(client.providerSubscriptions.createAccount).toHaveBeenCalledTimes(1);
+    expect(client.operations['provider-subscription.account-create']).toHaveBeenCalledTimes(1);
     expect(createFile).toHaveBeenCalledTimes(2);
     expect(createFile.mock.calls[0]).toEqual(createFile.mock.calls[1]);
     expect(document.body.textContent).not.toMatch(
@@ -1782,7 +1916,9 @@ describe('Round 2 Gateway dependency recovery', () => {
     const user = userEvent.setup();
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      providerSubscriptions: { listAccounts: vi.fn().mockResolvedValue({ accounts: [] }) },
+      operations: {
+        'provider-subscription.account-list': vi.fn().mockResolvedValue({ accounts: [] }),
+      },
     });
     renderScreen(client);
     const card = await screen.findByRole('region', { name: 'Codex work' });
@@ -1790,30 +1926,38 @@ describe('Round 2 Gateway dependency recovery', () => {
     expect(within(card).getByText('Affected logical models: Tier')).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
     await user.click(within(card).getByRole('button', { name: 'Retry account slots' }));
-    await waitFor(() => expect(client.providerSubscriptions.listAccounts).toHaveBeenCalledTimes(4));
+    await waitFor(() =>
+      expect(client.operations['provider-subscription.account-list']).toHaveBeenCalledTimes(4)
+    );
     expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
     expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 
   it('retains affected tiers after account deletion with active profiles and ordered routes unchanged', async () => {
     const user = userEvent.setup();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     let removed = false;
-    const listAccounts = vi.fn().mockImplementation((provider: string) =>
-      Promise.resolve({
-        accounts: provider === 'openai-codex' && !removed ? [CODEX_ACCOUNT] : [],
-      })
-    );
+    const listAccounts = vi
+      .fn()
+      .mockImplementation(
+        ({ subscriptionProviderId: provider }: { subscriptionProviderId: string }) =>
+          Promise.resolve({
+            accounts: provider === 'openai-codex' && !removed ? [CODEX_ACCOUNT] : [],
+          })
+      );
     const deleteAccount = vi.fn().mockImplementation(() => {
       removed = true;
-      return Promise.resolve();
+      return Promise.resolve(null);
     });
     const client = makeClient({
       app: { getDiagnostics: vi.fn().mockResolvedValue(GATEWAY_DIAGNOSTICS) },
-      providerSubscriptions: { listAccounts, deleteAccount },
-      runtimeConfig: { deleteFile: vi.fn() },
+      operations: {
+        'provider-subscription.account-list': listAccounts,
+        'provider-subscription.account-delete': deleteAccount,
+        'runtime.file-delete': vi.fn(),
+      },
     });
     renderScreen(client);
     const card = await screen.findByRole('region', { name: 'Codex work' });
@@ -1824,11 +1968,14 @@ describe('Round 2 Gateway dependency recovery', () => {
     expect(within(absentCard).getByText('Affected logical models: Tier')).toBeInTheDocument();
     expect(within(absentCard).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
     expect(within(absentCard).getByRole('button', { name: 'Retry account slots' })).toBeEnabled();
-    expect(deleteAccount).toHaveBeenCalledExactlyOnceWith('openai-codex', 'primary');
+    expect(deleteAccount).toHaveBeenCalledExactlyOnceWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+    });
     expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
     expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
-    expect(client.runtimeConfig.updateFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.deleteFile).not.toHaveBeenCalled();
-    expect(client.runtimeConfig.reload).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.file-delete']).not.toHaveBeenCalled();
+    expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
 });

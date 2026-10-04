@@ -20,7 +20,7 @@ import { settingsKeys } from './data';
 import { projectSafeValue } from './secret-safe';
 
 type Gateway = AppDiagnosticsResponse['gateway'];
-type FileRead = Awaited<ReturnType<CoreClient['runtimeConfig']['getFile']>>;
+type FileRead = Awaited<ReturnType<CoreClient['operations']['runtime.file-read']>>;
 
 /** Computes disclosure from active ordered routes, without changing their eligibility or order. */
 export function affectedLogicalModels(gateway: Gateway | null, providerIds: string[]): string[] {
@@ -83,18 +83,18 @@ export function ProfileRemoval({
   const remove = useMutation({
     mutationFn: async () => {
       // File names need not equal the profile ID; read the catalog and match the actual authored identity.
-      const listed = await client.runtimeConfig.listFiles();
+      const listed = await client.operations['runtime.file-list']({});
       const candidates = listed.files.filter((file) => file.kind === 'provider');
       let selected: FileRead | undefined;
       for (const candidate of candidates) {
-        const source = await client.runtimeConfig.getFile(candidate.id);
+        const source = await client.operations['runtime.file-read']({ id: candidate.id });
         if (parseObject(source.content).id === profile.id) {
           selected = source;
           break;
         }
       }
       if (!selected?.file.revision) throw new Error('Provider source unavailable.');
-      await client.runtimeConfig.deleteFile({
+      await client.operations['runtime.file-delete']({
         id: selected.file.id,
         kind: 'provider',
         expectedRevision: selected.file.revision,
@@ -249,7 +249,7 @@ export function GuidedSubscriptionSetup({
   const [failedStep, setFailedStep] = useState<number | null>(null);
   const [revision, setRevision] = useState<string | null>(null);
   const [login, setLogin] = useState<Awaited<
-    ReturnType<CoreClient['providerSubscriptions']['getAccountStatus']>
+    ReturnType<CoreClient['operations']['provider-subscription.account-status']>
   > | null>(null);
   const nextStep = useRef(0);
   const setup = useMutation({
@@ -257,11 +257,12 @@ export function GuidedSubscriptionSetup({
       for (let step = nextStep.current; step < STEP_NAMES.length; step++) {
         setFailedStep(step);
         if (step === 0 && !input.existing)
-          await client.providerSubscriptions.createAccount(input.provider, {
+          await client.operations['provider-subscription.account-create']({
+            subscriptionProviderId: input.provider,
             accountSlotId: input.slot,
           });
         if (step === 1) {
-          const result = await client.runtimeConfig.createFile({
+          const result = await client.operations['runtime.file-create']({
             id: `providers/${input.id}.provider.jsonc`,
             kind: 'provider',
             content: `${JSON.stringify({ id: input.id, displayName: input.id, kind: 'oauth', vendor: VENDORS[input.provider], models: input.models, defaultModel: input.models[0], extensions: { openkit: { subscriptionAccount: { accountSlotId: input.slot } } } }, null, 2)}\n`,
@@ -269,15 +270,20 @@ export function GuidedSubscriptionSetup({
           setRevision(result.file.revision);
         }
         if (step === 2) {
-          const result = await client.providerSubscriptions.startAccountLogin(
-            input.provider,
-            input.slot,
-            { mode: 'device_code' }
-          );
+          const result = await client.operations['provider-subscription.account-login-start']({
+            subscriptionProviderId: input.provider,
+            accountSlotId: input.slot,
+            mode: 'device_code',
+          });
           setLogin(result);
         }
         if (step === 3)
-          setLogin(await client.providerSubscriptions.getAccountStatus(input.provider, input.slot));
+          setLogin(
+            await client.operations['provider-subscription.account-status']({
+              subscriptionProviderId: input.provider,
+              accountSlotId: input.slot,
+            })
+          );
         nextStep.current = step + 1;
         setCompleted(step + 1);
         setFailedStep(null);
@@ -492,7 +498,7 @@ function GatewayEditor({
   const kind = target.type === 'metadata' ? 'model-catalog' : 'gateway';
   const read = useQuery({
     queryKey: [...settingsKeys.aiInterface, 'source', id],
-    queryFn: () => client.runtimeConfig.getFile(id),
+    queryFn: () => client.operations['runtime.file-read']({ id }),
     retry: false,
     gcTime: 0,
   });
@@ -569,12 +575,12 @@ function GatewayEditor({
           )
         );
       }
-      const validation = await client.runtimeConfig.validate({
+      const validation = await client.operations['runtime.validate']({
         files: [{ id, content }],
         mode: 'safe',
       });
       if (!validation.valid) throw new Error('Candidate validation failed.');
-      const result = await client.runtimeConfig.updateFile({
+      const result = await client.operations['runtime.file-update']({
         id,
         kind,
         content,
@@ -589,7 +595,7 @@ function GatewayEditor({
     },
   });
   const create = useMutation({
-    mutationFn: () => client.runtimeConfig.createFile({ id, kind }),
+    mutationFn: () => client.operations['runtime.file-create']({ id, kind }),
     onSuccess: () => {
       setInvalid(false);
       void read.refetch();
@@ -745,7 +751,7 @@ export function GatewayConfiguration({
   );
   const reload = useMutation({
     mutationFn: async () => {
-      const result = await client.runtimeConfig.reload({ mode: 'safe' });
+      const result = await client.operations['runtime.reload']({ mode: 'safe' });
       onChanged();
       return projectSafeValue(result) as typeof result;
     },

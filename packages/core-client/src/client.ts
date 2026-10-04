@@ -11,10 +11,6 @@ import { createResourceCatalogClient } from './catalog.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
 import { createOperationClient, type OperationClient } from './operations.js';
-import type { ProviderSubscriptionsClient } from './provider-subscriptions.js';
-import { createProviderSubscriptionsClient } from './provider-subscriptions.js';
-import type { RuntimeConfigClient } from './runtime-config.js';
-import { createRuntimeConfigClient } from './runtime-config.js';
 import type { EventSourceConstructor } from './sse.js';
 import { type ClientTransportOptions, createClientTransport } from './transport.js';
 
@@ -35,10 +31,6 @@ export interface CoreClient {
   readonly core: CoreProjectionClient;
   /** NanoCore App API read models and app-local commands. */
   readonly app: AppApiClient;
-  /** Runtime config editor and reload routes. */
-  readonly runtimeConfig: RuntimeConfigClient;
-  /** Provider-subscription inventory, account, login, and quota routes. */
-  readonly providerSubscriptions: ProviderSubscriptionsClient;
   /** Browser authentication clients grouped by credential method. */
   readonly auth: {
     /** Better Auth email/password client. */
@@ -57,8 +49,6 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const transport = createClientTransport(options);
   const core = createCoreProjectionClient(transport, options.eventSource);
   const app = createAppApiClient(transport);
-  const runtimeConfig = createRuntimeConfigClient(transport);
-  const providerSubscriptions = createProviderSubscriptionsClient(transport);
   const email = createEmailAuthClient(transport);
   const capabilities = createCapabilitiesClient(core.meta);
   const agents = createAgentCatalogClient(transport);
@@ -72,7 +62,5 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
     capabilities,
     catalog,
     core,
-    providerSubscriptions,
-    runtimeConfig,
   };
 }

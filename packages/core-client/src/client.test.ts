@@ -1390,23 +1390,25 @@ class FakeEventSource {
 describe('createCoreClient', () => {
   it('sends exact revision-bound Provider deletion JSON and validates before transport', async () => {
     const { client, requests } = createFakeClient({
-      'DELETE /api/admin/config/file': { status: 204 },
+      'POST /api/app/operations/runtime.file-delete': { status: 204 },
     });
     const input = {
       id: 'providers/exact.provider.jsonc',
       kind: 'provider' as const,
       expectedRevision: 'exact-revision',
     };
-    await expect(client.runtimeConfig.deleteFile(input)).resolves.toBeUndefined();
+    await expect(client.operations['runtime.file-delete'](input)).resolves.toBeNull();
     expect(requests).toEqual([
       expect.objectContaining({
         body: input,
-        method: 'DELETE',
-        path: '/api/admin/config/file',
+        method: 'POST',
+        path: '/api/app/operations/runtime.file-delete',
         headers: { 'content-type': 'application/json' },
       }),
     ]);
-    expect(() => client.runtimeConfig.deleteFile({ ...input, expectedRevision: '' })).toThrow();
+    await expect(
+      client.operations['runtime.file-delete']({ ...input, expectedRevision: '' })
+    ).rejects.toThrow();
     expect(requests).toHaveLength(1);
   });
   it('streams portable Workspace archive downloads and uploads without JSON encoding', async () => {
@@ -1481,13 +1483,10 @@ describe('createCoreClient', () => {
 
   it('exposes composed sub-clients without deprecated flat aliases', () => {
     const { client } = createFakeClient({});
-    const providerSubscriptions = Reflect.get(client, 'providerSubscriptions') as
-      | Record<string, unknown>
-      | undefined;
 
     expect(client.core).toBeDefined();
     expect(client.app).toBeDefined();
-    expect(client.runtimeConfig).toBeDefined();
+    expect('runtimeConfig' in client).toBe(false);
     expect(client.auth.email).toBeDefined();
     expect(client.capabilities).toBeDefined();
     expect(client.agents).toBeDefined();
@@ -1514,7 +1513,7 @@ describe('createCoreClient', () => {
 
     expect.soft('oauth' in client).toBe(false);
     expect.soft('createOpenAICodexOAuthClient' in coreClientExports).toBe(false);
-    expect.soft(providerSubscriptions).toBeDefined();
+    expect('providerSubscriptions' in client).toBe(false);
 
     for (const alias of [
       'listProviders',
@@ -1530,22 +1529,6 @@ describe('createCoreClient', () => {
       'getAccountAutoTopup',
     ]) {
       expect(alias in client).toBe(false);
-    }
-
-    if (providerSubscriptions) {
-      expect(Object.keys(providerSubscriptions)).toEqual([
-        'listProviders',
-        'listAccounts',
-        'createAccount',
-        'updateAccount',
-        'deleteAccount',
-        'getAccountStatus',
-        'startAccountLogin',
-        'cancelAccountLogin',
-        'logoutAccount',
-        'getAccountQuota',
-        'getAccountAutoTopup',
-      ]);
     }
 
     for (const removedEvidenceOperation of [
@@ -4223,96 +4206,122 @@ describe('createCoreClient', () => {
       amountCents: 2500,
       monthlyCapCents: 10_000,
     };
-    const encodedStatusPath =
-      '/api/app/provider-subscriptions/xai%2Fpreview/accounts/slot%20%EF%BF%BD%2Fa/status';
-    const leadingBomDeletePath =
-      '/api/app/provider-subscriptions/openai-codex/accounts/%EF%BB%BFdefault';
     const operations = [
       {
-        args: [],
-        body: null,
-        method: 'listProviders',
-        request: 'GET /api/app/provider-subscriptions',
+        input: {},
+        body: {},
+        method: 'provider-subscription.provider-list',
+        request: 'POST /api/app/operations/provider-subscription.provider-list',
         response: providers,
         route: { body: providers },
       },
       {
-        args: ['xai'],
-        body: null,
-        method: 'listAccounts',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts',
+        input: { subscriptionProviderId: 'xai' },
+        body: { subscriptionProviderId: 'xai' },
+        method: 'provider-subscription.account-list',
+        request: 'POST /api/app/operations/provider-subscription.account-list',
         response: { accounts: [loggedInAccount] },
         route: { body: { accounts: [loggedInAccount] } },
       },
       {
-        args: ['xai', { accountSlotId: 'team_slot', displayName: 'Team' }],
-        body: { accountSlotId: 'team_slot', displayName: 'Team' },
-        method: 'createAccount',
-        request: 'POST /api/app/provider-subscriptions/xai/accounts',
+        input: {
+          subscriptionProviderId: 'xai',
+          ...{ accountSlotId: 'team_slot', displayName: 'Team' },
+        },
+        body: {
+          subscriptionProviderId: 'xai',
+          ...{ accountSlotId: 'team_slot', displayName: 'Team' },
+        },
+        method: 'provider-subscription.account-create',
+        request: 'POST /api/app/operations/provider-subscription.account-create',
         response: loggedInAccount,
         route: { body: loggedInAccount },
       },
       {
-        args: ['openai-codex', 'default', { displayName: 'Default' }],
-        body: { displayName: 'Default' },
-        method: 'updateAccount',
-        request: 'PATCH /api/app/provider-subscriptions/openai-codex/accounts/default',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ displayName: 'Default' },
+        },
+        body: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ displayName: 'Default' },
+        },
+        method: 'provider-subscription.account-update',
+        request: 'POST /api/app/operations/provider-subscription.account-update',
         response: loggedOutAccount,
         route: { body: loggedOutAccount },
       },
       {
-        args: ['openai-codex', 'default'],
-        body: null,
-        method: 'deleteAccount',
-        request: 'DELETE /api/app/provider-subscriptions/openai-codex/accounts/default',
-        response: undefined,
+        input: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        body: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        method: 'provider-subscription.account-delete',
+        request: 'POST /api/app/operations/provider-subscription.account-delete',
+        response: null,
         route: { status: 204 },
       },
       {
-        args: ['openai-codex', 'default'],
-        body: null,
-        method: 'getAccountStatus',
-        request: 'GET /api/app/provider-subscriptions/openai-codex/accounts/default/status',
+        input: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        body: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        method: 'provider-subscription.account-status',
+        request: 'POST /api/app/operations/provider-subscription.account-status',
         response: loggedOutAccount,
         route: { body: loggedOutAccount },
       },
       {
-        args: ['openai-codex', 'default', { mode: 'device_code' }],
-        body: { mode: 'device_code' },
-        method: 'startAccountLogin',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ mode: 'device_code' },
+        },
+        body: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ mode: 'device_code' },
+        },
+        method: 'provider-subscription.account-login-start',
+        request: 'POST /api/app/operations/provider-subscription.account-login-start',
         response: pendingAccount,
         route: { body: pendingAccount },
       },
       {
-        args: ['openai-codex', 'default', { interactionId: 'interaction_demo' }],
-        body: { interactionId: 'interaction_demo' },
-        method: 'cancelAccountLogin',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login/cancel',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ interactionId: 'interaction_demo' },
+        },
+        body: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ interactionId: 'interaction_demo' },
+        },
+        method: 'provider-subscription.account-login-cancel',
+        request: 'POST /api/app/operations/provider-subscription.account-login-cancel',
         response: loggedOutAccount,
         route: { body: loggedOutAccount },
       },
       {
-        args: ['openai-codex', 'default'],
-        body: null,
-        method: 'logoutAccount',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/logout',
+        input: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        body: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        method: 'provider-subscription.account-logout',
+        request: 'POST /api/app/operations/provider-subscription.account-logout',
         response: loggedOutAccount,
         route: { body: loggedOutAccount },
       },
       {
-        args: ['xai', 'team_slot'],
-        body: null,
-        method: 'getAccountQuota',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/quota',
+        input: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        body: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        method: 'provider-subscription.account-quota',
+        request: 'POST /api/app/operations/provider-subscription.account-quota',
         response: quota,
         route: { body: quota },
       },
       {
-        args: ['xai', 'team_slot'],
-        body: null,
-        method: 'getAccountAutoTopup',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/auto-topup',
+        input: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        body: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        method: 'provider-subscription.account-auto-topup',
+        request: 'POST /api/app/operations/provider-subscription.account-auto-topup',
         response: autoTopup,
         route: { body: autoTopup },
       },
@@ -4320,45 +4329,26 @@ describe('createCoreClient', () => {
     const routes = Object.fromEntries(
       operations.map((operation) => [operation.request, operation.route])
     ) as RouteMap;
-    routes[`GET ${encodedStatusPath}`] = { body: loggedOutAccount };
-    routes[`DELETE ${leadingBomDeletePath}`] = { status: 204 };
     const { client, requests } = createFakeClient(routes);
-    const providerSubscriptions = Reflect.get(client, 'providerSubscriptions') as
-      | Record<
-          | 'listProviders'
-          | 'listAccounts'
-          | 'createAccount'
-          | 'updateAccount'
-          | 'deleteAccount'
-          | 'getAccountStatus'
-          | 'startAccountLogin'
-          | 'cancelAccountLogin'
-          | 'logoutAccount'
-          | 'getAccountQuota'
-          | 'getAccountAutoTopup',
-          (...args: unknown[]) => Promise<unknown>
-        >
-      | undefined;
-
-    expect(providerSubscriptions).toBeDefined();
-
-    if (!providerSubscriptions) {
-      return;
-    }
-
     for (const operation of operations) {
-      const method = providerSubscriptions[operation.method];
-      await expect(Reflect.apply(method, providerSubscriptions, operation.args)).resolves.toEqual(
+      const method = client.operations[operation.method];
+      await expect(Reflect.apply(method, client.operations, [operation.input])).resolves.toEqual(
         operation.response
       );
     }
 
     await expect(
-      providerSubscriptions.getAccountStatus('xai/preview', 'slot \uD800/a')
+      client.operations['provider-subscription.account-status']({
+        subscriptionProviderId: 'xai/preview',
+        accountSlotId: 'slot \uD800/a',
+      })
     ).resolves.toEqual(loggedOutAccount);
     await expect(
-      providerSubscriptions.deleteAccount('openai-codex', '\uFEFFdefault')
-    ).resolves.toBeUndefined();
+      client.operations['provider-subscription.account-delete']({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: '\uFEFFdefault',
+      })
+    ).resolves.toBeNull();
 
     expect(
       requests.slice(0, operations.length).map((request) => `${request.method} ${request.path}`)
@@ -4366,80 +4356,92 @@ describe('createCoreClient', () => {
     expect(requests.slice(0, operations.length).map((request) => request.body)).toEqual(
       operations.map((operation) => operation.body)
     );
-    expect(
-      requests.find((request) => request.path.endsWith('/accounts/default/logout'))?.hasBody
-    ).toBe(false);
     expect(requests.at(-2)).toMatchObject({
-      body: null,
-      method: 'GET',
-      path: encodedStatusPath,
+      body: { subscriptionProviderId: 'xai/preview', accountSlotId: 'slot \uD800/a' },
+      method: 'POST',
+      path: '/api/app/operations/provider-subscription.account-status',
     });
     expect(requests.at(-1)).toMatchObject({
-      body: null,
-      hasBody: false,
-      method: 'DELETE',
-      path: leadingBomDeletePath,
+      body: { subscriptionProviderId: 'openai-codex', accountSlotId: '\uFEFFdefault' },
+      hasBody: true,
+      method: 'POST',
+      path: '/api/app/operations/provider-subscription.account-delete',
     });
 
     const malformedCases = [
       {
-        args: [],
-        method: 'listProviders',
-        request: 'GET /api/app/provider-subscriptions',
+        input: {},
+        method: 'provider-subscription.provider-list',
+        request: 'POST /api/app/operations/provider-subscription.provider-list',
         route: { body: { ...providers, legacyProvider: 'openai_codex' } },
       },
       {
-        args: ['xai'],
-        method: 'listAccounts',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts',
+        input: { subscriptionProviderId: 'xai' },
+        method: 'provider-subscription.account-list',
+        request: 'POST /api/app/operations/provider-subscription.account-list',
         route: { body: { accounts: [], defaultAccountSlotId: 'default' } },
       },
       {
-        args: ['xai', { accountSlotId: 'team_slot', displayName: 'Team' }],
-        method: 'createAccount',
-        request: 'POST /api/app/provider-subscriptions/xai/accounts',
+        input: {
+          subscriptionProviderId: 'xai',
+          ...{ accountSlotId: 'team_slot', displayName: 'Team' },
+        },
+        method: 'provider-subscription.account-create',
+        request: 'POST /api/app/operations/provider-subscription.account-create',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['openai-codex', 'default', { displayName: 'Default' }],
-        method: 'updateAccount',
-        request: 'PATCH /api/app/provider-subscriptions/openai-codex/accounts/default',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ displayName: 'Default' },
+        },
+        method: 'provider-subscription.account-update',
+        request: 'POST /api/app/operations/provider-subscription.account-update',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['openai-codex', 'default'],
-        method: 'getAccountStatus',
-        request: 'GET /api/app/provider-subscriptions/openai-codex/accounts/default/status',
+        input: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        method: 'provider-subscription.account-status',
+        request: 'POST /api/app/operations/provider-subscription.account-status',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['openai-codex', 'default', { mode: 'device_code' }],
-        method: 'startAccountLogin',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ mode: 'device_code' },
+        },
+        method: 'provider-subscription.account-login-start',
+        request: 'POST /api/app/operations/provider-subscription.account-login-start',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['openai-codex', 'default', { interactionId: 'interaction_demo' }],
-        method: 'cancelAccountLogin',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/login/cancel',
+        input: {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+          ...{ interactionId: 'interaction_demo' },
+        },
+        method: 'provider-subscription.account-login-cancel',
+        request: 'POST /api/app/operations/provider-subscription.account-login-cancel',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['openai-codex', 'default'],
-        method: 'logoutAccount',
-        request: 'POST /api/app/provider-subscriptions/openai-codex/accounts/default/logout',
+        input: { subscriptionProviderId: 'openai-codex', accountSlotId: 'default' },
+        method: 'provider-subscription.account-logout',
+        request: 'POST /api/app/operations/provider-subscription.account-logout',
         route: { body: { ...loggedOutAccount, credential: 'secret' } },
       },
       {
-        args: ['xai', 'team_slot'],
-        method: 'getAccountQuota',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/quota',
+        input: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        method: 'provider-subscription.account-quota',
+        request: 'POST /api/app/operations/provider-subscription.account-quota',
         route: { body: { ...quota, rawQuota: {} } },
       },
       {
-        args: ['xai', 'team_slot'],
-        method: 'getAccountAutoTopup',
-        request: 'GET /api/app/provider-subscriptions/xai/accounts/team_slot/auto-topup',
+        input: { subscriptionProviderId: 'xai', accountSlotId: 'team_slot' },
+        method: 'provider-subscription.account-auto-topup',
+        request: 'POST /api/app/operations/provider-subscription.account-auto-topup',
         route: { body: { ...autoTopup, savedPaymentMethod: true } },
       },
     ] as const;
@@ -4448,18 +4450,12 @@ describe('createCoreClient', () => {
         malformedCases.map((testCase) => [testCase.request, testCase.route])
       ) as RouteMap
     );
-    const malformedProviderSubscriptions = Reflect.get(
-      malformedClient,
-      'providerSubscriptions'
-    ) as NonNullable<typeof providerSubscriptions>;
 
     for (const testCase of malformedCases) {
       await expect(
-        Reflect.apply(
-          malformedProviderSubscriptions[testCase.method],
-          malformedProviderSubscriptions,
-          testCase.args
-        )
+        Reflect.apply(malformedClient.operations[testCase.method], malformedClient.operations, [
+          testCase.input,
+        ])
       ).rejects.toBeInstanceOf(ProtocolValidationError);
     }
   });
@@ -4587,17 +4583,19 @@ describe('createCoreClient', () => {
       content: '{}',
     };
     const { client } = createFakeClient({
-      'POST /api/admin/config/reload': {
+      'POST /api/app/operations/runtime.reload': {
         body: {
           status: 'dry-run',
           runtimeConfig: runtimeConfigStatus(),
           plan: runtimeConfigPlan(),
         },
       },
-      'GET /api/admin/config/files': { body: { files: [file.file] } },
-      'GET /api/admin/config/file?id=server': { body: file },
-      'PUT /api/admin/config/file': { body: { file: file.file, diagnostics: [] } },
-      'POST /api/admin/config/validate': {
+      'POST /api/app/operations/runtime.file-list': { body: { files: [file.file] } },
+      'POST /api/app/operations/runtime.file-read': { body: file },
+      'POST /api/app/operations/runtime.file-update': {
+        body: { file: file.file, diagnostics: [] },
+      },
+      'POST /api/app/operations/runtime.validate': {
         body: {
           valid: true,
           diagnostics: [],
@@ -4605,40 +4603,42 @@ describe('createCoreClient', () => {
           plan: runtimeConfigPlan(),
         },
       },
-      'GET /api/admin/config/schemas': {
+      'POST /api/app/operations/runtime.schemas': {
         body: { schemas: [{ kind: 'server', title: 'Server config', schema: {} }] },
       },
-      'DELETE /api/admin/config/file': { status: 204 },
+      'POST /api/app/operations/runtime.file-delete': { status: 204 },
       'POST /api/app/operations/automation.delete': { status: 204 },
     });
 
     await expect(
-      client.runtimeConfig.reload({ dryRun: true, mode: 'safe' })
+      client.operations['runtime.reload']({ dryRun: true, mode: 'safe' })
     ).resolves.toMatchObject({
       status: 'dry-run',
     });
-    await expect(client.runtimeConfig.listFiles()).resolves.toEqual({ files: [file.file] });
-    await expect(client.runtimeConfig.getFile('server')).resolves.toEqual(file);
+    await expect(client.operations['runtime.file-list']({})).resolves.toEqual({
+      files: [file.file],
+    });
+    await expect(client.operations['runtime.file-read']({ id: 'server' })).resolves.toEqual(file);
     await expect(
-      client.runtimeConfig.updateFile({ id: 'server', kind: 'server', content: '{}' })
+      client.operations['runtime.file-update']({ id: 'server', kind: 'server', content: '{}' })
     ).resolves.toEqual({
       file: file.file,
       diagnostics: [],
     });
-    await expect(client.runtimeConfig.validate({ files: [] })).resolves.toMatchObject({
+    await expect(client.operations['runtime.validate']({ files: [] })).resolves.toMatchObject({
       diagnostics: [],
     });
-    await expect(client.runtimeConfig.getSchemas()).resolves.toEqual({
+    await expect(client.operations['runtime.schemas']({})).resolves.toEqual({
       schemas: [{ kind: 'server', title: 'Server config', schema: {} }],
     });
     await expect(
-      client.runtimeConfig.deleteFile({
+      client.operations['runtime.file-delete']({
         id: 'providers/exact.provider.jsonc',
         kind: 'provider',
         expectedRevision: 'exact-revision',
       })
-    ).resolves.toBeUndefined();
-    expect(client.runtimeConfig).not.toHaveProperty('restartStaleSession');
+    ).resolves.toBeNull();
+    expect('runtimeConfig' in client).toBe(false);
     await expect(
       client.operations['automation.delete']({ automationId: 'auto_demo' })
     ).resolves.toBeNull();

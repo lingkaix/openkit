@@ -9,8 +9,6 @@ export * from './errors.js';
 export * from './events.js';
 export * from './http.js';
 export * from './operations.js';
-export * from './provider-subscriptions.js';
 export * from './request-id.js';
-export * from './runtime-config.js';
 export * from './sse.js';
 export * from './transport.js';

@@ -492,12 +492,9 @@ function makeClient(overrides: ClientOverrides = {}) {
       supports: vi.fn().mockReturnValue(false),
     },
     core: { meta: forbidden.meta },
-    runtimeConfig: {
-      getFile: forbidden.runtimeConfig,
-      listFiles: forbidden.runtimeConfig,
-    },
-
     operations: {
+      'runtime.file-read': forbidden.runtimeConfig,
+      'runtime.file-list': forbidden.runtimeConfig,
       'user.disable': forbidden.admin,
       'workspace.access-recovery-read': forbidden.admin,
       'workspace.access-recover': forbidden.admin,
@@ -548,6 +545,10 @@ function makeSharingClient(overrides: SharingOverrides = {}) {
   };
   return {
     ...makeClient({
+      coreWorkspaces: overrides.coreWorkspaces,
+      listAuthorizedWorkspaces: vi
+        .fn()
+        .mockResolvedValue(overrides.authorizedWorkspaces ?? OWNER_WORKSPACES),
       operations: {
         'workspace.member-list': methods.listWorkspaceMembers,
         'workspace.invitation-list': methods.listWorkspaceInvitations,
@@ -561,10 +562,6 @@ function makeSharingClient(overrides: SharingOverrides = {}) {
         'workspace.leave': methods.leaveWorkspace,
         'workspace.ownership-transfer': methods.transferWorkspaceOwnership,
       },
-      coreWorkspaces: overrides.coreWorkspaces,
-      listAuthorizedWorkspaces: vi
-        .fn()
-        .mockResolvedValue(overrides.authorizedWorkspaces ?? OWNER_WORKSPACES),
     }),
     methods,
   };
