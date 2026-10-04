@@ -21,6 +21,98 @@ import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
 
+/**
+ * Reads only positive integer PIDs so an unpublished marker cannot become kill(0) in cleanup.
+ *
+ * @param path Plain PID marker or JSON lock/descendant marker path.
+ * @param field PID field for JSON files; omitted for a plain decimal marker.
+ * @returns Validated PID, or undefined while publication is missing, incomplete, or invalid.
+ */
+function readPublishedPid(path: string, field?: string): number | undefined {
+  try {
+    const content = readFileSync(path, 'utf8').trim();
+    let candidate: unknown;
+    if (field === undefined) {
+      if (!/^\d+$/.test(content)) return undefined;
+      candidate = Number(content);
+    } else {
+      const record = JSON.parse(content);
+      if (record === null || typeof record !== 'object') return undefined;
+      candidate = record[field];
+    }
+    return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0
+      ? candidate
+      : undefined;
+  } catch (error) {
+    if (
+      error instanceof SyntaxError ||
+      (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+test('keeps polling an empty PID marker until a positive PID is published', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-web-pid-marker-'));
+  const marker = join(root, 'web.pid');
+  try {
+    writeFileSync(marker, '');
+    expect(readPublishedPid(marker)).toBeUndefined();
+    writeFileSync(marker, '12345');
+    expect(readPublishedPid(marker)).toBe(12345);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test('keeps polling invalid PID markers', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-web-invalid-pid-'));
+  const marker = join(root, 'web.pid');
+  try {
+    expect(readPublishedPid(marker)).toBeUndefined();
+    for (const content of [
+      ' ',
+      '0',
+      '-0',
+      '-1',
+      '12x',
+      '1.5',
+      'NaN',
+      'Infinity',
+      '1e3',
+      '9007199254740992',
+    ]) {
+      writeFileSync(marker, content);
+      expect(readPublishedPid(marker), content).toBeUndefined();
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test('keeps polling incomplete or non-positive JSON PID fields', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-web-json-pid-'));
+  const marker = join(root, 'process.json');
+  try {
+    for (const content of ['', '{"pid":', 'null', '{}']) {
+      writeFileSync(marker, content);
+      expect(readPublishedPid(marker, 'pid'), content).toBeUndefined();
+    }
+    for (const field of ['pid', 'descendantPid', 'leaderPid']) {
+      for (const value of [0, -1, 1.5, '12345', null, 9007199254740992]) {
+        writeFileSync(marker, JSON.stringify({ [field]: value }));
+        expect(readPublishedPid(marker, field), `${field}: ${value}`).toBeUndefined();
+      }
+      writeFileSync(marker, JSON.stringify({ [field]: 12345 }));
+      expect(readPublishedPid(marker, field)).toBe(12345);
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 /** Reproduces the Material browser handoff after the simulator ends its question-raising Turn. */
 test('preserves Material delivery and delivers a durable simulator answer on the next Task Turn', async ({
   request,
@@ -341,7 +433,16 @@ test('restarts Core on the same port and data root before final cleanup', async 
   const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
 
   try {
-    const firstPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
+    let firstPid: number | undefined;
+    await expect
+      .poll(
+        () => {
+          firstPid = readPublishedPid(lockPath, 'pid');
+          return firstPid;
+        },
+        { message: 'NanoCore did not publish a positive lock PID.' }
+      )
+      .toBeDefined();
     const beforeEnvironment = await readFixtureNativeEnvironment(dataRoot);
     expect(beforeEnvironment).toEqual({
       imageDigest: `sha256:${'a'.repeat(64)}`,
@@ -357,7 +458,16 @@ test('restarts Core on the same port and data root before final cleanup', async 
       targetId: 'target_local',
     });
     await stack.restartCore();
-    const secondPid = JSON.parse(readFileSync(lockPath, 'utf8')).pid as number;
+    let secondPid: number | undefined;
+    await expect
+      .poll(
+        () => {
+          secondPid = readPublishedPid(lockPath, 'pid');
+          return secondPid;
+        },
+        { message: 'NanoCore did not publish a positive lock PID.' }
+      )
+      .toBeDefined();
     const afterTarget = await readFixtureLocalRuntimeTarget(dataRoot);
     expect(await readFixtureNativeEnvironment(dataRoot)).toEqual(beforeEnvironment);
 
@@ -444,18 +554,19 @@ setInterval(() => {}, 1000);
 
   try {
     const markerDeadline = originalDateNow() + 30_000;
-    while (originalDateNow() < markerDeadline && webPid === undefined) {
+    while (
+      originalDateNow() < markerDeadline &&
+      (webPid === undefined || nanoCorePid === undefined)
+    ) {
       if (existsSync(webPidMarker)) {
-        const candidate = Number(readFileSync(webPidMarker, 'utf8'));
-        if (Number.isInteger(candidate)) webPid = candidate;
+        webPid ??= readPublishedPid(webPidMarker);
       }
       // The Web marker follows Core readiness, so the lock bytes have finished publishing.
       if (webPid !== undefined && nanoCorePid === undefined) {
         const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
+        nanoCorePid = readPublishedPid(lockPath, 'pid');
       }
-      if (webPid === undefined) await delay(20);
+      if (webPid === undefined || nanoCorePid === undefined) await delay(20);
     }
 
     if (webPid === undefined) {
@@ -517,12 +628,12 @@ setInterval(() => {}, 1000);
     Date.now = originalDateNow;
     process.kill = originalKill;
     await failurePromise.catch(() => {});
-    if (webPid !== undefined) {
+    if (webPid !== undefined && webPid > 0) {
       try {
         originalKill(-webPid, 'SIGKILL');
       } catch {}
     }
-    if (nanoCorePid !== undefined) {
+    if (nanoCorePid !== undefined && nanoCorePid > 0) {
       try {
         originalKill(nanoCorePid, 'SIGKILL');
       } catch {}
@@ -627,8 +738,7 @@ setTimeout(() => process.exit(23), 2000);
       const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
       // The fake Web child starts only after Core readiness and complete lock publication.
       if (existsSync(webStartedMarker)) {
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
+        nanoCorePid = readPublishedPid(lockPath, 'pid');
       }
       if (nanoCorePid === undefined) await delay(20);
     }
@@ -659,7 +769,7 @@ setTimeout(() => process.exit(23), 2000);
     });
   } finally {
     await failurePromise.catch(() => {});
-    if (nanoCorePid !== undefined) {
+    if (nanoCorePid !== undefined && nanoCorePid > 0) {
       try {
         process.kill(nanoCorePid, 'SIGTERM');
       } catch {}
@@ -813,18 +923,16 @@ setInterval(() => {}, 1000);
 
   try {
     const markerDeadline = Date.now() + 30_000;
-    while (Date.now() < markerDeadline && webPid === undefined) {
+    while (Date.now() < markerDeadline && (webPid === undefined || nanoCorePid === undefined)) {
       if (existsSync(webPidMarker)) {
-        const candidate = Number(readFileSync(webPidMarker, 'utf8'));
-        if (Number.isInteger(candidate)) webPid = candidate;
+        webPid ??= readPublishedPid(webPidMarker);
       }
       // Web startup follows Core readiness and complete lock publication.
       if (webPid !== undefined && nanoCorePid === undefined) {
         const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
+        nanoCorePid = readPublishedPid(lockPath, 'pid');
       }
-      if (webPid === undefined) await delay(20);
+      if (webPid === undefined || nanoCorePid === undefined) await delay(20);
     }
 
     expect(webPid, 'SIGTERM-ignoring fake Web child did not start.').toBeDefined();
@@ -865,7 +973,7 @@ setInterval(() => {}, 1000);
   } finally {
     await failurePromise.catch(() => {});
     for (const pid of [webPid, nanoCorePid]) {
-      if (pid === undefined) continue;
+      if (pid === undefined || pid <= 0) continue;
       try {
         process.kill(pid, 'SIGKILL');
       } catch {}
@@ -933,19 +1041,22 @@ setInterval(() => {}, 1000);
 
   try {
     const markerDeadline = Date.now() + 10_000;
-    while (Date.now() < markerDeadline && descendantPid === undefined) {
+    while (
+      Date.now() < markerDeadline &&
+      (descendantPid === undefined || leaderPid === undefined || nanoCorePid === undefined)
+    ) {
       if (existsSync(descendantMarker)) {
-        const marker = JSON.parse(readFileSync(descendantMarker, 'utf8'));
-        if (Number.isInteger(marker.descendantPid)) descendantPid = marker.descendantPid;
-        if (Number.isInteger(marker.leaderPid)) leaderPid = marker.leaderPid;
+        descendantPid ??= readPublishedPid(descendantMarker, 'descendantPid');
+        leaderPid ??= readPublishedPid(descendantMarker, 'leaderPid');
       }
       // The descendant marker also follows the ready Core's complete lock publication.
       if (descendantPid !== undefined && nanoCorePid === undefined) {
         const lockPath = join(dataRoot, 'server', 'runtime', 'nanocore.lock');
-        const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isInteger(lock.pid)) nanoCorePid = lock.pid;
+        nanoCorePid = readPublishedPid(lockPath, 'pid');
       }
-      if (descendantPid === undefined) await delay(20);
+      if (descendantPid === undefined || leaderPid === undefined || nanoCorePid === undefined) {
+        await delay(20);
+      }
     }
 
     expect(descendantPid, 'SIGTERM-ignoring Web descendant did not start.').toBeDefined();
@@ -990,7 +1101,7 @@ setInterval(() => {}, 1000);
     Date.now = originalDateNow;
     await failurePromise.catch(() => {});
     for (const pid of [descendantPid, leaderPid, nanoCorePid]) {
-      if (pid === undefined) continue;
+      if (pid === undefined || pid <= 0) continue;
       try {
         process.kill(pid, 'SIGKILL');
       } catch {}
