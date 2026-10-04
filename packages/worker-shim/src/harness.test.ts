@@ -527,6 +527,49 @@ function command(operation: string, sequence: number, body: Readonly<Record<stri
 }
 
 describe('session.open workspace initialization', () => {
+  it('resumes after Sandbox recreation only on the retained native root', async () => {
+    const first = harnessFixture();
+    expect(await first.open('as-recreate-predecessor')).toMatchObject({ disposition: 'succeeded' });
+    expect(await first.start('as-recreate-predecessor', 'turn-recreate-1')).toMatchObject({
+      disposition: 'succeeded',
+    });
+    await first.settle('as-recreate-predecessor');
+    expect(
+      await first.send('session.close', first.selector('as-recreate-predecessor'))
+    ).toMatchObject({ disposition: 'succeeded' });
+    const reference = readFileSync(first.referencePath('as-recreate-predecessor'));
+    const resume = { digest: sha256(reference), locator: 'as-recreate-predecessor' };
+    // Sandbox deletion removes disposable roots but retains the complete data mount.
+    rmSync(first.privateRoot, { force: true, recursive: true });
+    rmSync(first.sandboxRoot, { force: true, recursive: true });
+    const reattached = harnessFixture({ root: first.root });
+    expect(await reattached.open('as-recreate-reattached', { resume })).toMatchObject({
+      body: { nativeHandleDigest: resume.digest, nativeHandleState: 'ready', state: 'open' },
+      disposition: 'succeeded',
+    });
+    expect(Buffer.from(reattached.fake.residents[0]!.input.resumeReference!)).toEqual(reference);
+    expect(
+      await reattached.send('session.close', reattached.selector('as-recreate-reattached'))
+    ).toMatchObject({ disposition: 'succeeded' });
+    // A fresh association can use the same logical Thread while mounting different bytes.
+    const fresh = harnessFixture();
+    expect(await fresh.open('as-recreate-fresh', { resume })).toMatchObject({
+      body: { reasonCode: 'missing' },
+      disposition: 'refused',
+    });
+    expect(fresh.fake.residents).toHaveLength(0);
+    expect(fresh.integration.loopbacks.size).toBe(0);
+    expect(readFileSync(first.referencePath(resume.locator))).toEqual(reference);
+    writeFileSync(first.referencePath(resume.locator), 'corrupt reference');
+    const corrupt = harnessFixture({ root: first.root });
+    expect(await corrupt.open('as-recreate-corrupt', { resume })).toMatchObject({
+      body: { reasonCode: 'conflict' },
+      disposition: 'refused',
+    });
+    expect(corrupt.fake.residents).toHaveLength(0);
+    expect(corrupt.integration.loopbacks.size).toBe(0);
+  });
+
   it('initializes the source-less empty work slot before the native runtime opens', async () => {
     const fixture = harnessFixture();
     fixture.writePackage('session-empty', 'initial');

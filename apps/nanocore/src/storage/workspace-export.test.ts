@@ -386,6 +386,7 @@ describe('workspace export verifier', () => {
       completedAt: timestamp,
     };
     const agentSession = {
+      retainedStorage: { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-source' },
       id: 'as_source',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
@@ -663,6 +664,8 @@ describe('workspace export verifier', () => {
     expect.soft(imported.itemRevisions).toHaveLength(7);
     expect.soft(imported.artifacts).toHaveLength(1);
     expect.soft(imported.agentSessions).toHaveLength(1);
+    expect(readFileSync(join(root, 'records/agent-sessions.jsonl'), 'utf8')).not.toContain('wst_');
+    expect(imported.agentSessions[0]).toHaveProperty('retainedStorage', null);
     expect.soft(imported.turnEvents).toHaveLength(1);
 
     const importedThread = imported.threads[0];

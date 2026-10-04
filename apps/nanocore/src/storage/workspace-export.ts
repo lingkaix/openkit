@@ -429,7 +429,11 @@ export function writeWorkspaceExportTree(
       input.workspaceMaterialRevisions
     );
     writeJsonl(join(recordsRoot, 'workspace-materials.jsonl'), input.workspaceMaterials);
-    writeJsonl(join(recordsRoot, 'agent-sessions.jsonl'), history.agentSessions);
+    // Portable history cannot carry source-deployment attachment authority.
+    writeJsonl(
+      join(recordsRoot, 'agent-sessions.jsonl'),
+      history.agentSessions.map((session) => ({ ...session, retainedStorage: null }))
+    );
     writeJsonl(
       join(recordsRoot, 'turn-events.jsonl'),
       history.turnEvents.flatMap(([, events]) => events)

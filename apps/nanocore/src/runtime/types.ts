@@ -226,6 +226,8 @@ export interface PreparedCurrentAgentSession {
 export interface PreparedAgentSessionForTurn {
   /** Reused or fresh AgentSession id authorized for the future Turn. */
   readonly agentSessionId: string;
+  /** Exact authored or native-continuation selection captured before slot planning. */
+  readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
   /** Current predecessor snapshot, or null when the Thread had no current AgentSession. */
   readonly currentAgentSession: PreparedCurrentAgentSession | null;
   /** Whether post-dispatch commit must close the current predecessor before starting the Turn. */

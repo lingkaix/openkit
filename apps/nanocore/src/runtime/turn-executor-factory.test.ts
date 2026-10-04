@@ -21,6 +21,7 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { createDemoWorkspaceForUser, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
+  completeSchedulerLeaseForTerminalTurn,
   createSchedulerAdmissionEntry,
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
@@ -43,7 +44,10 @@ import {
 } from '../test-support/native-environment.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import {
+  recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
 import {
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
@@ -84,7 +88,10 @@ import {
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
-import { agentSessionCompatibilityKeyFromPackage } from './worker-governance-turn-executor.js';
+import {
+  agentSessionCompatibilityKeyFromPackage,
+  WorkerGovernanceTurnExecutor,
+} from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
   createWorkerStorageBinding,
@@ -603,6 +610,7 @@ function createFactoryNanoHostDispatch(
   effects: NanoHostSessionEffectRequest[],
   hooks: {
     onInspect?: () => void;
+    onRetirement?: () => void;
     onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
   } = {}
 ): NanoHostSessionDispatch {
@@ -610,7 +618,12 @@ function createFactoryNanoHostDispatch(
     async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
       const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
       effects.push(request);
-      if (request.kind === 'image.acquire') return { digest: `sha256:${'a'.repeat(64)}` };
+      if (request.kind === 'image.acquire')
+        return {
+          digest: String(request.input.imageReference).startsWith('sha256:')
+            ? request.input.imageReference
+            : `sha256:${'a'.repeat(64)}`,
+        };
       if (request.kind === 'image.inspect') {
         hooks.onInspect?.();
         return nanoHostImageInspection(request);
@@ -634,6 +647,7 @@ function createFactoryNanoHostDispatch(
             : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
       if (request.kind === 'reference.import') return { state: 'imported' };
       if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+        hooks.onRetirement?.();
         return { state: 'deleted' };
       }
       throw new Error(`Unexpected NanoHost effect: ${request.kind}`);
@@ -1817,96 +1831,11 @@ describe('createConfiguredTurnExecutor', () => {
   });
 
   it('does not prove restored binding reuse from SessionCompatibilityKey alone', async () => {
-    const coreDb = createFactoryCoreDb();
-    const sessionCompatibilityKey = `sha256:${'a'.repeat(64)}`;
-    const runtimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
-      adapterId: 'codex',
-      adapterVersion: '0.153.4',
-      harnessCompatibilityKey: 'd'.repeat(64),
-      sessionCompatibilityKey,
-      threadId: 'thread-continuity-key',
-    });
+    // Use a real admitted predecessor, including its immutable package and actual attachment.
+    const admitted = await admitIdleSupplyResident('continuity_key');
+    const { coreDb, environmentPackage } = admitted;
+    const sessionCompatibilityKey = sessionCompatibilityDigest(environmentPackage);
     try {
-      coreDb.sqlite
-        .prepare(
-          `INSERT INTO nanohost_runtime_targets (
-             target_id, identity_id, deployment_id, connection_generation,
-             predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count
-           ) VALUES ('target_continuity_key', 'identity_continuity_key', 'deployment_continuity_key', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
-        )
-        .run('2026-08-21T00:00:00.000Z');
-      createNanoHostHarnessRuntime(coreDb, {
-        adapterId: 'codex',
-        adapterVersion: '0.153.4',
-        harnessBindingRef: 'harness-binding-continuity-key',
-        harnessCompatibilityKey: 'd'.repeat(64),
-        harnessInstanceId: 'harness-continuity-key',
-        imageDigest: `sha256:${'b'.repeat(64)}`,
-        originPhysicalEpoch: 'a'.repeat(64),
-        sandboxBindingRef: 'sandbox-binding-continuity-key',
-        sandboxCompatibilityKey: 'c'.repeat(64),
-        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
-        sandboxRuntimeId: 'sandbox-runtime-continuity-key',
-        runtimeTargetId: 'target_continuity_key',
-        timestamp: '2026-08-21T00:00:00.000Z',
-      });
-      attachNanoHostStorageFixture(coreDb, {
-        agentSessionId: 'as-continuity-key',
-        deploymentId: 'deployment_continuity_key',
-        runtimeTargetId: 'target_continuity_key',
-        sandboxBindingRef: 'sandbox-binding-continuity-key',
-        threadId: 'thread-continuity-key',
-        workspaceId: 'workspace-continuity-key',
-      });
-      openNanoHostAgentSessionBinding(coreDb, {
-        agentSessionCompatibilityKey: runtimeCompatibilityKey,
-        agentSessionId: 'as-continuity-key',
-        agentSessionRuntimeBindingId: 'binding-continuity-key',
-        effectiveSetupGeneration: 1,
-        harnessInstanceId: 'harness-continuity-key',
-        threadId: 'thread-continuity-key',
-        timestamp: '2026-08-21T00:00:00.000Z',
-        workspaceId: 'workspace-continuity-key',
-      });
-      queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          adapterId: 'codex',
-          agentSessionCompatibilityKey: runtimeCompatibilityKey,
-          agentSessionId: 'as-continuity-key',
-          agentSessionRuntimeBindingId: 'binding-continuity-key',
-          effectiveSetupGeneration: 1,
-          resume: null,
-          threadId: 'thread-continuity-key',
-          workspaceId: 'workspace-continuity-key',
-        },
-        harnessInstanceId: 'harness-continuity-key',
-        operation: 'session.open',
-        timestamp: '2026-08-21T00:00:01.000Z',
-      });
-      const command = dispatchNanoHostHarnessOperation(coreDb, {
-        now: () => '2026-08-21T00:00:02.000Z',
-        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
-      });
-      if (!command) {
-        throw new Error('Expected the continuity fixture session.open command.');
-      }
-      settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-sandbox-binding-continuity-key',
-        result: {
-          body: {
-            maxActiveTurns: 1,
-            nativeHandleDigest: 'd'.repeat(64),
-            nativeHandleState: 'ready',
-            state: 'open',
-          },
-          disposition: 'succeeded',
-          harnessInstanceId: 'harness-continuity-key',
-          operationId: command.operationId,
-          schemaVersion: 2,
-          sequence: command.sequence,
-        },
-        timestamp: '2026-08-21T00:00:03.000Z',
-      });
       const runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
@@ -1914,32 +1843,42 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (
         runtime.turnExecutor as unknown as {
-          readonly backend: WorkerGovernanceBackend & {
+          backend: WorkerGovernanceBackend & {
             restoreSharedHarness(
-              sandboxCompatibilityKey: string,
-              harnessCompatibilityKey: string,
-              runtimeTargetId: string,
-              adapterId: 'codex',
+              sandboxKey: string,
+              harnessKey: string,
+              targetId: string,
+              adapterId: string,
               adapterVersion: string
             ): unknown;
           };
         }
       ).backend;
+      const keys = coreDb.sqlite
+        .prepare(`SELECT s.sandbox_compatibility_key AS sandboxKey,
+        h.harness_compatibility_key AS harnessKey, h.adapter_id AS adapterId,
+        h.adapter_version AS adapterVersion FROM sandbox_runtime_records s
+        JOIN harness_instance_records h ON h.sandbox_runtime_id = s.sandbox_runtime_id`)
+        .get() as {
+        sandboxKey: string;
+        harnessKey: string;
+        adapterId: string;
+        adapterVersion: string;
+      };
       backend.restoreSharedHarness(
-        'c'.repeat(64),
-        'd'.repeat(64),
+        keys.sandboxKey,
+        keys.harnessKey,
         'target_continuity_key',
-        'codex',
-        '0.153.4'
+        keys.adapterId,
+        keys.adapterVersion
       );
       const input = {
         agentSessionCompatibilityKey: sessionCompatibilityKey,
-        agentSessionId: 'as-continuity-key',
+        agentSessionId: environmentPackage.scope.agentSessionId,
         reuseAllowed: true,
-        threadId: 'thread-continuity-key',
-        workspaceId: 'workspace-continuity-key',
+        threadId: environmentPackage.scope.threadId,
+        workspaceId: environmentPackage.scope.workspaceId,
       } as const;
-
       await expect(backend.prepareAgentSessionContinuity?.(input)).resolves.toBe(
         'replacement-required'
       );
@@ -2021,10 +1960,17 @@ describe('createConfiguredTurnExecutor', () => {
           .prepare(
             'SELECT lifecycle_state AS lifecycleState FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
           )
-          .get('as-continuity-key')
+          .get(input.agentSessionId)
       ).toEqual({ lifecycleState: 'open' });
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
+      ).toEqual({ count: 2 });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT COUNT(*) AS count FROM scheduler_session_leases WHERE status NOT IN ('released', 'lost', 'failed')"
+          )
+          .get()
       ).toEqual({ count: 1 });
       const replacementGeneration = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment_continuity_key',
@@ -2235,6 +2181,9 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite.close();
         throw error;
       });
+    new FsStore({ dataRoot: coreDb.dataRoot }).updateAgentSession(agentSessionId, {
+      retainedStorage: materialization.retainedStorage!,
+    });
     const recordedDigests: string[] = [];
     backend.bindNativeHandleRecorder(environmentPackage.snapshotId, (digest) => {
       recordedDigests.push(digest);
@@ -6488,7 +6437,9 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
+      const retainedStorage = { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-inspect' };
       const environmentPackage = {
+        extensions: { openkit: { workerStorage: { workSlotRef: retainedStorage.workSlotRef } } },
         scope: {
           agentSessionId: 'as_factory_inspect',
           requestId: null,
@@ -6511,10 +6462,12 @@ describe('createConfiguredTurnExecutor', () => {
         leaseId: 'lease_factory_inspect',
         nativeResume: resume ? { digest: resume, locator: 'as_factory_predecessor' } : null,
         nativeSessionReusable: false,
-        recordNativeHandleDigest: (digest: string) => {
+        recordNativeHandleDigest: (digest: string, actualStorage: typeof retainedStorage) => {
+          expect(actualStorage).toEqual(retainedStorage);
           recordedDigests.push(digest);
         },
         sharedHarness: {
+          sandbox: { workerStorageBinding: { storageRef: retainedStorage.storageRef } },
           adapterId: 'codex',
           bindings: new Map([[environmentPackage.scope.agentSessionId, binding]]),
         },
@@ -8377,6 +8330,465 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it.each([
+    'eviction',
+    'missing-fact',
+    'handoff',
+    'intact',
+    'image-intact',
+    'image-handoff',
+    'cross-thread-missing-fact',
+    'cross-thread-handoff',
+    'cross-thread-closed-handoff',
+    'cross-thread-old-epoch-handoff',
+  ] as const)('ordinary admission preserves native proof across eviction or incompatible replacement after restart: %s', async (scenario) => {
+    const coreDb = createFactoryCoreDb();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const digest = 'a'.repeat(64);
+    const setups = [
+      createTestAgentSetup({
+        adapter: 'codex',
+        agentId: 'agent_resume_a',
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }),
+      createTestAgentSetup({
+        adapter: 'pi',
+        agentId: 'agent_resume_b',
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }),
+    ];
+    for (const setup of setups) admitTestNativeEnvironment(coreDb, setup.manifest);
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('target_resume', 'identity_resume', 'deployment_resume', 1, 1, 1, 1, ?, ?, 1)`
+      )
+      .run('a'.repeat(64), '2999-10-03T00:00:00.000Z');
+    for (const [index, setup] of setups.entries())
+      authorizeNanoHostPackage(
+        coreDb,
+        resolveAgentEnvironmentPackage({
+          coreDb,
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSessionId: `as_seed_${index}`,
+          agentSetup: setup,
+          backend: { kind: 'openshell' },
+          createdAt: '2999-10-03T00:00:00.000Z',
+          requestId: null,
+          triggerActor: { kind: 'user', id: 'user_resume' },
+          turn: {
+            completedAt: null,
+            configVersion: null,
+            durationMs: null,
+            error: null,
+            id: `turn_seed_${index}`,
+            items: [],
+            startedAt: '2999-10-03T00:00:00.000Z',
+            status: 'running',
+            threadId: `thread_resume_${index}`,
+            triggerActor: { kind: 'user', id: 'user_resume' },
+            workspaceId: 'workspace_resume',
+          },
+          turnInput: 'Continue',
+          workspaceCwd: null,
+          workspaceRoots: [],
+        })
+      );
+    let store = new FsStore({ dataRoot: coreDb.dataRoot });
+    let runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      env: {},
+      nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects),
+      store,
+      workerControlGateway: new WorkerControlGateway(),
+    });
+    const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+      .backend;
+    // This regression owns storage, native admission and cleanup; transcript export is a separate boundary.
+    backend.collectTranscript = async () => ({
+      artifactsJsonl: '',
+      eventsJsonl: '',
+      itemsJsonl: '',
+    });
+    let tick = 1;
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      now: () => `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
+      awaitWorkerCompletion: async (aep) => {
+        recordWorkerControlAcceptedRecord(coreDb, {
+          acceptedAt: `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
+          lineage: { ...aep.scope, packageSnapshotId: aep.snapshotId },
+          operation: 'final_status',
+          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+          recordKey: '1',
+          sequence: 1,
+        });
+        return {
+          acceptedAt: `2999-10-03T00:00:${String(tick).padStart(2, '0')}.000Z`,
+          status: 'completed',
+          stopReason: 'completed',
+        };
+      },
+    });
+    upsertSchedulerWorkerPool(coreDb, {
+      allowedBackendKinds: ['openshell'],
+      allowedPlacements: ['local'],
+      allowedWorkspaceScopes: ['local'],
+      budgetClass: 'interactive',
+      currentAdmittedSessionCount: 0,
+      currentQueueDepth: 0,
+      defaultTimeoutMs: 900_000,
+      healthSummary: 'ready',
+      maxConcurrentSessions: 1,
+      poolId: 'pool_resume',
+      queueLimit: 20,
+      status: 'active',
+    });
+    upsertSchedulerCapacityRecord(coreDb, {
+      capacityClass: 'local',
+      concurrencyCeiling: 1,
+      inUseCount: 0,
+      observationSource: 'configured',
+      observedAt: '2999-10-03T00:00:00.000Z',
+      poolId: 'pool_resume',
+      queueDepth: 0,
+      targetId: 'target_resume',
+    });
+    upsertSchedulerTargetHealthRecord(coreDb, {
+      checkResults: [],
+      consecutiveFailureCount: 0,
+      consecutiveSuccessCount: 1,
+      healthState: 'healthy',
+      lastProbeAt: '2999-10-03T00:00:00.000Z',
+      nextProbeAt: '2999-01-01T00:00:00.000Z',
+      targetId: 'target_resume',
+    });
+    const providerRegistry = new ProviderRegistry([
+      {
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        defaultModel: 'openai/gpt-5.2',
+        displayName: 'Resume fixture',
+        id: 'agent-openrouter',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+      },
+    ]);
+    const opens: Record<string, unknown>[] = [];
+    /** Runs real scheduler preparation/commit/start while settling only the external Harness boundary. */
+    const run = async (index: number, agentIndex: number) => {
+      tick = index * 10;
+      createSchedulerAdmissionEntry(coreDb, {
+        now: () => `2999-10-03T00:00:${tick}.000Z`,
+        priorityClass: 'interactive',
+        queueEntryId: `queue_resume_${index}`,
+        requestId: null,
+        requestedAgentId: setups[agentIndex]!.manifest.id,
+        requiredPoolConstraints: ['openshell.local'],
+        threadId: `thread_resume_${agentIndex}`,
+        turnId: `turn_resume_${index}`,
+        turnInput: 'Continue',
+        triggerActor: { kind: 'user', id: 'user_resume' },
+        workspaceId: 'workspace_resume',
+      });
+      let done = false;
+      const running = runSchedulerDispatchLoop({
+        agentManifests: setups.map((setup) => setup.manifest),
+        coreDb,
+        createAgentSessionId: () => `as_resume_${index}`,
+        createLeaseId: () => `lease_resume_${index}`,
+        createPlanId: () => `plan_resume_${index}`,
+        expectedControlMode: 'poll',
+        expectedDataPlaneMode: 'openshell-files',
+        gatewayConfig: createTestGatewayConfig(),
+        heartbeatIntervalMs: 10_000,
+        heartbeatTimeoutMs: 30_000,
+        leaseDurationMs: 900_000,
+        maxDispatches: 1,
+        now: () => `2999-10-03T00:00:${tick}.000Z`,
+        providerRegistry,
+        schedulerEpoch: 1,
+        startupTimeoutMs: 120_000,
+        store,
+        turnExecutor: executor,
+      }).finally(() => {
+        done = true;
+      });
+      // Observe the rejection immediately while the external-command driver drains.
+      void running.catch(() => undefined);
+      for (let attempt = 0; attempt < 5000 && !done; attempt += 1) {
+        const integrations = coreDb.sqlite
+          .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+          .all() as { ref: string }[];
+        for (const integration of integrations) {
+          const command = dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.ref,
+          });
+          if (!command) continue;
+          runtime.acceptNanoHostHarnessCommand(command);
+          if (command.operation === 'session.open') opens.push(command.body);
+          const body =
+            command.operation === 'session.close'
+              ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+              : command.operation === 'turn.start'
+                ? { state: 'started', nativeHandleState: 'ready', nativeHandleDigest: digest }
+                : command.operation === 'session.open'
+                  ? {
+                      maxActiveTurns: 1,
+                      state: 'open',
+                      nativeHandleState: 'ready',
+                      nativeHandleDigest: digest,
+                    }
+                  : {
+                      state: 'open',
+                      childState: 'absent',
+                      cleanupState: 'clean',
+                      nativeHandleState: 'ready',
+                      nativeHandleDigest: digest,
+                    };
+          const result = {
+            body,
+            disposition: 'succeeded' as const,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            schemaVersion: 2 as const,
+            sequence: command.sequence,
+          };
+          settleNanoHostHarnessOperation(coreDb, {
+            result,
+            sandboxIntegrationBindingRef: integration.ref,
+            timestamp: `2999-10-03T00:00:${tick}.000Z`,
+          });
+          runtime.acceptNanoHostHarnessResult(result);
+        }
+        if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      }
+      expect(done).toBe(true);
+      const dispatched = await running;
+      expect(dispatched.startedTurns).toHaveLength(1);
+      completeSchedulerLeaseForTerminalTurn(coreDb, store.getTurnById(`turn_resume_${index}`));
+      expect(store.getTurnById(`turn_resume_${index}`).status).toBe('completed');
+    };
+    try {
+      await run(1, 0);
+      const original = effects.find((effect) => effect.kind === 'sandbox.create')!.input.storage;
+      expect.soft(store.getAgentSession('as_resume_1')).toMatchObject({
+        nativeHandleDigest: digest,
+        retainedStorage: {
+          storageRef: (original as { storageRef: string }).storageRef,
+          workSlotRef: workerStorageDefaultWorkSlotRef('workspace_resume', 'thread_resume_0'),
+        },
+      });
+      if (scenario !== 'eviction') {
+        const predecessor = store.getAgentSession('as_resume_1');
+        // Persist the exact crash/pre-fact state; the write-once API must not erase a live fact.
+        const recordPath = join(
+          coreDb.dataRoot,
+          'workspaces/workspace_resume/runtime/agent-sessions/as_resume_1/session.json'
+        );
+        const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+        if (!['intact', 'image-intact'].includes(scenario)) record.nativeHandleDigest = null;
+        if (['missing-fact', 'cross-thread-missing-fact'].includes(scenario))
+          record.retainedStorage = null;
+        writeFileSync(recordPath, JSON.stringify(record));
+        store = new FsStore({ dataRoot: coreDb.dataRoot });
+        runtime = createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, {
+            onRetirement: () => {
+              if (!['cross-thread-handoff', 'cross-thread-closed-handoff'].includes(scenario))
+                return;
+              // Observe Core handoff at the first external retirement effect, not only afterward.
+              expect(store.getAgentSession(predecessor.id)).toMatchObject({
+                nativeHandleDigest: digest,
+                retainedStorage: predecessor.retainedStorage,
+              });
+              expect(
+                coreDb.sqlite
+                  .prepare(
+                    'SELECT native_handle_digest AS digest FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+                  )
+                  .get(predecessor.id)
+              ).toEqual({ digest });
+            },
+          }),
+          store,
+          workerControlGateway: new WorkerControlGateway(),
+        });
+        const restoredBackend = (
+          runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend }
+        ).backend;
+        restoredBackend.collectTranscript = backend.collectTranscript;
+        Object.assign(executor, { backend: restoredBackend });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT native_handle_state AS state, native_handle_digest AS digest FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+            )
+            .get(predecessor.id)
+        ).toMatchObject({ state: 'ready', digest });
+        if (scenario === 'cross-thread-closed-handoff') {
+          coreDb.sqlite
+            .prepare("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'closed'")
+            .run();
+        }
+        if (scenario === 'cross-thread-old-epoch-handoff') {
+          const packageDb = openWorkspaceDb(coreDb.dataRoot, predecessor.workspaceId);
+          let priorPackage: AgentEnvironmentPackage;
+          try {
+            priorPackage = requireAgentEnvironmentPackageSnapshot(
+              packageDb,
+              predecessor.workspaceId,
+              predecessor.environmentPackageSnapshotId!
+            ).snapshot;
+          } finally {
+            packageDb.sqlite.close();
+          }
+          const liveBackend = restoredBackend as WorkerGovernanceBackend & {
+            restoreSession(environmentPackage: AgentEnvironmentPackage, leaseId: string): void;
+            sessions: Map<
+              string,
+              { sharedHarness: { bindings: Map<string, { nativeHandleDigest: string | null }> } }
+            >;
+          };
+          const lease = coreDb.sqlite
+            .prepare(
+              'SELECT lease_id AS leaseId FROM worker_backend_sessions WHERE agent_session_id = ?'
+            )
+            .get(predecessor.id) as { leaseId: string };
+          liveBackend.restoreSession(priorPackage, lease.leaseId);
+          // The durable ready result may precede publication to the volatile binding cache.
+          liveBackend.sessions
+            .get(priorPackage.snapshotId)!
+            .sharedHarness.bindings.get(predecessor.id)!.nativeHandleDigest = null;
+          coreDb.sqlite
+            .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+            .run('f'.repeat(64));
+          coreDb.sqlite
+            .prepare(
+              "UPDATE sandbox_runtime_records SET lifecycle_state = 'failed', health_state = 'unknown', drain_state = 'draining', cleanup_state = 'unknown'"
+            )
+            .run();
+          coreDb.sqlite.prepare("UPDATE worker_storage_bindings SET state = 'unknown'").run();
+        }
+        const crossThread = scenario.startsWith('cross-thread-');
+        const imageReplacement = scenario.startsWith('image-');
+        if (imageReplacement) {
+          setups[0]!.manifest.runtime.image = {
+            kind: 'reference',
+            pullPolicy: 'if-not-present',
+            ref: `sha256:${'7'.repeat(64)}`,
+          };
+          admitTestNativeEnvironment(coreDb, setups[0]!.manifest);
+        } else if (!crossThread) {
+          setups[0]!.manifest.runtime.version = 'test-new-version';
+        }
+        const effectsBefore = [...effects];
+        if (['missing-fact', 'cross-thread-missing-fact'].includes(scenario)) {
+          await expect(run(2, crossThread ? 1 : 0)).rejects.toMatchObject({
+            code: 'recovery_required',
+            status: 409,
+          });
+          expect(effects).toEqual(effectsBefore);
+          expect(
+            coreDb.sqlite.prepare('SELECT drain_state AS state FROM sandbox_runtime_records').all()
+          ).toEqual([{ state: 'accepting' }]);
+          expect(
+            coreDb.sqlite.prepare('SELECT drain_state AS state FROM harness_instance_records').all()
+          ).toEqual([{ state: 'accepting' }]);
+          expect(opens).toHaveLength(1);
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            status: 'idle',
+            nativeHandleDigest: null,
+            retainedStorage: null,
+          });
+          expect(
+            coreDb.sqlite
+              .prepare(
+                'SELECT native_handle_state AS state, native_handle_digest AS digest FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+              )
+              .get(predecessor.id)
+          ).toMatchObject({ state: 'ready', digest });
+          expect(store.listThreadAgentSessions('workspace_resume', 'thread_resume_0')).toHaveLength(
+            1
+          );
+        } else if (crossThread) {
+          await run(2, 1);
+          expect(opens).toHaveLength(2);
+          expect(opens[1]).toMatchObject({ resume: null });
+          expect(
+            effects.slice(effectsBefore.length).some((effect) => effect.kind === 'sandbox.delete')
+          ).toBe(scenario !== 'cross-thread-old-epoch-handoff');
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+              .get(predecessor.id)
+          ).toBeUndefined();
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            nativeHandleDigest: digest,
+            retainedStorage: predecessor.retainedStorage,
+          });
+          expect(store.getAgentSession('as_resume_2').retainedStorage?.storageRef).not.toBe(
+            predecessor.retainedStorage?.storageRef
+          );
+        } else {
+          await run(2, 0);
+          const creates = effects.filter((effect) => effect.kind === 'sandbox.create');
+          expect(opens).toHaveLength(2);
+          expect(opens[1]).toMatchObject({ resume: { digest, locator: predecessor.id } });
+          if (imageReplacement) {
+            expect(creates).toHaveLength(2);
+            expect(
+              effects.slice(effectsBefore.length).some((effect) => effect.kind === 'sandbox.delete')
+            ).toBe(true);
+          }
+          // Version-only native replacement may keep the compatible Sandbox; every mount keeps exact targets.
+          for (const create of creates) {
+            expect(create.input.storage).toMatchObject({
+              storageRef: (original as { storageRef: string }).storageRef,
+              targets: (original as { targets: unknown }).targets,
+            });
+          }
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT storage_ref AS storageRef FROM worker_storage_bindings')
+              .all()
+          ).toEqual([{ storageRef: (original as { storageRef: string }).storageRef }]);
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            status: 'closed',
+            nativeHandleDigest: digest,
+            retainedStorage: predecessor.retainedStorage,
+          });
+          expect(store.getAgentSession('as_resume_2').retainedStorage).toEqual(
+            predecessor.retainedStorage
+          );
+        }
+        return;
+      }
+      await run(2, 1);
+      expect(opens[1]).toMatchObject({ resume: null });
+      expect(
+        effects.filter((effect) => effect.kind === 'sandbox.create')[1]!.input.storage
+      ).not.toMatchObject({ storageRef: (original as { storageRef: string }).storageRef });
+      expect(effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(true);
+      // Re-read durable AgentSession history rather than relying on the first process's Store cache.
+      store = new FsStore({ dataRoot: coreDb.dataRoot });
+      await run(3, 0);
+      const creates = effects.filter((effect) => effect.kind === 'sandbox.create');
+      expect(creates).toHaveLength(3);
+      expect(creates[2]!.input.storage).toMatchObject({
+        storageRef: (original as { storageRef: string }).storageRef,
+        targets: (original as { targets: unknown }).targets,
+      });
+      expect(opens[2]).toMatchObject({ resume: { digest, locator: 'as_resume_1' } });
+      expect(store.getAgentSession('as_resume_3').retainedStorage).toEqual(
+        store.getAgentSession('as_resume_1').retainedStorage
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  }, 30_000);
+
   it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
@@ -8601,6 +9013,13 @@ describe('createConfiguredTurnExecutor', () => {
             childState: 'absent',
           });
         const materialized = await materializing;
+        // Direct backend admission supplies the actual attachment that ordinary launch records.
+        new FsStore({ dataRoot: coreDb.dataRoot }).updateAgentSession(
+          environmentPackage.scope.agentSessionId,
+          {
+            retainedStorage: materialized.retainedStorage!,
+          }
+        );
         const sandboxId = backend.sessions.get(environmentPackage.snapshotId)!.sharedHarness.sandbox
           .sandboxRuntimeId;
         if (index === 0) originalOpenCodeSandboxId = sandboxId;
@@ -8944,6 +9363,13 @@ describe('createConfiguredTurnExecutor', () => {
 
       anchorNanoHostMaterialization(coreDb, backend, firstPackage);
       const firstMaterialization = await backend.materialize(firstPackage, { workspaceRoots: [] });
+      // Keep the real admitted fact when this direct fixture accepts ready proof.
+      new FsStore({ dataRoot: coreDb.dataRoot }).updateAgentSession(
+        firstPackage.scope.agentSessionId,
+        {
+          retainedStorage: firstMaterialization.retainedStorage!,
+        }
+      );
       const recordedDigests: string[] = [];
       backend.bindNativeHandleRecorder?.(firstPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
@@ -9083,6 +9509,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run();
       coreDb.sqlite.prepare('UPDATE harness_instance_records SET active_turn_count = 0').run();
+      // This synthetic history tests closed occupancy, not an accepted native proof without provenance.
       coreDb.sqlite
         .prepare(
           `INSERT INTO agent_session_runtime_bindings (
@@ -9092,13 +9519,12 @@ describe('createConfiguredTurnExecutor', () => {
              lifecycle_state, current_turn_id, current_lease_id, next_turn_sequence,
              cleanup_state, created_at, updated_at, image_digest
            ) SELECT 'binding_closed_history', harness_instance_id, 'as_closed_history',
-                    'workspace_closed_history', 'thread_closed_history', ?, 1, 'ready', ?,
+                    'workspace_closed_history', 'thread_closed_history', ?, 1, 'absent', NULL,
                     'closed', NULL, NULL, 1, 'clean', ?, ?, ?
              FROM harness_instance_records LIMIT 1`
         )
         .run(
           'f'.repeat(64),
-          'e'.repeat(64),
           '2026-09-06T00:00:00.000Z',
           '2026-09-06T00:00:00.000Z',
           `sha256:${'f'.repeat(64)}`
@@ -10266,7 +10692,15 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       firstBackend.requireLeaseId = (snapshotId) => `lease-${snapshotId}`;
       anchorNanoHostMaterialization(coreDb, firstBackend, firstPackage);
-      await firstBackend.materialize(firstPackage, { workspaceRoots: [] });
+      const firstMaterialization = await firstBackend.materialize(firstPackage, {
+        workspaceRoots: [],
+      });
+      new FsStore({ dataRoot: coreDb.dataRoot }).updateAgentSession(
+        firstPackage.scope.agentSessionId,
+        {
+          retainedStorage: firstMaterialization.retainedStorage!,
+        }
+      );
       const harness = coreDb.sqlite
         .prepare(
           `SELECT harness_instance_id AS harnessInstanceId,
@@ -10318,6 +10752,7 @@ describe('createConfiguredTurnExecutor', () => {
                native_handle_digest = ?, cleanup_state = 'clean'`
         )
         .run('9'.repeat(64));
+      // The first binding retains ready proof for the positive reuse check; the synthetic incompatible Harness owns only restart retirement and has no accepted native proof.
       const unprovedPackage = packageFor(
         'as_restart_unproved_other_harness',
         'thread_restart_unproved_other_harness',
@@ -10361,11 +10796,11 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
-           SET lifecycle_state = 'open', native_handle_state = 'ready',
-               native_handle_digest = ?, cleanup_state = 'clean'
+           SET lifecycle_state = 'open', native_handle_state = 'absent',
+               native_handle_digest = NULL, cleanup_state = 'clean'
            WHERE agent_session_runtime_binding_id = 'binding-restart-unproved-other'`
         )
-        .run('8'.repeat(64));
+        .run();
       coreDb.sqlite
         .prepare(
           `UPDATE scheduler_session_leases
@@ -10725,13 +11160,15 @@ describe('createConfiguredTurnExecutor', () => {
         timestamp: '2026-09-11T00:00:01.000Z',
         workspaceId: 'workspace_restart_selected',
       });
+      // This regression owns selected-storage release without native proof. Missing-fact ready proof
+      // must refuse, as the ordinary restart/replacement regression above proves independently.
       coreDb.sqlite
         .prepare(
           `UPDATE agent_session_runtime_bindings
-             SET lifecycle_state = 'open', native_handle_state = 'ready',
-                 native_handle_digest = ?, cleanup_state = 'clean'`
+             SET lifecycle_state = 'open', native_handle_state = 'absent',
+                 native_handle_digest = NULL, cleanup_state = 'clean'`
         )
-        .run('8'.repeat(64));
+        .run();
       const store = new FsStore({ dataRoot: coreDb.dataRoot });
       const requestId = '00000000-0000-4000-8000-00000000e501';
       const selectedChoice = attached

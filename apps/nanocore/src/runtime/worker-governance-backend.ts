@@ -60,10 +60,15 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   readonly admissionLeaseId?: string;
   /** Current Core AgentSession identity. */
   readonly agentSessionId: string;
-  /** Exact desired compatibility key derived from current static owners. */
-  readonly agentSessionCompatibilityKey: string;
+  /** Desired compatibility key; absent for proof-only inspection before package planning. */
+  readonly agentSessionCompatibilityKey?: string;
   /** Current secret-free desired package required to prove existing-binding reuse or retire a Sandbox; absence and package-free close need no supply proof. */
   readonly environmentPackage?: AgentEnvironmentPackagePreview;
+  /** Hands off accepted ready proof before inspection permits replacement or retirement. */
+  readonly recordNativeHandleDigest?: (
+    digest: string,
+    retainedStorage: { storageRef: string; workSlotRef: string }
+  ) => void;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
   /** Exact retained-storage selection whose attached Sandbox may be retired. */
@@ -103,8 +108,9 @@ export type WorkerGovernanceAgentSessionContinuityDisposition =
 
 /** Signals that existing scheduler admission must remain queued for physical runtime capacity. */
 export class WorkerGovernanceCapacityUnavailableError extends Error {
-  public constructor() {
-    super('Worker runtime capacity is saturated.');
+  /** Preserves the product-safe capacity or readiness reason while retaining scheduler queue semantics. */
+  public constructor(message = 'Worker runtime capacity is saturated.') {
+    super(message);
     this.name = 'WorkerGovernanceCapacityUnavailableError';
   }
 }
@@ -605,9 +611,11 @@ interface OpenShellWorkspaceBundleFileInventoryEntry {
 }
 
 /**
- * Product-safe materialization summary returned by a worker governance backend.
+ * Backend materialization result with product-safe summaries and private attachment provenance.
  */
 export interface WorkerGovernanceMaterializationRecord {
+  /** Actual admitted private association and slot, recorded before native work. */
+  retainedStorage?: { storageRef: string; workSlotRef: string };
   /** Comparable accepted-base commit contexts for retained Git work slots, never capture cursors. */
   workspaceBaseCommits?: Record<string, string>;
   /** Backend kind selected for materialization. */
@@ -793,7 +801,10 @@ export interface WorkerGovernanceBackend {
    * @param packageSnapshotId Exact live or restored package snapshot.
    * @param record Records one accepted `nativeHandleDigest` on the Turn's AgentSession.
    */
-  bindNativeHandleRecorder?(packageSnapshotId: string, record: (digest: string) => void): void;
+  bindNativeHandleRecorder?(
+    packageSnapshotId: string,
+    record: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
+  ): void;
 
   /**
    * Applies a dynamic package update when supported.

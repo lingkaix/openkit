@@ -103,6 +103,7 @@ import {
   prepareNanoHostContextPackageImports,
   removeNanoHostStagedExport,
   resolveNanoHostExportPath,
+  WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -277,6 +278,17 @@ function createNanoHostWorkerLifecycleRuntime(
 ): ConfiguredWorkerLifecycleRuntime {
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
+    (agentSessionId, digest, retainedStorage) => {
+      if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
+        throw new Error('The self-check executor cannot record real native proof.');
+      }
+      turnExecutor.recordNativeHandleDigest(
+        sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
+        agentSessionId,
+        digest,
+        retainedStorage
+      );
+    },
     nanoHostSessionDispatch,
     workerControlGateway,
     vaultBackend
@@ -400,7 +412,9 @@ interface NanoHostBackendTurnSession {
   /** Predecessor resume pair for a new binding; null starts a new native conversation. */
   readonly nativeResume: WorkerGovernanceNativeResume | null;
   /** AgentSession owner bound by the executor; receives each accepted ready proof at once. */
-  recordNativeHandleDigest: ((digest: string) => void) | null;
+  recordNativeHandleDigest:
+    | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+    | null;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
   readonly agentSessionCompatibilityKey: string;
@@ -473,7 +487,9 @@ interface NanoHostSharedSandbox {
 
 /** One incompatible resident Sandbox whose complete private occupancy is proved idle. */
 interface NanoHostIdleSandboxEviction {
-  readonly bindings: NanoHostAgentSessionContinuityInspection[];
+  readonly bindings: Array<
+    NanoHostAgentSessionContinuityInspection & { readonly lifecycleState: string }
+  >;
   readonly bridgeOpen: boolean;
   readonly closeAgentSessions: boolean;
   readonly originPhysicalEpoch: string;
@@ -573,11 +589,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * Creates the NanoHost backend over the composition root's one session dispatcher.
    *
    * @param coreDb Durable Core database and lineage source.
+   * @param recordNativeHandleDigest Existing Core recorder for proof on an eviction victim.
    * @param sessionDispatch Optional dispatcher; production composition always supplies it.
    * @param workerControlGateway Optional existing semantic worker-control owner.
+   * @param collectionVaultBackend Existing Vault owner for private release snapshots.
    */
   public constructor(
     private readonly coreDb: CoreDb,
+    private readonly recordNativeHandleDigest: (
+      agentSessionId: string,
+      digest: string,
+      retainedStorage: { storageRef: string; workSlotRef: string }
+    ) => void,
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
     private readonly collectionVaultBackend?: () => VaultBackend
@@ -1155,11 +1178,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       runtimeTargets[0].ready !== 1 ||
       runtimeTargets[0].freshEmpty !== 1
     ) {
-      throw new Error('The configured NanoHost RuntimeTarget is not ready for admission.');
+      throw new WorkerGovernanceCapacityUnavailableError(
+        'The configured NanoHost RuntimeTarget is not ready for admission.'
+      );
     }
     const inspection = inspectNanoHostAgentSessionContinuity(this.coreDb, input);
     if (!inspection) {
       return 'absent';
+    }
+    // Compatibility decides placement, never whether an already-accepted proof survives.
+    if (input.recordNativeHandleDigest) {
+      this.handoffDurableAgentSessionProof(inspection, input.recordNativeHandleDigest);
     }
     if (
       !this.hasProcessLocalAgentSession(inspection) &&
@@ -1696,13 +1725,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     });
   }
 
-  /** Reports one-Sandbox capacity without changing durable or physical runtime state. */
+  /** Reports capacity after preserving any retiring binding's proof, without runtime effects. */
   public inspectMaterializationCapacity(
     environmentPackage: AgentEnvironmentPackagePreview
   ): 'available' | 'capacity-saturated' {
-    return this.inspectIncompatibleIdleSandbox(environmentPackage) === 'capacity-saturated'
-      ? 'capacity-saturated'
-      : 'available';
+    const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
+    if (eviction === 'capacity-saturated') return 'capacity-saturated';
+    for (const binding of eviction?.bindings ?? []) {
+      this.handoffDurableAgentSessionProof(binding);
+    }
+    return 'available';
   }
 
   /** Finds an idle replacement or a fenced predecessor resident proved absent in a fresh Epoch. */
@@ -1825,11 +1857,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 b.lifecycle_state AS lifecycleState,
                 b.current_turn_id AS currentTurnId,
                 b.current_lease_id AS currentLeaseId,
-                b.cleanup_state AS cleanupState
+                b.cleanup_state AS cleanupState,
+                b.native_handle_state AS nativeHandleState,
+                b.native_handle_digest AS nativeHandleDigest
          FROM agent_session_runtime_bindings b
          JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
          WHERE h.sandbox_runtime_id = ?
-           AND b.lifecycle_state <> 'closed'
          ORDER BY b.agent_session_runtime_binding_id`
       )
       .all(sandbox.sandboxRuntimeId) as Array<{
@@ -1842,6 +1875,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       readonly harnessCompatibilityKey: string;
       readonly harnessInstanceId: string;
       readonly lifecycleState: string;
+      readonly nativeHandleState: string;
+      readonly nativeHandleDigest: string | null;
     }>;
     if (
       bindings.some(
@@ -1849,6 +1884,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           binding.currentTurnId !== null ||
           binding.currentLeaseId !== null ||
           (!physicalAbsent &&
+            binding.lifecycleState !== 'closed' &&
             (binding.lifecycleState !== 'open' ||
               binding.cleanupState !== 'clean' ||
               this.agentSessionCloseOwners.has(binding.agentSessionRuntimeBindingId)))
@@ -1880,6 +1916,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         harnessBindingRef: binding.harnessBindingRef,
         harnessCompatibilityKey: binding.harnessCompatibilityKey,
         harnessInstanceId: binding.harnessInstanceId,
+        lifecycleState: binding.lifecycleState,
+        nativeHandleDigest:
+          binding.nativeHandleState === 'ready' ? binding.nativeHandleDigest : null,
         reusable: false,
       })),
       bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
@@ -1922,6 +1961,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (selectedBinding.currentSandboxBindingRef === eviction.sandboxBindingRef) {
             authorizedReplacementBinding = selectedBinding;
           }
+        }
+        // Every row removed by whole-Sandbox retirement must settle proof before drain.
+        for (const binding of eviction.bindings) {
+          this.handoffDurableAgentSessionProof(binding);
         }
         const timestamp = new Date().toISOString();
         const physicalAbsentFlag = Number(eviction.physicalAbsent);
@@ -1967,6 +2010,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       if (eviction.closeAgentSessions) {
         for (const binding of eviction.bindings) {
+          if (binding.lifecycleState === 'closed') continue;
           try {
             await this.closeDurableAgentSession(binding);
           } catch (error) {
@@ -2552,6 +2596,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     return {
       ...(workspaceBaseCommits ? { workspaceBaseCommits } : {}),
+      retainedStorage: {
+        storageRef: sharedSandbox.workerStorageBinding.storageRef,
+        workSlotRef: plannedWorkSlotRef,
+      },
       backendKind: 'openshell',
       command: {
         argv: [...environmentPackage.runtime.command.argv],
@@ -2772,7 +2820,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    */
   public bindNativeHandleRecorder(
     packageSnapshotId: string,
-    record: (digest: string) => void
+    record: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
   ): void {
     const session = this.requireSession(packageSnapshotId);
     session.recordNativeHandleDigest = record;
@@ -2799,7 +2847,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!session.recordNativeHandleDigest) {
       throw new Error('NanoHost accepted native ready proof without its AgentSession recorder.');
     }
-    session.recordNativeHandleDigest(digest);
+    session.recordNativeHandleDigest(digest, {
+      storageRef: session.sharedHarness.sandbox.workerStorageBinding.storageRef,
+      workSlotRef: packageWorkerStorageWorkSlotRef(session.environmentPackage),
+    });
     session.acceptedProofUnrecorded = false;
   }
 
@@ -3528,13 +3579,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return session;
   }
 
-  /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
-  private async closeDurableAgentSession(
-    inspection: NanoHostAgentSessionContinuityInspection
-  ): Promise<void> {
-    if (this.agentSessionCloseOwners.has(inspection.agentSessionRuntimeBindingId)) {
-      throw new Error('NanoHost AgentSession close already has a live producer.');
-    }
+  /** Reads the immutable prior package and lease shared by proof handoff and local close. */
+  private readDurableAgentSession(inspection: NanoHostAgentSessionContinuityInspection): {
+    environmentPackage: AgentEnvironmentPackage;
+    leaseId: string;
+  } {
     const latest = this.coreDb.sqlite
       .prepare(
         'SELECT lease_id AS leaseId, workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? ORDER BY created_at DESC, lease_id DESC LIMIT 1'
@@ -3555,12 +3604,121 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       workspaceDb.sqlite.close();
     }
-    this.restoreSession(environmentPackage, latest.leaseId);
+    return { environmentPackage, leaseId: latest.leaseId };
+  }
+
+  /** Restores a temporary Turn handle only for collection and local close. */
+  private restoreDurableAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): NanoHostBackendTurnSession {
+    const { environmentPackage, leaseId } = this.readDurableAgentSession(inspection);
+    this.restoreSession(environmentPackage, leaseId);
+    return this.requireSession(environmentPackage.snapshotId);
+  }
+
+  /**
+   * Joins exact persisted binding proof and attachment through the existing Core recorder. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
+   */
+  private handoffDurableAgentSessionProof(
+    inspection: NanoHostAgentSessionContinuityInspection,
+    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
+  ): void {
+    const digest = inspection.nativeHandleDigest;
+    if (!digest) return;
+    const liveSession = [...this.sessions.values()].find(
+      (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
+    );
+    if (liveSession) liveSession.acceptedProofUnrecorded = true;
+    const { environmentPackage, leaseId } = this.readDurableAgentSession(inspection);
+    const identity = this.planSession(environmentPackage);
+    const anchor = this.findDurableBackendSession(identity);
+    const attachment = this.coreDb.sqlite
+      .prepare(
+        `SELECT s.sandbox_binding_ref AS sandboxBindingRef, s.runtime_target_id AS runtimeTargetId,
+                s.origin_physical_epoch AS originPhysicalEpoch
+         FROM agent_session_runtime_bindings b
+         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+         JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+         WHERE b.agent_session_runtime_binding_id = ? AND b.agent_session_id = ?
+           AND h.harness_instance_id = ? AND h.harness_binding_ref = ?
+           AND h.harness_compatibility_key = ? AND b.native_handle_state = 'ready'
+           AND b.native_handle_digest = ? AND b.workspace_id = ? AND b.thread_id = ?
+           AND b.agent_session_compatibility_key = ? AND s.sandbox_compatibility_key = ?`
+      )
+      .get(
+        inspection.agentSessionRuntimeBindingId,
+        inspection.agentSessionId,
+        inspection.harnessInstanceId,
+        inspection.harnessBindingRef,
+        inspection.harnessCompatibilityKey,
+        digest,
+        environmentPackage.scope.workspaceId,
+        environmentPackage.scope.threadId,
+        nanoHostAgentSessionCompatibilityKey(environmentPackage),
+        nanoHostSandboxCompatibilityKey(environmentPackage)
+      ) as
+      | { sandboxBindingRef: string; runtimeTargetId: string; originPhysicalEpoch: string }
+      | undefined;
+    if (
+      !anchor ||
+      anchor.leaseId !== leaseId ||
+      !attachment ||
+      environmentPackage.scope.agentSessionId !== inspection.agentSessionId ||
+      attachment.runtimeTargetId !== identity.runtimeTargetId ||
+      attachment.originPhysicalEpoch !== anchor.originPhysicalEpoch ||
+      inspection.harnessCompatibilityKey !== nanoHostHarnessCompatibilityKey(environmentPackage)
+    ) {
+      throw new Error('NanoHost native proof does not match its durable package and attachment.');
+    }
+    // A fenced attachment still proves where accepted native bytes belong; only reuse needs attached state.
+    const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
+      sandboxBindingRef: attachment.sandboxBindingRef,
+    });
+    if (!storage || storage.runtimeTargetId !== attachment.runtimeTargetId) {
+      throw new Error('NanoHost native proof has no exact retained-storage association.');
+    }
+    const retainedStorage = {
+      storageRef: storage.storageRef,
+      workSlotRef: packageWorkerStorageWorkSlotRef(environmentPackage),
+    };
+    const recorder =
+      record ??
+      liveSession?.recordNativeHandleDigest ??
+      ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => {
+        this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage);
+      });
+    if (liveSession) {
+      if (
+        liveSession.sharedHarness.sandbox.workerStorageBinding.storageRef !==
+          retainedStorage.storageRef ||
+        packageWorkerStorageWorkSlotRef(liveSession.environmentPackage) !==
+          retainedStorage.workSlotRef
+      ) {
+        throw new Error('NanoHost live proof attachment disagrees with its durable binding.');
+      }
+      liveSession.recordNativeHandleDigest = recorder;
+      // The durable result may precede the volatile cache handoff; record exactly the inspected proof.
+      this.recordAcceptedNativeHandleDigest(liveSession, digest);
+      const cachedBinding = liveSession.sharedHarness.bindings.get(inspection.agentSessionId);
+      if (cachedBinding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId) {
+        cachedBinding.nativeHandleDigest = digest;
+      }
+    } else {
+      recorder(digest, retainedStorage);
+    }
+  }
+
+  /** Queues one exact pre-lease close from durable binding lineage and awaits its settled result. */
+  private async closeDurableAgentSession(
+    inspection: NanoHostAgentSessionContinuityInspection
+  ): Promise<void> {
+    if (this.agentSessionCloseOwners.has(inspection.agentSessionRuntimeBindingId)) {
+      throw new Error('NanoHost AgentSession close already has a live producer.');
+    }
+    const session = this.restoreDurableAgentSession(inspection);
+    const packageSnapshotId = session.environmentPackage.snapshotId;
     try {
-      await this.collectWorkspaceSnapshot(
-        this.requireSession(latest.packageSnapshotId),
-        'successor'
-      );
+      await this.collectWorkspaceSnapshot(session, 'successor');
       await new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {
         const pending: PendingNanoHostHarnessOperation = {
           operation: 'session.close',
@@ -3606,7 +3764,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     } finally {
       // Idle close restores a Turn handle only for collection and close, not active occupancy.
       // Sandbox identities repeat on later compatible creation, so retaining it can block admission.
-      this.sessions.delete(latest.packageSnapshotId);
+      this.sessions.delete(packageSnapshotId);
     }
   }
 

@@ -700,6 +700,43 @@ describe('FsStore persistence', () => {
     expect.soft(restartedOrphan).toBeNull();
   });
 
+  it('persists an immutable actual retained-storage attachment beside native proof', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retained-'));
+    const store = new FsStore({ dataRoot });
+    seedDemoWorkspace(store);
+    const session = store.createAgentSession({
+      id: 'as_retained_fact',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'initializing',
+      message: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    });
+    const retainedStorage = { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-exact' };
+    store.updateAgentSession(session.id, { retainedStorage });
+    store.updateAgentSession(session.id, { nativeHandleDigest: 'a'.repeat(64), status: 'closed' });
+    const restarted = new FsStore({ dataRoot });
+    expect(restarted.getAgentSession(session.id)).toMatchObject({
+      retainedStorage,
+      nativeHandleDigest: 'a'.repeat(64),
+    });
+    expect(() => restarted.updateAgentSession(session.id, { retainedStorage })).not.toThrow();
+    expect(() =>
+      restarted.updateAgentSession(session.id, {
+        retainedStorage: { ...retainedStorage, workSlotRef: 'different' },
+      })
+    ).toThrow('attachment cannot change');
+    expect(() => restarted.updateAgentSession(session.id, { retainedStorage: null })).toThrow(
+      'attachment cannot change'
+    );
+    // Private attachment provenance does not enter the public protocol projection.
+    expect(AgentSessionSchema.parse(restarted.getAgentSession(session.id))).not.toHaveProperty(
+      'retainedStorage'
+    );
+  });
+
   it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });

@@ -149,6 +149,8 @@ export type AgentSession = ProtocolAgentSession & {
   environmentPackageSnapshotId: string | null;
   /** Accepted ready native handle digest; with `id` as locator it is the resume pair. */
   nativeHandleDigest: string | null;
+  /** Historical admitted association and slot; grants no current attachment authority. */
+  retainedStorage: { storageRef: string; workSlotRef: string } | null;
   policySnapshotId: string | null;
   sessionCompatibilityKey: string | null;
   stale: boolean;
@@ -160,6 +162,7 @@ type AgentSessionInput = Omit<
   | 'configVersion'
   | 'environmentPackageSnapshotId'
   | 'nativeHandleDigest'
+  | 'retainedStorage'
   | 'policySnapshotId'
   | 'sandboxSummary'
   | 'sessionCompatibilityKey'
@@ -172,6 +175,7 @@ type AgentSessionInput = Omit<
       | 'configVersion'
       | 'environmentPackageSnapshotId'
       | 'nativeHandleDigest'
+      | 'retainedStorage'
       | 'policySnapshotId'
       | 'sandboxSummary'
       | 'sessionCompatibilityKey'
@@ -3176,6 +3180,7 @@ export class FsStore {
       configVersion: null,
       environmentPackageSnapshotId: null,
       nativeHandleDigest: null,
+      retainedStorage: null,
       policySnapshotId: null,
       sandboxSummary: sandboxSummaryForWorkspaceRoots(workspaceRoots),
       sessionCompatibilityKey: null,
@@ -3214,6 +3219,7 @@ export class FsStore {
     return agentSession;
   }
 
+  /** Updates session lifecycle while preserving its write-once native proof and attachment provenance. */
   public updateAgentSession(
     agentSessionId: string,
     input: Partial<
@@ -3223,6 +3229,7 @@ export class FsStore {
         | 'environmentPackageSnapshotId'
         | 'message'
         | 'nativeHandleDigest'
+        | 'retainedStorage'
         | 'stale'
         | 'status'
         | 'updatedAt'
@@ -3237,6 +3244,7 @@ export class FsStore {
           'environmentPackageSnapshotId',
           'message',
           'nativeHandleDigest',
+          'retainedStorage',
           'stale',
           'status',
           'updatedAt',
@@ -3246,6 +3254,14 @@ export class FsStore {
       throw new Error(`AgentSession update cannot change field: ${unsupportedField}`);
     }
     // The resume pair is write-once: a later proof for the same binding must carry the same digest.
+    if (
+      input.retainedStorage !== undefined &&
+      agentSession.retainedStorage !== null &&
+      (input.retainedStorage?.storageRef !== agentSession.retainedStorage.storageRef ||
+        input.retainedStorage?.workSlotRef !== agentSession.retainedStorage.workSlotRef)
+    ) {
+      throw new Error('AgentSession retained-storage attachment cannot change.');
+    }
     if (
       input.nativeHandleDigest !== undefined &&
       agentSession.nativeHandleDigest !== null &&

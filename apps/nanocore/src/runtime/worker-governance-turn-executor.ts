@@ -51,7 +51,10 @@ import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js
 import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  AgentSessionRetainedStorageSchema,
+  isCurrentAgentSessionStatus,
+} from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import {
   type CreateVaultInjectionReceiptInput,
@@ -173,12 +176,12 @@ function workerGovernanceContinuityDisposition(
  *
  * @param agentSessions Every AgentSession of the Thread.
  * @param successorId AgentSession the new binding belongs to, excluded from the walk.
- * @throws TurnStartValidationError when equal creation times leave the walked order unproved.
+ * @throws TurnStartValidationError when creation order or the accepted proof's storage provenance is unproved.
  */
-function selectThreadNativeResume(
+function selectThreadNativeResumeSource(
   agentSessions: readonly ReturnType<FsStore['getAgentSession']>[],
   successorId: string
-): WorkerGovernanceNativeResume | null {
+): ReturnType<FsStore['getAgentSession']> | null {
   const ordered = agentSessions
     .filter((candidate) => candidate.id !== successorId)
     .sort((left, right) =>
@@ -193,7 +196,14 @@ function selectThreadNativeResume(
       );
     }
     if (candidate.nativeHandleDigest !== null) {
-      return { digest: candidate.nativeHandleDigest, locator: candidate.id };
+      if (!AgentSessionRetainedStorageSchema.safeParse(candidate.retainedStorage).success) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The native resume predecessor has no proven retained-storage attachment.',
+          409
+        );
+      }
+      return candidate;
     }
   }
   return null;
@@ -622,11 +632,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.workspaceMutationAdmission = options.workspaceMutationAdmission ?? null;
   }
 
-  /** Previews reusable continuity or replacement without Store or backend effects. */
+  /** Hands off surviving ready proof before previewing continuity, without replacement effects. */
   public async prepareAgentSessionForTurn(
     store: FsStore,
     input: PrepareAgentSessionForTurnInput
   ): Promise<PreparedAgentSessionForTurn> {
+    let workerStorageChoice = this.selectContinuationStorage(
+      store,
+      input,
+      input.workerStorageChoice
+    );
+    input = { ...input, ...(workerStorageChoice ? { workerStorageChoice } : {}) };
     const currentSessions = store
       .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
@@ -677,6 +693,61 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       }
     }
+    if (current) {
+      const currentAgentSessionId = current.id;
+      const currentTurns = store
+        .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+        .filter((turn) => turn.agentSessionId === currentAgentSessionId);
+      if (currentTurns.some((turn) => !isSealedTurnTerminal(turn.status))) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The current AgentSession still owns an active Turn.',
+          409
+        );
+      }
+    }
+    if (current && current.nativeHandleDigest === null) {
+      if (!this.backend.prepareAgentSessionContinuity) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The worker backend cannot inspect surviving native proof.',
+          409
+        );
+      }
+      let proofInspection: WorkerGovernanceAgentSessionContinuityDisposition;
+      try {
+        // Inspect the old identity without planning a desired work slot or any replacement effect.
+        proofInspection = await this.backend.prepareAgentSessionContinuity({
+          agentSessionId: current.id,
+          recordNativeHandleDigest: (digest, retainedStorage) =>
+            this.recordNativeHandleDigest(store, current!.id, digest, retainedStorage),
+          reuseAllowed: true,
+          threadId: input.turn.threadId,
+          workspaceId: input.turn.workspaceId,
+        });
+      } catch (error) {
+        if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The surviving native proof cannot be joined to its retained-storage attachment.',
+          409
+        );
+      }
+      if (
+        !['reusable', 'replacement-required', 'sandbox-replacement-required', 'absent'].includes(
+          workerGovernanceContinuityDisposition(proofInspection)
+        )
+      ) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Native proof inspection performed a replacement effect.',
+          409
+        );
+      }
+      current = store.getAgentSession(current.id);
+      workerStorageChoice = this.selectContinuationStorage(store, input, workerStorageChoice);
+      input = { ...input, ...(workerStorageChoice ? { workerStorageChoice } : {}) };
+    }
     if (!current) {
       if (!this.backend.prepareAgentSessionContinuity) {
         throw new TurnStartValidationError(
@@ -719,21 +790,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       return {
+        ...(workerStorageChoice ? { workerStorageChoice } : {}),
         agentSessionId: input.freshAgentSessionId,
         currentAgentSession: null,
         replacementRequired: false,
         sessionCompatibilityKey,
       };
-    }
-    const currentTurns = store
-      .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
-      .filter((turn) => turn.agentSessionId === current.id);
-    if (currentTurns.some((turn) => !isSealedTurnTerminal(turn.status))) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'The current AgentSession still owns an active Turn.',
-        409
-      );
     }
     const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(current.id, input);
     const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, input);
@@ -757,6 +819,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionCompatibilityKey: currentCompatibilityKey,
         agentSessionId: current.id,
         environmentPackage: currentEnvironmentPackage,
+        recordNativeHandleDigest: (digest, retainedStorage) =>
+          this.recordNativeHandleDigest(store, current.id, digest, retainedStorage),
         reuseAllowed: true,
         threadId: input.turn.threadId,
         workspaceId: input.turn.workspaceId,
@@ -778,7 +842,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       updatedAt: current.updatedAt,
     };
     if (reuseAllowed && workerGovernanceContinuityDisposition(disposition) === 'reusable') {
+      // Ready proof can survive only on the runtime binding after a failed digest handoff.
+      if (!AgentSessionRetainedStorageSchema.safeParse(current.retainedStorage).success) {
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The reusable native binding has no proven retained-storage attachment.',
+          409
+        );
+      }
       return {
+        ...(workerStorageChoice ? { workerStorageChoice } : {}),
         agentSessionId: current.id,
         currentAgentSession,
         replacementRequired: false,
@@ -802,6 +875,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
     this.requireMaterializationCapacity(input.freshAgentSessionId, input);
     return {
+      ...(workerStorageChoice ? { workerStorageChoice } : {}),
       agentSessionId: input.freshAgentSessionId,
       currentAgentSession,
       replacementRequired: true,
@@ -814,7 +888,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     input: CommitPreparedAgentSessionForTurnInput
   ): Promise<SchedulerWorkerStorageChoice | undefined> {
-    const { prepared, preparation } = input;
+    const { prepared } = input;
+    // Keep the captured revision; a revalidation must never rebase a caller or prepared choice.
+    const workerStorageChoice = this.selectContinuationStorage(
+      store,
+      input.preparation,
+      prepared.workerStorageChoice ?? input.preparation.workerStorageChoice
+    );
+    const preparation = {
+      ...input.preparation,
+      ...(workerStorageChoice ? { workerStorageChoice } : {}),
+    };
     const currentSessions = store
       .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
@@ -838,6 +922,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           agentSessionCompatibilityKey,
           agentSessionId,
           environmentPackage,
+          recordNativeHandleDigest: (digest, retainedStorage) =>
+            this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage),
           reuseAllowed,
           ...(preparation.workerStorageChoice
             ? { workerStorageChoice: preparation.workerStorageChoice }
@@ -891,7 +977,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      return;
+      return workerStorageChoice;
     }
 
     const predecessorIsTerminal =
@@ -973,7 +1059,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      return;
+      return workerStorageChoice;
     }
 
     if (
@@ -1019,7 +1105,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    let committedWorkerStorageChoice: SchedulerWorkerStorageChoice | undefined;
+    if (
+      !isDeepStrictEqual(
+        this.selectContinuationStorage(store, preparation, workerStorageChoice),
+        workerStorageChoice
+      )
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Native proof changed the prepared storage selection after scheduler dispatch.',
+        409
+      );
+    }
+    let committedWorkerStorageChoice = workerStorageChoice;
     if (workerGovernanceContinuityDisposition(inspected) !== 'absent') {
       const closed = await inspectBackendContinuity(
         current.id,
@@ -1072,6 +1170,53 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     return committedWorkerStorageChoice;
+  }
+
+  /** Joins native proof to its exact storage selection before package planning or replacement. */
+  private selectContinuationStorage(
+    store: FsStore,
+    input: PrepareAgentSessionForTurnInput,
+    choice: SchedulerWorkerStorageChoice | undefined
+  ): SchedulerWorkerStorageChoice | undefined {
+    const source = selectThreadNativeResumeSource(
+      store.listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId),
+      input.freshAgentSessionId
+    );
+    if (!source) return choice;
+    const retainedStorage = source.retainedStorage!;
+    if (
+      choice &&
+      (choice.kind === 'fresh' ||
+        choice.storageRef !== retainedStorage.storageRef ||
+        (choice.reuseWorkSlotRef !== undefined &&
+          choice.reuseWorkSlotRef !== retainedStorage.workSlotRef))
+    ) {
+      throw new TurnStartValidationError(
+        'worker_storage_choice_conflict',
+        'Worker storage choice conflicts with the expected native resume.',
+        409
+      );
+    }
+    if (choice?.kind === 'selected')
+      return { ...choice, reuseWorkSlotRef: retainedStorage.workSlotRef };
+    const binding = this.coreDb
+      ? getWorkerStorageBinding(this.coreDb, { storageRef: retainedStorage.storageRef })
+      : null;
+    if (!binding)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The native resume storage association is unavailable.',
+        409
+      );
+    return {
+      kind: 'selected',
+      storageRef: retainedStorage.storageRef,
+      reuseWorkSlotRef: retainedStorage.workSlotRef,
+      expectedRevision: binding.revision,
+      purpose: 'work',
+      goalId: null,
+      taskId: null,
+    };
   }
 
   /** Rejects admission when the current NanoHost target cannot host the resolved package. */
@@ -1458,9 +1603,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
+      if (
+        existingAgentSession &&
+        !AgentSessionRetainedStorageSchema.safeParse(existingAgentSession.retainedStorage).success
+      ) {
+        agentSessionId = null;
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The selected native AgentSession has no proven retained-storage attachment.',
+          409
+        );
+      }
       let nativeResume: WorkerGovernanceNativeResume | null;
       try {
-        nativeResume = selectThreadNativeResume(threadAgentSessions, resolvedAgentSessionId);
+        const source = selectThreadNativeResumeSource(threadAgentSessions, resolvedAgentSessionId);
+        nativeResume = source ? { digest: source.nativeHandleDigest!, locator: source.id } : null;
       } catch (error) {
         agentSessionId = null;
         throw error;
@@ -1573,6 +1730,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
           : context.workspaceRoots,
       });
+      if (materialization.retainedStorage) {
+        const sourceStorage = nativeResume
+          ? store.getAgentSession(nativeResume.locator).retainedStorage
+          : null;
+        if (sourceStorage && !isDeepStrictEqual(sourceStorage, materialization.retainedStorage)) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The admitted storage differs from the native resume attachment.',
+            409
+          );
+        }
+        store.updateAgentSession(agentSessionId, {
+          retainedStorage: materialization.retainedStorage,
+          updatedAt: this.now(),
+        });
+      }
       this.bindNativeHandleRecorder(store, environmentPackage);
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
@@ -2273,21 +2446,53 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    *
    * @param store Store that owns the AgentSession.
    * @param environmentPackage Package of the live or restored Turn whose binding the backend holds.
-   * @throws Error when an accepted digest contradicts the recorded one.
+   * @throws Error when native proof contradicts the durable digest or actual attachment provenance.
    */
   public bindNativeHandleRecorder(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage
   ): void {
     const agentSessionId = environmentPackage.scope.agentSessionId;
-    this.backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
-      if (store.getAgentSession(agentSessionId).nativeHandleDigest !== digest) {
-        store.updateAgentSession(agentSessionId, {
-          nativeHandleDigest: digest,
-          updatedAt: this.now(),
-        });
+    this.backend.bindNativeHandleRecorder?.(
+      environmentPackage.snapshotId,
+      (digest, retainedStorage) => {
+        this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage);
       }
-    });
+    );
+  }
+
+  /**
+   * Joins live, restored or retiring binding proof to immutable attachment without backfilling it.
+   *
+   * @param store Store that owns the proof-producing AgentSession.
+   * @param agentSessionId Exact binding's durable AgentSession identity.
+   * @param digest Ready proof accepted by that binding.
+   * @param retainedStorage Actual association and work slot held by that binding.
+   * @throws TurnStartValidationError when immutable attachment provenance is missing or disagrees.
+   */
+  public recordNativeHandleDigest(
+    store: FsStore,
+    agentSessionId: string,
+    digest: string,
+    retainedStorage: { storageRef: string; workSlotRef: string }
+  ): void {
+    const session = store.getAgentSession(agentSessionId);
+    if (
+      !AgentSessionRetainedStorageSchema.safeParse(session.retainedStorage).success ||
+      !isDeepStrictEqual(session.retainedStorage, retainedStorage)
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Native ready proof has no matching durable retained-storage attachment.',
+        409
+      );
+    }
+    if (session.nativeHandleDigest !== digest) {
+      store.updateAgentSession(agentSessionId, {
+        nativeHandleDigest: digest,
+        updatedAt: this.now(),
+      });
+    }
   }
 
   /**

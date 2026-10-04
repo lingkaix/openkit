@@ -136,7 +136,8 @@ export interface FenceNanoHostSandboxRuntimeInput {
 export interface InspectNanoHostAgentSessionContinuityInput {
   readonly admissionAgentSessionId?: string;
   readonly admissionLeaseId?: string;
-  readonly agentSessionCompatibilityKey: string;
+  /** No desired key means proof-only inspection cannot establish reuse. */
+  readonly agentSessionCompatibilityKey?: string;
   readonly agentSessionId: string;
   readonly threadId: string;
   readonly workspaceId: string;
@@ -149,6 +150,8 @@ export interface NanoHostAgentSessionContinuityInspection {
   readonly harnessBindingRef: string;
   readonly harnessCompatibilityKey: string;
   readonly harnessInstanceId: string;
+  /** Accepted ready proof is independent of current compatibility and reusability. */
+  readonly nativeHandleDigest: string | null;
   readonly reusable: boolean;
 }
 
@@ -562,13 +565,16 @@ export function inspectNanoHostAgentSessionContinuity(
     }
     return null;
   }
-  const expectedRuntimeCompatibilityKey = deriveNanoHostAgentSessionCompatibilityKey({
-    adapterId: row.adapterId,
-    adapterVersion: row.adapterVersion,
-    harnessCompatibilityKey: row.harnessCompatibilityKey,
-    sessionCompatibilityKey: input.agentSessionCompatibilityKey,
-    threadId: input.threadId,
-  });
+  const expectedRuntimeCompatibilityKey =
+    input.agentSessionCompatibilityKey === undefined
+      ? null
+      : deriveNanoHostAgentSessionCompatibilityKey({
+          adapterId: row.adapterId,
+          adapterVersion: row.adapterVersion,
+          harnessCompatibilityKey: row.harnessCompatibilityKey,
+          sessionCompatibilityKey: input.agentSessionCompatibilityKey,
+          threadId: input.threadId,
+        });
   if (hasActiveLease) {
     throw new Error('NanoHost AgentSession still owns a live scheduler lease.');
   }
@@ -598,6 +604,7 @@ export function inspectNanoHostAgentSessionContinuity(
     harnessBindingRef: row.harnessBindingRef,
     harnessCompatibilityKey: row.harnessCompatibilityKey,
     harnessInstanceId: row.harnessInstanceId,
+    nativeHandleDigest: nativeHandleReady ? row.nativeHandleDigest : null,
     reusable:
       row.agentSessionCompatibilityKey === expectedRuntimeCompatibilityKey &&
       row.bindingLifecycleState === 'open' &&

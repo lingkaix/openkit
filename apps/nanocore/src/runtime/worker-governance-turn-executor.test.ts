@@ -43,7 +43,7 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
-import type { FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
@@ -139,7 +139,11 @@ import {
   type ImportWorkerRuntimeProvenanceInput,
   importWorkerRuntimeProvenance,
 } from './worker-runtime-provenance.js';
-import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
+import {
+  createWorkerStorageBinding,
+  reserveWorkerStorageAttachment,
+  workerStorageDefaultWorkSlotRef,
+} from './worker-storage-bindings.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { getFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
@@ -890,6 +894,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       createdAt: '2026-08-21T00:00:00.000Z',
       environmentPackageSnapshotId: 'aepsnap-current-continuity',
       id: 'as-current-continuity',
+      retainedStorage: {
+        storageRef: `wst_${'1'.repeat(32)}`,
+        workSlotRef: workerStorageDefaultWorkSlotRef(turn.workspaceId, turn.threadId),
+      },
       message: null,
       policySnapshotId: 'worker_turn_launch_policy',
       sessionCompatibilityKey: currentCompatibilityKey,
@@ -935,7 +943,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       sessionCompatibilityKey: currentCompatibilityKey,
     });
     expect(preview).toHaveBeenCalledTimes(1);
-    expect(prepareContinuity).toHaveBeenCalledOnce();
+    expect(prepareContinuity).toHaveBeenCalledTimes(2);
+    expect(prepareContinuity.mock.calls[0]?.[0]).not.toHaveProperty('environmentPackage');
+    expect(prepareContinuity.mock.calls[1]?.[0]).toHaveProperty('environmentPackage');
     expect(prepareContinuity).toHaveBeenCalledWith(expect.objectContaining({ reuseAllowed: true }));
   });
 
@@ -980,7 +990,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceRoots: [],
       })
     ).rejects.toThrow('Fresh target preview failed.');
-    expect(prepareContinuity).toHaveBeenCalledOnce();
+    expect(prepareContinuity).toHaveBeenCalledTimes(2);
+    expect(prepareContinuity.mock.calls[0]?.[0]).not.toHaveProperty('environmentPackage');
+    expect(prepareContinuity.mock.calls[1]?.[0]).toHaveProperty('environmentPackage');
     expect(prepareContinuity).toHaveBeenCalledWith(expect.objectContaining({ reuseAllowed: true }));
     expect(store.getAgentSession('as-runtime-incompatible').status).toBe('idle');
   });
@@ -1112,8 +1124,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(continuity).toHaveBeenCalledTimes(3);
-    expect(continuity.mock.calls.map(([input]) => input.reuseAllowed)).toEqual([true, true, false]);
+    expect(continuity).toHaveBeenCalledTimes(4);
+    expect(continuity.mock.calls.map(([input]) => input.reuseAllowed)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
     expect(store.getAgentSession('as-restart-unproved-current').status).toBe('idle');
     expect(() => store.getAgentSession('as-restart-unproved-fresh')).toThrow();
     finishRetirement();
@@ -1222,6 +1239,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(events).toEqual([
+      'inspect:as-terminal-predecessor',
       'inspect:as-terminal-predecessor',
       'inspect:as-terminal-predecessor',
       'close:as-terminal-predecessor',
@@ -2537,16 +2555,419 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it.each([
+    'closed',
+    'idle',
+  ] as const)('continues a pre-fact predecessor with no proof and no backend binding: %s', async (status) => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Continue without native proof');
+    const backend = new FakeWorkerGovernanceBackend();
+    backend.prepareAgentSessionContinuity = async () => 'absent';
+    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const input = {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as_unproved_next',
+      requestId: null,
+      turn,
+      turnInput: turn.input,
+      workspaceRoots: [],
+    };
+    store.createAgentSession({
+      id: 'as_unproved_old',
+      agentId: input.agentSetup.manifest.id,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status,
+      message: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    });
+    const prepared = await executor.prepareAgentSessionForTurn(store, input);
+    expect(prepared.agentSessionId).toBe(input.freshAgentSessionId);
+    expect(prepared.workerStorageChoice).toBeUndefined();
+    expect(
+      await executor.commitPreparedAgentSessionForTurn(store, {
+        prepared,
+        preparation: input,
+        leaseId: 'lease_unproved',
+      })
+    ).toBeUndefined();
+    expect(store.getAgentSession('as_unproved_old')).toMatchObject({
+      nativeHandleDigest: null,
+      retainedStorage: null,
+    });
+    expect(backend.calls).toEqual([]);
+  });
+
+  it('refuses a reusable runtime ready proof without attachment provenance even before digest handoff', async () => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Continue');
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, { prepareAgentSessionContinuity: async () => 'reusable' as const });
+    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const input = {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId: 'as_unrecorded_ready_next',
+      requestId: null,
+      turn,
+      turnInput: 'Continue',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const sessionCompatibilityKey = (
+      executor as unknown as {
+        previewAgentSessionCompatibilityKey(id: string, preparation: typeof input): string;
+      }
+    ).previewAgentSessionCompatibilityKey('as_unrecorded_ready', input);
+    store.createAgentSession({
+      id: 'as_unrecorded_ready',
+      agentId: input.agentSetup.manifest.id,
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'idle',
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    });
+    // Reusable disposition proves an already-ready runtime binding; Core handoff may still be absent.
+    await expect(executor.prepareAgentSessionForTurn(store, input)).rejects.toMatchObject({
+      code: 'recovery_required',
+    });
+    expect(store.getAgentSession('as_unrecorded_ready')).toMatchObject({
+      nativeHandleDigest: null,
+      retainedStorage: null,
+    });
+    expect(backend.calls).toEqual([]);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('reconstructs the same proof source and nondefault slot after restart without rebasing caller revision: explicit=%s', async (explicit) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-retained-selection-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, observed_at, slot_count) VALUES ('target_retained', 'identity_retained', 'deployment_retained', 1, 1, 1, 1, ?, 1)`
+      )
+      .run('2026-10-03T00:00:00.000Z');
+    const binding = createWorkerStorageBinding(coreDb, {
+      deploymentId: 'deployment_retained',
+      runtimeTargetId: 'target_retained',
+      workspaceId: 'ws_demo',
+      layout: {
+        family: 'openkit-worker',
+        version: '1',
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/tmp/openkit-bootstrap',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+      },
+    });
+    const reserved = reserveWorkerStorageAttachment(coreDb, {
+      storageRef: binding.storageRef,
+      expectedRevision: binding.revision,
+      layout: binding.layout,
+      purpose: 'work',
+      responsibleUserId: 'user_local',
+      threadId: 'th_demo',
+      workspaceId: 'ws_demo',
+      authorizeContributor: () => true,
+      agentSessionId: 'as_retained_proof',
+      runtimeTargetId: 'target_retained',
+    });
+    // A prior explicit handoff supplied a slot that differs from the Thread's generated default.
+    coreDb.sqlite
+      .prepare('UPDATE worker_storage_contributors SET work_slot_ref = ? WHERE storage_ref = ?')
+      .run('slot-exact', binding.storageRef);
+    coreDb.sqlite
+      .prepare(
+        "UPDATE worker_storage_bindings SET state = 'idle', current_agent_session_id = NULL, current_thread_id = NULL, current_work_slot_ref = NULL WHERE storage_ref = ?"
+      )
+      .run(binding.storageRef);
+    const retainedStorage = { storageRef: binding.storageRef, workSlotRef: 'slot-exact' };
+    store.createAgentSession({
+      id: 'as_retained_proof',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'closed',
+      message: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+      nativeHandleDigest: 'a'.repeat(64),
+      retainedStorage,
+    });
+    store.createAgentSession({
+      id: 'as_failed_unproved',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'failed',
+      message: null,
+      createdAt: '2026-10-03T00:00:01.000Z',
+      updatedAt: '2026-10-03T00:00:01.000Z',
+      retainedStorage: { storageRef: `wst_${'9'.repeat(32)}`, workSlotRef: 'unproved-slot' },
+    });
+    const restarted = new FsStore({ dataRoot: coreDb.dataRoot });
+    const backend = new FakeWorkerGovernanceBackend();
+    const inspect = vi.fn(async () => 'absent' as const);
+    Object.assign(backend, { prepareAgentSessionContinuity: inspect });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const turn = createAssignedTurn(restarted, 'ws_demo', 'th_demo', 'Continue');
+    const callerChoice = {
+      kind: 'selected' as const,
+      purpose: 'work' as const,
+      storageRef: binding.storageRef,
+      expectedRevision: 1,
+      goalId: null,
+      taskId: null,
+    };
+    try {
+      const prepared = await executor.prepareAgentSessionForTurn(restarted, {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_retained_next',
+        requestId: null,
+        turn,
+        turnInput: 'Continue',
+        workspaceCwd: null,
+        workspaceRoots: [],
+        ...(explicit ? { workerStorageChoice: callerChoice } : {}),
+      });
+      expect(prepared.workerStorageChoice).toEqual({
+        kind: 'selected',
+        purpose: 'work',
+        storageRef: binding.storageRef,
+        expectedRevision: explicit ? 1 : reserved.revision,
+        goalId: null,
+        taskId: null,
+        reuseWorkSlotRef: 'slot-exact',
+      });
+      expect(inspect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environmentPackage: expect.objectContaining({
+            extensions: expect.objectContaining({
+              openkit: expect.objectContaining({ workerStorage: { workSlotRef: 'slot-exact' } }),
+            }),
+          }),
+        })
+      );
+      if (explicit) {
+        expect(() =>
+          reserveWorkerStorageAttachment(coreDb, {
+            ...callerChoice,
+            reuseWorkSlotRef: 'slot-exact',
+            layout: binding.layout,
+            responsibleUserId: 'user_local',
+            threadId: 'th_demo',
+            workspaceId: 'ws_demo',
+            authorizeContributor: () => true,
+            agentSessionId: 'as_retained_next',
+            runtimeTargetId: 'target_retained',
+          })
+        ).toThrow('revision changed');
+      }
+      const occupied = reserveWorkerStorageAttachment(coreDb, {
+        storageRef: binding.storageRef,
+        expectedRevision: reserved.revision,
+        reuseWorkSlotRef: 'slot-exact',
+        layout: binding.layout,
+        purpose: 'work',
+        responsibleUserId: 'user_local',
+        threadId: 'th_demo',
+        workspaceId: 'ws_demo',
+        authorizeContributor: () => true,
+        agentSessionId: 'as_other_live',
+        runtimeTargetId: 'target_retained',
+      });
+      expect(() =>
+        reserveWorkerStorageAttachment(coreDb, {
+          storageRef: binding.storageRef,
+          expectedRevision: occupied.revision,
+          reuseWorkSlotRef: 'slot-exact',
+          layout: binding.layout,
+          purpose: 'work',
+          responsibleUserId: 'user_local',
+          threadId: 'th_demo',
+          workspaceId: 'ws_demo',
+          authorizeContributor: () => true,
+          agentSessionId: 'as_retained_next',
+          runtimeTargetId: 'target_retained',
+        })
+      ).toThrow('already has an attachment');
+      expect(restarted.getAgentSession('as_retained_proof').retainedStorage).toEqual(
+        retainedStorage
+      );
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('records actual attachment before native open and refuses work on recording failure: failure=%s', async (recordingFailure) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-attachment-before-open-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const retainedStorage = {
+      storageRef: `wst_${'3'.repeat(32)}`,
+      workSlotRef: 'actual-nondefault',
+    };
+    const backend = new FakeWorkerGovernanceBackend();
+    const materialize = backend.materialize.bind(backend);
+    backend.materialize = async (...args) => ({ ...(await materialize(...args)), retainedStorage });
+    let record:
+      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | null = null;
+    Object.assign(backend, {
+      bindNativeHandleRecorder: (
+        _id: string,
+        recorder: (
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void
+      ) => {
+        record = recorder;
+      },
+    });
+    const launch = vi.fn(async () => {
+      expect(
+        new FsStore({ dataRoot: coreDb.dataRoot }).getAgentSession('as_attachment_before_open')
+      ).toMatchObject({ retainedStorage });
+      record?.('d'.repeat(64), retainedStorage);
+      // A ready proof precedes baseline collection; collection need never complete.
+      throw new Error('baseline failed after ready proof');
+    });
+    backend.launch = launch;
+    if (recordingFailure) {
+      const update = store.updateAgentSession.bind(store);
+      vi.spyOn(store, 'updateAgentSession').mockImplementation((id, input) => {
+        if ('retainedStorage' in input) throw new Error('attachment persistence failed');
+        return update(id, input);
+      });
+    }
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Record before open');
+    try {
+      await expect(
+        startWithExecutorLease(
+          coreDb,
+          executor,
+          store,
+          turn,
+          'as_attachment_before_open',
+          new Date().toISOString(),
+          'Continue',
+          {
+            agentSetup: createTestAgentSetup(),
+            requestId: null,
+            triggerActor: turn.triggerActor,
+            workspaceRoots: [],
+          }
+        )
+      ).rejects.toThrow(
+        recordingFailure ? 'attachment persistence failed' : 'baseline failed after ready proof'
+      );
+      expect(backend.calls).toContain('cleanupSession');
+      if (recordingFailure) {
+        expect(launch).not.toHaveBeenCalled();
+        expect(store.getAgentSession('as_attachment_before_open').nativeHandleDigest).toBeNull();
+      } else {
+        expect(launch).toHaveBeenCalledOnce();
+        expect(
+          new FsStore({ dataRoot: coreDb.dataRoot }).getAgentSession('as_attachment_before_open')
+        ).toMatchObject({ retainedStorage, nativeHandleDigest: 'd'.repeat(64), status: 'failed' });
+      }
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'missing',
+    'fresh',
+    'different-storage',
+    'different-slot',
+  ])('refuses continuation before planning or effects when attachment choice is $0', async (violation) => {
+    const store = createDemoStore();
+    const predecessor = store.createAgentSession({
+      id: 'as_choice_predecessor',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      nativeHandleDigest: 'a'.repeat(64),
+      status: 'closed',
+      message: null,
+      createdAt: '2026-10-03T00:00:00.000Z',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    });
+    const retainedStorage = { storageRef: `wst_${'1'.repeat(32)}`, workSlotRef: 'slot-exact' };
+    // Isolate selection from schema evolution: the durable-record regression verifies real persistence.
+    vi.spyOn(store, 'listThreadAgentSessions').mockReturnValue([
+      { ...predecessor, retainedStorage: violation === 'missing' ? null : retainedStorage },
+    ]);
+    const backend = new FakeWorkerGovernanceBackend();
+    const inspect = vi.fn(async () => 'absent' as const);
+    Object.assign(backend, { prepareAgentSessionContinuity: inspect });
+    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Continue');
+    const workerStorageChoice =
+      violation === 'missing'
+        ? undefined
+        : violation === 'fresh'
+          ? { kind: 'fresh' as const, goalId: null, taskId: null }
+          : {
+              kind: 'selected' as const,
+              purpose: 'work' as const,
+              goalId: null,
+              taskId: null,
+              expectedRevision: 7,
+              storageRef:
+                violation === 'different-storage'
+                  ? `wst_${'2'.repeat(32)}`
+                  : retainedStorage.storageRef,
+              reuseWorkSlotRef:
+                violation === 'different-slot' ? 'different' : retainedStorage.workSlotRef,
+            };
+    await expect(
+      executor.prepareAgentSessionForTurn(store, {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_choice_next',
+        requestId: null,
+        turn,
+        turnInput: 'Continue',
+        workspaceCwd: null,
+        workspaceRoots: [],
+        ...(workerStorageChoice ? { workerStorageChoice } : {}),
+      })
+    ).rejects.toMatchObject({
+      code: violation === 'missing' ? 'recovery_required' : 'worker_storage_choice_conflict',
+    });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(backend.calls).toEqual([]);
+    expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBe('a'.repeat(64));
+  });
+
   it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'a'.repeat(64);
-    let record: ((digest: string) => void) | null = null;
+    let record:
+      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
       bindNativeHandleRecorder: (
         _packageSnapshotId: string,
-        recorder: (digest: string) => void
+        recorder: (
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void
       ) => {
         record = recorder;
       },
@@ -2555,7 +2976,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       awaitWorkerCompletion: async () => {
         // The backend accepts the ready proof during the Turn, after materialization.
-        record?.(digest);
+        record?.(digest, {
+          storageRef: `wst_${'1'.repeat(32)}`,
+          workSlotRef: workerStorageDefaultWorkSlotRef('ws_demo', 'th_demo'),
+        });
         return {
           acceptedAt: '2026-07-15T00:00:03.000Z',
           status: 'completed' as const,
@@ -2626,11 +3050,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'c'.repeat(64);
-    let record: ((digest: string) => void) | null = null;
+    let record:
+      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
       bindNativeHandleRecorder: (
         _packageSnapshotId: string,
-        recorder: (digest: string) => void
+        recorder: (
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void
       ) => {
         record = recorder;
       },
@@ -2638,7 +3067,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     backend.launch = async () => {
       backend.calls.push('launch');
       // The backend accepts the open proof, then a later import fails the launch.
-      record?.(digest);
+      record?.(digest, {
+        storageRef: `wst_${'1'.repeat(32)}`,
+        workSlotRef: workerStorageDefaultWorkSlotRef('ws_demo', 'th_demo'),
+      });
       throw new Error('reference import failed');
     };
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
@@ -2710,6 +3142,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         id: session.id,
         message: null,
         nativeHandleDigest: session.digest,
+        retainedStorage: {
+          storageRef: `wst_${'1'.repeat(32)}`,
+          workSlotRef: workerStorageDefaultWorkSlotRef('ws_demo', 'th_demo'),
+        },
         status: 'closed',
         threadId: 'th_demo',
         updatedAt: session.createdAt,
@@ -7647,6 +8083,13 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.lastPackage = environmentPackage;
 
     return {
+      retainedStorage: {
+        storageRef: `wst_${'1'.repeat(32)}`,
+        workSlotRef: workerStorageDefaultWorkSlotRef(
+          environmentPackage.scope.workspaceId,
+          environmentPackage.scope.threadId
+        ),
+      },
       backendKind: 'openshell',
       command: {
         argv: environmentPackage.runtime.command.argv,

@@ -158,6 +158,14 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
 }).strict();
+/** Private historical attachment provenance; current admission remains with WorkerStorageBinding. */
+export const AgentSessionRetainedStorageSchema = z
+  .object({
+    storageRef: z.string().regex(/^wst_[0-9a-f]{32}$/),
+    workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+  })
+  .strict();
+
 /** Canonical AgentSession record schema shared with workspace portability. */
 export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   sandboxSummary: AgentSandboxSummarySchema.extend({
@@ -169,6 +177,8 @@ export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   updatedAt: CanonicalTimestampSchema,
   configVersion: z.number().int().positive().nullable(),
   environmentPackageSnapshotId: z.string().min(1).nullable(),
+  /** Actual admitted attachment, persisted before native open and immutable for this AgentSession. */
+  retainedStorage: AgentSessionRetainedStorageSchema.nullable().default(null),
   /**
    * Resume digest: the native handle digest of the ready proof NanoCore accepted for this
    * AgentSession's binding. With the record's own id as locator it forms the resume pair a
