@@ -91,6 +91,7 @@ export interface OpenCodeAdapterDependencies {
 
 /**
  * Bounds and redacts one diagnostic value to a complete UTF-8 prefix of at most 16 KiB.
+ * URLs are omitted because vendor errors may embed credentials outside the known secret set.
  *
  * @param value Raw diagnostic text.
  * @param secrets Exact values that must not appear.
@@ -101,6 +102,7 @@ export function boundOpenCodeDiagnostic(value: string, secrets: readonly string[
   for (const secret of secrets) {
     if (secret) redacted = redacted.split(secret).join('[redacted]');
   }
+  redacted = redacted.replace(/\bhttps?:\/\/[^\s"'<>]+/gi, '[redacted URL]');
   return new StringDecoder('utf8').write(Buffer.from(redacted).subarray(0, DIAGNOSTIC_BYTE_LIMIT));
 }
 
@@ -1777,8 +1779,25 @@ function basicAuth(password: string): string {
   return Buffer.from(`opencode:${password}`).toString('base64');
 }
 
+/** Preserves vendor cause codes/messages without serializing request or socket metadata. */
 function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  // The SDK wraps fetch, which wraps the socket error; cap malformed or cyclic vendor chains.
+  for (let depth = 0; depth < 8 && !seen.has(error); depth += 1) {
+    seen.add(error);
+    if (typeof error !== 'object' || error === null) {
+      parts.push(String(error));
+      break;
+    }
+    const detail = error as { message?: unknown; code?: unknown; cause?: unknown };
+    const message = typeof detail.message === 'string' ? detail.message : String(error);
+    const code = typeof detail.code === 'string' || typeof detail.code === 'number';
+    parts.push(code ? `${detail.code}: ${message}` : message);
+    if (detail.cause === undefined) break;
+    error = detail.cause;
+  }
+  return parts.join('; cause: ');
 }
 
 type NativeRpc = <T>(name: string, work: Promise<T>) => Promise<T>;

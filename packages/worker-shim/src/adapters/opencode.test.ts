@@ -81,6 +81,58 @@ describe('OpenCode resident adapter', () => {
     expect(diagnostic.length).toBe(16 * 1024);
   });
 
+  it.each([
+    'UND_ERR_SOCKET',
+    'ECONNREFUSED',
+  ])('preserves transport cause code %s without credentials or secret URLs', async (code) => {
+    const { ClientError } = await import('@opencode/client');
+    const creds = loopback('transport-cause', 'http://127.0.0.1:9');
+    const root = Object.assign(
+      new Error(
+        `other side closed ${creds.capabilityCredential} https://user:password@example.test/private?token=unknown-secret#fragment`
+      ),
+      { code }
+    );
+    // A cyclic vendor cause must not hang error reporting or duplicate socket metadata.
+    root.cause = root;
+    const transport = new ClientError('Transport', {
+      cause: new TypeError('fetch failed', { cause: root }),
+    });
+    const module = failingModule('create');
+    const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+    client.session.create = async () => {
+      throw transport;
+    };
+    module.OpenCode.make = () => client;
+    const child = stubbornChild([]);
+    child.kill = () => {
+      child.emit('exit', null, 'SIGTERM');
+      child.emit('close', null, 'SIGTERM');
+      return true;
+    };
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => module,
+      resolveBinary: () => '/unused',
+      spawnServer: () => child,
+    });
+    const failure = await adapter
+      .openSession(openInput(makeRoots(), creds))
+      .catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) return;
+    expect(failure.message).toContain('Transport: fetch failed');
+    expect(failure.message).toContain(`${code}: other side closed`);
+    expect(failure.message.match(new RegExp(code, 'g'))).toHaveLength(1);
+    for (const secret of [creds.capabilityCredential, 'password', 'unknown-secret', 'fragment']) {
+      expect(failure.message).not.toContain(secret);
+    }
+    expect(Buffer.byteLength(failure.message)).toBeLessThanOrEqual(16 * 1024);
+    const bounded = boundOpenCodeDiagnostic(`${failure.message}${'é'.repeat(20_000)}`, []);
+    expect(Buffer.byteLength(bounded)).toBeLessThanOrEqual(16 * 1024);
+    expect(bounded).toContain(`${code}: other side closed`);
+    expect(bounded).not.toContain('\uFFFD');
+  });
+
   it('registers the production adapter and resolves only the pinned CLI', () => {
     expect(WORKER_ADAPTERS.opencode).toBe(opencodeAdapter);
     expect(OPENCODE_PROVIDER_ID).toBe('openkit-worker-inference');

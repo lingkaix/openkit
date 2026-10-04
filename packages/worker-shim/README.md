@@ -77,6 +77,8 @@ DeepSeek malformed-frame and stdout-tail regressions allow five seconds for comp
 
 The OpenCode managed Skill escape setup regression keeps the production close windows and records EOF, signal, exit and stream-close timing plus any rejected cleanup settlement. It still requires a clean start refusal, no inference, no escape link and successful retained close proof.
 
+OpenCode native failure diagnostics preserve up to eight cause levels with each cause's code and message, so SDK transport failures expose the underlying fetch/socket reason. Cycles stop traversal; request and socket metadata are not serialized. The existing 16 KiB UTF-8 bound and exact credential redaction apply after formatting, and HTTP URLs are omitted because vendor messages may contain unknown URL credentials. Diagnostic enrichment does not retry native requests or alter stop, settlement or persistence-flush proof.
+
 Rejected-settlement regressions wait for the inspected cleanup outcome after interrupt invocation; the invocation counter alone does not prove that asynchronous input removal finished.
 
 Successful Turn closeout stops periodic heartbeat scheduling and waits for any in-flight lease heartbeat and its transcript event's live acceptance before writing `turn.settled` and draining loopback requests. The heartbeat timer's cancellation signal is separate from control delivery, so barrier shutdown cannot cancel an immutable heartbeat request or a transcript event's append. Live rejection still fails the Turn, and the separate local transcript queue can seal a failed terminal record under the existing control-outage rules.
