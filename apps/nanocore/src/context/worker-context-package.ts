@@ -25,6 +25,7 @@ import {
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
 import { chatTaskModeTurnId } from '../runtime/idempotent-command.js';
+import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-requests.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
@@ -52,6 +53,23 @@ const EXCLUSION_REASONS = [
 export type WorkerContextPackageExclusionReason = (typeof EXCLUSION_REASONS)[number];
 
 const IdSchema = z.string().min(1);
+// S59 owns these frozen values; S39 identifies their envelope and retains every original byte.
+const PendingOutcomeInputSchema = z.object({
+  triggerInput: z.string(),
+  pendingOutcomes: z
+    .array(
+      z.object({
+        requestId: IdSchema,
+        requestItemId: IdSchema,
+        publicationTurnId: IdSchema,
+        kind: z.enum(['approval', 'user-input']),
+        resolution: z.enum(['granted', 'denied', 'answered']).nullable(),
+        ending: z.enum(['withdrawn', 'invalidated']).nullable(),
+      })
+    )
+    .min(1)
+    .max(OUTCOME_DELIVERY_BOUND),
+});
 const Sha256Schema = IdSchema.regex(/^sha256:[a-f0-9]{64}$/);
 const ContextPackageDigestSchema = z.string().regex(/^ctxpkg_sha256_[a-f0-9]{64}$/);
 const IMPORTED_HISTORY_REQUEST_ID_PATTERN = /^import-lineage:sha256:[a-f0-9]{64}$/;
@@ -868,10 +886,17 @@ export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTr
  */
 export function projectWorkerContextRequest(text: string): {
   readonly contextBudgetTokens: number;
-  readonly requestKind: 'artifact-review' | 'structured-delegation';
+  readonly requestKind: 'artifact-review' | 'structured-delegation' | 'pending-outcomes';
   readonly requestedItemIds: readonly string[];
 } {
   const value = JSON.parse(text) as unknown;
+  if (PendingOutcomeInputSchema.safeParse(value).success) {
+    return {
+      contextBudgetTokens: STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
+      requestKind: 'pending-outcomes',
+      requestedItemIds: [],
+    };
+  }
   const structured = StructuredWorkerDelegationRequestSchema.safeParse(value);
   if (structured.success) {
     return {

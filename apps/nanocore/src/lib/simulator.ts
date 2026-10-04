@@ -4,7 +4,7 @@ import type {
   AgentEnvironmentPackage,
   SessionWorkspaceMaterializationPlan,
 } from '@openkit/config-schema';
-import type { ApprovalRequestSchema, ItemSchema, ItemType } from '@openkit/protocol';
+import type { ActorRef, ApprovalRequestSchema, ItemSchema, ItemType } from '@openkit/protocol';
 import {
   ItemDeltaEventSchema,
   isSealedTurnTerminal,
@@ -20,7 +20,12 @@ import {
 } from '../runtime/agent-environment.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
-import { frozenPendingOutcomeInput, proveFrozenDelivery } from '../runtime/pending-requests.js';
+import {
+  frozenPendingOutcomeInput,
+  listThreadPendingRequests,
+  pendingRequestSystemActor,
+  proveFrozenDelivery,
+} from '../runtime/pending-requests.js';
 import type {
   AgentSessionReadModel,
   ApprovalDecision,
@@ -516,21 +521,28 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         );
       }
       const agentSessionId = context.agentSessionId ?? `session_sim_turn_${turn.id}`;
+      const workerInput = workspaceDb
+        ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
+        : input;
+      // Delivery cause owns initiating-request identity; carried outcomes do not replace it.
+      const outcomeInitiated = workspaceDb
+        ? listThreadPendingRequests(workspaceDb.sqlite, turn.workspaceId, turn.threadId).some(
+            (record) => record.deliveryTurnId === turn.id && record.deliveryCause === 'outcome'
+          )
+        : false;
+      const contextRequest = outcomeInitiated ? workerInput : input;
       const preparedContext =
-        this.coreDb && workspaceDb && checkpoint && context.sandboxBindingRef
+        this.coreDb && workspaceDb && (checkpoint || outcomeInitiated) && context.sandboxBindingRef
           ? prepareWorkerTurnContextPackage(this.coreDb, workspaceDb, store, checkpoint, {
               agentSessionId,
               requestId: context.requestId ?? null,
               threadId: turn.threadId,
               turnId: turn.id,
-              workerRequest: input,
+              workerRequest: contextRequest,
               workspaceId: turn.workspaceId,
             })
           : null;
       const environmentBackend = { kind: 'openshell' } as const;
-      const workerInput = workspaceDb
-        ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
-        : input;
       const resolvedEnvironmentPackage = captureCoverage
         ? resolveAgentEnvironmentPackage({
             captureCoverage,
@@ -666,7 +678,15 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         userInputRequestId: randomUUID(),
       };
 
-      this.emitStartedEnvelope(store, state, agentSession, input);
+      this.emitStartedEnvelope(
+        store,
+        state,
+        agentSession,
+        contextRequest,
+        outcomeInitiated
+          ? pendingRequestSystemActor(responsibleUserIdForActor(turn.triggerActor))
+          : turn.triggerActor
+      );
 
       if (this.coreDb && workspaceDb && environmentPackage && context.sandboxBindingRef) {
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
@@ -995,13 +1015,14 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Emits the shared turn-start, user item, and AgentSession events.
+   * Emits turn-start, retained request input with its author, and AgentSession events.
    */
   private emitStartedEnvelope(
     store: FsStore,
     state: SimulatedTurnState,
     agentSession: ReturnType<FsStore['createAgentSession']>,
-    input: string
+    input: string,
+    actor: ActorRef
   ): void {
     const turn = store.getTurnById(state.turnId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
@@ -1012,7 +1033,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       turnId: state.turnId,
       type: 'user-message',
       status: 'completed',
-      actor: turn.triggerActor,
+      actor,
       text: input,
       createdAt: timestamp,
       completedAt: timestamp,

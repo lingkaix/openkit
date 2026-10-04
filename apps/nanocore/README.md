@@ -148,6 +148,8 @@ The unified Human Attention Action Center is available at `POST /api/app/operati
 
 Direct Task and Chat-to-Task deliver the complete Coordinator request as compact JSON through the existing Turn path. Goal-linked admissions use the same ordinary Task request and worker owner, with Plan and card citations reserved in Workspace SQL.
 
+Outcome-initiated Worker Turns have no Task checkpoint. The governed executor and simulator retain their complete frozen Pending Request input in the ordinary S39 request Item and Context Package, then write and verify the immutable trace after backend handoff and before native launch. Material reads retain their fail-closed missing-trace check.
+
 Pending requests preserve the originating Task or selected-Worker conversation receipt. Raising a request leaves the Worker Turn running; the worker ends it normally. The request remains actionable after that Turn completes, and its final outcome enters a later matching executor Turn under current authority. [Pending Requests](../../docs/specs/20260930-pending_requests.md) owns execution, publication, native delivery proof, and recovery.
 
 Redacted Agent Environment Package snapshot readback is available at `POST /api/app/operations/environment.snapshot-list` and `POST /api/app/operations/environment.snapshot-read`. These routes return durable workspace-owned package snapshots for diagnostics and evidence without exposing backend-private fields, raw credentials, or host-local runtime references.

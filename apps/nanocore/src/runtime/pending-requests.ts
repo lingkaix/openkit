@@ -28,6 +28,15 @@ export const OUTCOME_DELIVERY_BOUND = 16;
 export const PENDING_REQUEST_NEXT_STEP =
   'The outcome arrives on a later Turn. Do not call again to claim it.';
 
+/** Creates the existing Core actor for pending-request publication and machine input. */
+export function pendingRequestSystemActor(responsibleUserId: string | null): {
+  kind: 'system';
+  id: string;
+  responsibleUserId: string | null;
+} {
+  return { kind: 'system', id: 'nanocore-pending-request', responsibleUserId };
+}
+
 /** Closed failure raised by a pending-request command before any record write. */
 export class PendingRequestCommandError extends Error {
   /** Stable API error code. */

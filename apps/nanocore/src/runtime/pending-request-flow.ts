@@ -33,6 +33,7 @@ import {
   PendingRequestCommandError,
   type PendingRequestRecord,
   pendingRequestItemId,
+  pendingRequestSystemActor,
   projectApprovalRequest,
   proveFrozenDelivery,
   type RaisePendingRequestInput,
@@ -724,7 +725,7 @@ export function archiveThreadWithCloseout(
         workspaceId,
         threadId,
         'Pending request closeout',
-        systemActor(actor.id),
+        pendingRequestSystemActor(actor.id),
         null,
         {
           turnId: closeoutTurnId,
@@ -804,7 +805,7 @@ function closeoutUnavailableRequests(
       workspaceId,
       threadId,
       closeoutTurnId: turnId,
-      actor: systemActor(null),
+      actor: pendingRequestSystemActor(null),
       now,
       usable,
       invalidatingEvent: (record) => loss(record)!,
@@ -814,7 +815,7 @@ function closeoutUnavailableRequests(
         workspaceId,
         threadId,
         'Unavailable requester closeout',
-        systemActor(null),
+        pendingRequestSystemActor(null),
         null,
         {
           turnId,
@@ -881,7 +882,9 @@ function admitNextOutcome(
     workspaceId,
     threadId,
     choice.approval ? 'Approval outcomes' : 'User-input outcomes',
-    choice.actorId === 'system' ? systemActor(null) : { kind: 'user', id: choice.actorId },
+    choice.actorId === 'system'
+      ? pendingRequestSystemActor(null)
+      : { kind: 'user', id: choice.actorId },
     null,
     {
       turnId,
@@ -1404,7 +1407,7 @@ function admitInvalidations(
           workspaceId,
           threadId,
           'Person grant invalidations',
-          systemActor(null),
+          pendingRequestSystemActor(null),
           null,
           {
             turnId,
@@ -1451,14 +1454,6 @@ function storeHasTurn(store: FsStore, turnId: string): boolean {
   } catch {
     return false;
   }
-}
-
-function systemActor(responsibleUserId: string | null): {
-  kind: 'system';
-  id: string;
-  responsibleUserId: string | null;
-} {
-  return { kind: 'system', id: 'nanocore-pending-request', responsibleUserId };
 }
 
 /** Presentation fields for one pending request. */

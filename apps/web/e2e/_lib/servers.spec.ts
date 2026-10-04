@@ -193,6 +193,18 @@ test('preserves Material delivery and delivers a durable simulator answer on the
       }
     }
     expect(answerTurnCompleted).toBe(true);
+    const answerTurn = await client.operations['turn.read']({
+      workspaceId,
+      threadId: thread.id,
+      turnId: nextTurn.id,
+    });
+    expect(answerTurn.contextPackageDigest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+    const deliveredMaterial = await client.app.getThreadMaterial(workspaceId, thread.id);
+    expect(deliveredMaterial.material).toMatchObject({
+      lastWorkerSeenRevisionId: nextRevisionId,
+      latestQueuedRevisionId: null,
+      currentTurnRevisionId: null,
+    });
     expect((await client.operations['turn.read'](selector)).status).toBe('completed');
     const answeredItems = await client.operations['thread.items']({
       workspaceId,
@@ -244,6 +256,17 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     } finally {
       workspaceDb.sqlite.close();
     }
+    await stack.restartCore();
+    expect(await client.app.getThreadMaterial(workspaceId, thread.id)).toEqual(deliveredMaterial);
+    expect(
+      (
+        await client.operations['turn.read']({
+          workspaceId,
+          threadId: thread.id,
+          turnId: nextTurn.id,
+        })
+      ).contextPackageDigest
+    ).toBe(answerTurn.contextPackageDigest);
   } finally {
     await stack.stop();
   }

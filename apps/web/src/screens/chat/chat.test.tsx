@@ -4655,6 +4655,47 @@ describe('task thread (board 04)', () => {
     expect(screen.queryByText('View request details')).not.toBeInTheDocument();
   });
 
+  it('keeps Core-authored frozen outcome input out of the conversation while showing the answer', async () => {
+    const envelope = JSON.stringify({
+      triggerInput: 'Receive pending request outcomes.',
+      pendingOutcomes: [{ request: { question: 'Which summary tone should the simulator use?' } }],
+    });
+    const input = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_user_outcome',
+      actor: {
+        kind: 'system',
+        id: 'nanocore-pending-request',
+        responsibleUserId: 'user_editor',
+      },
+      text: envelope,
+    });
+    const answer = ItemSchema.parse({
+      ...ITEMS[0],
+      id: 'it_answer',
+      type: 'user-input-response',
+      causationId: 'it_question',
+      userInputRequestId: 'uir1',
+      answers: { tone: ['Concise'] },
+      answeredAt: ITEMS[0]!.createdAt,
+    });
+    renderApp(
+      '/chat/ws1/th1',
+      makeClient({
+        'thread.dashboard': vi.fn().mockResolvedValue({ viewerUserId: 'user_editor', turns: [] }),
+        'thread.items': vi
+          .fn()
+          .mockResolvedValue({ items: [ITEMS[0], input, answer], nextCursor: null }),
+      })
+    );
+    expect(await screen.findByText('You answered')).toBeVisible();
+    expect(screen.getByText('Draft a competitive teardown.')).toBeVisible();
+    expect(screen.queryByText(envelope)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('article', { name: 'Message from nanocore-pending-request' })
+    ).not.toBeInTheDocument();
+  });
+
   it('applies the same initiating-request projection to self and agent user-message wrappers', async () => {
     const selfItem = ItemSchema.parse({
       ...ITEMS[0],

@@ -12,6 +12,8 @@ This directory owns deterministic projection of durable OpenKit items into provi
 - Projection must not dispatch providers, mutate thread history, or become a second persistence owner.
 - Every excluded item keeps a stable policy reason; provider-visible content must follow the selected projection policy.
 
+S39 recognizes the existing frozen Pending Request input envelope as worker request context. Outcome-initiated Turns use scheduler request lineage without inventing a Task checkpoint; their exact input bytes enter the existing immutable package and trace before native launch. The Material projection still refuses a genuinely missing accepted trace.
+
 The S39 authority reader locates the trace's exact AEP snapshot filename under retained Workspace AgentSession owners, independently of a session's mutable current-package pointer. It requires one strictly validated match for both package and backend-handoff reads, so unrelated malformed historical snapshots cannot prevent new delivery. Missing, malformed, or conflicting selected snapshots remain unavailable; workspace export still validates the full retained AEP inventory.
 
 ## Verification

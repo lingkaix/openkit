@@ -76,7 +76,12 @@ import {
 } from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { frozenPendingOutcomeInput, proveFrozenDelivery } from './pending-requests.js';
+import {
+  frozenPendingOutcomeInput,
+  listThreadPendingRequests,
+  pendingRequestSystemActor,
+  proveFrozenDelivery,
+} from './pending-requests.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { generateUuidV7 } from './session-id.js';
 import type {
@@ -208,8 +213,10 @@ interface WorkerTurnBackendLifecycle {
 
 /** Prepared S39 package state retained until its accepted trace and queue handoff complete. */
 export interface PreparedWorkerTurnContext {
-  /** Exact diagnostic checkpoint whose lineage is frozen into the trace. */
-  readonly checkpoint: WorkerCheckpointRecord;
+  /** Task diagnostic lineage, absent for an outcome-initiated Turn. */
+  readonly checkpoint: WorkerCheckpointRecord | null;
+  /** Exact scheduler request identity, including checkpoint-free outcome Turns. */
+  readonly requestId: string;
   /** Canonical package bytes and immutable identity. */
   readonly packageFiles: WorkerContextPackageFiles;
   /** Backend-private generated root projected into the AEP and materializer. */
@@ -227,12 +234,12 @@ export interface PreparedWorkerTurnContext {
 }
 
 /**
- * Prepares the one accepted S39 package only when an exact worker checkpoint owns this Turn.
+ * Prepares the one accepted S39 package from a Task checkpoint or frozen Pending Request input.
  *
  * @param coreDb Core authority used to reverify accepted Knowledge work references.
  * @param workspaceDb Open Workspace database containing checkpoint and Material authority.
  * @param store Product store containing canonical Thread Items.
- * @param checkpoint Exact diagnostic checkpoint that owns this worker Turn.
+ * @param checkpoint Exact Task diagnostic checkpoint, or null for an outcome-initiated Turn.
  * @param input Exact worker Turn, command, and request bytes.
  * @returns Prepared immutable package state.
  * @throws TurnStartValidationError when checkpoint or requested Item authority is contradictory.
@@ -241,7 +248,7 @@ export function prepareWorkerTurnContextPackage(
   coreDb: CoreDb | null,
   workspaceDb: WorkspaceDb,
   store: FsStore,
-  checkpoint: WorkerCheckpointRecord,
+  checkpoint: WorkerCheckpointRecord | null,
   input: {
     readonly agentSessionId: string;
     readonly workerRequest: string;
@@ -253,8 +260,9 @@ export function prepareWorkerTurnContextPackage(
 ): PreparedWorkerTurnContext {
   if (
     !input.requestId ||
-    checkpoint.requestId !== input.requestId ||
-    (checkpoint.goalId === null) !== (checkpoint.taskId === null)
+    (checkpoint &&
+      (checkpoint.requestId !== input.requestId ||
+        (checkpoint.goalId === null) !== (checkpoint.taskId === null)))
   ) {
     throw new TurnStartValidationError(
       'recovery_required',
@@ -264,8 +272,17 @@ export function prepareWorkerTurnContextPackage(
   }
 
   const workerRequest = projectWorkerContextRequest(input.workerRequest);
+  if (!checkpoint && workerRequest.requestKind !== 'pending-outcomes') {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Worker Context Package requires Task or frozen outcome authority.',
+      409
+    );
+  }
   const contextBudgetTokens = workerRequest.contextBudgetTokens;
-  const contextAssembly = parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary);
+  const contextAssembly = checkpoint
+    ? parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
+    : null;
   const knowledgeSelectionInput = contextAssembly?.knowledgeSelectionInput ?? null;
   const turn = store.getTurn(input.workspaceId, input.threadId, input.turnId);
   const isChatSubordinateTask = isChatSubordinateTaskTurn({
@@ -274,7 +291,7 @@ export function prepareWorkerTurnContextPackage(
   });
   const requiresTaskKnowledgeSelection =
     workerRequest.requestKind === 'structured-delegation' &&
-    checkpoint.goalId === null &&
+    checkpoint?.goalId === null &&
     !isChatSubordinateTask;
   if (
     (requiresTaskKnowledgeSelection && knowledgeSelectionInput === null) ||
@@ -415,6 +432,7 @@ export function prepareWorkerTurnContextPackage(
   writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
   return {
     checkpoint,
+    requestId: input.requestId,
     knowledgeExclusions,
     knowledgeSelectionInput,
     materialExclusions,
@@ -457,14 +475,14 @@ export function acceptPreparedWorkerTurnContextPackage(input: {
   const trace = createWorkerContextPackageTrace({
     agentSessionId: environmentPackage.scope.agentSessionId,
     excludedItems: [],
-    goalId: preparedContext.checkpoint.goalId,
+    goalId: preparedContext.checkpoint?.goalId ?? null,
     knowledgeExclusions: preparedContext.knowledgeExclusions,
     knowledgeSelectionInput: preparedContext.knowledgeSelectionInput,
     materialExclusions: preparedContext.materialExclusions,
     packageFiles: preparedContext.packageFiles,
     packageSnapshotId: environmentPackage.snapshotId,
-    requestId: preparedContext.checkpoint.requestId,
-    taskId: preparedContext.checkpoint.taskId,
+    requestId: preparedContext.requestId,
+    taskId: preparedContext.checkpoint?.taskId ?? null,
   });
   writeWorkerContextPackageTrace({
     authorities,
@@ -1281,6 +1299,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const checkpoint = workspaceDb
         ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
         : null;
+      const workerInput = workspaceDb
+        ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
+        : input;
+      // Delivery cause owns initiating-request identity; carried outcomes do not replace it.
+      const outcomeInitiated = workspaceDb
+        ? listThreadPendingRequests(workspaceDb.sqlite, turn.workspaceId, turn.threadId).some(
+            (record) => record.deliveryTurnId === turn.id && record.deliveryCause === 'outcome'
+          )
+        : false;
+      const contextRequest = outcomeInitiated ? workerInput : input;
       if (checkpoint && !context.sandboxBindingRef) {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -1288,7 +1316,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      if (workspaceDb && checkpoint && context.sandboxBindingRef) {
+      if (workspaceDb && (checkpoint || outcomeInitiated) && context.sandboxBindingRef) {
         preparedWorkerContext = prepareWorkerTurnContextPackage(
           this.coreDb,
           workspaceDb,
@@ -1299,7 +1327,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             requestId,
             threadId: turn.threadId,
             turnId: turn.id,
-            workerRequest: input,
+            workerRequest: contextRequest,
             workspaceId: turn.workspaceId,
           }
         );
@@ -1336,9 +1364,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         runtimeEnvCredentialSink: (credential) => runtimeEnvCredentials.push(credential),
         runtimeFileCredentialSink: (credential) => runtimeFileCredentials.push(credential),
         turn,
-        turnInput: workspaceDb
-          ? frozenPendingOutcomeInput(workspaceDb.sqlite, turn.id, input)
-          : input,
+        turnInput: workerInput,
         triggerActor: context.triggerActor,
         ...(this.vaultBackend ? { vaultBackend: this.vaultBackend } : {}),
         ...(context.workspaceDataSourceCatalog
@@ -1467,12 +1493,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         agentSessionId: agentSession.id,
       });
       const userItem = store.createItem({
-        actor: context.triggerActor,
+        actor: outcomeInitiated
+          ? pendingRequestSystemActor(responsibleUserIdForActor(context.triggerActor))
+          : context.triggerActor,
         completedAt: timestamp,
         createdAt: timestamp,
         id: `it_user_${turnId}`,
         status: 'completed',
-        text: input,
+        text: contextRequest,
         threadId: turn.threadId,
         turnId,
         type: 'user-message',

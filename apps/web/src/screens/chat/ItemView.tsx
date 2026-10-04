@@ -263,6 +263,8 @@ export function ItemView({
 }: ItemViewProps) {
   switch (item.type) {
     case 'user-message': {
+      // Core retains exact outcome input for S39 verification; S59 publishes its human decision separately.
+      if (item.actor.kind === 'system' && item.actor.id === 'nanocore-pending-request') return null;
       const body = requestObjective ? (
         <>
           <p>{requestObjective}</p>

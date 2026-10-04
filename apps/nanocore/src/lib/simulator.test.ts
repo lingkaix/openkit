@@ -887,6 +887,32 @@ describe('SimulatedTurnExecutor', () => {
       expect(
         store
           .listThreadItems('ws_demo', 'th_demo')
+          .filter(
+            (item) =>
+              item.turnId === deliveringTurn.id &&
+              item.type === 'user-message' &&
+              item.actor.kind === 'user'
+          )
+      ).toEqual([]);
+      const outcomeMaterialResponse = await app.request(
+        '/api/app/workspaces/ws_demo/threads/th_demo/material'
+      );
+      expect(outcomeMaterialResponse.status, await outcomeMaterialResponse.clone().text()).toBe(
+        200
+      );
+      const outcomeTurnResponse = await app.request(
+        ...operationRequest('turn.read', {
+          workspaceId: 'ws_demo',
+          threadId: 'th_demo',
+          turnId: deliveringTurn.id,
+        })
+      );
+      expect((await outcomeTurnResponse.json()).contextPackageDigest).toMatch(
+        /^ctxpkg_sha256_[a-f0-9]{64}$/
+      );
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
           .filter((item) => item.type === 'user-input-response')
       ).toEqual([
         expect.objectContaining({

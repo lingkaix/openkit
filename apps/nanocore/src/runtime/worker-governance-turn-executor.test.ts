@@ -41,6 +41,7 @@ import { ensureLocalUser } from '../auth/identity.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { FsStore } from '../lib/store.js';
 import type {
@@ -99,10 +100,17 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
+import {
+  answerPendingRequest,
+  freezeReadyOutcomes,
+  frozenPendingOutcomeInput,
+  raisePendingRequest,
+} from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import {
+  clearWorkerCheckpoint,
   createWorkerCheckpointContextDiagnostics,
   getWorkerCheckpoint,
   upsertWorkerCheckpoint,
@@ -5521,6 +5529,152 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workerRequest
       );
     } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'outcome',
+    'carried',
+  ] as const)('preserves checkpoint-free %s delivery before native launch', async (cause) => {
+    const triggerInput = 'Receive pending request outcomes.';
+    const fixture = createWorkerContextExecutorFixture(`pending-${cause}`, {
+      workerRequest: triggerInput,
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const pendingRequestId = 'pending_context_question';
+    const now = '2026-07-15T00:00:03.000Z';
+    clearWorkerCheckpoint(
+      workspaceDb,
+      fixture.turn.workspaceId,
+      fixture.turn.threadId,
+      fixture.turn.id
+    );
+    raisePendingRequest(workspaceDb.sqlite, {
+      requestId: pendingRequestId,
+      workspaceId: fixture.turn.workspaceId,
+      threadId: fixture.turn.threadId,
+      raisingTurnId: 'tu_previous_question',
+      requestItemId: 'it_previous_question',
+      kind: 'user-input',
+      requesterKind: 'worker',
+      agentId: fixture.turn.agentId,
+      responsibleUserId: LOCAL_USER_ID,
+      questions: [{ id: 'tone', header: 'Tone', question: 'Which tone?', options: [] }],
+      now,
+    });
+    answerPendingRequest(
+      workspaceDb.sqlite,
+      pendingRequestId,
+      { kind: 'user', id: LOCAL_USER_ID },
+      { tone: ['Detailed'] },
+      now
+    );
+    expect(
+      freezeReadyOutcomes(workspaceDb.sqlite, {
+        workspaceId: fixture.turn.workspaceId,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        executor: 'worker',
+        agentId: fixture.turn.agentId,
+        cause,
+        now,
+      })
+    ).toHaveLength(1);
+    const frozenInput = frozenPendingOutcomeInput(
+      workspaceDb.sqlite,
+      fixture.turn.id,
+      triggerInput
+    );
+    const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
+    if (cause === 'carried') {
+      fixture.store.recordCommandRequest({
+        command: 'turn.start',
+        requestId: fixture.requestId,
+        scope: { workspaceId: fixture.turn.workspaceId, threadId: fixture.turn.threadId },
+        inputHash: commandInputHash({
+          workspaceId: fixture.turn.workspaceId,
+          threadId: fixture.turn.threadId,
+          requestId: fixture.requestId,
+          input: triggerInput,
+          profileId: 'profile_worker',
+        }),
+        response: { kind: 'turn', id: fixture.turn.id },
+      });
+    }
+    const backend = new FakeWorkerGovernanceBackend();
+    const nativeLaunch = backend.launch.bind(backend);
+    const launch = vi.spyOn(backend, 'launch').mockImplementation(async () => {
+      if (cause === 'carried') {
+        const replay = await app.request('/api/app/operations/turn.start', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-openkit-request-id': fixture.requestId,
+          },
+          body: JSON.stringify({
+            workspaceId: fixture.turn.workspaceId,
+            threadId: fixture.turn.threadId,
+            input: triggerInput,
+            profileId: 'profile_worker',
+          }),
+        });
+        expect(replay.status, await replay.clone().text()).toBe(202);
+        expect(await replay.json()).toMatchObject({ id: fixture.turn.id, status: 'running' });
+      }
+      if (cause === 'outcome') {
+        const digest = readStrictWorkerContextPackageDigest({
+          coreDb: fixture.coreDb,
+          workspaceDb,
+          store: fixture.store,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+        });
+        expect(digest).toMatch(/^ctxpkg_sha256_[a-f0-9]{64}$/);
+        expect(readFileSync(join(fixture.packageRoot, 'instructions.md'), 'utf8')).toBe(
+          frozenInput
+        );
+      }
+      expect(
+        fixture.store
+          .listThreadItems(fixture.turn.workspaceId, fixture.turn.threadId)
+          .find((item) => item.id === `it_user_${fixture.turn.id}`)
+      ).toMatchObject({
+        type: 'user-message',
+        text: cause === 'outcome' ? frozenInput : triggerInput,
+        actor:
+          cause === 'outcome'
+            ? { kind: 'system', id: 'nanocore-pending-request', responsibleUserId: LOCAL_USER_ID }
+            : fixture.turn.triggerActor,
+      });
+      return nativeLaunch();
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      now: () => now,
+    });
+    try {
+      await executor.startTurn(fixture.store, fixture.turn.id, triggerInput, {
+        agentSessionId: fixture.agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(launch).toHaveBeenCalledOnce();
+      expect(
+        getWorkerCheckpoint(
+          workspaceDb,
+          fixture.turn.workspaceId,
+          fixture.turn.threadId,
+          fixture.turn.id
+        )
+      ).toBeNull();
+    } finally {
+      workspaceDb.sqlite.close();
       fixture.coreDb.sqlite.close();
     }
   });
