@@ -24,7 +24,14 @@ channel.on('data', (chunk) => {
   while (newline >= 0) {
     const request = JSON.parse(buffer.slice(0, newline));
     buffer = buffer.slice(newline + 1);
-    if (request.op === 'open') {
+    if (request.id === 0 && request.op === undefined) {
+      // Prove fixture startup without opening a session or entering a fault mode.
+      send({
+        id: 0,
+        ok: false,
+        error: { code: 'invalid_request', message: 'Request is invalid.' },
+      });
+    } else if (request.op === 'open') {
       if (mode === 'silent-open') {
         newline = buffer.indexOf('\n');
         continue;

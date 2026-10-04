@@ -68,6 +68,8 @@ const INFERENCE = 'inference-credential-deepseek-w5';
 const CAPABILITY = 'capability-credential-deepseek-w5';
 const CONTROL = 'worker-control-token-deepseek-w5';
 const LIVE = 180_000;
+/** Two bounded 2 s signals plus exit delivery; measured fault-to-stop completion exceeded 2 s. */
+const NATIVE_STOP_MS = 5_000;
 
 const sessions: WorkerResidentSession[] = [];
 const closers: (() => Promise<void>)[] = [];
@@ -1164,7 +1166,7 @@ describe('deepseek resident adapter', () => {
       nativeStdout(session, Buffer.from('{broken-json\n'));
       const outcome = await Promise.race([
         active.settled,
-        new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), 1_000)),
+        new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), NATIVE_STOP_MS)),
       ]);
       expect(outcome).toMatchObject({
         assistantText: null,
@@ -1304,7 +1306,7 @@ describe('deepseek resident adapter', () => {
       nativeStdoutEnd(session);
       const outcome = await Promise.race([
         active.settled,
-        new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), 1_000)),
+        new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), NATIVE_STOP_MS)),
       ]);
       expect(admitted.some((line) => line.endsWith('�'))).toBe(true);
       expect(outcome).toMatchObject({
@@ -1595,7 +1597,10 @@ describe('deepseek resident adapter', () => {
         configId: 'model',
         value: JSON.stringify(['openkit-loopback', 'catalog-a']),
       });
-      expect(mcp.requests.length).toBe(mcpCount);
+      expect(
+        mcp.requests.length,
+        JSON.stringify(mcp.requests.map((request) => request.method))
+      ).toBe(mcpCount);
       const patch = readFileSync(join(roots.control, 'deepseek-loopback.patch.yml'), 'utf8');
       const models = JSON.parse(patch)
         .at(-1)

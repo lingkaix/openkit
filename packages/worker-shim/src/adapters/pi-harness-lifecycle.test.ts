@@ -17,6 +17,7 @@ import {
   type SandboxIntegrationClient,
 } from '../integration-client.js';
 import { startSyntheticCapability } from '../test-support/pi-capability.js';
+import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
 import {
   type InferenceReply,
   requestTexts,
@@ -92,11 +93,17 @@ function harnessFor(
     adapters: {
       pi: {
         async openSession(input) {
+          let readiness: Promise<void> | undefined;
           const binding = (await createPiResidentAdapter({
             hostCommand: [process.execPath, '--no-warnings', HOST_BIN],
             ...options,
+            observeChannel: (channel) => {
+              options.observeChannel?.(channel);
+              readiness = waitForPiHostReadiness(channel);
+            },
           }).openSession(input)) as PiResidentBinding;
           bindings.push(binding);
+          await readiness;
           return binding;
         },
       },

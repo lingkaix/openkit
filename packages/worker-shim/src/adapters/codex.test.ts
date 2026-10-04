@@ -2411,7 +2411,8 @@ describe('round 4 failure boundaries', () => {
     await expect(
       openCodexResidentSession(openInput(roots), {
         binaryPath: vendorBinary,
-        stopGraceMs: 5,
+        // Real SIGKILL exit delivery measured up to 18 ms in the CI image.
+        // Keep the production stop grace; the ten-second assertion still owns the bound.
         spawnProcess: (binary, args, options) => {
           child = spawn(binary, [...args], {
             ...options,

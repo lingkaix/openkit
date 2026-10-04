@@ -20,6 +20,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
 
 const spawnCalls = vi.hoisted(
   () =>
@@ -262,7 +263,13 @@ async function fixture(
     () => inference.close(),
     () => capability.close()
   );
-  const adapter = createPiResidentAdapter({ hostCommand: hostCommand() });
+  let readiness: Promise<void> | undefined;
+  const adapter = createPiResidentAdapter({
+    hostCommand: hostCommand(),
+    observeChannel: (channel) => {
+      readiness = waitForPiHostReadiness(channel);
+    },
+  });
   return {
     capability,
     capabilityCredential,
@@ -289,6 +296,7 @@ async function fixture(
         stateRoot: dirs.stateRoot,
       });
       sessions.push(session);
+      await readiness;
       return session;
     },
   };
@@ -800,12 +808,17 @@ describe('Pi controlled channel faults', () => {
   async function peer(
     mode: string,
     marker?: string,
-    options: { requestTimeoutMs?: number; closeExitTimeoutMs?: number } = {}
+    options: import('./pi.js').PiResidentAdapterOptions = {}
   ) {
     const dirs = await createDirs();
+    let readiness: Promise<void> | undefined;
     const adapter = createPiResidentAdapter({
       hostCommand: [process.execPath, PEER_BIN],
       ...options,
+      observeChannel: (channel) => {
+        options.observeChannel?.(channel);
+        readiness = waitForPiHostReadiness(channel);
+      },
     });
     const session = await adapter.openSession({
       agentSessionId: 'session-a',
@@ -826,34 +839,39 @@ describe('Pi controlled channel faults', () => {
       stateRoot: dirs.stateRoot,
     });
     sessions.push(session);
+    await readiness;
     return { dirs, session };
   }
 
-  it('R5 changes the admitted set only through an exact real-host successor', async () => {
-    const f = await fixture((_request, n) => ({ text: `answer-${n}` }), []);
-    const session = await f.open();
-    const input = turnInput(f.dirs, { mcpServerIds: [] });
-    expect((await (await session.startTurn(input)).settled).status).toBe('completed');
-    const ready = await session.nativeHandle();
-    if (ready.state !== 'ready') throw new Error('Expected exact ready reference.');
-    const changed = {
-      ...input,
-      llmRoute: { ...input.llmRoute, model: 'logical-c', id: 'logical-c' },
-    };
-    const successorInput = { ...changed, allowedLlmRoutes: [changed.llmRoute], turnId: 'turn-2' };
-    const write = vi.spyOn(spawnControl.children.at(-1)!.stdio[3] as Duplex, 'write');
-    await expect(session.startTurn(successorInput)).rejects.toThrow('route set changed');
-    expect(write).not.toHaveBeenCalled();
-    expect((await session.nativeHandle()).state).toBe('ready');
-    await session.close();
-    const successor = await f.open(ready.reference);
-    expect((await (await successor.startTurn(successorInput)).settled).status).toBe('completed');
-    expect(f.inference.requests[1]!.body.model).toBe('logical-c');
-    expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
-    expect(await successor.nativeHandle()).toEqual(ready);
-    expect(spawnControl.children).toHaveLength(2);
-    await successor.close();
-  });
+  it(
+    'R5 changes the admitted set only through an exact real-host successor',
+    async () => {
+      const f = await fixture((_request, n) => ({ text: `answer-${n}` }), []);
+      const session = await f.open();
+      const input = turnInput(f.dirs, { mcpServerIds: [] });
+      expect((await (await session.startTurn(input)).settled).status).toBe('completed');
+      const ready = await session.nativeHandle();
+      if (ready.state !== 'ready') throw new Error('Expected exact ready reference.');
+      const changed = {
+        ...input,
+        llmRoute: { ...input.llmRoute, model: 'logical-c', id: 'logical-c' },
+      };
+      const successorInput = { ...changed, allowedLlmRoutes: [changed.llmRoute], turnId: 'turn-2' };
+      const write = vi.spyOn(spawnControl.children.at(-1)!.stdio[3] as Duplex, 'write');
+      await expect(session.startTurn(successorInput)).rejects.toThrow('route set changed');
+      expect(write).not.toHaveBeenCalled();
+      expect((await session.nativeHandle()).state).toBe('ready');
+      await session.close();
+      const successor = await f.open(ready.reference);
+      expect((await (await successor.startTurn(successorInput)).settled).status).toBe('completed');
+      expect(f.inference.requests[1]!.body.model).toBe('logical-c');
+      expect(requestTexts(f.inference.requests[1]!).join(' ')).toContain('answer-1');
+      expect(await successor.nativeHandle()).toEqual(ready);
+      expect(spawnControl.children).toHaveLength(2);
+      await successor.close();
+    },
+    TIMEOUT
+  );
 
   it('R5 fixes the admitted route set before native requests', async () => {
     let channel: Duplex | undefined;

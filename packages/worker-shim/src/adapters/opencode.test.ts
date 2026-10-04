@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
@@ -109,10 +109,9 @@ describe('OpenCode resident adapter', () => {
   });
 
   it('records supporting literal-string evidence; image smoke still owns /etc/opencode absence', () => {
-    const searched = spawnSync('rg', ['-a', '-F', '-q', '/etc/opencode', resolveOpenCodeBinary()], {
-      encoding: 'utf8',
-    });
-    expect(searched.status).toBe(1);
+    expect(readFileSync(resolveOpenCodeBinary()).includes(Buffer.from('/etc/opencode'))).toBe(
+      false
+    );
   });
 
   it('fails open closed when the client or the binary cannot be loaded', async () => {
@@ -1637,7 +1636,8 @@ describe('W4 round-five proof regressions', () => {
       const creds = loopback('response', inference.url);
       const adapter = createOpenCodeAdapter({
         interruptTimeoutMs: 200,
-        stopTimeoutMs: 100,
+        // Real exit proof exceeded the 100 ms signal grace in the CI image.
+        // Use the owned native stop budget while the missing-terminal deadline stays short.
         loadClient: () => transformingModule({ interrupt: async () => response }),
       });
       const session = await adapter.openSession(openInput(layout, creds));

@@ -1209,10 +1209,13 @@ describe('Worker Harness resident AgentSessions', () => {
     f.fake.script.push({ kind: 'reject-settlement', stopProved });
     expect(await f.start('as-a', 'turn-1')).toMatchObject({ disposition: 'succeeded' });
     await vi.waitFor(() => expect(f.fake.residents[0]?.interrupts).toBe(1));
-    expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
-      body: stopProved
-        ? { cleanupState: 'clean', state: 'open' }
-        : { cleanupState: 'unknown', state: 'failed' },
+    // Interrupt invocation precedes asynchronous input cleanup; await the owned outcome.
+    await vi.waitFor(async () => {
+      expect(await f.send('session.inspect', f.selector('as-a'))).toMatchObject({
+        body: stopProved
+          ? { cleanupState: 'clean', state: 'open' }
+          : { cleanupState: 'unknown', state: 'failed' },
+      });
     });
     expect(
       f.integration.finalStatuses.find((status) => status.lineage.turnId === 'turn-1')

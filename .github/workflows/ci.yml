@@ -24,7 +24,7 @@ on:
 permissions:
   contents: read
 
-# Image-placed jobs run as root against a checkout the runner user owns, so git refuses the
+# Image bootstrap steps run as root against a checkout the runner user owns, so git refuses the
 # repository as dubiously owned. `actions/checkout` declares the exception only under a temporary
 # HOME its own steps use, which no later step reads. Declaring it here reaches every job's steps.
 # The value is the in-container checkout path rather than `*`, which would disable git's ownership
@@ -248,8 +248,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run L0-L2 verification
-        run: pnpm -w verify:l0-l2
+      - name: Run L0-L2 verification as the unprivileged image user
+        run: |
+          # Permission-refusal fixtures must exercise ordinary filesystem authority.
+          # Checkout, install, and cache restoration still need the container bootstrap user.
+          chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
+          runuser -u node -- env HOME="${HOME}" pnpm -w verify:l0-l2
 
   nano-core-e2e:
     name: L3 NanoCore e2e

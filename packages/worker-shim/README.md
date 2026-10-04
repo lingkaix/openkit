@@ -61,9 +61,17 @@ Missing root evidence is `failed`; missing, contradictory, or changing reachable
 - `pnpm --filter @openkit/worker-shim build`
 - `pnpm --filter @openkit/worker-shim lint`
 
-Real-pin regressions use the adapters' owned native request bounds, including OpenCode's eight-second RPC bound, so setup completes before a deliberately missing tool-registry proof is examined. Codex home checks preserve opaque native staging bytes and scan all surviving files, including `.tmp/`, SQLite, WAL and logs; only `ENOENT` for a vanished child is tolerated, while a missing scan root and unreadable bytes fail the check. Deterministic disappearance and unreadability cases qualify that scan without relying on native cleanup timing.
+CI runs L0-L2 verification as the test image's unprivileged `node` user. Permission-refusal fixtures require ordinary filesystem authority and run without skips; running them as root does not prove their unreadability or cleanup-refusal predicates.
+
+Pi fixtures prove their private request listener is responsive before starting control and fault-injection deadlines, using a closed invalid request that opens no native session. Cold SDK module loading is fixture setup, while production startup and operation deadlines remain unchanged. The R5 real-host successor case uses the existing 120-second native-fixture test budget because it starts two SDK processes. The OpenCode binary-literal evidence check searches the actual pinned bytes with Node and requires no external search executable.
+
+Real-pin regressions use the adapters' owned native request and stop bounds, including Codex's two-second signal grace, DeepSeek's two-second grace for each stop signal, and OpenCode's two-second stop-signal grace and eight-second RPC bound, so setup completes before a deliberately missing tool-registry proof is examined. Codex home checks preserve opaque native staging bytes and scan all surviving files, including `.tmp/`, SQLite, WAL and logs; only `ENOENT` for a vanished child is tolerated, while a missing scan root and unreadable bytes fail the check. Deterministic disappearance and unreadability cases qualify that scan without relying on native cleanup timing.
 
 The OpenCode unknown-finish regression transforms the collected native message through the existing client fixture after ordinary inference, so auxiliary request ordering cannot choose its failure path. It proves failed collection, no assistant text, confirmed host absence and rejected close without graceful flush proof; the separate graceful-close regression proves EOF release and exact successor resume.
+
+DeepSeek malformed-frame and stdout-tail regressions allow five seconds for complete native stop proof. Fault admission can be immediate while the owned two-stage stop uses both two-second signal windows; the native result and confirmed child absence remain required.
+
+Rejected-settlement regressions wait for the inspected cleanup outcome after interrupt invocation; the invocation counter alone does not prove that asynchronous input removal finished.
 
 Successful Turn closeout stops periodic heartbeat scheduling and waits for any in-flight lease heartbeat and its transcript event's live acceptance before writing `turn.settled` and draining loopback requests. The heartbeat timer's cancellation signal is separate from control delivery, so barrier shutdown cannot cancel an immutable heartbeat request or a transcript event's append. Live rejection still fails the Turn, and the separate local transcript queue can seal a failed terminal record under the existing control-outage rules.
 
