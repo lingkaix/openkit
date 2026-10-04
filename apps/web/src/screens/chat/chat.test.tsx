@@ -3613,7 +3613,10 @@ describe('live turn subscription (S6)', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(listThreadItems).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('Authoritative interleaved result')).toBeInTheDocument();
+    // Stream-drop rendering can replace Markdown nodes; assert the current DOM in the query's turn.
+    await waitFor(() =>
+      expect(screen.getByText('Authoritative interleaved result')).toBeInTheDocument()
+    );
     expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
 
     await act(async () => {
