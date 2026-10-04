@@ -308,7 +308,6 @@ describe('OpenCode resident adapter', () => {
       loadClient: async () => absentRowModule(),
       resolveBinary: () => '/unused/opencode',
       spawnServer: () => child,
-      stopTimeoutMs: 20,
     });
     const session = await adapter.openSession(
       openInput(makeRoots(), loopback('close-stream', 'http://127.0.0.1:9'))
@@ -625,6 +624,7 @@ describe('OpenCode resident adapter', () => {
       loadClient: async () => fake,
       resolveBinary: () => '/unused',
       spawnServer: () => stubbornChild([]),
+      // This peer ignores both signals; the short window exercises unproved settlement.
       stopTimeoutMs: 10,
     });
     // Reuse the same admitted stand-in client for the settlement-error boundary.
@@ -1409,7 +1409,6 @@ describe('W4 round-five proof regressions', () => {
       loadClient: async () => absentRowModule(),
       resolveBinary: () => '/unused',
       spawnServer: () => child,
-      stopTimeoutMs: 20,
     });
     const session = await adapter.openSession(
       openInput(makeRoots(), loopback('forced', 'http://127.0.0.1:9'))
@@ -1427,7 +1426,6 @@ describe('W4 round-five proof regressions', () => {
       loadClient: async () => absentRowModule(),
       resolveBinary: () => '/unused',
       spawnServer: () => child,
-      stopTimeoutMs: 20,
     });
     const session = await adapter.openSession(
       openInput(makeRoots(), loopback('crash', 'http://127.0.0.1:9'))
@@ -1483,7 +1481,7 @@ describe('W4 round-five proof regressions', () => {
     const creds = loopback('ack-only', inference.url);
     const adapter = createOpenCodeAdapter({
       interruptTimeoutMs: 100,
-      stopTimeoutMs: 100,
+      // Keep production signal windows while bounding only interrupt acknowledgement.
       loadClient: () => transformingModule({ interrupt: async () => ({ interrupted: true }) }),
     });
     const session = await adapter.openSession(openInput(layout, creds));

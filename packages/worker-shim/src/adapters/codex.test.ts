@@ -664,7 +664,6 @@ describe('Codex App Server adapter', () => {
           spawned = true;
           return controlledPeer();
         },
-        stopGraceMs: 5,
       })
     ).rejects.toThrow(`Codex rejected environment ${name}.`);
     expect(spawned).toBe(false);
@@ -701,7 +700,6 @@ describe('Codex App Server adapter', () => {
           spawned = true;
           return controlledPeer();
         },
-        stopGraceMs: 5,
       })
     ).rejects.toThrow(/CODEX_SQLITE_HOME/);
     expect(spawned).toBe(false);
@@ -751,7 +749,6 @@ describe('Codex App Server adapter', () => {
     await expect(
       openCodexResidentSession(openInput(roots), {
         spawnProcess: () => child,
-        stopGraceMs: 5,
         controlTimeoutMs: 20,
       })
     ).rejects.toThrow('Codex native MCP configuration is malformed.');
@@ -1328,7 +1325,6 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const calls: unknown[] = [];
     const child = controlledPeer();
     const session = await openCodexResidentSession(openInput(roots), {
-      stopGraceMs: 5,
       spawnProcess: (binary, args, options) => {
         calls.push({ binary, args, options });
         return child;
@@ -1454,6 +1450,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     silent.exitCode = null;
     silent.signalCode = null;
     silent.kill = () => true;
+    // A peer that never emits exit must exhaust the unproved-stop window.
     await expect(confirmCodexChildStopped(silent, 20)).resolves.toBe(false);
     expect(silent.listenerCount('exit')).toBe(0);
   });
@@ -1463,6 +1460,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: childThatNeverExits,
+      // The peer never exits; the short grace exercises unproved-stop fencing.
       stopGraceMs: 20,
     });
     sessions.push(session);
@@ -2000,6 +1998,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer();
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // This peer never emits exit; failure cases require unproved-stop rejection.
       stopGraceMs: 5,
       controlTimeoutMs: 20,
     });
@@ -2080,6 +2079,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer(undefined, { turn: { id: 42, status, items: [] } });
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
       stopGraceMs: 5,
     });
     const turn = await session.startTurn(turnInput(roots, []));
@@ -2100,6 +2100,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer(undefined, { turn: { id: 'controlled-turn', status } });
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // No exit is emitted; invalid acceptance must reject through the unproved-stop path.
       stopGraceMs: 5,
     });
     const turn = await session.startTurn(turnInput(roots, []));
@@ -2116,6 +2117,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer(undefined, undefined, [NATIVE_THREAD]);
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // No exit is emitted; invalid identity must reject through the unproved-stop path.
       stopGraceMs: 5,
     });
     const turn = await session.startTurn(turnInput(roots, []));
@@ -2331,6 +2333,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer();
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // The peer never exits; cleanup remains unproved when setup expires.
       stopGraceMs: 5,
       setupTimeoutMs: 10,
       controlTimeoutMs: 20,
@@ -2366,7 +2369,6 @@ describe('round 4 failure boundaries', () => {
     let release: ((value: { size: number }) => void) | undefined;
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
-      stopGraceMs: 5,
       inspectTimeoutMs: 10,
       inspectRollout: () =>
         new Promise((resolve) => {
@@ -2390,6 +2392,7 @@ describe('round 4 failure boundaries', () => {
     const child = controlledPeer();
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
+      // The peer never exits; missing terminal proof must retain unproved cleanup.
       stopGraceMs: 5,
       controlTimeoutMs: 10,
     });
@@ -2437,7 +2440,6 @@ describe('round 4 failure boundaries', () => {
       openInput(roots, { inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1` }),
       {
         binaryPath: vendorBinary,
-        stopGraceMs: 250,
         spawnProcess: (binary, args, options) => {
           child = spawn(binary, [...args], {
             ...options,

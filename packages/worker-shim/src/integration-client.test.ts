@@ -889,13 +889,13 @@ describe('Sandbox Integration', () => {
       });
 
       // A request that completes inside the drain bound is not cut.
-      expect(await integration.drainTurn('as_b', 1_000)).toBe(0);
+      expect(await integration.drainTurn('as_b')).toBe(0);
       expect(await native(b.inferenceCredential, '/inference/v1/responses')).toMatchObject({
         status: 403,
       });
       integration.clearTurnRouteTokens('as_b');
 
-      // The barrier refuses new requests, waits for in-flight ones up to its bound, then cuts.
+      // The short window exercises incomplete drain: held requests are cut at the barrier.
       const inflight = native(a.inferenceCredential, '/inference/v1/hold');
       await vi.waitFor(() => expect(held.size).toBe(1));
       const drainStarted = Date.now();
@@ -912,7 +912,7 @@ describe('Sandbox Integration', () => {
         status: 403,
       });
 
-      // A request still uploading its body is cut by the barrier, and none of it goes upstream.
+      // The short window exercises incomplete drain of an upload; none of it goes upstream.
       const openRequests = () =>
         (integration as unknown as { nativeRequests: Set<unknown> }).nativeRequests.size;
       integration.bindTurnRouteTokens('as_a', tokens('turn-a-upload'));

@@ -1100,6 +1100,7 @@ describe('Pi controlled channel faults', () => {
   });
 
   it('R4 shares the close promise and its rejection', async () => {
+    // The acknowledged close never exits; this short window tests unproved close.
     const { session } = await peer('stuck-close', undefined, { closeExitTimeoutMs: 100 });
     const first = session.close();
     const second = session.close();
@@ -1152,6 +1153,7 @@ describe('Pi controlled channel faults', () => {
       'Pi host request timed out.'
     );
     expect(silent.session.childState()).toBe('absent');
+    // The acknowledged close never exits; this short window tests unproved close.
     const stuck = await peer('stuck-close', undefined, { closeExitTimeoutMs: 100 });
     await expect(stuck.session.close()).rejects.toThrow('Pi host close exit timed out.');
   });
