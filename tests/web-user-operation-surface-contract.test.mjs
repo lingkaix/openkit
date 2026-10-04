@@ -228,8 +228,8 @@ const WEB_OPERATION_GROUPS = {
     'workspace.ownership-transfer': { disposition: 'live', surface: 'Account' },
   },
   'My admin access': {
-    listMyAdminAccessTokens: { disposition: 'live', surface: 'My admin access' },
-    setMyAdminAccessTokenDefault: { disposition: 'live', surface: 'My admin access' },
+    'token.my-admin-list': { disposition: 'live', surface: 'My admin access' },
+    'token.my-admin-default': { disposition: 'live', surface: 'My admin access' },
   },
   'Core approval': {
     'approval.respond': { disposition: 'live', surface: 'Overview' },

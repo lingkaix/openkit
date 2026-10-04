@@ -23,7 +23,7 @@ export function WorkspaceAccessRecoveryScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'workspace-access-recovery', 'admin-access'],
     queryFn: async () => {
-      await client.app.listOpenKitAccessTokens();
+      await client.operations['token.list']({});
       return true;
     },
     retry: false,

@@ -32,7 +32,6 @@ import {
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
-import { registerAccessTokenRoutes } from './auth/access-token-routes.js';
 import {
   resolveSessionDeploymentAdminTokenId,
   verifyOpenKitAccessTokenRecord,
@@ -188,7 +187,7 @@ import {
   listAllWorkspaceDeletionRequests,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
-import { ensureUserQuickChatWorkspace, resolveWorkspaceRole } from './workspace-membership.js';
+import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
@@ -1050,20 +1049,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   /**
-   * Checks the internally consistent active Workspace role required by membership-gated callers.
-   *
-   * @param userId Canonical user id.
-   * @param workspaceId Workspace id.
-   * @returns True when the user is an active workspace member.
-   */
-  function isActiveWorkspaceMember(userId: string, workspaceId: string): boolean {
-    if (!options.coreDb) {
-      return false;
-    }
-    return resolveWorkspaceRole(options.coreDb, workspaceId, userId) !== null;
-  }
-
-  /**
    * Returns the configured Core database for repository App API routes.
    *
    * @returns Core database handles.
@@ -1361,12 +1346,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app.all('/api/auth/*', (c) => auth.handler(c.req.raw));
   }
 
-  registerAccessTokenRoutes({
-    app,
-    coreDb: options.coreDb,
-    isActiveWorkspaceMember,
-    mode,
-  });
   registerNanoHostTransportAdmissionRoutes({
     app,
     coreDb: options.coreDb,

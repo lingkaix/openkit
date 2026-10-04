@@ -394,3 +394,5 @@ Configuration, Administration and Gateway settings call canonical `runtime.*` an
 Agents and Catalog hooks use canonical `client.operations` inputs with complete Workspace and resource selectors. Existing request identity, cache invalidation, disconnected states, exact Agent detail refresh, uploaded tree bytes and immutable version selection remain with their hooks and screens.
 
 Material hooks and Artifact Review Material comparisons use `client.operations` with complete Workspace, Thread, Material and revision selectors. Request identity, editor drafts, typed conflict outcomes, caches and refetch ownership remain with their hooks. Material e2e setup reads and response waits use canonical POST operation bindings.
+
+Access-token inventory, creation, rotation, revocation and personal administrator-token selection call the canonical `token.*` methods through `client.operations` with complete input objects. Their existing secret display/dismiss and administrator-admission UI behavior remains unchanged.

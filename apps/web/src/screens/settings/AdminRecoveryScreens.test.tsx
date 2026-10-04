@@ -32,15 +32,12 @@ const DISABLED = {
 function makeClient(): CoreClient {
   return {
     operations: {
+      'token.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.access-recovery-read': vi.fn().mockResolvedValue(RECOVERY),
       'workspace.access-recover': vi.fn().mockResolvedValue({
         recovery: { ...RECOVERY.recovery, administratorRole: 'editor', registryRevision: 8 },
       }),
       'user.disable': vi.fn().mockResolvedValue(DISABLED),
-    },
-
-    app: {
-      listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
     },
   } as unknown as CoreClient;
 }
@@ -186,7 +183,7 @@ describe('Web admin recovery and user disable', () => {
   describe.each(['workspace-access-recovery', 'disable-user'])('%s authority', (id) => {
     it.each([401, 403])('handles initial %s and probes again without mutations', async (status) => {
       const client = makeClient();
-      vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(
+      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
         new ApiCallError(status, POISON)
       );
       const { container } = renderScreen(client, id);
@@ -195,7 +192,7 @@ describe('Web admin recovery and user disable', () => {
       expect(container.innerHTML).not.toContain(POISON);
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
       await screen.findByLabelText(id === 'disable-user' ? 'User ID' : 'Workspace ID');
-      expect(client.app.listOpenKitAccessTokens).toHaveBeenCalledTimes(2);
+      expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
       expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();
       expect(client.operations['user.disable']).not.toHaveBeenCalled();
     });
@@ -207,7 +204,7 @@ describe('Web admin recovery and user disable', () => {
         await confirmDisable();
         await screen.findByText('disabled');
       } else await loadRecovery();
-      vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(
+      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
         new ApiCallError(403, POISON)
       );
       await act(() =>
@@ -308,7 +305,7 @@ describe('Web admin recovery and user disable', () => {
     'disable-user',
   ])('recovers a safe probe error on %s', async (id) => {
     const client = makeClient();
-    vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(new Error(POISON));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new Error(POISON));
     const { container } = renderScreen(client, id);
     await screen.findByRole('alert');
     expect(container.innerHTML).not.toContain(POISON);

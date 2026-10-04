@@ -25,7 +25,7 @@ export function createOperationEngine(
     try {
       const output = await implementations[id](
         admitted.input as OperationInput<K>,
-        admitted.context
+        admitted.context as Parameters<OperationImplementations[K]>[1]
       );
       const validated = definition.outputSchema.safeParse(output);
       if (!validated.success)

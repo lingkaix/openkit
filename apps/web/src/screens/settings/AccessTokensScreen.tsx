@@ -36,12 +36,12 @@ export function AccessTokensScreen() {
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
   const listed = useQuery({
     queryKey: QUERY_KEY,
-    queryFn: () => client.app.listOpenKitAccessTokens(),
+    queryFn: () => client.operations['token.list']({}),
     retry: false,
   });
   const issue = useMutation({
     mutationFn: () =>
-      client.app.createOpenKitAccessToken({
+      client.operations['token.create']({
         ownerUserId: ownerUserId.trim(),
         scope,
         expiresAt,
@@ -54,14 +54,14 @@ export function AccessTokensScreen() {
     },
   });
   const revoke = useMutation({
-    mutationFn: (tokenId: string) => client.app.revokeOpenKitAccessToken(tokenId),
+    mutationFn: (tokenId: string) => client.operations['token.revoke']({ tokenId: tokenId }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
     },
   });
   const rotate = useMutation({
     gcTime: 0,
-    mutationFn: (tokenId: string) => client.app.rotateOpenKitAccessToken(tokenId),
+    mutationFn: (tokenId: string) => client.operations['token.rotate']({ tokenId: tokenId }),
     onSuccess: (result) => {
       setIssuedSecret(result.token);
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY });

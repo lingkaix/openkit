@@ -86,6 +86,9 @@ export function verifyOpenKitAccessTokenSecret(secret: string, expectedHash: str
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
+/** Known refusal of a human token's scope binding; storage and unexpected failures remain unclassified. */
+export class AccessTokenScopeError extends Error {}
+
 /**
  * Normalizes and validates one access-token scope binding.
  *
@@ -101,14 +104,14 @@ export function normalizeOpenKitAccessTokenScope(
 
   if (scope === 'server-admin') {
     if (uniqueWorkspaceIds.length > 0) {
-      throw new Error('server-admin tokens must not carry workspace bindings.');
+      throw new AccessTokenScopeError('server-admin tokens must not carry workspace bindings.');
     }
 
     return { scope, workspaceIds: [] };
   }
 
   if (uniqueWorkspaceIds.length === 0) {
-    throw new Error(`${scope} tokens must bind at least one workspace id.`);
+    throw new AccessTokenScopeError(`${scope} tokens must bind at least one workspace id.`);
   }
 
   return { scope, workspaceIds: uniqueWorkspaceIds };

@@ -115,7 +115,7 @@ describe('server-mode access-token auth', () => {
         tokenExpiresAt: '2999-01-01T00:00:00.000Z',
       });
       const remotePlaintext = await app.request(
-        new Request('http://public.example/api/app/auth/bootstrap/consume', {
+        new Request('http://public.example/api/app/operations/bootstrap.consume', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: consumeBody,
@@ -132,7 +132,7 @@ describe('server-mode access-token auth', () => {
         }
       );
 
-      const consumed = await app.request('/api/app/auth/bootstrap/consume', {
+      const consumed = await app.request('/api/app/operations/bootstrap.consume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: consumeBody,
@@ -149,9 +149,15 @@ describe('server-mode access-token auth', () => {
         .get('user_owner') as
         | { account_id: string; provider_id: string; user_id: string }
         | undefined;
-      const listed = await app.request('/api/app/auth/tokens', {
-        headers: { authorization: `Bearer ${consumedBody.token}` },
-      });
+      const listed = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${consumedBody.token}` },
+          }
+        )
+      );
       const signIn = await app.request('/api/auth/sign-in/email', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -176,10 +182,16 @@ describe('server-mode access-token auth', () => {
       });
       expect(listed.status).toBe(200);
       expect(signIn.status).toBe(200);
-      const sessionAdminTokens = await app.request('/api/app/auth/my-admin-tokens', {
-        headers: { cookie: sessionCookie(signIn) },
-      });
-      const secondConsume = await app.request('/api/app/auth/bootstrap/consume', {
+      const sessionAdminTokens = await app.request(
+        ...operationRequest(
+          'token.my-admin-list',
+          {},
+          {
+            headers: { cookie: sessionCookie(signIn) },
+          }
+        )
+      );
+      const secondConsume = await app.request('/api/app/operations/bootstrap.consume', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: consumeBody,
@@ -280,13 +292,19 @@ describe('server-mode access-token auth', () => {
         headers: { ...{ [OWNER_SESSION_HEADER]: '1' }, 'content-type': 'application/json' },
         body: JSON.stringify({}),
       });
-      const listed = await app.request('/api/app/auth/tokens', {
-        headers: {
-          authorization: `Bearer ${issued.secret}`,
-          'x-openkit-client-channel': 'mcp',
-          'x-openkit-client-source': 'desktop-agent',
-        },
-      });
+      const listed = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: {
+              authorization: `Bearer ${issued.secret}`,
+              'x-openkit-client-channel': 'mcp',
+              'x-openkit-client-source': 'desktop-agent',
+            },
+          }
+        )
+      );
       const listedBody = (await listed.json()) as {
         items: Array<{
           lastUsedAt: string | null;
@@ -378,18 +396,24 @@ describe('server-mode access-token auth', () => {
         body: JSON.stringify({}),
       });
       const listedBody = (await listed.json()) as { items: Array<{ workspace: { id: string } }> };
-      const created = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'workspace-readonly',
-          workspaceIds: [workspace.id],
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const created = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              scope: 'workspace-readonly',
+              workspaceIds: [workspace.id],
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
 
       expect(createdWorkspace.status).toBe(201);
       expect(listed.status).toBe(200);
@@ -400,7 +424,7 @@ describe('server-mode access-token auth', () => {
     }
   });
 
-  it('issues, lists, and revokes access tokens through server-admin App API routes', async () => {
+  it('issues, lists, and revokes access tokens through canonical administrator operations', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-admin-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -444,46 +468,73 @@ describe('server-mode access-token auth', () => {
         workspaceIds: [workspace.id],
       });
 
-      const created = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'workspace-readonly',
-          workspaceIds: [workspace.id],
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
+      const created = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              scope: 'workspace-readonly',
+              workspaceIds: [workspace.id],
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
       const createdBody = (await created.json()) as {
         record: { tokenId: string; scope: string };
         token: string;
       };
-      const unowned = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          scope: 'workspace',
-          workspaceIds: ['ws_missing'],
-          expiresAt: '2999-01-01T00:00:00.000Z',
-        }),
-      });
-      const denied = await app.request('/api/app/auth/tokens', {
-        headers: { authorization: `Bearer ${workspaceToken.secret}` },
-      });
-      const listed = await app.request('/api/app/auth/tokens', {
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const unowned = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              scope: 'workspace',
+              workspaceIds: ['ws_missing'],
+              expiresAt: '2999-01-01T00:00:00.000Z',
+            }),
+          }
+        )
+      );
+      const denied = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${workspaceToken.secret}` },
+          }
+        )
+      );
+      const listed = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       const revoked = await app.request(
-        `/api/app/auth/tokens/${createdBody.record.tokenId}/revoke`,
-        {
-          method: 'POST',
-          headers: { authorization: `Bearer ${admin.secret}` },
-        }
+        ...operationRequest(
+          'token.revoke',
+          { tokenId: createdBody.record.tokenId },
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
       );
 
       expect(workspaceResponse.status).toBe(201);
@@ -539,28 +590,42 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
       const responses = await Promise.all([
-        app.request('/api/app/auth/tokens'),
-        app.request('/api/app/auth/tokens', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            expiresAt: '2999-01-01T00:00:00.000Z',
-            scope: 'server-admin',
-            workspaceIds: [],
-          }),
-        }),
-        app.request(`/api/app/auth/tokens/${token.tokenId}/rotate`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ graceSeconds: 60 }),
-        }),
-        app.request(`/api/app/auth/tokens/${token.tokenId}/revoke`, { method: 'POST' }),
+        app.request(...operationRequest('token.list', {}, {})),
+        app.request(
+          ...operationRequest(
+            'token.create',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                expiresAt: '2999-01-01T00:00:00.000Z',
+                scope: 'server-admin',
+                workspaceIds: [],
+              }),
+            }
+          )
+        ),
+        app.request(
+          ...operationRequest(
+            'token.rotate',
+            { tokenId: token.tokenId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ graceSeconds: 60 }),
+            }
+          )
+        ),
+        app.request(
+          ...operationRequest('token.revoke', { tokenId: token.tokenId }, { method: 'POST' })
+        ),
       ]);
 
       for (const response of responses) {
         expect(response.status).toBe(403);
         await expect(response.json()).resolves.toMatchObject({
-          code: 'access_token_admin_forbidden',
+          code: 'deployment_admin_required',
         });
       }
     } finally {
@@ -568,7 +633,7 @@ describe('server-mode access-token auth', () => {
     }
   });
 
-  it('rotates access tokens through server-admin App API routes', async () => {
+  it('rotates access tokens through canonical administrator operations', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-rotate-app-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -612,14 +677,20 @@ describe('server-mode access-token auth', () => {
         workspaceIds: [workspace.id],
       });
 
-      const rotated = await app.request(`/api/app/auth/tokens/${workspaceToken.tokenId}/rotate`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ graceSeconds: 60 }),
-      });
+      const rotated = await app.request(
+        ...operationRequest(
+          'token.rotate',
+          { tokenId: workspaceToken.tokenId },
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ graceSeconds: 60 }),
+          }
+        )
+      );
       const rotatedBody = (await rotated.json()) as {
         record: { predecessorTokenId: string; tokenId: string };
         rotatedRecord: { status: string; tokenId: string };
@@ -912,49 +983,67 @@ describe('server-mode access-token auth', () => {
         )
       );
       const memberWorkspaceBody = (await memberWorkspace.json()) as { id: string };
-      const issuedToMember = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerUserId: 'user_member',
-          scope: 'workspace',
-          workspaceIds: [memberWorkspaceBody.id],
-        }),
-      });
+      const issuedToMember = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              expiresAt: '2999-01-01T00:00:00.000Z',
+              ownerUserId: 'user_member',
+              scope: 'workspace',
+              workspaceIds: [memberWorkspaceBody.id],
+            }),
+          }
+        )
+      );
       const issuedToMemberBody = (await issuedToMember.json()) as {
         record: { ownerUserId: string; scope: string };
         token: string;
       };
-      const issuedToCaller = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerUserId: 'user_owner',
-          scope: 'workspace',
-          workspaceIds: [memberWorkspaceBody.id],
-        }),
-      });
-      const missingOwner = await app.request('/api/app/auth/tokens', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${admin.secret}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          expiresAt: '2999-01-01T00:00:00.000Z',
-          ownerUserId: 'user_missing',
-          scope: 'server-admin',
-          workspaceIds: [],
-        }),
-      });
+      const issuedToCaller = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              expiresAt: '2999-01-01T00:00:00.000Z',
+              ownerUserId: 'user_owner',
+              scope: 'workspace',
+              workspaceIds: [memberWorkspaceBody.id],
+            }),
+          }
+        )
+      );
+      const missingOwner = await app.request(
+        ...operationRequest(
+          'token.create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${admin.secret}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              expiresAt: '2999-01-01T00:00:00.000Z',
+              ownerUserId: 'user_missing',
+              scope: 'server-admin',
+              workspaceIds: [],
+            }),
+          }
+        )
+      );
 
       expect(ownerWorkspace.status).toBe(201);
       expect(memberWorkspace.status).toBe(201);
@@ -993,22 +1082,46 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
-      const deniedMember = await app.request('/api/app/auth/tokens', {
-        headers: { [MEMBER_SESSION_HEADER]: '1' },
-      });
-      const allowedOwner = await app.request('/api/app/auth/tokens', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
-      const mine = await app.request('/api/app/auth/my-admin-tokens', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const deniedMember = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { [MEMBER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
+      const allowedOwner = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
+      const mine = await app.request(
+        ...operationRequest(
+          'token.my-admin-list',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
       const mineBody = (await mine.json()) as {
         defaultTokenId: string | null;
         items: Array<{ ownerUserId: string; scope: string; tokenId: string }>;
       };
-      const bearerMine = await app.request('/api/app/auth/my-admin-tokens', {
-        headers: { authorization: `Bearer ${admin.secret}` },
-      });
+      const bearerMine = await app.request(
+        ...operationRequest(
+          'token.my-admin-list',
+          {},
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+          }
+        )
+      );
       const otherWorkspace = await app.request(
         ...operationRequest(
           'workspace.create',
@@ -1036,13 +1149,25 @@ describe('server-mode access-token auth', () => {
           }
         )
       );
-      const revoked = await app.request(`/api/app/auth/tokens/${admin.tokenId}/revoke`, {
-        method: 'POST',
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
-      const afterRevoke = await app.request('/api/app/auth/tokens', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const revoked = await app.request(
+        ...operationRequest(
+          'token.revoke',
+          { tokenId: admin.tokenId },
+          {
+            method: 'POST',
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
+      const afterRevoke = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
 
       expect(deniedMember.status).toBe(403);
       expect(allowedOwner.status).toBe(200);
@@ -1051,7 +1176,10 @@ describe('server-mode access-token auth', () => {
         defaultTokenId: admin.tokenId,
         items: [{ tokenId: admin.tokenId, ownerUserId: 'user_owner', scope: 'server-admin' }],
       });
-      expect(bearerMine.status).toBe(403);
+      expect(bearerMine.status).toBe(200);
+      expect(await bearerMine.json()).toMatchObject({
+        items: [{ tokenId: admin.tokenId, ownerUserId: 'user_owner' }],
+      });
       expect(otherWorkspace.status).toBe(201);
       expect(bypassDenied.status).toBe(200);
       expect(revoked.status).toBe(200);
@@ -1096,24 +1224,48 @@ describe('server-mode access-token auth', () => {
         dataRoot,
         mode: 'server',
       });
-      const selected = await app.request('/api/app/auth/my-admin-tokens/default', {
-        method: 'PUT',
-        headers: {
-          [OWNER_SESSION_HEADER]: '1',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ tokenId: first.tokenId }),
-      });
-      const listed = await app.request('/api/app/auth/tokens', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
-      await app.request(`/api/app/auth/tokens/${first.tokenId}/revoke`, {
-        method: 'POST',
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
-      const afterRevoke = await app.request('/api/app/auth/my-admin-tokens', {
-        headers: { [OWNER_SESSION_HEADER]: '1' },
-      });
+      const selected = await app.request(
+        ...operationRequest(
+          'token.my-admin-default',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              [OWNER_SESSION_HEADER]: '1',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ tokenId: first.tokenId }),
+          }
+        )
+      );
+      const listed = await app.request(
+        ...operationRequest(
+          'token.list',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
+      await app.request(
+        ...operationRequest(
+          'token.revoke',
+          { tokenId: first.tokenId },
+          {
+            method: 'POST',
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
+      const afterRevoke = await app.request(
+        ...operationRequest(
+          'token.my-admin-list',
+          {},
+          {
+            headers: { [OWNER_SESSION_HEADER]: '1' },
+          }
+        )
+      );
 
       expect(selected.status).toBe(200);
       await expect(selected.json()).resolves.toMatchObject({ defaultTokenId: first.tokenId });
@@ -1128,7 +1280,7 @@ describe('server-mode access-token auth', () => {
   });
 });
 
-describe('my-admin-tokens canonical-user access', () => {
+describe('personal administrator-token canonical-user access', () => {
   it('lists only local-owned admin tokens and persists a valid local default', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-local-admin-tokens-'));
     const coreDb = openCoreDb(dataRoot);
@@ -1150,7 +1302,7 @@ describe('my-admin-tokens canonical-user access', () => {
         });
       }
       const app = createApp({ coreDb, dataRoot, mode: 'local' });
-      const listed = await app.request('/api/app/auth/my-admin-tokens');
+      const listed = await app.request(...operationRequest('token.my-admin-list', {}, {}));
       expect(listed.status).toBe(200);
       const body = await listed.json();
       expect(body.items.map((item: { tokenId: string }) => item.tokenId).sort()).toEqual([
@@ -1158,37 +1310,55 @@ describe('my-admin-tokens canonical-user access', () => {
         'tok_local_second',
       ]);
       expect(JSON.stringify(body)).not.toMatch(/okt_|tokenHash|secret/);
-      const selected = await app.request('/api/app/auth/my-admin-tokens/default', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tokenId: 'tok_local_second' }),
-      });
+      const selected = await app.request(
+        ...operationRequest(
+          'token.my-admin-default',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ tokenId: 'tok_local_second' }),
+          }
+        )
+      );
       expect(selected.status).toBe(200);
       expect((await selected.json()).defaultTokenId).toBe('tok_local_second');
       for (const tokenId of ['tok_other', 'tok_missing']) {
-        const invalid = await app.request('/api/app/auth/my-admin-tokens/default', {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ tokenId }),
-        });
+        const invalid = await app.request(
+          ...operationRequest(
+            'token.my-admin-default',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ tokenId }),
+            }
+          )
+        );
         expect(invalid.status).toBe(400);
         expect((await invalid.json()).code).toBe('access_token_default_invalid');
       }
-      const after = await app.request('/api/app/auth/my-admin-tokens');
+      const after = await app.request(...operationRequest('token.my-admin-list', {}, {}));
       expect((await after.json()).defaultTokenId).toBe('tok_local_second');
-      for (const [path, method] of [
-        ['/api/app/auth/tokens', 'GET'],
-        ['/api/app/auth/tokens', 'POST'],
-        ['/api/app/auth/tokens/tok_local_first/rotate', 'POST'],
-      ]) {
-        expect((await app.request(path, { method })).status).toBe(404);
+      for (const [id, input] of [
+        ['token.list', {}],
+        ['token.create', { scope: 'server-admin', expiresAt: '2999-01-01T00:00:00.000Z' }],
+        ['token.rotate', { tokenId: 'tok_local_first' }],
+      ] as const) {
+        const response = await app.request(
+          ...operationRequest(id, {}, { body: JSON.stringify(input) })
+        );
+        expect(response.status).toBe(404);
+        expect(await response.json()).toMatchObject({
+          code: 'access_token_admin_server_mode_required',
+        });
       }
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects server-mode bearer actors for both my-admin-tokens operations', async () => {
+  it('admits current administrator bearers to both personal administrator-token operations', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-tokens-bearer-'));
     const coreDb = openCoreDb(dataRoot);
     try {
@@ -1202,17 +1372,24 @@ describe('my-admin-tokens canonical-user access', () => {
         expiresAt: '2999-01-01T00:00:00.000Z',
       });
       const app = createApp({ auth: ownerSessionAuth(), coreDb, dataRoot, mode: 'server' });
-      for (const [path, method] of [
-        ['/api/app/auth/my-admin-tokens', 'GET'],
-        ['/api/app/auth/my-admin-tokens/default', 'PUT'],
-      ]) {
-        const denied = await app.request(path, {
-          method,
-          headers: { authorization: `Bearer ${admin.secret}`, 'content-type': 'application/json' },
-          ...(method === 'PUT' ? { body: JSON.stringify({ tokenId: 'tok_admin' }) } : {}),
+      for (const [id, input] of [
+        ['token.my-admin-list', {}],
+        ['token.my-admin-default', { tokenId: 'tok_admin' }],
+      ] as const) {
+        const admitted = await app.request(
+          ...operationRequest(
+            id,
+            {},
+            {
+              headers: { authorization: `Bearer ${admin.secret}` },
+              body: JSON.stringify(input),
+            }
+          )
+        );
+        expect(admitted.status).toBe(200);
+        expect(await admitted.json()).toMatchObject({
+          items: [{ tokenId: 'tok_admin', ownerUserId: 'user_owner' }],
         });
-        expect(denied.status).toBe(403);
-        expect((await denied.json()).code).toBe('access_token_session_required');
       }
     } finally {
       coreDb.sqlite.close();

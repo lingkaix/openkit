@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { APP_SEARCH_OPERATION_DEFINITIONS } from './app-search-operations.js';
@@ -65,7 +66,11 @@ export type {
   OperationScope,
   OperationTarget,
 } from './operation-contract.js';
-export { composeOperationTables, operationMcpEligible } from './operation-contract.js';
+export {
+  composeOperationTables,
+  operationMcpEligible,
+  operationUsesBootstrapSecret,
+} from './operation-contract.js';
 export { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
 export { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
 export { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
@@ -119,7 +124,8 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
 /** Static composition of the implemented families; this is not a registration surface. */
 export const OPERATION_DEFINITIONS = composeOperationTables(
   PRODUCT_OPERATION_DEFINITIONS,
-  ADMINISTRATION_OPERATION_DEFINITIONS
+  ADMINISTRATION_OPERATION_DEFINITIONS,
+  ACCESS_TOKEN_OPERATION_DEFINITIONS
 );
 /** JSON product ids inferred from the static public composition. */
 export type ProductOperationId = keyof typeof PRODUCT_OPERATION_DEFINITIONS;
@@ -154,6 +160,7 @@ export function operationModelInput(
   return schema.clone({ ...schema.def, shape });
 }
 
+export { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 export { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 export { APP_UPDATE_OPERATION_DEFINITIONS } from './app-update-operations.js';
 export { WORKER_ENVIRONMENT_OPERATION_DEFINITIONS } from './worker-environment-operations.js';

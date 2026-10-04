@@ -21,17 +21,16 @@ const originalMatchMedia = window.matchMedia;
  */
 function makeClient(): CoreClient {
   return {
-    app: {
-      listOpenKitAccessTokens: vi.fn().mockRejectedValue(
-        new ApiCallError(403, 'Server-admin authority is required.', {
-          code: 'forbidden',
-        })
-      ),
-    },
     core: {
       meta: vi.fn().mockResolvedValue({}),
     },
     operations: {
+      'token.list': vi.fn().mockRejectedValue(
+        new ApiCallError(403, 'Server-admin authority is required.', {
+          code: 'forbidden',
+        })
+      ),
+
       'runtime.file-list': vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Current deployment administrator authority is required.', {
           code: 'deployment_admin_required',

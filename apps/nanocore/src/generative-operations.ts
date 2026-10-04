@@ -214,6 +214,7 @@ export function createGenerativeUiOperationImplementations(
       workspaceDb: db,
       administratorEligible:
         invocation.kind !== 'worker' &&
+        invocation.kind !== 'bootstrap' &&
         isCurrentDeploymentAdministrator(dependencies.coreDb!, invocation.actor),
     };
     try {

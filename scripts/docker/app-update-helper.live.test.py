@@ -107,7 +107,7 @@ def fixture_current_container_argv(
 
 
 def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS) -> Dict[str, Any]:
-    """Bounded helper GET /api/app/auth/tokens. New observation; not a historical race claim."""
+    """Bounded helper POST /api/app/operations/token.list. New observation; not a historical race claim."""
 
     deadline = time.time() + timeout
     last_status = 0
@@ -116,7 +116,7 @@ def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS
     while time.time() < deadline:
         last_error = None
         try:
-            last_status, last_body = authorized_get("/api/app/auth/tokens")
+            last_status, last_body = authorized_get("/api/app/operations/token.list", method="POST", body={})
         except Exception as error:
             last_status = 0
             last_body = None
@@ -162,12 +162,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"migrations": {"applied": fixture["appliedMigrations"]}})
         elif path == "/api/app/diagnostics":
             self._send(200, {"boot": fixture["boot"]})
-        elif path == "/api/app/auth/tokens":
-            self._send(200, {"items": [fixture["token"]]})
         else:
             self._send(404)
     def do_POST(self):
-        if self.path == "/api/app/operations/app-update.status":
+        if self.path == "/api/app/operations/token.list":
+            self._send(200, {"items": [fixture["token"]]})
+        elif self.path == "/api/app/operations/app-update.status":
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             self._send(200, {"requestId": body["requestId"]})
         elif self.path == "/api/app/operations/workspace.list":
@@ -674,8 +674,8 @@ class FixtureAdmissionTests(unittest.TestCase):
             def log_message(self, format, *args):
                 return
 
-            def do_GET(self):
-                if self.path.split("?", 1)[0] != "/api/app/auth/tokens":
+            def do_POST(self):
+                if self.path.split("?", 1)[0] != "/api/app/operations/token.list":
                     self.send_response(404)
                     self.end_headers()
                     return

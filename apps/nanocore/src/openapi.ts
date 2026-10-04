@@ -5,10 +5,6 @@ import {
   AppDiagnosticsResponseSchema,
   AppUpdateStatusResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
-  ConsumeOpenKitBootstrapTokenRequestSchema,
-  ConsumeOpenKitBootstrapTokenResponseSchema,
-  CreateOpenKitAccessTokenRequestSchema,
-  CreateOpenKitAccessTokenResponseSchema,
   CreateWorkspaceInvitationRequestSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
@@ -17,8 +13,6 @@ import {
   DisableUserRequestSchema,
   DisableUserResponseSchema,
   LeaveWorkspaceRequestSchema,
-  ListMyAdminAccessTokensResponseSchema,
-  ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
   ListSkillCatalogResponseSchema,
   ListWorkspaceInvitationsResponseSchema,
@@ -27,17 +21,13 @@ import {
   type OperationId,
   operationHttpPath,
   operationModelInput,
+  operationUsesBootstrapSecret,
   RecoverDeletedWorkspaceRequestSchema,
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
-  RevokeOpenKitAccessTokenResponseSchema,
   RevokeWorkspaceInvitationRequestSchema,
-  RotateOpenKitAccessTokenRequestSchema,
-  RotateOpenKitAccessTokenResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
-  SetMyAdminAccessTokenDefaultRequestSchema,
-  SetMyAdminAccessTokenDefaultResponseSchema,
   SetProviderApiKeyRequestSchema,
   SetupDiagnosticsResponseSchema,
   TransferWorkspaceOwnershipRequestSchema,
@@ -346,7 +336,11 @@ function operationPaths() {
           operationId: id,
           tag: id.split('.')[0]!,
           summary: definition.description,
-          ...(definition.scope.kind === 'server' ? { security: DEPLOYMENT_ADMIN_SECURITY } : {}),
+          ...(operationUsesBootstrapSecret(definition)
+            ? { security: [] }
+            : definition.scope.kind === 'server'
+              ? { security: DEPLOYMENT_ADMIN_SECURITY }
+              : {}),
           requestSchema: `${id}.input`,
           responseSchema: `${id}.output`,
           responseStatus:
@@ -439,195 +433,6 @@ export function createAppOpenApiDocument() {
             },
           },
         },
-      },
-      '/api/app/auth/tokens': {
-        get: {
-          operationId: 'listOpenKitAccessTokens',
-          tags: ['auth'],
-          summary: 'List redacted OpenKit access-token records.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          responses: {
-            '200': {
-              description: 'Redacted access-token records.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListOpenKitAccessTokensResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          operationId: 'createOpenKitAccessToken',
-          tags: ['auth'],
-          summary: 'Issue an OpenKit access token and return the secret once.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/CreateOpenKitAccessTokenRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Issued access token and redacted record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/CreateOpenKitAccessTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/auth/bootstrap/consume': {
-        post: {
-          operationId: 'consumeOpenKitBootstrapToken',
-          tags: ['auth'],
-          summary: 'Consume the one-time server bootstrap token.',
-          security: [],
-          requestBody: {
-            required: true,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ConsumeOpenKitBootstrapTokenRequest' },
-              },
-            },
-          },
-          responses: {
-            '201': {
-              description: 'Issued owner server-admin token and redacted record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ConsumeOpenKitBootstrapTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/auth/tokens/{tokenId}/revoke': {
-        post: {
-          operationId: 'revokeOpenKitAccessToken',
-          tags: ['auth'],
-          summary: 'Revoke an OpenKit access token immediately.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'tokenId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Revoked access-token record.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RevokeOpenKitAccessTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/auth/tokens/{tokenId}/rotate': {
-        post: {
-          operationId: 'rotateOpenKitAccessToken',
-          tags: ['auth'],
-          summary: 'Rotate an OpenKit access token and return the new secret once.',
-          security: DEPLOYMENT_ADMIN_SECURITY,
-          parameters: [
-            {
-              name: 'tokenId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', minLength: 1 },
-            },
-          ],
-          requestBody: {
-            required: false,
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/RotateOpenKitAccessTokenRequest' },
-              },
-            },
-          },
-          responses: {
-            '200': {
-              description: 'Rotated access-token records and new secret.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/RotateOpenKitAccessTokenResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/auth/my-admin-tokens': {
-        get: appJsonOperation({
-          operationId: 'listMyAdminAccessTokens',
-          tag: 'auth',
-          summary: "List the signed-in user's redacted server-admin tokens and effective default.",
-          responseStatus: '200',
-          responseSchema: 'ListMyAdminAccessTokensResponse',
-          security: SESSION_COOKIE_SECURITY,
-        }),
-      },
-      '/api/app/auth/my-admin-tokens/default': {
-        put: appJsonOperation({
-          operationId: 'setMyAdminAccessTokenDefault',
-          tag: 'auth',
-          summary: 'Select one owned usable server-admin token as the signed-in user default.',
-          responseStatus: '200',
-          responseSchema: 'SetMyAdminAccessTokenDefaultResponse',
-          requestSchema: 'SetMyAdminAccessTokenDefaultRequest',
-          security: SESSION_COOKIE_SECURITY,
-        }),
       },
       '/api/app/workspaces/{workspaceId}/exports/{exportId}/archive': {
         get: {
@@ -790,27 +595,8 @@ export function createAppOpenApiDocument() {
 
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
-        ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
-          ConsumeOpenKitBootstrapTokenRequestSchema
-        ),
-        ConsumeOpenKitBootstrapTokenResponse: toJsonSchema(
-          ConsumeOpenKitBootstrapTokenResponseSchema
-        ),
-        CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
-        CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
-        ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
         ListSkillCatalogResponse: toJsonSchema(ListSkillCatalogResponseSchema),
-        RevokeOpenKitAccessTokenResponse: toJsonSchema(RevokeOpenKitAccessTokenResponseSchema),
-        RotateOpenKitAccessTokenRequest: toJsonSchema(RotateOpenKitAccessTokenRequestSchema),
-        RotateOpenKitAccessTokenResponse: toJsonSchema(RotateOpenKitAccessTokenResponseSchema),
-        SetMyAdminAccessTokenDefaultRequest: toJsonSchema(
-          SetMyAdminAccessTokenDefaultRequestSchema
-        ),
-        SetMyAdminAccessTokenDefaultResponse: toJsonSchema(
-          SetMyAdminAccessTokenDefaultResponseSchema
-        ),
         CreateWorkspaceVaultSecretRequest: toJsonSchema(CreateWorkspaceVaultSecretRequestSchema),
         RotateWorkspaceVaultSecretRequest: toJsonSchema(RotateWorkspaceVaultSecretRequestSchema),
         CreateWorkspaceVaultGrantRequest: toJsonSchema(CreateWorkspaceVaultGrantRequestSchema),

@@ -669,9 +669,18 @@ test('one catalog covers the checked App API and public Core projection', async 
       );
     }
     if (Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id)) {
+      const definition = appSchemas.OPERATION_DEFINITIONS[entry.id];
+      const { destination, ...sharedShape } = entry.inputSchema.shape;
+      const namedSecretSink =
+        definition.returnsOneTimeSecret && !appSchemas.operationUsesBootstrapSecret(definition);
+      assert.equal(
+        Boolean(destination),
+        namedSecretSink,
+        `${entry.id} adds a local destination only for named secret delivery`
+      );
       assert.deepEqual(
-        entry.inputSchema.shape,
-        appSchemas.OPERATION_DEFINITIONS[entry.id].inputSchema.shape,
+        sharedShape,
+        definition.inputSchema.shape,
         `${entry.id} strict CLI view must preserve shared fields`
       );
       assert.equal(
@@ -812,6 +821,8 @@ test('one catalog covers the checked App API and public Core projection', async 
       'runtime.schemas',
       'runtime.validate',
       'storage.layout-report',
+      'token.list',
+      'token.revoke',
       'user.disable',
       'vault.bootstrap-codex-auth',
       'vault.lock',
@@ -826,10 +837,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'workspace.access-recovery-read',
     ]
   );
-  assert.deepEqual(idsWithAccess('server-admin bearer token in server mode'), [
-    'token.list',
-    'token.revoke',
-  ]);
+  assert.deepEqual(idsWithAccess('server-admin bearer token in server mode'), []);
   assert.deepEqual(idsWithAccess('local credential-store access; no NanoCore actor'), [
     'credential.delete',
     'credential.store',
@@ -842,7 +850,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   );
   assert.deepEqual(
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
-    ['token.my-admin-default', 'token.my-admin-list']
+    []
   );
   assert.deepEqual(idsWithAccess('public metadata read; no authenticated actor'), [
     'connection.meta',
@@ -941,19 +949,19 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
 test('my admin-token operations use strict canonical-user schemas and client methods', async () => {
   const { operationCatalog } = await operations();
   for (const [action, method] of [
-    ['list', 'listMyAdminAccessTokens'],
-    ['default', 'setMyAdminAccessTokenDefault'],
+    ['list', 'token.my-admin-list'],
+    ['default', 'token.my-admin-default'],
   ]) {
     const operation = operationCatalog.find((entry) => entry.id === `token.my-admin-${action}`);
     assert.ok(operation);
     assert.equal(operation.appOperationId, method);
-    assert.equal(operation.clientMethod, `app.${method}`);
+    assert.equal(operation.clientMethod, `operations.${method}`);
     assert.equal(operation.source, 'app-api');
     assert.equal(operation.group, 'token');
     assert.equal(operation.mutating, action === 'default');
     assert.equal(
       operation.requiredAccess,
-      'implicit local actor; bundled CLI operation is local-mode only'
+      'canonical user: implicit local actor or server-admin bearer token'
     );
     const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
     for (const extra of [{ cookie: 'session' }, { authorization: 'bearer' }, { unknown: true }]) {
@@ -962,9 +970,9 @@ test('my admin-token operations use strict canonical-user schemas and client met
     if (action === 'list') {
       assert.equal(operation.inputSchema.safeParse({ tokenId: 'tok_admin' }).success, false);
     } else {
-      assert.strictEqual(
-        operation.inputSchema,
-        appSchemas.SetMyAdminAccessTokenDefaultRequestSchema
+      assert.deepEqual(
+        Object.keys(operation.inputSchema.shape),
+        Object.keys(appSchemas.SetMyAdminAccessTokenDefaultRequestSchema.shape)
       );
       assert.equal(operation.inputSchema.safeParse({}).success, false);
       assert.equal(operation.inputSchema.safeParse({ tokenId: '' }).success, false);
@@ -975,7 +983,7 @@ test('my admin-token operations use strict canonical-user schemas and client met
       await operation.handler(
         {
           client: {
-            app: {
+            operations: {
               [method]: async (...args) => {
                 observed = args;
                 return response;
@@ -987,7 +995,7 @@ test('my admin-token operations use strict canonical-user schemas and client met
       ),
       response
     );
-    assert.deepEqual(observed, action === 'list' ? [] : [input]);
+    assert.deepEqual(observed, [input]);
   }
 });
 
@@ -1015,8 +1023,8 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
   for (const action of ['list', 'default']) {
     const args = ['ops', 'call', `token.my-admin-${action}`, '--input', '-'];
     const input = action === 'list' ? {} : { tokenId: 'tok_admin' };
-    const url = `http://127.0.0.1:3456/api/app/auth/my-admin-tokens${action === 'default' ? '/default' : ''}`;
-    const method = action === 'list' ? 'GET' : 'PUT';
+    const url = `http://127.0.0.1:3456/api/app/operations/token.my-admin-${action}`;
+    const method = 'POST';
     const env = { OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456', OPENKIT_NANOCORE_TOKEN: '' };
     const result = await runCli(args, env, JSON.stringify(input), [
       dataModule(`
@@ -1024,9 +1032,7 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
         const headers = new Headers(options.headers);
         if (headers.has('authorization') || headers.has('cookie')) throw new Error('unexpected credential');
         if (url !== ${JSON.stringify(url)} || options.method !== '${method}') throw new Error('unexpected transport');
-        if (${JSON.stringify(action)} === 'list') {
-          if (options.body !== undefined) throw new Error('unexpected GET body');
-        } else if (options.body !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('unexpected PUT body');
+        if (options.body !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('unexpected operation body');
         return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
       };
     `),
@@ -1036,7 +1042,7 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
     for (const [status, code, token] of [
       [401, 'unauthorized', ''],
       [401, 'unauthorized', 'okt_not_a_session'],
-      [403, 'access_token_session_required', 'okt_not_a_session'],
+      [403, 'workspace_access_denied', 'okt_not_a_session'],
     ]) {
       const denied = await runCli(
         args,
@@ -1928,9 +1934,9 @@ test('token create and rotate require named delivery and preflight before the pu
   for (const action of ['create', 'rotate']) {
     const operation = operationCatalog.find((entry) => entry.id === `token.${action}`);
     assert.ok(operation);
-    const method = `${action}OpenKitAccessToken`;
+    const method = `token.${action}`;
     assert.equal(operation.appOperationId, method);
-    assert.equal(operation.clientMethod, `app.${method}`);
+    assert.equal(operation.clientMethod, `operations.${method}`);
     assert.match(operation.requiredAccess, /deployment admin.*server-admin bearer.*server mode/);
     const body =
       action === 'create'
@@ -1940,7 +1946,7 @@ test('token create and rotate require named delivery and preflight before the pu
             ownerUserId: 'user_demo',
             expiresAt: '2027-01-01T00:00:00.000Z',
           }
-        : { graceSeconds: 60 };
+        : { graceSeconds: 60, tokenId: 'tok_old' };
     const input = {
       ...body,
       destination: 'automation',
@@ -1965,7 +1971,7 @@ test('token create and rotate require named delivery and preflight before the pu
     const context = {
       endpoint: slot.baseUrl,
       client: {
-        app: {
+        operations: {
           [method]: async (...args) => {
             events.push(['request', args]);
             return response;
@@ -1988,7 +1994,7 @@ test('token create and rotate require named delivery and preflight before the pu
     const result = await operation.handler(context, operation.inputSchema.parse(input));
     assert.deepEqual(events, [
       ['preflight', slot],
-      ['request', action === 'create' ? [body] : ['tok_old', body]],
+      ['request', [body]],
       ['write', { ...slot, token: response.token }],
     ]);
     assert.deepEqual(result, {
@@ -2090,7 +2096,7 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
     const body =
       action === 'create'
         ? { scope: 'workspace', workspaceIds: ['ws_demo'], expiresAt: record.expiresAt }
-        : { graceSeconds: 60 };
+        : { graceSeconds: 60, tokenId: 'tok_old' };
     const input = {
       ...body,
       destination: 'automation',
@@ -2103,7 +2109,7 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
         ? { rotatedRecord: { ...record, tokenId: 'tok_old', status: 'rotated' } }
         : {}),
     };
-    const url = `${endpoint}/api/app/auth/tokens${action === 'rotate' ? '/tok_old/rotate' : ''}`;
+    const url = `${endpoint}/api/app/operations/token.${action}`;
     const args = ['ops', 'call', `token.${action}`, '--input', '-'];
     const transport = dataModule(`
       globalThis.fetch = async (url, options) => {
@@ -2133,13 +2139,16 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
     for (const status of [401, 403]) {
       const denied = await runCli(args, env, JSON.stringify(input), [
         responseModule(status, {
-          code: 'access_token_admin_forbidden',
+          code: status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required',
           message: 'Denied okt_fake_admin',
           protocolVersion: '0.4.0',
         }),
       ]);
       assert.equal(denied.code, 3, denied.stdout);
-      assert.equal(JSON.parse(denied.stdout).error.code, 'access_token_admin_forbidden');
+      assert.equal(
+        JSON.parse(denied.stdout).error.code,
+        status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required'
+      );
       assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fake_/);
       assert.equal(
         store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
@@ -2152,6 +2161,74 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
     assert.equal(invalid.code, 2);
     assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
   }
+});
+
+test('bundled bootstrap uses only its secret input and stores its one-time result without printing credentials', async (t) => {
+  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-cli-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const endpoint = 'https://nanocore.example';
+  const { configDir, env: isolatedEnv, machineId } = isolatedCredentialLayout(root);
+  const input = {
+    token: 'okt_bootstrap_canary_do_not_print',
+    ownerUserId: 'user_owner',
+    displayName: 'Owner',
+    email: 'owner@example.test',
+    password: 'password-canary-do-not-print',
+    tokenExpiresAt: '2027-01-01T00:00:00.000Z',
+  };
+  const record = {
+    tokenId: 'tok_bootstrap',
+    ownerUserId: 'user_owner',
+    scope: 'server-admin',
+    workspaceIds: [],
+    status: 'active',
+    issuedAt: '2026-10-05T00:00:00.000Z',
+    expiresAt: input.tokenExpiresAt,
+    revokedAt: null,
+    predecessorTokenId: null,
+    rotatedGraceExpiresAt: null,
+    lastUsedAt: null,
+    lastUsedChannel: null,
+    lastUsedSource: null,
+  };
+  const response = { record, token: 'okt_bootstrap_return_canary' };
+  const result = await runCli(
+    ['ops', 'call', 'bootstrap.consume', '--input', '-'],
+    {
+      ...isolatedEnv,
+      OPENKIT_NANOCORE_URL: endpoint,
+      OPENKIT_NANOCORE_TOKEN: 'okt_ordinary_admin_canary',
+    },
+    JSON.stringify(input),
+    [
+      dataModule(`
+    globalThis.fetch = async (url, options) => {
+      if (url !== '${endpoint}/api/app/operations/bootstrap.consume' || options.method !== 'POST') throw new Error('wrong bootstrap route');
+      const headers = new Headers(options.headers);
+      if (headers.has('authorization') || headers.has('cookie')) throw new Error('ordinary credential sent');
+      if (JSON.stringify(JSON.parse(options.body)) !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('wrong bootstrap input');
+      return Response.json(${JSON.stringify(response)}, { status: 201 });
+    };
+  `),
+    ]
+  );
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout).data, {
+    record: { ...record, ownerUserId: '[redacted]', expiresAt: '[redacted]' },
+    credentialStorageBackend: 'encrypted-file',
+  });
+  for (const secret of [input.token, input.password, response.token, 'okt_ordinary_admin_canary'])
+    assert.ok(!(result.stdout + result.stderr).includes(secret));
+  const store = createDefaultOpenKitCredentialStore({
+    configDir,
+    ...(machineId === undefined ? {} : { machineId }),
+    execFile() {
+      throw new Error('unavailable');
+    },
+    warn() {},
+  });
+  assert.equal(store.readToken({ baseUrl: endpoint }), response.token);
 });
 
 test('bundled token delivery reports preflight and post-issuance storage failures without secrets', async (t) => {

@@ -38,7 +38,7 @@ export function DataRootBackupScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'data-root-backup', 'admin-access'],
     queryFn: async () => {
-      await client.app.listOpenKitAccessTokens();
+      await client.operations['token.list']({});
       return true;
     },
     retry: false,

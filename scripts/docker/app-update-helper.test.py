@@ -441,7 +441,9 @@ class RecordingEffects:
             return 200, {"migrations": {"applied": list(self.applied_migrations)}}
         if url.endswith("/api/app/operations/workspace.list"):
             return 403, None
-        if url.endswith("/api/app/auth/tokens"):
+        if url.endswith("/api/app/operations/token.list"):
+            if method != "POST" or body != {}:
+                raise AssertionError("Token inventory must use its canonical JSON binding.")
             if self.replaced and self.tokens_after is not None:
                 return 200, self.tokens_after
             return 200, self.tokens
@@ -1009,7 +1011,7 @@ class ApplyJobTests(unittest.TestCase):
             )
             self.assertIn(HTTPS_SAMPLE, config_before)
             self.assertEqual(start["jobId"], body["jobId"])
-            self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertTrue(body["predicates"]["retainedAuthRead"])
 
@@ -1956,7 +1958,7 @@ class ContractCorrectionTests(unittest.TestCase):
             self.assertRegex(body["error"] or "", r"retained")
             self.assertIn("retainedAuthRead", (body.get("predicates") or {}))
             self.assertIs(body["predicates"]["retainedAuthRead"], False)
-            self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -1981,7 +1983,7 @@ class ContractCorrectionTests(unittest.TestCase):
             _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
             self.assertEqual(body["stage"], "succeeded", body)
             self.assertTrue(body["predicates"]["retainedAuthRead"])
-            self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
@@ -2009,7 +2011,7 @@ class ContractCorrectionTests(unittest.TestCase):
             )[1]
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"empty")
-            self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
@@ -2040,7 +2042,7 @@ class ContractCorrectionTests(unittest.TestCase):
             )[1]
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"public Token")
-            self.assertTrue(any(url.endswith("/api/app/auth/tokens") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 

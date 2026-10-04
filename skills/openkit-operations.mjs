@@ -53,15 +53,9 @@ const LOCAL_CREDENTIAL = Object.freeze({
 const DEPLOYMENT_ADMIN_ACCESS = Object.freeze({
   requiredAccess: 'deployment admin: implicit local actor or server-admin bearer token',
 });
-const SERVER_ADMIN_TOKEN_ACCESS = Object.freeze({
-  requiredAccess: 'server-admin bearer token in server mode',
-});
 const LOCAL_WORKSPACE_ARCHIVE_ACCESS = Object.freeze({
   requiredAccess:
     'implicit local actor; bundled CLI Workspace archive operations are local-mode only',
-});
-const LOCAL_CANONICAL_USER_ACCESS = Object.freeze({
-  requiredAccess: 'implicit local actor; bundled CLI operation is local-mode only',
 });
 
 const workspaceScope = { workspaceId: protocol.WorkspaceIdSchema };
@@ -175,6 +169,60 @@ async function deliverNamedAccessToken({ credentialStore, endpoint }, destinatio
       cause
     );
   }
+}
+
+/** Stores an actorless bootstrap result in the endpoint credential sink after preflighting it. */
+async function deliverEndpointAccessToken({ credentialStore, endpoint }, issue) {
+  if (
+    typeof credentialStore?.preflightWrite !== 'function' ||
+    typeof credentialStore.writeToken !== 'function' ||
+    !endpoint
+  )
+    throw localError(
+      'credential_storage_unavailable',
+      'Endpoint credential storage must be available before bootstrap consumption.'
+    );
+  try {
+    credentialStore.preflightWrite({ baseUrl: endpoint });
+  } catch (cause) {
+    throw localError(
+      'credential_storage_unavailable',
+      'Endpoint credential storage must be writable before bootstrap consumption.',
+      cause
+    );
+  }
+  const { token, record } = await issue();
+  try {
+    const credentialStorageBackend = credentialStore.writeToken({ baseUrl: endpoint, token });
+    return { record, credentialStorageBackend };
+  } catch (cause) {
+    throw localError(
+      'credential_storage_failed',
+      'The bootstrap token was consumed, but the returned endpoint credential could not be stored.',
+      cause
+    );
+  }
+}
+
+/** Derives secret delivery from credential/result facts without an independent online operation row. */
+function secretDeliveryProjection(id, definition) {
+  if (!definition.returnsOneTimeSecret) return {};
+  const bootstrap = appSchemas.operationUsesBootstrapSecret(definition);
+  return {
+    outputSensitivity: 'redacted token records and credential storage metadata only',
+    requiredAccess: bootstrap
+      ? 'one-time server bootstrap token over HTTPS or loopback; no authenticated actor'
+      : 'deployment admin: server-admin bearer token in server mode',
+    inputSchema: bootstrap
+      ? strictShared(definition.inputSchema)
+      : flatRequest(definition.inputSchema, { destination: CREDENTIAL_DESTINATION }),
+    handler: (context, input) =>
+      bootstrap
+        ? deliverEndpointAccessToken(context, () => context.client.operations[id](input))
+        : deliverNamedAccessToken(context, input.destination, () =>
+            context.client.operations[id](bodyWithout(input, 'destination'))
+          ),
+  };
 }
 
 /**
@@ -296,145 +344,6 @@ export const operationCatalog = [
     mutating: false,
     inputSchema: EMPTY_INPUT,
     handler: ({ client }) => client.app.getSetupDiagnostics(),
-  },
-  {
-    ...STANDARD,
-    ...LOCAL_CANONICAL_USER_ACCESS,
-    id: 'token.my-admin-list',
-    source: 'app-api',
-    appOperationId: 'listMyAdminAccessTokens',
-    clientMethod: 'app.listMyAdminAccessTokens',
-    group: 'token',
-    summary: 'List the local canonical user’s redacted admin tokens and effective default.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.app.listMyAdminAccessTokens(),
-  },
-  {
-    ...STANDARD,
-    ...LOCAL_CANONICAL_USER_ACCESS,
-    id: 'token.my-admin-default',
-    source: 'app-api',
-    appOperationId: 'setMyAdminAccessTokenDefault',
-    clientMethod: 'app.setMyAdminAccessTokenDefault',
-    group: 'token',
-    summary: 'Select an owned usable admin token as the local canonical user’s default.',
-    mutating: true,
-    inputSchema: appSchemas.SetMyAdminAccessTokenDefaultRequestSchema,
-    handler: ({ client }, input) => client.app.setMyAdminAccessTokenDefault(input),
-  },
-  {
-    ...STANDARD,
-    ...SERVER_ADMIN_TOKEN_ACCESS,
-    id: 'token.list',
-    source: 'app-api',
-    appOperationId: 'listOpenKitAccessTokens',
-    clientMethod: 'app.listOpenKitAccessTokens',
-    group: 'token',
-    summary: 'List redacted OpenKit access tokens.',
-    mutating: false,
-    inputSchema: EMPTY_INPUT,
-    handler: ({ client }) => client.app.listOpenKitAccessTokens(),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin: server-admin bearer token in server mode',
-    outputSensitivity: 'redacted token records and named credential storage metadata only',
-    id: 'token.create',
-    source: 'app-api',
-    appOperationId: 'createOpenKitAccessToken',
-    clientMethod: 'app.createOpenKitAccessToken',
-    group: 'token',
-    summary: 'Create an OpenKit access token into an explicit named local credential destination.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.CreateOpenKitAccessTokenRequestSchema, {
-      destination: CREDENTIAL_DESTINATION,
-    }),
-    handler: (context, input) =>
-      deliverNamedAccessToken(context, input.destination, () =>
-        context.client.app.createOpenKitAccessToken(bodyWithout(input, 'destination'))
-      ),
-  },
-  {
-    ...STANDARD,
-    requiredAccess: 'deployment admin: server-admin bearer token in server mode',
-    outputSensitivity: 'redacted token records and named credential storage metadata only',
-    id: 'token.rotate',
-    source: 'app-api',
-    appOperationId: 'rotateOpenKitAccessToken',
-    clientMethod: 'app.rotateOpenKitAccessToken',
-    group: 'token',
-    summary: 'Rotate an OpenKit access token into an explicit named local credential destination.',
-    mutating: true,
-    inputSchema: flatRequest(appSchemas.RotateOpenKitAccessTokenRequestSchema, {
-      destination: CREDENTIAL_DESTINATION,
-      tokenId: IDENTIFIER,
-    }),
-    handler: (context, input) =>
-      deliverNamedAccessToken(context, input.destination, () =>
-        context.client.app.rotateOpenKitAccessToken(
-          input.tokenId,
-          bodyWithout(input, 'tokenId', 'destination')
-        )
-      ),
-  },
-  {
-    ...SECRET_INPUT,
-    requiredAccess:
-      'one-time server bootstrap token over HTTPS or loopback; no authenticated actor',
-    id: 'bootstrap.consume',
-    source: 'app-api',
-    appOperationId: 'consumeOpenKitBootstrapToken',
-    clientMethod: 'app.consumeBootstrapToken',
-    group: 'bootstrap',
-    summary: 'Create the login-capable owner, then store the returned endpoint credential.',
-    mutating: true,
-    inputSchema: strictShared(appSchemas.ConsumeOpenKitBootstrapTokenRequestSchema),
-    async handler({ client, credentialStore, endpoint }, input) {
-      if (
-        typeof credentialStore?.preflightWrite !== 'function' ||
-        typeof credentialStore.writeToken !== 'function' ||
-        !endpoint
-      ) {
-        throw localError(
-          'credential_storage_unavailable',
-          'Endpoint credential storage must be available before bootstrap consumption.'
-        );
-      }
-      try {
-        credentialStore.preflightWrite({ baseUrl: endpoint });
-      } catch (cause) {
-        throw localError(
-          'credential_storage_unavailable',
-          'Endpoint credential storage must be writable before bootstrap consumption.',
-          cause
-        );
-      }
-      const { token, record } = await client.app.consumeBootstrapToken(input);
-      try {
-        const credentialStorageBackend = credentialStore.writeToken({ baseUrl: endpoint, token });
-        return { record, credentialStorageBackend };
-      } catch (cause) {
-        throw localError(
-          'credential_storage_failed',
-          'The bootstrap token was consumed, but the returned endpoint credential could not be stored.',
-          cause
-        );
-      }
-    },
-  },
-  {
-    ...STANDARD,
-    ...SERVER_ADMIN_TOKEN_ACCESS,
-    id: 'token.revoke',
-    source: 'app-api',
-    appOperationId: 'revokeOpenKitAccessToken',
-    clientMethod: 'app.revokeOpenKitAccessToken',
-    group: 'token',
-    summary: 'Revoke one OpenKit access token.',
-    mutating: true,
-    inputSchema: strictScope({ tokenId: IDENTIFIER }),
-    handler: ({ client }, input) => client.app.revokeOpenKitAccessToken(input.tokenId),
   },
   {
     ...STANDARD,
@@ -592,6 +501,8 @@ export const operationCatalog = [
       }
       return client.operations[id](input);
     },
+    credentials: definition.credentials,
+    ...secretDeliveryProjection(id, definition),
   })),
 ];
 

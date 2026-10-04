@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 /** Release-coupled authentication procedures; actual authority remains server-owned. */
 export type OperationCredential =
+  | 'bootstrap-secret'
   | 'local-user'
   | 'user-session'
   | 'user-bearer'
@@ -111,7 +112,9 @@ export interface OperationDefinition extends OperationProjectionFacts {
   readonly description: string;
   readonly inputSchema: z.ZodObject;
   readonly outputSchema: z.ZodType;
-  readonly credentials: readonly OperationCredential[];
+  readonly credentials:
+    | readonly ['bootstrap-secret']
+    | readonly Exclude<OperationCredential, 'bootstrap-secret'>[];
   readonly scope: OperationScope;
   readonly target: OperationTarget;
   readonly mutationTarget?: OperationMutationTarget;
@@ -134,6 +137,15 @@ export function composeOperationTables<const T extends readonly object[]>(
   for (const table of tables) {
     for (const [id, value] of Object.entries(table)) {
       if (Object.hasOwn(result, id)) throw new Error(`Duplicate operation id: ${id}`);
+      if (
+        value &&
+        typeof value === 'object' &&
+        'credentials' in value &&
+        Array.isArray(value.credentials) &&
+        value.credentials.includes('bootstrap-secret') &&
+        !operationUsesBootstrapSecret(value as { credentials: readonly string[] })
+      )
+        throw new Error(`Bootstrap-secret credential must be exclusive: ${id}`);
       result[id] = value;
     }
   }
@@ -143,4 +155,11 @@ export function composeOperationTables<const T extends readonly object[]>(
 /** Result eligibility does not grant admission or widen immutable worker supply. */
 export function operationMcpEligible(definition: OperationProjectionFacts): boolean {
   return definition.binding === 'json' && definition.returnsOneTimeSecret === false;
+}
+
+/** Selects the actorless bootstrap procedure only from an exclusive credential declaration. */
+export function operationUsesBootstrapSecret(definition: {
+  readonly credentials: readonly string[];
+}): boolean {
+  return definition.credentials.length === 1 && definition.credentials[0] === 'bootstrap-secret';
 }

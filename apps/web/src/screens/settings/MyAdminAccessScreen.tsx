@@ -19,11 +19,11 @@ export function MyAdminAccessScreen() {
   const queryClient = useQueryClient();
   const listed = useQuery({
     queryKey: QUERY_KEY,
-    queryFn: () => client.app.listMyAdminAccessTokens(),
+    queryFn: () => client.operations['token.my-admin-list']({}),
     retry: false,
   });
   const setDefault = useMutation({
-    mutationFn: (tokenId: string) => client.app.setMyAdminAccessTokenDefault({ tokenId }),
+    mutationFn: (tokenId: string) => client.operations['token.my-admin-default']({ tokenId }),
     onSuccess: (data) => {
       queryClient.setQueryData(QUERY_KEY, data);
     },

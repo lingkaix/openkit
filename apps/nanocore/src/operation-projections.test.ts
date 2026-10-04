@@ -22,6 +22,10 @@ import { KernelCommandError } from './generative-kernel/errors.js';
 import * as invocation from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import {
+  dispatchOpenkitGenerativeTool,
+  OPENKIT_GENERATIVE_TOOL_OPERATIONS,
+} from './runtime/openkit-generative-mcp.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
@@ -486,6 +490,89 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
 }
 
 describe('operation projection cutover', () => {
+  it('refuses a one-time-secret result before native dispatch even if a built-in Worker mapping accidentally supplies it', async () => {
+    const f = await operationFixture();
+    const db = openWorkspaceDb(f.command.dataRoot, 'ws_demo');
+    const selected = OPENKIT_GENERATIVE_TOOL_OPERATIONS as unknown as Record<string, string>;
+    try {
+      const before = f.coreDb.sqlite
+        .prepare('SELECT * FROM openkit_access_tokens ORDER BY token_id')
+        .all();
+      for (const id of ['token.create', 'token.rotate', 'bootstrap.consume']) {
+        const name = operationToolName(id);
+        expect(selected[name]).toBeUndefined();
+        selected[name] = id;
+        try {
+          await expect(
+            dispatchOpenkitGenerativeTool(
+              {
+                coreDb: f.coreDb,
+                store: f.store,
+                dataRoot: f.command.dataRoot,
+                workspaceDb: db,
+                workspaceId: 'ws_demo',
+                actor: f.command.actor,
+                inflightCommands: new WeakMap(),
+                packageSnapshotId: 'package_fixture',
+                workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                scope: {
+                  workspaceId: 'ws_demo',
+                  threadId: 'th_demo',
+                  turnId: 'turn_fixture',
+                  agentSessionId: 'as_fixture',
+                },
+              },
+              name,
+              {}
+            )
+          ).rejects.toMatchObject({ code: 'mcp_result_unavailable', status: 400 });
+          expect(
+            f.coreDb.sqlite.prepare('SELECT * FROM openkit_access_tokens ORDER BY token_id').all()
+          ).toEqual(before);
+        } finally {
+          delete selected[name];
+        }
+      }
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('omits and refuses all one-time-secret operations through the selected built-in Worker MCP path without token writes', async () => {
+    const f = await operationFixture();
+    try {
+      const { mcp } = await operationProjections(f);
+      const rows = () =>
+        f.coreDb.sqlite.prepare('SELECT * FROM openkit_access_tokens ORDER BY token_id').all();
+      const before = rows();
+      const request = async (method: string, params: Record<string, unknown>) => {
+        const response = await mcp.request('/api/worker-capabilities/mcp/openkit-generative', {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            authorization: 'Bearer private-test-capability',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params }),
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const listed = await request('tools/list', {});
+      for (const id of ['token.create', 'token.rotate', 'bootstrap.consume']) {
+        const name = operationToolName(id);
+        expect(listed.result.tools).not.toContainEqual(expect.objectContaining({ name }));
+        const result = await request('tools/call', { name, arguments: {} });
+        expect(result.error).toBeDefined();
+        expect(JSON.stringify(result)).not.toMatch(/okt_|token_hash/);
+        expect(rows()).toEqual(before);
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('preserves one result and stored-record invariant over every projection and initiating projection', async () => {
     const f = await operationFixture();
     const createInvocation = vi.spyOn(invocation, 'createOperationInvocation');

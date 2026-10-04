@@ -2744,7 +2744,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/app-update.prepare': { body: appUpdatePrepared() },
       'POST /api/app/operations/app-update.start': { body: appUpdateStatus() },
       'POST /api/app/operations/app-update.status': { body: appUpdateStatus() },
-      'POST /api/app/auth/bootstrap/consume': {
+      'POST /api/app/operations/bootstrap.consume': {
         body: {
           token: 'okt_owner_secret',
           record: {
@@ -3381,7 +3381,7 @@ describe('createCoreClient', () => {
       client.operations['app-update.status']({ requestId: '11111111-1111-4111-8111-111111111111' })
     ).resolves.toEqual(appUpdateStatus());
     await expect(
-      client.app.consumeBootstrapToken({
+      client.operations['bootstrap.consume']({
         displayName: 'Owner',
         email: 'owner@example.com',
         ownerUserId: 'user_owner',
@@ -3801,7 +3801,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/app-update.prepare',
       'POST /api/app/operations/app-update.start',
       'POST /api/app/operations/app-update.status',
-      'POST /api/app/auth/bootstrap/consume',
+      'POST /api/app/operations/bootstrap.consume',
       'POST /api/app/operations/backup.verify',
       'POST /api/app/operations/workspace.export',
       'POST /api/app/operations/workspace.import-dry-run',
@@ -3876,17 +3876,17 @@ describe('createCoreClient', () => {
     expect(requests.at(-1)?.body).toEqual({ workspaceId: 'ws_demo' });
   });
 
-  it('routes OpenKit access-token administration through app-owned schemas', async () => {
+  it('routes OpenKit access-token administration through canonical operation schemas', async () => {
     const { client, requests } = createFakeClient({
-      'GET /api/app/auth/tokens': { body: { items: [accessTokenRecord()] } },
-      'POST /api/app/auth/tokens': {
+      'POST /api/app/operations/token.list': { body: { items: [accessTokenRecord()] } },
+      'POST /api/app/operations/token.create': {
         body: { token: 'okt_workspace_secret', record: accessTokenRecord() },
         status: 201,
       },
-      'POST /api/app/auth/tokens/tok_workspace/revoke': {
+      'POST /api/app/operations/token.revoke': {
         body: { record: accessTokenRecord({ status: 'revoked', revokedAt: timestamp }) },
       },
-      'POST /api/app/auth/tokens/tok_workspace/rotate': {
+      'POST /api/app/operations/token.rotate': {
         body: {
           token: 'okt_rotated_secret',
           record: accessTokenRecord({ status: 'rotated', rotatedGraceExpiresAt: timestamp }),
@@ -3896,7 +3896,7 @@ describe('createCoreClient', () => {
           }),
         },
       },
-      'GET /api/app/auth/my-admin-tokens': {
+      'POST /api/app/operations/token.my-admin-list': {
         body: {
           defaultTokenId: 'tok_admin',
           items: [
@@ -3904,7 +3904,7 @@ describe('createCoreClient', () => {
           ],
         },
       },
-      'PUT /api/app/auth/my-admin-tokens/default': {
+      'POST /api/app/operations/token.my-admin-default': {
         body: {
           defaultTokenId: 'tok_admin',
           items: [
@@ -3914,11 +3914,11 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.app.listOpenKitAccessTokens()).resolves.toMatchObject({
+    await expect(client.operations['token.list']({})).resolves.toMatchObject({
       items: [{ tokenId: 'tok_workspace', workspaceIds: ['ws_demo'] }],
     });
     await expect(
-      client.app.createOpenKitAccessToken({
+      client.operations['token.create']({
         expiresAt: timestamp,
         scope: 'workspace',
         workspaceIds: ['ws_demo'],
@@ -3927,39 +3927,41 @@ describe('createCoreClient', () => {
       token: 'okt_workspace_secret',
       record: { tokenId: 'tok_workspace' },
     });
-    await expect(client.app.revokeOpenKitAccessToken('tok_workspace')).resolves.toMatchObject({
+    await expect(
+      client.operations['token.revoke']({ tokenId: 'tok_workspace' })
+    ).resolves.toMatchObject({
       record: { status: 'revoked' },
     });
     await expect(
-      client.app.rotateOpenKitAccessToken('tok_workspace', { graceSeconds: 60 })
+      client.operations['token.rotate']({ tokenId: 'tok_workspace', ...{ graceSeconds: 60 } })
     ).resolves.toMatchObject({
       token: 'okt_rotated_secret',
       rotatedRecord: { predecessorTokenId: 'tok_workspace' },
     });
-    await expect(client.app.listMyAdminAccessTokens()).resolves.toMatchObject({
+    await expect(client.operations['token.my-admin-list']({})).resolves.toMatchObject({
       defaultTokenId: 'tok_admin',
       items: [{ tokenId: 'tok_admin', scope: 'server-admin' }],
     });
     await expect(
-      client.app.setMyAdminAccessTokenDefault({ tokenId: 'tok_admin' })
+      client.operations['token.my-admin-default']({ tokenId: 'tok_admin' })
     ).resolves.toMatchObject({
       defaultTokenId: 'tok_admin',
     });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'GET /api/app/auth/tokens',
-      'POST /api/app/auth/tokens',
-      'POST /api/app/auth/tokens/tok_workspace/revoke',
-      'POST /api/app/auth/tokens/tok_workspace/rotate',
-      'GET /api/app/auth/my-admin-tokens',
-      'PUT /api/app/auth/my-admin-tokens/default',
+      'POST /api/app/operations/token.list',
+      'POST /api/app/operations/token.create',
+      'POST /api/app/operations/token.revoke',
+      'POST /api/app/operations/token.rotate',
+      'POST /api/app/operations/token.my-admin-list',
+      'POST /api/app/operations/token.my-admin-default',
     ]);
     expect(requests[1]?.body).toEqual({
       expiresAt: timestamp,
       scope: 'workspace',
       workspaceIds: ['ws_demo'],
     });
-    expect(requests[3]?.body).toEqual({ graceSeconds: 60 });
+    expect(requests[3]?.body).toEqual({ tokenId: 'tok_workspace', graceSeconds: 60 });
   });
 
   it('routes vault admin operations through app-owned schemas', async () => {

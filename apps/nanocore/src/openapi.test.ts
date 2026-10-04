@@ -81,8 +81,6 @@ const PRIVATE_NANOHOST_EFFECT_ROUTES = [
   `POST /api/nanohost/transport/effects/${operation}/result`,
 ]);
 const SESSION_COOKIE_ONLY_ROUTES = new Set([
-  'GET /api/app/auth/my-admin-tokens',
-  'PUT /api/app/auth/my-admin-tokens/default',
   'POST /api/app/workspace-archives/import',
   'POST /api/app/workspace-archives/import-dry-run',
 ]);
@@ -1790,19 +1788,19 @@ describe('app api openapi projection', () => {
       policyOperation: 'workspace.write',
       scope: 'user',
     });
-    expect(PUBLIC_OPERATION_ACCESS.consumeOpenKitBootstrapToken).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['bootstrap.consume']).toMatchObject({
       authentication: 'bootstrap-secret',
       mutating: true,
       policyOperation: 'api.call',
       scope: 'server',
     });
-    expect(PUBLIC_OPERATION_ACCESS.listMyAdminAccessTokens).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['token.my-admin-list']).toMatchObject({
       authentication: 'canonical-user',
       mutating: false,
       policyOperation: 'api.call',
       scope: 'user',
     });
-    expect(PUBLIC_OPERATION_ACCESS.setMyAdminAccessTokenDefault).toMatchObject({
+    expect(PUBLIC_OPERATION_ACCESS['token.my-admin-default']).toMatchObject({
       authentication: 'canonical-user',
       mutating: true,
       policyOperation: 'api.call',
@@ -1878,7 +1876,7 @@ describe('app api openapi projection', () => {
     const invalidSecurity = operations
       .filter(({ operation, route }) => {
         const expected =
-          route === 'POST /api/app/auth/bootstrap/consume'
+          route === 'POST /api/app/operations/bootstrap.consume'
             ? []
             : SESSION_COOKIE_ONLY_ROUTES.has(route)
               ? [{ sessionCookie: [] }]
@@ -2030,13 +2028,6 @@ describe('app api openapi projection', () => {
 
   it('preserves the characterized handler registration order', () => {
     expect(getRegisteredAppApiOperationIds(createApp())).toEqual([
-      'consumeOpenKitBootstrapToken',
-      'listOpenKitAccessTokens',
-      'createOpenKitAccessToken',
-      'revokeOpenKitAccessToken',
-      'rotateOpenKitAccessToken',
-      'listMyAdminAccessTokens',
-      'setMyAdminAccessTokenDefault',
       'getAppDiagnostics',
       'getSetupDiagnostics',
       'downloadWorkspaceExportArchive',

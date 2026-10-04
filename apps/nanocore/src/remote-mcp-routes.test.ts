@@ -6,6 +6,7 @@ import {
   type BootReadinessSnapshot,
   CreateOpenKitAccessTokenResponseSchema,
   OPERATION_DEFINITIONS,
+  operationMcpEligible,
   RotateOpenKitAccessTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -740,7 +741,9 @@ describe('remote MCP App endpoint', () => {
         .every((tool: { annotations: { readOnlyHint: boolean } }) => tool.annotations.readOnlyHint)
     ).toBe(true);
     expect(listed.result.tools[3].annotations.readOnlyHint).toBe(false);
-    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(([, definition]) =>
+      operationMcpEligible(definition)
+    )) {
       const result = await f.call('describe', { operation: id }, token.secret);
       const data = JSON.parse(result.content[0].text);
       expect(data.id).toBe(id);
@@ -924,6 +927,70 @@ describe('remote MCP App endpoint', () => {
     );
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text)).toEqual(expected);
+  });
+
+  it.each([
+    'token.create',
+    'token.rotate',
+    'bootstrap.consume',
+  ] as const)('omits and refuses %s over remote MCP before token writes', async (id) => {
+    const f = await fixture();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'user_remote_mcp',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const input =
+      id === 'token.create'
+        ? { scope: 'server-admin', expiresAt: '2099-01-01T00:00:00.000Z' }
+        : id === 'token.rotate'
+          ? { tokenId: token.record.tokenId }
+          : {
+              token: 'okt_bootstrap_fixture',
+              ownerUserId: 'user_bootstrap',
+              displayName: 'Owner',
+              email: 'owner@example.test',
+              password: 'fixture-password',
+              tokenExpiresAt: '2099-01-01T00:00:00.000Z',
+            };
+    const before = f.coreDb.sqlite
+      .prepare(
+        'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
+      )
+      .all();
+    // Collect every projection and row boundary so one missing declaration cannot mask later evidence.
+    for (const name of ['search', 'describe', 'call']) {
+      const result = await f.call(
+        name,
+        name === 'search'
+          ? { query: id }
+          : name === 'describe'
+            ? { operation: id }
+            : { operation: id, input },
+        token.secret
+      );
+      if (name === 'search') {
+        expect.soft(result.isError).not.toBe(true);
+        expect
+          .soft(JSON.parse(result.content[0].text).items)
+          .not.toContainEqual(expect.objectContaining({ id }));
+      } else {
+        expect.soft(result.isError).toBe(true);
+        expect.soft(JSON.parse(result.content[0].text).code).toBe('mcp_secret_returning_operation');
+      }
+      expect.soft(JSON.stringify(result)).not.toContain(token.secret);
+      expect.soft(JSON.stringify(result)).not.toMatch(/okt_|token_hash/);
+      expect
+        .soft(
+          f.coreDb.sqlite
+            .prepare(
+              'SELECT token_id, token_hash, status, revoked_at, predecessor_token_id, rotated_grace_expires_at FROM openkit_access_tokens ORDER BY token_id'
+            )
+            .all()
+        )
+        .toEqual(before);
+    }
   });
 
   it('refuses declared one-time-secret results before dispatch when a credential definition is added', async () => {

@@ -189,7 +189,10 @@ async function callOperation(operationId, env, state) {
     return operation.handler({ client: null, credentialStore, endpoint }, input);
   }
 
-  const credential = resolveCredential({ endpoint, env, store: credentialStore });
+  const credential =
+    operation.credentials?.length === 1 && operation.credentials[0] === 'bootstrap-secret'
+      ? null
+      : resolveCredential({ endpoint, env, store: credentialStore });
   if (credential) {
     state.secrets.push(credential.token);
   }

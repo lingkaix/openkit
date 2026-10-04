@@ -43,11 +43,11 @@ const TOKENS = {
   ],
 };
 
-function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
   return {
-    app: {
-      listMyAdminAccessTokens: vi.fn().mockResolvedValue(TOKENS),
-      setMyAdminAccessTokenDefault: vi.fn().mockResolvedValue({
+    operations: {
+      'token.my-admin-list': vi.fn().mockResolvedValue(TOKENS),
+      'token.my-admin-default': vi.fn().mockResolvedValue({
         ...TOKENS,
         defaultTokenId: 'tok_other',
       }),
@@ -77,7 +77,9 @@ describe('My admin access', () => {
     expect(screen.getByText('tok_other')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: 'tok_other (active)' }));
     await waitFor(() =>
-      expect(client.app.setMyAdminAccessTokenDefault).toHaveBeenCalledWith({ tokenId: 'tok_other' })
+      expect(client.operations['token.my-admin-default']).toHaveBeenCalledWith({
+        tokenId: 'tok_other',
+      })
     );
   });
 
@@ -85,10 +87,10 @@ describe('My admin access', () => {
     const user = userEvent.setup();
     const listMyAdminAccessTokens = vi.fn().mockRejectedValue(
       new ApiCallError(403, 'canonical session required', {
-        code: 'access_token_session_required',
+        code: 'workspace_access_denied',
       })
     );
-    renderScreen(makeClient({ listMyAdminAccessTokens }));
+    renderScreen(makeClient({ 'token.my-admin-list': listMyAdminAccessTokens }));
 
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
@@ -101,7 +103,7 @@ describe('My admin access', () => {
     const setMyAdminAccessTokenDefault = vi.fn().mockRejectedValue(new Error('rejected'));
     renderScreen(
       makeClient({
-        listMyAdminAccessTokens: vi.fn().mockResolvedValue({
+        'token.my-admin-list': vi.fn().mockResolvedValue({
           ...TOKENS,
           items: [
             ...TOKENS.items,
@@ -113,7 +115,7 @@ describe('My admin access', () => {
             },
           ],
         }),
-        setMyAdminAccessTokenDefault,
+        'token.my-admin-default': setMyAdminAccessTokenDefault,
       })
     );
 

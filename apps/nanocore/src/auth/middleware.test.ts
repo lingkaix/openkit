@@ -386,10 +386,11 @@ describe('createAuthMiddleware', () => {
       })
     );
     app.get('/api/app/workspaces', (c) => c.json(c.get('actor')));
-    app.get('/api/app/auth/tokens', (c) => c.json(c.get('actor')));
+    app.post('/api/app/operations/token.list', (c) => c.json(c.get('actor')));
 
-    for (const path of ['/api/app/workspaces', '/api/app/auth/tokens']) {
+    for (const path of ['/api/app/workspaces', '/api/app/operations/token.list']) {
       const denied = await app.request(path, {
+        ...(path.endsWith('token.list') ? { method: 'POST', body: '{}' } : {}),
         headers: { authorization: `Bearer ${nanohostSecret}` },
       });
       const body = await denied.text();

@@ -24,15 +24,13 @@ const RECORD = {
   lastUsedSource: null,
 };
 
-function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
+function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
   return {
-    app: {
-      listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [RECORD] }),
-      createOpenKitAccessToken: vi.fn().mockResolvedValue({ token: RAW_TOKEN, record: RECORD }),
-      revokeOpenKitAccessToken: vi
-        .fn()
-        .mockResolvedValue({ record: { ...RECORD, status: 'revoked' } }),
-      rotateOpenKitAccessToken: vi.fn().mockResolvedValue({
+    operations: {
+      'token.list': vi.fn().mockResolvedValue({ items: [RECORD] }),
+      'token.create': vi.fn().mockResolvedValue({ token: RAW_TOKEN, record: RECORD }),
+      'token.revoke': vi.fn().mockResolvedValue({ record: { ...RECORD, status: 'revoked' } }),
+      'token.rotate': vi.fn().mockResolvedValue({
         token: RAW_TOKEN,
         record: { ...RECORD, tokenId: 'tok_2' },
         rotatedRecord: { ...RECORD, status: 'rotated' },
@@ -65,7 +63,7 @@ describe('Access tokens administration', () => {
     await user.click(screen.getByRole('button', { name: 'Issue token' }));
 
     await waitFor(() =>
-      expect(client.app.createOpenKitAccessToken).toHaveBeenCalledWith(
+      expect(client.operations['token.create']).toHaveBeenCalledWith(
         expect.objectContaining({
           ownerUserId: 'user_owner',
           scope: 'server-admin',
@@ -103,10 +101,14 @@ describe('Access tokens administration', () => {
 
     expect(await screen.findByText('tok_1')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Revoke' }));
-    await waitFor(() => expect(client.app.revokeOpenKitAccessToken).toHaveBeenCalledWith('tok_1'));
+    await waitFor(() =>
+      expect(client.operations['token.revoke']).toHaveBeenCalledWith({ tokenId: 'tok_1' })
+    );
 
     await user.click(screen.getByRole('button', { name: 'Rotate' }));
-    await waitFor(() => expect(client.app.rotateOpenKitAccessToken).toHaveBeenCalledWith('tok_1'));
+    await waitFor(() =>
+      expect(client.operations['token.rotate']).toHaveBeenCalledWith({ tokenId: 'tok_1' })
+    );
     expect(await screen.findByLabelText('Issued token')).toHaveValue(RAW_TOKEN);
 
     await user.click(screen.getByRole('button', { name: 'Dismiss' }));
@@ -128,7 +130,7 @@ describe('Access tokens administration', () => {
     const listOpenKitAccessTokens = vi
       .fn()
       .mockRejectedValue(new ApiCallError(403, 'deployment admin required', { code: 'forbidden' }));
-    renderScreen(makeClient({ listOpenKitAccessTokens }));
+    renderScreen(makeClient({ 'token.list': listOpenKitAccessTokens }));
 
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Issue token' })).not.toBeInTheDocument();

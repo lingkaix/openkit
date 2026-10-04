@@ -22,7 +22,7 @@ export function DisableUserScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'disable-user', 'admin-access'],
     queryFn: async () => {
-      await client.app.listOpenKitAccessTokens();
+      await client.operations['token.list']({});
       return true;
     },
     retry: false,

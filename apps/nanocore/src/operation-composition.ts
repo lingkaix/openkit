@@ -7,6 +7,7 @@ import { createWorkerOperationImplementations } from './agents/workspace-workers
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createAppUpdateOperationImplementations } from './app-update/app-update-operations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
+import { createAccessTokenOperationImplementations } from './auth/access-token-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
@@ -128,6 +129,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
       store: dependencies.store!,
       inflightCommands: dependencies.inflightCommands!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
+    }),
+    createAccessTokenOperationImplementations({
+      coreDb: dependencies.coreDb,
+      mode: dependencies.mode ?? 'local',
     }),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),

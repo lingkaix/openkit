@@ -1,4 +1,4 @@
-import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
 import type { ProductOperation } from '../policy/workspace-access.js';
 
 /** Public authorization scope declared by one canonical operation. */
@@ -109,29 +109,9 @@ function registerOperations(
 
 const catalog: Record<string, PublicOperationAccess> = {};
 
-registerOperations(
-  catalog,
-  ['getAppDiagnostics', 'getSetupDiagnostics', 'listOpenKitAccessTokens'],
-  {
-    authentication: 'deployment-admin',
-    mutating: false,
-    policyOperation: 'api.call',
-    scope: 'server',
-  }
-);
-registerOperations(
-  catalog,
-  ['createOpenKitAccessToken', 'revokeOpenKitAccessToken', 'rotateOpenKitAccessToken'],
-  {
-    authentication: 'deployment-admin',
-    mutating: true,
-    policyOperation: 'api.call',
-    scope: 'server',
-  }
-);
-registerOperations(catalog, ['consumeOpenKitBootstrapToken'], {
-  authentication: 'bootstrap-secret',
-  mutating: true,
+registerOperations(catalog, ['getAppDiagnostics', 'getSetupDiagnostics'], {
+  authentication: 'deployment-admin',
+  mutating: false,
   policyOperation: 'api.call',
   scope: 'server',
 });
@@ -143,18 +123,6 @@ registerOperations(catalog, ['dryRunWorkspaceArchiveImport'], {
   scope: 'user',
 });
 
-registerOperations(catalog, ['listMyAdminAccessTokens'], {
-  authentication: 'canonical-user',
-  mutating: false,
-  policyOperation: 'api.call',
-  scope: 'user',
-});
-registerOperations(catalog, ['setMyAdminAccessTokenDefault'], {
-  authentication: 'canonical-user',
-  mutating: true,
-  policyOperation: 'api.call',
-  scope: 'user',
-});
 registerOperations(catalog, ['importWorkspaceArchive'], {
   authentication: 'canonical-user',
   mutating: true,
@@ -189,7 +157,9 @@ for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS)) {
     [id],
     definition.scope.kind === 'server'
       ? {
-          authentication: 'deployment-admin',
+          authentication: operationUsesBootstrapSecret(definition)
+            ? 'bootstrap-secret'
+            : 'deployment-admin',
           mutating: definition.mutating,
           policyOperation: definition.policyOperation,
           scope: 'server',

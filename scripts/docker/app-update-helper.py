@@ -1523,7 +1523,7 @@ class AppUpdateHelper:
             )
 
     def _snapshot_retained_auth(self, receipt: Dict[str, Any]) -> None:
-        status, body = self._authorized_json("/api/app/auth/tokens")
+        status, body = self._authorized_json("/api/app/operations/token.list", method="POST", body={})
         if status != 200:
             raise HelperError("app_update_unavailable", "Retained auth-store identity could not be read.")
         receipt["retainedAuthSnapshot"] = self._auth_store_identity(body)
@@ -1601,7 +1601,7 @@ class AppUpdateHelper:
         }
 
     def _retained_auth_read(self, receipt: Mapping[str, Any]) -> bool:
-        status, body = self._authorized_json("/api/app/auth/tokens")
+        status, body = self._authorized_json("/api/app/operations/token.list", method="POST", body={})
         if status != 200:
             return False
         try:

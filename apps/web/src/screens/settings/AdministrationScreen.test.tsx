@@ -252,12 +252,14 @@ function makeClient(
   operations: Partial<CoreClient['operations']> = {}
 ): CoreClient {
   return {
-    app: { listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }), ...app },
+    app: { ...app },
     core: {
       meta: vi.fn().mockResolvedValue({}),
       ...core,
     },
     operations: {
+      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      ...app,
       'runtime.file-list': vi.fn().mockResolvedValue({ files: [] }),
       'runtime.file-read': vi.fn(),
       ...operations,
@@ -456,7 +458,7 @@ describe('Administration', () => {
 
   it('fails closed when the signed-in session has no usable administrator authority', async () => {
     const client = makeClient({
-      listOpenKitAccessTokens: vi
+      'token.list': vi
         .fn()
         .mockRejectedValue(
           new ApiCallError(403, 'Server-admin authority is required.', { code: 'forbidden' })

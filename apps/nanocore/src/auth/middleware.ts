@@ -1,4 +1,9 @@
 import { isIP } from 'node:net';
+import {
+  OPERATION_DEFINITIONS,
+  operationHttpPath,
+  operationUsesBootstrapSecret,
+} from '@openkit/app-api-schemas';
 
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import type { MiddlewareHandler } from 'hono';
@@ -32,6 +37,8 @@ export interface BetterAuthServer {
 export interface AuthVariables {
   /** Authenticated or implicit request actor. */
   actor: Actor;
+  /** Trusted actorless bootstrap admission after secure transport and ordinary credential refusal. */
+  bootstrapSecretAdmission?: true;
   /** Optional centralized Workspace authorization result for the current operation. */
   workspaceAccess?: WorkspaceAccess;
 }
@@ -86,17 +93,25 @@ export function createAuthMiddleware(
   options: AuthMiddlewareOptions = {}
 ): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
-    if (isPublicRoute(c.req.method, c.req.path)) {
+    const bootstrap = isBootstrapOperationPath(c.req.method, c.req.path);
+    if (bootstrap || isPublicRoute(c.req.method, c.req.path)) {
       if (
         mode === 'server' &&
         c.req.method === 'POST' &&
-        (c.req.path === '/api/app/auth/bootstrap/consume' ||
-          isNanoHostTransportAdmissionPath(c.req.path)) &&
+        (bootstrap || isNanoHostTransportAdmissionPath(c.req.path)) &&
         !acceptsSecretTransport(c)
       ) {
         return insecureTransport(c);
       }
 
+      // Bootstrap authenticates its secret at its native owner, never through a session or bearer.
+      if (
+        bootstrap &&
+        (c.req.header('authorization') ||
+          (await auth?.api.getSession({ headers: c.req.raw.headers })))
+      )
+        return unauthorized(c);
+      if (bootstrap) c.set('bootstrapSecretAdmission', true);
       await next();
       return;
     }
@@ -166,10 +181,6 @@ export function createAuthMiddleware(
  */
 function isPublicRoute(method: string, path: string): boolean {
   if (path.startsWith('/api/auth/')) {
-    return true;
-  }
-
-  if (method === 'POST' && path === '/api/app/auth/bootstrap/consume') {
     return true;
   }
 
@@ -293,5 +304,16 @@ function insecureTransport(c: Parameters<MiddlewareHandler>[0]) {
       message: 'Bearer token authentication requires HTTPS outside loopback.',
     }),
     400
+  );
+}
+
+/** Public actorless admission is derived exclusively from the selected operation credential. */
+function isBootstrapOperationPath(method: string, path: string): boolean {
+  return (
+    method === 'POST' &&
+    Object.entries(OPERATION_DEFINITIONS).some(
+      ([id, definition]) =>
+        operationUsesBootstrapSecret(definition) && operationHttpPath(id) === path
+    )
   );
 }

@@ -1,4 +1,9 @@
-import type { OperationId, OperationInput, OperationOutput } from '@openkit/app-api-schemas';
+import type {
+  OPERATION_DEFINITIONS,
+  OperationId,
+  OperationInput,
+  OperationOutput,
+} from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from './auth/identity.js';
 import { OperationError } from './operation-error.js';
@@ -12,6 +17,7 @@ export interface OperationRequestFacts {
 /** Trusted entry context, constructed by authentication or Worker supply assembly. */
 export type OperationInvocationContext = OperationRequestFacts &
   (
+    | { readonly kind: 'bootstrap' }
     | { readonly kind: 'public'; readonly actor: Actor }
     | {
         readonly kind: 'coordinator';
@@ -39,7 +45,10 @@ export type AdmittedOperationScope =
   | { readonly kind: 'workspace'; readonly workspaceId: string }
   | { readonly kind: 'authorized-workspace-set'; readonly workspaceIds: readonly string[] };
 /** Internal admission result, never a caller-supplied authorization token. */
-export type AdmittedOperationContext = OperationInvocationContext & {
+export type AdmittedOperationContext = Exclude<
+  OperationInvocationContext,
+  { kind: 'bootstrap' }
+> & {
   readonly actorRef: ActorRef;
   readonly scope: AdmittedOperationScope;
   readonly resolvedLineage?: {
@@ -52,7 +61,9 @@ export type AdmittedOperationContext = OperationInvocationContext & {
 export type OperationImplementations = {
   [K in OperationId]: (
     input: OperationInput<K>,
-    context: AdmittedOperationContext
+    context: (typeof OPERATION_DEFINITIONS)[K]['credentials'] extends readonly ['bootstrap-secret']
+      ? Extract<OperationInvocationContext, { kind: 'bootstrap' }>
+      : AdmittedOperationContext
   ) => OperationOutput<K> | Promise<OperationOutput<K>>;
 };
 /** Family signatures are selected only from the browser-safe table's exact keys. */
@@ -62,7 +73,7 @@ export type FamilyImplementations<T> = Pick<
 >;
 /** Requires a human-authenticated entry where the family has no worker projection. */
 export function publicOperationActor(context: OperationInvocationContext): Actor {
-  if (context.kind === 'worker')
+  if (context.kind === 'worker' || context.kind === 'bootstrap')
     throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
   return context.actor;
 }

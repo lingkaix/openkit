@@ -30,9 +30,9 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 
 ## Client Shape
 
-- `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, and redacted Agent Environment Package snapshot readback.
+- `client.operations`: definition-derived product operations, including `chat.quick`, `turn.feedback`, Vault administration and reference operations, capability usage, audit, search, redacted Agent Environment Package snapshot readback, Material reads and mutations, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership, and personal administrator-token inventory and default selection.
 - `client.core`: metadata discovery and the Thread event stream.
-- `client.app`: dashboards, diagnostics, setup diagnostics, bootstrap-token consumption, OpenKit access-token administration including cross-user ownership plus session-user redacted admin Token inventory and default selection, raw portable archive download, dry-run, and import streams, Workspace Material reads and mutations.
+- `client.app`: diagnostics, setup diagnostics, and raw portable archive download, dry-run, and import streams.
 - `client.operations` exposes the seven current-administrator Worker environment operations and the private administration conversation entry. Every input carries its complete logical selectors; destructive purge binds confirmation to the same storage reference and revision.
 - `client.operations[id]`: the ten `runtime.*` configuration editor and reload operations.
 - `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
@@ -99,3 +99,5 @@ All seventeen Agent, Worker and resource catalog operations use `client.operatio
 Governance, AEP snapshot, App search and Vault operations use `client.operations[id](input)`, including `usage.read`, `audit.workspace-list`, `audit.server-list`, `evidence.bundle-list`, `evidence.runtime-list`, `permission.workspace-list`, `permission.server-list`, `environment.snapshot-list`, `environment.snapshot-read`, `app.search` and the 17 `vault.*` operations. Workspace reads receive `{ workspaceId }`, snapshot reads also receive `snapshotId`, search receives `{ query }`, and empty server reads receive `{}`. The former App methods and route mappings are removed.
 
 Material calls use `client.operations[id]` with canonical `material.*` operation ids with complete selector objects and existing optional request-id generation. Former App API Material methods and their orphan input types are removed; response codecs and header request identities derive from the definitions.
+
+Human token lifecycle and bootstrap use the seven canonical `client.operations[id](input)` methods. Rotation and revocation include `tokenId` in the logical input. Bootstrap returns its first administrator credential once through separately authorized actorless HTTP; administrator bearer and session headers must be absent. The old App methods are removed.

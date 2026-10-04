@@ -22,7 +22,7 @@ Vault administration schemas keep provider API keys in strict request-only paylo
 
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
-Authentication schemas include optional exact-owner access-token issuance plus session-only redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
+Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
 
 This package no longer projects an AgentSession backend-summary schema. Gateway endpoints, Gateway names, native Sandbox names, retired control transports, and hidden AgentSession continuity are not ordinary public read-model states; protected evidence and operator projections may retain only their separately authorized redacted lineage.
 
@@ -126,3 +126,5 @@ The `governance-operations.ts`, `environment-operations.ts`, `app-search-operati
 `worker-environment-operations.ts`, `administration-operations.ts` and `app-update-operations.ts` declare the twelve administrator operations composed into `ADMINISTRATION_OPERATION_DEFINITIONS`. Preparation and result-only recovery expose separate strict objects derived from the canonical command branches, with no public mode. Their model views preserve requirements, exclusions, null defaults and raw-secret checks; family joins supply the fixed internal mode before the existing receipt owner. App-update status retains its host receipt `requestId` as a read selector; command identity uses the header only for mutations.
 
 The eleven Material definitions live in `src/material-operations.ts`, reusing complete Material payload schemas with strict logical Workspace and child selectors. The table supplies success status and admission facts for all projections; executable delivery preflight stays in NanoCore.
+
+`src/access-token-operations.ts` declares the seven human access-token and bootstrap operations. The shared credential vocabulary admits bootstrap only as the exclusive `bootstrap-secret` credential; composition rejects a mixed credential declaration. Issuance, rotation and bootstrap truthfully declare their one-time-secret results, which exclude them from MCP.

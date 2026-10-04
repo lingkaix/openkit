@@ -3,6 +3,7 @@ import type {
   OperationMutationTarget,
   OperationTarget,
 } from '@openkit/app-api-schemas';
+import { operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import {
   authorizedWorkspaceSet,
@@ -83,7 +84,7 @@ function bindOperationInput(
         403
       );
   }
-  if (context.kind === 'public') return input;
+  if (context.kind === 'public' || context.kind === 'bootstrap') return input;
   const bindings =
     context.kind === 'coordinator'
       ? {
@@ -143,7 +144,11 @@ export function admitOperation(
   entry: OperationInvocationContext,
   dependencies: OperationAdmissionDependencies
 ) {
+  const bootstrap = operationUsesBootstrapSecret(definition);
+  if ((entry.kind === 'bootstrap') !== bootstrap)
+    throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
   const input = parseOperationInput(definition, value, entry);
+  if (entry.kind === 'bootstrap') return { input, context: entry, release: undefined };
   const credential =
     entry.kind === 'coordinator'
       ? 'coordinator'
@@ -156,7 +161,7 @@ export function admitOperation(
             : entry.actor.tokenScope === 'server-admin'
               ? 'deployment-administrator'
               : 'user-bearer';
-  if (!definition.credentials.includes(credential)) {
+  if (!(definition.credentials as readonly string[]).includes(credential)) {
     if (definition.scope.kind === 'server')
       throw new OperationError(
         'deployment_admin_required',
@@ -366,7 +371,7 @@ export function admitOperation(
 function requireThreadAudience(
   store: FsStore,
   coreDb: CoreDb,
-  entry: OperationInvocationContext,
+  entry: Exclude<OperationInvocationContext, { kind: 'bootstrap' }>,
   workspaceId: string,
   threadId: string
 ): void {
@@ -389,7 +394,7 @@ function resolveTarget(
   target: OperationTarget,
   input: Record<string, unknown>,
   dependencies: OperationAdmissionDependencies,
-  entry: OperationInvocationContext,
+  entry: Exclude<OperationInvocationContext, { kind: 'bootstrap' }>,
   workspaceId: string
 ): void {
   switch (target.kind) {

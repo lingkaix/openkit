@@ -71,8 +71,10 @@ const SUCCEEDED = {
 
 function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> = {}): CoreClient {
   return {
-    app: { listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }), ...app },
+    app: { ...app },
     operations: {
+      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      ...app,
       'app-update.prepare': vi.fn().mockResolvedValue(PREPARED),
       'app-update.start': vi.fn().mockResolvedValue(STARTED),
       'app-update.status': vi.fn().mockResolvedValue(STARTED),
@@ -209,7 +211,7 @@ describe('App update administration', () => {
 
   it('states missing server-admin authority without a credential prompt', async () => {
     const client = makeClient({
-      listOpenKitAccessTokens: vi
+      'token.list': vi
         .fn()
         .mockRejectedValue(new ApiCallError(403, 'Server-admin authority is required.')),
     });

@@ -39,7 +39,7 @@ export function AppUpdateScreen() {
 
   const adminAccess = useQuery({
     queryKey: ['settings', 'app-update', 'admin-access'],
-    queryFn: () => client.app.listOpenKitAccessTokens(),
+    queryFn: () => client.operations['token.list']({}),
     retry: false,
   });
   const prepare = useMutation({

@@ -1,4 +1,8 @@
-import { OPERATION_DEFINITIONS, type OperationDefinition } from '@openkit/app-api-schemas';
+import {
+  OPERATION_DEFINITIONS,
+  type OperationDefinition,
+  operationUsesBootstrapSecret,
+} from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -8,6 +12,7 @@ import {
   createOperationInvocation,
   type OperationInvocationDependencies,
 } from './operation-composition.js';
+import type { OperationInvocationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { parseOperationInput } from './operation-resolvers.js';
 
@@ -26,6 +31,8 @@ export function registerOperationJsonRoutes(
       // Initialize response headers so returned Responses and the HTTP error handler inherit the same cache policy.
       c.res.headers.set('Cache-Control', 'no-store');
       try {
+        if (operationUsesBootstrapSecret(definition) && c.get('bootstrapSecretAdmission') !== true)
+          throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
         const body: unknown = await c.req.json().catch((error: unknown) => {
           if (error instanceof SyntaxError) return null;
           throw error;
@@ -49,14 +56,17 @@ export function registerOperationJsonRoutes(
             ? { ...args, requestId }
             : args;
         // HTTP must refuse malformed input before selecting a request store; native entries independently use the same validator.
-        parseOperationInput(definition, input, { kind: 'public', actor: c.get('actor') });
+        const entry: OperationInvocationContext = operationUsesBootstrapSecret(definition)
+          ? { kind: 'bootstrap', delivery: 'human', signal: c.req.raw.signal }
+          : { kind: 'public', actor: c.get('actor'), delivery: 'human', signal: c.req.raw.signal };
+        parseOperationInput(definition, input, entry);
         let successStatus: 200 | 201 | 202 | 204 = definition.successStatus;
-        const invoke = createOperationInvocation({ ...dependencies, store: requestStore(c) });
+        const invoke = createOperationInvocation({
+          ...dependencies,
+          ...(entry.kind === 'bootstrap' ? {} : { store: requestStore(c) }),
+        });
         const output = await invoke(id as keyof typeof OPERATION_DEFINITIONS, input, {
-          kind: 'public',
-          actor: c.get('actor'),
-          delivery: 'human',
-          signal: c.req.raw.signal,
+          ...entry,
           observeSuccessStatus: (status) => {
             successStatus = status;
           },

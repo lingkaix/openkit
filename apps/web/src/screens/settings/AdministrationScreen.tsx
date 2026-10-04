@@ -112,7 +112,7 @@ export function AdministrationScreen() {
 
   const access = useQuery({
     queryKey: administrationKeys.access,
-    queryFn: () => client.app.listOpenKitAccessTokens(),
+    queryFn: () => client.operations['token.list']({}),
     retry: false,
   });
   const administrationThread = useQuery({

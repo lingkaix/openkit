@@ -30,10 +30,8 @@ const RESPONSE = {
 /** Minimal deployment client: no Workspace or credential-bearing calls are available. */
 function makeClient(): CoreClient {
   return {
-    app: {
-      listOpenKitAccessTokens: vi.fn().mockResolvedValue({ items: [] }),
-    },
     operations: {
+      'token.list': vi.fn().mockResolvedValue({ items: [] }),
       'backup.create': vi.fn().mockResolvedValue(RESPONSE),
       'backup.verify': vi.fn().mockResolvedValue(RESPONSE),
     },
@@ -123,7 +121,7 @@ describe('Deployment data-root backup', () => {
     401, 403,
   ])('handles initial %s denial and recovers without credentials', async (status) => {
     const client = makeClient();
-    vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
       new ApiCallError(status, POISON)
     );
     const { container } = renderScreen(client);
@@ -166,9 +164,7 @@ describe('Deployment data-root backup', () => {
     const { container, queryClient } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
     await screen.findByText('Backup created');
-    vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(
-      new ApiCallError(401, POISON)
-    );
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new ApiCallError(401, POISON));
     await act(() =>
       queryClient.invalidateQueries({ queryKey: ['settings', 'data-root-backup', 'admin-access'] })
     );
@@ -206,7 +202,7 @@ describe('Deployment data-root backup', () => {
 
   it('retries an authority-check failure without leaking its raw message', async () => {
     const client = makeClient();
-    vi.mocked(client.app.listOpenKitAccessTokens).mockRejectedValueOnce(new Error(POISON));
+    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new Error(POISON));
     const { container } = renderScreen(client);
     await screen.findByRole('button', { name: 'Try again' });
     expect(container.innerHTML).not.toContain(POISON);

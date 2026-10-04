@@ -1,23 +1,11 @@
 import {
   type AppDiagnosticsResponse,
   AppDiagnosticsResponseSchema,
-  type ConsumeOpenKitBootstrapTokenRequest,
-  ConsumeOpenKitBootstrapTokenRequestSchema,
-  type ConsumeOpenKitBootstrapTokenResponse,
-  ConsumeOpenKitBootstrapTokenResponseSchema,
-  type CreateOpenKitAccessTokenRequest,
-  CreateOpenKitAccessTokenRequestSchema,
-  type CreateOpenKitAccessTokenResponse,
-  CreateOpenKitAccessTokenResponseSchema,
   type KnowledgeManagerAnswerRequest,
   type KnowledgeManagerDraftProposalRequest,
   type KnowledgeManagerHealthCheckRequest,
   type KnowledgeManagerPrepareContextRequest,
   type KnowledgeManagerSuggestRepairRequest,
-  type ListMyAdminAccessTokensResponse,
-  ListMyAdminAccessTokensResponseSchema,
-  type ListOpenKitAccessTokensResponse,
-  ListOpenKitAccessTokensResponseSchema,
   type RecordKnowledgeClaimRequest,
   type RecordKnowledgeConflictRequest,
   type RecordKnowledgeObservationRequest,
@@ -25,16 +13,6 @@ import {
   type ResolveKnowledgeConflictRequest,
   type RetrieveKnowledgeRequest,
   type ReverseKnowledgeProposalRequest,
-  type RevokeOpenKitAccessTokenResponse,
-  RevokeOpenKitAccessTokenResponseSchema,
-  type RotateOpenKitAccessTokenRequest,
-  RotateOpenKitAccessTokenRequestSchema,
-  type RotateOpenKitAccessTokenResponse,
-  RotateOpenKitAccessTokenResponseSchema,
-  type SetMyAdminAccessTokenDefaultRequest,
-  SetMyAdminAccessTokenDefaultRequestSchema,
-  type SetMyAdminAccessTokenDefaultResponse,
-  SetMyAdminAccessTokenDefaultResponseSchema,
   type SetupDiagnosticsResponse,
   SetupDiagnosticsResponseSchema,
   type SubmitKnowledgeProposalDecisionRequest,
@@ -78,17 +56,6 @@ export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
 export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisionRequest;
 /** Bounded Knowledge proposal reversal input. */
 export type ReverseKnowledgeProposalInput = ReverseKnowledgeProposalRequest;
-/** OpenKit server bootstrap token consumption input. */
-export type ConsumeOpenKitBootstrapTokenInput = ConsumeOpenKitBootstrapTokenRequest;
-/** OpenKit access-token issue input. */
-export type CreateOpenKitAccessTokenInput = CreateOpenKitAccessTokenRequest;
-/** Signed-in user's default server-admin token selection input. */
-export type SetMyAdminAccessTokenDefaultInput = SetMyAdminAccessTokenDefaultRequest;
-/** OpenKit access-token rotation input. */
-export interface RotateOpenKitAccessTokenInput {
-  /** Optional grace period before the rotated token fully expires. */
-  graceSeconds?: RotateOpenKitAccessTokenRequest['graceSeconds'];
-}
 /** Vault admin unlock input. */
 export type VaultAdminUnlockInput = VaultAdminUnlockRequest;
 /** Vault admin Codex auth JSON bootstrap input. */
@@ -123,29 +90,6 @@ export interface AppApiClient {
   getDiagnostics(): Promise<AppDiagnosticsResponse>;
   /** Reads setup diagnostics. */
   getSetupDiagnostics(): Promise<SetupDiagnosticsResponse>;
-  /** Consumes the one-time server bootstrap token and returns the first server-admin token. */
-  consumeBootstrapToken(
-    input: ConsumeOpenKitBootstrapTokenInput
-  ): Promise<ConsumeOpenKitBootstrapTokenResponse>;
-  /** Lists redacted OpenKit access-token records. */
-  listOpenKitAccessTokens(): Promise<ListOpenKitAccessTokensResponse>;
-  /** Issues one OpenKit access token and returns the secret once. */
-  createOpenKitAccessToken(
-    input: CreateOpenKitAccessTokenInput
-  ): Promise<CreateOpenKitAccessTokenResponse>;
-  /** Revokes one OpenKit access token. */
-  revokeOpenKitAccessToken(tokenId: string): Promise<RevokeOpenKitAccessTokenResponse>;
-  /** Rotates one OpenKit access token and returns the replacement secret once. */
-  rotateOpenKitAccessToken(
-    tokenId: string,
-    input?: RotateOpenKitAccessTokenInput
-  ): Promise<RotateOpenKitAccessTokenResponse>;
-  /** Lists the signed-in user's redacted server-admin tokens and effective default. */
-  listMyAdminAccessTokens(): Promise<ListMyAdminAccessTokensResponse>;
-  /** Selects one owned usable server-admin token as the signed-in user default. */
-  setMyAdminAccessTokenDefault(
-    input: SetMyAdminAccessTokenDefaultInput
-  ): Promise<SetMyAdminAccessTokenDefaultResponse>;
   /** Downloads one verified Workspace export as a raw archive stream. */
   downloadWorkspaceExportArchive(
     workspaceId: string,
@@ -163,40 +107,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
     getDiagnostics: () => transport.getJson('/api/app/diagnostics', AppDiagnosticsResponseSchema),
     getSetupDiagnostics: () =>
       transport.getJson('/api/setup/diagnostics', SetupDiagnosticsResponseSchema),
-    consumeBootstrapToken: (input) =>
-      transport.postJson(
-        '/api/app/auth/bootstrap/consume',
-        ConsumeOpenKitBootstrapTokenRequestSchema.parse(input),
-        ConsumeOpenKitBootstrapTokenResponseSchema
-      ),
-    listOpenKitAccessTokens: () =>
-      transport.getJson('/api/app/auth/tokens', ListOpenKitAccessTokensResponseSchema),
-    createOpenKitAccessToken: (input) =>
-      transport.postJson(
-        '/api/app/auth/tokens',
-        CreateOpenKitAccessTokenRequestSchema.parse(input),
-        CreateOpenKitAccessTokenResponseSchema
-      ),
-    revokeOpenKitAccessToken: (tokenId) =>
-      transport.postJson(
-        `/api/app/auth/tokens/${tokenId}/revoke`,
-        {},
-        RevokeOpenKitAccessTokenResponseSchema
-      ),
-    rotateOpenKitAccessToken: (tokenId, input = {}) =>
-      transport.postJson(
-        `/api/app/auth/tokens/${tokenId}/rotate`,
-        RotateOpenKitAccessTokenRequestSchema.parse(input),
-        RotateOpenKitAccessTokenResponseSchema
-      ),
-    listMyAdminAccessTokens: () =>
-      transport.getJson('/api/app/auth/my-admin-tokens', ListMyAdminAccessTokensResponseSchema),
-    setMyAdminAccessTokenDefault: (input) =>
-      transport.putJson(
-        '/api/app/auth/my-admin-tokens/default',
-        SetMyAdminAccessTokenDefaultRequestSchema.parse(input),
-        SetMyAdminAccessTokenDefaultResponseSchema
-      ),
     downloadWorkspaceExportArchive: (workspaceId, exportId) =>
       transport.getStream(
         `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,

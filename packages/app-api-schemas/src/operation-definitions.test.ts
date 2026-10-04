@@ -191,3 +191,16 @@ it('retains deletion confirmation refinements in complete and model inputs and r
   );
   expect(disable.safeParse({ userId: 'target', requestId: input.requestId }).success).toBe(false);
 });
+
+it('rejects a bootstrap-secret credential mixed with another credential during composition', () => {
+  expect(() =>
+    composeOperationTables({
+      'bootstrap.consume': { credentials: ['bootstrap-secret', 'deployment-administrator'] },
+    })
+  ).toThrow('Bootstrap-secret credential must be exclusive: bootstrap.consume');
+  expect(
+    composeOperationTables({
+      'bootstrap.consume': { credentials: ['bootstrap-secret'] },
+    })
+  ).toHaveProperty('bootstrap.consume');
+});
