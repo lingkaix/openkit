@@ -176,6 +176,7 @@ const HOST_BIN = fileURLToPath(
   new URL('../../../pi-runtime-host/src/bin/openkit-pi-runtime-host.ts', import.meta.url)
 );
 const PEER_BIN = fileURLToPath(new URL('../test-support/pi-channel-peer.mjs', import.meta.url));
+// Cold native starts under CI scheduling took 3246.44–4602.00 ms for the M4 fixtures, close to the five-second default.
 const TIMEOUT = 120_000;
 const sessions: PiResidentBinding[] = [];
 const stops: (() => Promise<void>)[] = [];
@@ -1185,100 +1186,104 @@ describe('Pi controlled channel faults', () => {
   });
 });
 
-it.each([
-  'setting',
-  'project-setting',
-  'late-registration',
-] as const)('M4 adapter permits user-configured codemode from %s', async (source) => {
-  const f = await fixture(() => ({ text: 'codemode setup permitted' }));
-  const agentDir = piAgentDirectory(f.dirs.stateRoot);
-  await mkdir(agentDir, { recursive: true });
-  if (source !== 'late-registration') {
-    const settingsDir =
-      source === 'project-setting' ? join(f.dirs.workingDirectory, '.pi') : agentDir;
-    await mkdir(settingsDir, { recursive: true });
-    await writeFile(
-      join(settingsDir, 'settings.json'),
-      JSON.stringify({ defaultTools: ['+codemode'] })
-    );
-  } else {
-    const extension = join(agentDir, 'late-codemode.js');
-    await writeFile(
-      extension,
-      `import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
+it.each(['setting', 'project-setting', 'late-registration'] as const)(
+  'M4 adapter permits user-configured codemode from %s',
+  async (source) => {
+    const f = await fixture(() => ({ text: 'codemode setup permitted' }));
+    const agentDir = piAgentDirectory(f.dirs.stateRoot);
+    await mkdir(agentDir, { recursive: true });
+    if (source !== 'late-registration') {
+      const settingsDir =
+        source === 'project-setting' ? join(f.dirs.workingDirectory, '.pi') : agentDir;
+      await mkdir(settingsDir, { recursive: true });
+      await writeFile(
+        join(settingsDir, 'settings.json'),
+        JSON.stringify({ defaultTools: ['+codemode'] })
+      );
+    } else {
+      const extension = join(agentDir, 'late-codemode.js');
+      await writeFile(
+        extension,
+        `import { createCodemodeExtension } from '@earendil-works/pi-coding-agent';
 export default function(pi) { pi.on('session_start', () => {
   createCodemodeExtension()(pi);
   pi.setActiveTools([...pi.getActiveTools(), 'codemode']);
 }); }`
-    );
-    await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ extensions: [extension] }));
-  }
-  const localCredential = credential();
-  const local = await startSyntheticCapability(localCredential, ['local']);
-  local.bound = true;
-  stops.push(() => local.close());
-  const nativeMcp = JSON.stringify({
-    mcpServers: {
-      local: {
-        url: `${local.base}/mcp/local`,
-        headers: { Authorization: `Bearer ${localCredential}` },
-      },
-    },
-  });
-  await writeFile(join(agentDir, 'mcp.json'), nativeMcp);
-  f.capability.bound = true;
-  const session = await f.open();
-  const result = await (await session.startTurn(turnInput(f.dirs))).settled;
-  expect(result).toMatchObject({ status: 'completed' });
-  expect(await readFile(join(agentDir, 'mcp.json'), 'utf8')).toBe(nativeMcp);
-  expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
-  expect(f.inference.requests).toHaveLength(1);
-  expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
-  await session.close();
-});
-
-it('M4 adapter discovers and calls default-exposure local MCP without a second managed owner', async () => {
-  const replies: InferenceReply[] = [
-    { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
-    { toolCall: { name: 'mcp__local_tools__echo', arguments: { text: 'adapter-sentinel' } } },
-    { text: 'adapter search completed' },
-  ];
-  const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
-  const localCredential = credential();
-  // The user server has its own authored local credential, unrelated to the two loopback carriers.
-  // Use a plane with the exact credential written into user configuration.
-  const admittedLocal = await startSyntheticCapability(localCredential, ['local-tools']);
-  admittedLocal.bound = true;
-  stops.push(() => admittedLocal.close());
-  const agentDir = piAgentDirectory(f.dirs.stateRoot);
-  await mkdir(agentDir, { recursive: true });
-  await writeFile(
-    join(agentDir, 'mcp.json'),
-    JSON.stringify({
+      );
+      await writeFile(join(agentDir, 'settings.json'), JSON.stringify({ extensions: [extension] }));
+    }
+    const localCredential = credential();
+    const local = await startSyntheticCapability(localCredential, ['local']);
+    local.bound = true;
+    stops.push(() => local.close());
+    const nativeMcp = JSON.stringify({
       mcpServers: {
-        'local-tools': {
-          url: `${admittedLocal.base}/mcp/local-tools`,
+        local: {
+          url: `${local.base}/mcp/local`,
           headers: { Authorization: `Bearer ${localCredential}` },
         },
       },
-    })
-  );
-  f.capability.bound = true;
-  const session = await f.open();
-  expect((await (await session.startTurn(turnInput(f.dirs))).settled).status).toBe('completed');
-  expect(toolNames(f.inference.requests[0]!)).toContain('tool_search');
-  expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
-  expect(toolNames(f.inference.requests[1]!)).toContain('mcp__local_tools__echo');
-  expect(
-    admittedLocal.log
-      .filter((entry) => entry.method === 'tools/call')
-      .map((entry) => entry.params?.arguments)
-  ).toEqual([{ text: 'adapter-sentinel' }]);
-  expect(requestTexts(f.inference.requests[2]!).join(' ')).toContain('echo:adapter-sentinel');
-  expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
-  expect(admittedLocal.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
-  await session.close();
-});
+    });
+    await writeFile(join(agentDir, 'mcp.json'), nativeMcp);
+    f.capability.bound = true;
+    const session = await f.open();
+    const result = await (await session.startTurn(turnInput(f.dirs))).settled;
+    expect(result).toMatchObject({ status: 'completed' });
+    expect(await readFile(join(agentDir, 'mcp.json'), 'utf8')).toBe(nativeMcp);
+    expect(local.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+    expect(f.inference.requests).toHaveLength(1);
+    expect(f.capability.log.filter((entry) => entry.method === 'tools/call')).toHaveLength(0);
+    await session.close();
+  },
+  TIMEOUT
+);
+
+it(
+  'M4 adapter discovers and calls default-exposure local MCP without a second managed owner',
+  async () => {
+    const replies: InferenceReply[] = [
+      { toolCall: { name: 'tool_search', arguments: { query: 'echo text' } } },
+      { toolCall: { name: 'mcp__local_tools__echo', arguments: { text: 'adapter-sentinel' } } },
+      { text: 'adapter search completed' },
+    ];
+    const f = await fixture((_request, n) => replies[n - 1] ?? { text: 'unexpected' });
+    const localCredential = credential();
+    // The user server has its own authored local credential, unrelated to the two loopback carriers.
+    // Use a plane with the exact credential written into user configuration.
+    const admittedLocal = await startSyntheticCapability(localCredential, ['local-tools']);
+    admittedLocal.bound = true;
+    stops.push(() => admittedLocal.close());
+    const agentDir = piAgentDirectory(f.dirs.stateRoot);
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          'local-tools': {
+            url: `${admittedLocal.base}/mcp/local-tools`,
+            headers: { Authorization: `Bearer ${localCredential}` },
+          },
+        },
+      })
+    );
+    f.capability.bound = true;
+    const session = await f.open();
+    expect((await (await session.startTurn(turnInput(f.dirs))).settled).status).toBe('completed');
+    expect(toolNames(f.inference.requests[0]!)).toContain('tool_search');
+    expect(toolNames(f.inference.requests[0]!)).toContain('mcp__openkit_work__echo');
+    expect(toolNames(f.inference.requests[1]!)).toContain('mcp__local_tools__echo');
+    expect(
+      admittedLocal.log
+        .filter((entry) => entry.method === 'tools/call')
+        .map((entry) => entry.params?.arguments)
+    ).toEqual([{ text: 'adapter-sentinel' }]);
+    expect(requestTexts(f.inference.requests[2]!).join(' ')).toContain('echo:adapter-sentinel');
+    expect(f.capability.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+    expect(admittedLocal.log.filter((entry) => entry.method === 'initialize')).toHaveLength(1);
+    await session.close();
+  },
+  TIMEOUT
+);
 
 describe('Pi resident host', () => {
   it(
