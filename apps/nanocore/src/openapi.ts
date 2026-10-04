@@ -4,7 +4,6 @@ import {
   AcceptWorkspaceInvitationRequestSchema,
   ActivateWorkerEnvironmentRequestSchema,
   ActivateWorkerEnvironmentResponseSchema,
-  AgentHealthRefreshResponseSchema,
   AppDiagnosticsResponseSchema,
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
@@ -13,12 +12,9 @@ import {
   BindThreadMaterialRequestSchema,
   BindThreadMaterialResponseSchema,
   CapabilityUsageResponseSchema,
-  CatalogMutationResponseSchema,
   ChangeWorkspaceMemberAccessRequestSchema,
   ConsumeOpenKitBootstrapTokenRequestSchema,
   ConsumeOpenKitBootstrapTokenResponseSchema,
-  CreateMcpConfigRequestSchema,
-  CreateMcpConfigResponseSchema,
   CreateOpenKitAccessTokenRequestSchema,
   CreateOpenKitAccessTokenResponseSchema,
   CreateWorkspaceInvitationRequestSchema,
@@ -26,28 +22,19 @@ import {
   CreateWorkspaceMaterialResponseSchema,
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
-  DecideSkillCandidateRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
   DeleteWorkspaceRequestSchema,
   DisableUserRequestSchema,
   DisableUserResponseSchema,
   ExcludeThreadMaterialRequestSchema,
   ExcludeThreadMaterialResponseSchema,
-  GetAgentCatalogEntryResponseSchema,
   GetAgentEnvironmentPackageSnapshotResponseSchema,
   GetThreadMaterialResponseSchema,
   GetWorkerEnvironmentStatusResponseSchema,
-  GetWorkspaceCatalogResponseSchema,
   GetWorkspaceMaterialResponseSchema,
   GetWorkspaceMaterialRevisionResponseSchema,
-  ImportPluginRequestSchema,
-  ImportPluginResponseSchema,
-  ImportSkillRequestSchema,
-  ImportSkillResponseSchema,
   LeaveWorkspaceRequestSchema,
-  ListAgentCatalogResponseSchema,
   ListAgentEnvironmentPackageSnapshotsResponseSchema,
-  ListMcpCatalogResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
   ListPluginCatalogResponseSchema,
@@ -91,8 +78,6 @@ import {
   RotateWorkspaceVaultSecretRequestSchema,
   SaveWorkspaceMaterialRevisionRequestSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
-  SelectMcpVersionRequestSchema,
-  SelectSkillVersionRequestSchema,
   SelectWorkerEnvironmentRequestSchema,
   SelectWorkerEnvironmentResponseSchema,
   SetMyAdminAccessTokenDefaultRequestSchema,
@@ -100,15 +85,12 @@ import {
   SetProviderApiKeyRequestSchema,
   SetProviderApiKeyResponseSchema,
   SetupDiagnosticsResponseSchema,
-  SkillCandidateResponseSchema,
   StartAppUpdateRequestSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
-  SubmitSkillCandidateRequestSchema,
   TransferWorkspaceOwnershipRequestSchema,
   UnbindThreadMaterialRequestSchema,
   UnbindThreadMaterialResponseSchema,
-  UpdateMcpBindingRequestSchema,
   VaultAdminBootstrapCodexAuthJsonRequestSchema,
   VaultAdminBootstrapCodexAuthJsonResponseSchema,
   VaultAdminListWorkspaceReferencesResponseSchema,
@@ -127,7 +109,6 @@ import {
   WorkspaceMemberMutationResponseSchema,
   WorkspaceOwnershipMutationResponseSchema,
   WorkspaceVaultGrantSchema,
-  WorkspaceWorkersResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
   AgentIdSchema,
@@ -222,24 +203,6 @@ const REQUEST_ID_HEADER = {
 } as const;
 const REVISION_ID_PARAMETER = {
   name: 'revisionId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
-const SKILL_ID_PARAMETER = {
-  name: 'skillId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
-const MCP_ID_PARAMETER = {
-  name: 'mcpId',
-  in: 'path',
-  required: true,
-  schema: { type: 'string', minLength: 1 },
-} as const;
-const CANDIDATE_ID_PARAMETER = {
-  name: 'candidateId',
   in: 'path',
   required: true,
   schema: { type: 'string', minLength: 1 },
@@ -746,93 +709,6 @@ export function createAppOpenApiDocument() {
           security: SESSION_COOKIE_SECURITY,
         }),
       },
-      '/api/app/workspaces/{workspaceId}/agents/health/refresh': {
-        post: {
-          operationId: 'refreshAgentHealth',
-          tags: ['app-utils'],
-          summary: 'Refresh agent health for one workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Agent health and session summaries.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/AgentHealthRefreshResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/agents': {
-        get: {
-          operationId: 'listAgentCatalog',
-          tags: ['agents'],
-          summary: 'List product-visible agent catalog entries.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          responses: {
-            '200': {
-              description: 'Agent catalog entries.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ListAgentCatalogResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/agents/{agentId}': {
-        get: {
-          operationId: 'getAgentCatalogEntry',
-          tags: ['agents'],
-          summary: 'Read one product-visible agent catalog entry.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [
-            {
-              name: 'agentId',
-              in: 'path',
-              required: true,
-              schema: { $ref: '#/components/schemas/AgentId' },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Agent catalog entry.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/GetAgentCatalogEntryResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
-              },
-            },
-          },
-        },
-      },
       '/api/app/administration/configuration/apply': {
         post: {
           operationId: 'applyAdministrationConfiguration',
@@ -1134,33 +1010,6 @@ export function createAppOpenApiDocument() {
               description: 'Protocol error envelope.',
               content: {
                 [JSON_CONTENT_TYPE]: { schema: { $ref: '#/components/schemas/ApiError' } },
-              },
-            },
-          },
-        },
-      },
-      '/api/app/workspaces/{workspaceId}/workers': {
-        get: {
-          operationId: 'listWorkspaceWorkers',
-          tags: ['agents'],
-          summary: 'Read current Workers for one selected Workspace.',
-          security: [{ bearerAuth: [] }, { sessionCookie: [] }],
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responses: {
-            '200': {
-              description: 'Current Worker inventory for the selected Workspace.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/WorkspaceWorkersResponse' },
-                },
-              },
-            },
-            default: {
-              description: 'Protocol error envelope.',
-              content: {
-                [JSON_CONTENT_TYPE]: {
-                  schema: { $ref: '#/components/schemas/ApiError' },
-                },
               },
             },
           },
@@ -2300,143 +2149,6 @@ export function createAppOpenApiDocument() {
           },
         },
       },
-      '/api/app/workspaces/{workspaceId}/catalog': {
-        get: appJsonOperation({
-          operationId: 'getWorkspaceCatalog',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responseSchema: 'GetWorkspaceCatalogResponse',
-          responseStatus: '200',
-          summary: 'Read the Workspace Skill, MCP, and plugin catalog summary.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/skills': {
-        get: appJsonOperation({
-          operationId: 'listSkillCatalog',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responseSchema: 'ListSkillCatalogResponse',
-          responseStatus: '200',
-          summary: 'List Workspace Skill catalog entries.',
-          tag: 'catalog',
-        }),
-        post: appJsonOperation({
-          operationId: 'importSkill',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestSchema: 'ImportSkillRequest',
-          responseDescription: 'Imported Skill version.',
-          responseSchema: 'ImportSkillResponse',
-          responseStatus: '201',
-          summary: 'Import one Skill tree into the Workspace catalog.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/candidates': {
-        post: appJsonOperation({
-          operationId: 'submitSkillCandidate',
-          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
-          requestSchema: 'SubmitSkillCandidateRequest',
-          responseDescription: 'Submitted Skill candidate.',
-          responseSchema: 'SkillCandidateResponse',
-          responseStatus: '201',
-          summary: 'Submit one Skill candidate without changing the current pointer.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/candidates/{candidateId}/decide': {
-        post: appJsonOperation({
-          operationId: 'decideSkillCandidate',
-          parameters: [WORKSPACE_ID_PARAMETER, CANDIDATE_ID_PARAMETER],
-          requestSchema: 'DecideSkillCandidateRequest',
-          responseSchema: 'CatalogMutationResponse',
-          responseStatus: '200',
-          summary: 'Promote, reject, or withdraw one Skill candidate.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/select': {
-        post: appJsonOperation({
-          operationId: 'selectSkillDefault',
-          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
-          requestSchema: 'SelectSkillVersionRequest',
-          responseSchema: 'CatalogMutationResponse',
-          responseStatus: '200',
-          summary: 'Select the current Skill default digest.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/skills/{skillId}/pin': {
-        post: appJsonOperation({
-          operationId: 'setSkillPin',
-          parameters: [WORKSPACE_ID_PARAMETER, SKILL_ID_PARAMETER],
-          requestSchema: 'SelectSkillVersionRequest',
-          responseSchema: 'CatalogMutationResponse',
-          responseStatus: '200',
-          summary: 'Set or clear the Workspace pin for one Skill.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/mcp': {
-        get: appJsonOperation({
-          operationId: 'listMcpCatalog',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responseSchema: 'ListMcpCatalogResponse',
-          responseStatus: '200',
-          summary: 'List Workspace MCP catalog entries.',
-          tag: 'catalog',
-        }),
-        post: appJsonOperation({
-          operationId: 'createMcpConfig',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestSchema: 'CreateMcpConfigRequest',
-          responseDescription: 'Created inactive MCP configuration.',
-          responseSchema: 'CreateMcpConfigResponse',
-          responseStatus: '201',
-          summary: 'Create an inactive MCP configuration version.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/mcp/{mcpId}/select': {
-        post: appJsonOperation({
-          operationId: 'selectMcpVersion',
-          parameters: [WORKSPACE_ID_PARAMETER, MCP_ID_PARAMETER],
-          requestSchema: 'SelectMcpVersionRequest',
-          responseSchema: 'CatalogMutationResponse',
-          responseStatus: '200',
-          summary: 'Select the current MCP configuration version.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/mcp/{mcpId}/binding': {
-        post: appJsonOperation({
-          operationId: 'updateMcpBinding',
-          parameters: [WORKSPACE_ID_PARAMETER, MCP_ID_PARAMETER],
-          requestSchema: 'UpdateMcpBindingRequest',
-          responseSchema: 'CatalogMutationResponse',
-          responseStatus: '200',
-          summary: 'Update MCP enablement, credential bindings, tool policy, and timeout.',
-          tag: 'catalog',
-        }),
-      },
-      '/api/app/workspaces/{workspaceId}/catalog/plugins': {
-        get: appJsonOperation({
-          operationId: 'listPluginCatalog',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          responseSchema: 'ListPluginCatalogResponse',
-          responseStatus: '200',
-          summary: 'List Workspace Agent Plugin catalog entries.',
-          tag: 'catalog',
-        }),
-        post: appJsonOperation({
-          operationId: 'importPlugin',
-          parameters: [WORKSPACE_ID_PARAMETER],
-          requestSchema: 'ImportPluginRequest',
-          responseDescription: 'Imported Agent Plugin version.',
-          responseSchema: 'ImportPluginResponse',
-          responseStatus: '201',
-          summary: 'Import one Agent Plugin package into the Workspace catalog.',
-          tag: 'catalog',
-        }),
-      },
     } as const,
     components: {
       securitySchemes: {
@@ -2487,7 +2199,6 @@ export function createAppOpenApiDocument() {
         WorkspaceOwnershipMutationResponse: toJsonSchema(WorkspaceOwnershipMutationResponseSchema),
         AgentId: toJsonSchema(AgentIdSchema),
         ApiError: toJsonSchema(ApiErrorSchema),
-        AgentHealthRefreshResponse: toJsonSchema(AgentHealthRefreshResponseSchema),
         ArtifactId: toJsonSchema(ArtifactIdSchema),
         BindThreadMaterialRequest: toJsonSchema(BindThreadMaterialRequestSchema),
         BindThreadMaterialResponse: toJsonSchema(BindThreadMaterialResponseSchema),
@@ -2501,10 +2212,6 @@ export function createAppOpenApiDocument() {
         GetWorkspaceMaterialRevisionResponse: toJsonSchema(
           GetWorkspaceMaterialRevisionResponseSchema
         ),
-        ImportPluginRequest: toJsonSchema(ImportPluginRequestSchema),
-        ImportPluginResponse: toJsonSchema(ImportPluginResponseSchema),
-        ImportSkillRequest: toJsonSchema(ImportSkillRequestSchema),
-        ImportSkillResponse: toJsonSchema(ImportSkillResponseSchema),
         ListWorkspaceMaterialRevisionsResponse: toJsonSchema(
           ListWorkspaceMaterialRevisionsResponseSchema
         ),
@@ -2517,37 +2224,27 @@ export function createAppOpenApiDocument() {
         SaveWorkspaceMaterialRevisionResponse: toJsonSchema(
           SaveWorkspaceMaterialRevisionResponseSchema
         ),
-        SelectMcpVersionRequest: toJsonSchema(SelectMcpVersionRequestSchema),
-        SelectSkillVersionRequest: toJsonSchema(SelectSkillVersionRequestSchema),
         UnbindThreadMaterialRequest: toJsonSchema(UnbindThreadMaterialRequestSchema),
         UnbindThreadMaterialResponse: toJsonSchema(UnbindThreadMaterialResponseSchema),
         AppDiagnosticsResponse: toJsonSchema(AppDiagnosticsResponseSchema),
         AppSearchResponse: toJsonSchema(AppSearchResponseSchema),
         AppUpdateStatusResponse: toJsonSchema(AppUpdateStatusResponseSchema),
         CapabilityUsageResponse: toJsonSchema(CapabilityUsageResponseSchema),
-        CatalogMutationResponse: toJsonSchema(CatalogMutationResponseSchema),
         ConsumeOpenKitBootstrapTokenRequest: toJsonSchema(
           ConsumeOpenKitBootstrapTokenRequestSchema
         ),
         ConsumeOpenKitBootstrapTokenResponse: toJsonSchema(
           ConsumeOpenKitBootstrapTokenResponseSchema
         ),
-        CreateMcpConfigRequest: toJsonSchema(CreateMcpConfigRequestSchema),
-        CreateMcpConfigResponse: toJsonSchema(CreateMcpConfigResponseSchema),
-        DecideSkillCandidateRequest: toJsonSchema(DecideSkillCandidateRequestSchema),
         CreateOpenKitAccessTokenRequest: toJsonSchema(CreateOpenKitAccessTokenRequestSchema),
         CreateOpenKitAccessTokenResponse: toJsonSchema(CreateOpenKitAccessTokenResponseSchema),
-        GetAgentCatalogEntryResponse: toJsonSchema(GetAgentCatalogEntryResponseSchema),
         GetAgentEnvironmentPackageSnapshotResponse: toJsonSchema(
           GetAgentEnvironmentPackageSnapshotResponseSchema
         ),
         GetWorkerEnvironmentStatusResponse: toJsonSchema(GetWorkerEnvironmentStatusResponseSchema),
-        GetWorkspaceCatalogResponse: toJsonSchema(GetWorkspaceCatalogResponseSchema),
-        ListAgentCatalogResponse: toJsonSchema(ListAgentCatalogResponseSchema),
         ListAgentEnvironmentPackageSnapshotsResponse: toJsonSchema(
           ListAgentEnvironmentPackageSnapshotsResponseSchema
         ),
-        ListMcpCatalogResponse: toJsonSchema(ListMcpCatalogResponseSchema),
         ListOpenKitAccessTokensResponse: toJsonSchema(ListOpenKitAccessTokensResponseSchema),
         ListPluginCatalogResponse: toJsonSchema(ListPluginCatalogResponseSchema),
         ListMyAdminAccessTokensResponse: toJsonSchema(ListMyAdminAccessTokensResponseSchema),
@@ -2617,11 +2314,8 @@ export function createAppOpenApiDocument() {
         ActivateWorkerEnvironmentRequest: toJsonSchema(ActivateWorkerEnvironmentRequestSchema),
         ActivateWorkerEnvironmentResponse: toJsonSchema(ActivateWorkerEnvironmentResponseSchema),
         StartAppUpdateRequest: toJsonSchema(StartAppUpdateRequestSchema),
-        SkillCandidateResponse: toJsonSchema(SkillCandidateResponseSchema),
-        SubmitSkillCandidateRequest: toJsonSchema(SubmitSkillCandidateRequestSchema),
         ThreadId: toJsonSchema(ThreadIdSchema),
         TurnId: toJsonSchema(TurnIdSchema),
-        UpdateMcpBindingRequest: toJsonSchema(UpdateMcpBindingRequestSchema),
         VaultAdminBootstrapCodexAuthJsonRequest: toJsonSchema(
           VaultAdminBootstrapCodexAuthJsonRequestSchema
         ),
@@ -2643,7 +2337,6 @@ export function createAppOpenApiDocument() {
         VaultAdminUnlockResponse: toJsonSchema(VaultAdminUnlockResponseSchema),
         WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
         WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
-        WorkspaceWorkersResponse: toJsonSchema(WorkspaceWorkersResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
       },
     },

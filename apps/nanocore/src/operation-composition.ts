@@ -1,10 +1,13 @@
 import { composeOperationTables } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { createAgentOperationImplementations } from './agents/agent-operations.js';
+import { createWorkerOperationImplementations } from './agents/workspace-workers.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
+import { createCatalogOperationImplementations } from './catalog/catalog-operations.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
 import { createRuntimeConfigOperationImplementations } from './config/runtime-config-operation-implementations.js';
@@ -99,6 +102,9 @@ export function createOperationImplementations(dependencies: OperationInvocation
   return composeOperationTables(
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),
     createProviderSubscriptionOperationImplementations(dependencies.providerSubscriptionOperations),
+    createAgentOperationImplementations(dependencies),
+    createWorkerOperationImplementations(dependencies),
+    createCatalogOperationImplementations(dependencies),
     createAutomationOperationImplementations(dependencies),
     createSchedulerAdmissionOperationImplementations(dependencies),
     createRecoveryOperationImplementations(dependencies),

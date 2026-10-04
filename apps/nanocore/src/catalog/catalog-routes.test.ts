@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { OperationId } from '@openkit/app-api-schemas';
 import {
   GetWorkspaceCatalogResponseSchema,
   ImportSkillResponseSchema,
@@ -8,12 +9,12 @@ import {
 import { createCoreClient } from '@openkit/core-client';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -36,24 +37,40 @@ function catalogFixture() {
   return { app, coreDb, dataRoot, workspace };
 }
 
-/** Posts a JSON command through the actual catalog route. */
-function postCatalog(app: ReturnType<typeof createApp>, path: string, input: unknown) {
-  return app.request(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  });
+/** Posts complete logical input through the canonical catalog operation. */
+function postCatalog(app: ReturnType<typeof createApp>, path: OperationId, input: unknown) {
+  return app.request(
+    ...operationRequest(
+      path,
+      {},
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }
+    )
+  );
 }
 
-describe('resource catalog routes', () => {
-  it('keeps schema-invalid retained catalog reads on the fixed route error', async () => {
+describe('resource catalog operations', () => {
+  it('keeps schema-invalid retained catalog reads on the fixed catalog.read error', async () => {
     const f = catalogFixture();
     try {
       writeFileSync(
         catalogDocumentPath(f.dataRoot, f.workspace.id),
         JSON.stringify({ revision: 'invalid-retained-revision' })
       );
-      const response = await f.app.request(`/api/app/workspaces/${f.workspace.id}/catalog`);
+      const response = await f.app.request(
+        ...operationRequest(
+          'catalog.read',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: f.workspace.id }),
+          }
+        )
+      );
       expect(response.status).toBe(404);
       expect(response.headers.get('content-type')).toContain('application/json');
       expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
@@ -71,7 +88,6 @@ describe('resource catalog routes', () => {
     'cli',
   ] as const)('stores, retains and replaces credential bindings through %s', async (surface) => {
     const f = catalogFixture();
-    const root = `/api/app/workspaces/${f.workspace.id}/catalog`;
     try {
       createVaultReference(f.coreDb, {
         referenceId: 'vault_binding_synthetic',
@@ -91,15 +107,18 @@ describe('resource catalog routes', () => {
         lifetime: 'workspace',
       });
       expect(grant.targetCapabilityId).toBeNull();
-      const created = await postCatalog(f.app, `${root}/mcp`, {
-        allowedTools: ['echo'],
-        declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
-        displayName: 'Echo',
-        id: 'echo',
-        expectedRevision: 0,
-        requestId: crypto.randomUUID(),
+      const created = await postCatalog(f.app, 'catalog.mcp-create', {
+        workspaceId: f.workspace.id,
+        ...{
+          allowedTools: ['echo'],
+          declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+          displayName: 'Echo',
+          id: 'echo',
+          expectedRevision: 0,
+          requestId: crypto.randomUUID(),
+        },
       });
-      expect(created.status).toBe(201);
+      expect(created.status, await created.clone().text()).toBe(201);
       const credentialBindings = [
         {
           slot: 'token',
@@ -138,7 +157,11 @@ describe('resource catalog routes', () => {
             })
           );
         }
-        const response = await postCatalog(f.app, `${root}/mcp/echo/binding`, body);
+        const response = await postCatalog(f.app, 'catalog.mcp-binding', {
+          workspaceId: f.workspace.id,
+          mcpId: 'echo',
+          ...body,
+        });
         expect(response.status).toBe(200);
         return response.json();
       };
@@ -163,21 +186,29 @@ describe('resource catalog routes', () => {
       expect(projectEffectiveWorkspaceMcpCatalog(retained).servers[0]?.credentialBindings).toEqual(
         credentialBindings
       );
-      const stale = await postCatalog(f.app, `${root}/mcp/echo/binding`, {
-        ...command,
-        expectedRevision: 2,
-        bindingRevision: 3,
-        requestId: crypto.randomUUID(),
-        credentialBindings: [],
+      const stale = await postCatalog(f.app, 'catalog.mcp-binding', {
+        workspaceId: f.workspace.id,
+        mcpId: 'echo',
+        ...{
+          ...command,
+          expectedRevision: 2,
+          bindingRevision: 3,
+          requestId: crypto.randomUUID(),
+          credentialBindings: [],
+        },
       });
       expect(stale.status).toBe(409);
       expect(ApiErrorSchema.parse(await stale.json()).code).toBe('conflict');
-      const staleBinding = await postCatalog(f.app, `${root}/mcp/echo/binding`, {
-        ...command,
-        expectedRevision: 3,
-        bindingRevision: 1,
-        requestId: crypto.randomUUID(),
-        credentialBindings: [],
+      const staleBinding = await postCatalog(f.app, 'catalog.mcp-binding', {
+        workspaceId: f.workspace.id,
+        mcpId: 'echo',
+        ...{
+          ...command,
+          expectedRevision: 3,
+          bindingRevision: 1,
+          requestId: crypto.randomUUID(),
+          credentialBindings: [],
+        },
       });
       expect(staleBinding.status).toBe(409);
       expect(ApiErrorSchema.parse(await staleBinding.json()).code).toBe('conflict');
@@ -208,17 +239,19 @@ describe('resource catalog routes', () => {
     'duplicate-destination',
   ] as const)('refuses %s without publishing a catalog revision', async (invalid) => {
     const f = catalogFixture();
-    const root = `/api/app/workspaces/${f.workspace.id}/catalog`;
     try {
-      const created = await postCatalog(f.app, `${root}/mcp`, {
-        allowedTools: ['echo'],
-        declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
-        displayName: 'Echo',
-        id: 'echo',
-        expectedRevision: 0,
-        requestId: crypto.randomUUID(),
+      const created = await postCatalog(f.app, 'catalog.mcp-create', {
+        workspaceId: f.workspace.id,
+        ...{
+          allowedTools: ['echo'],
+          declaration: { endpoint: 'https://mcp.example.test/mcp', kind: 'http' },
+          displayName: 'Echo',
+          id: 'echo',
+          expectedRevision: 0,
+          requestId: crypto.randomUUID(),
+        },
       });
-      expect(created.status).toBe(201);
+      expect(created.status, await created.clone().text()).toBe(201);
       const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
       const binding = {
         slot: 'token',
@@ -229,20 +262,24 @@ describe('resource catalog routes', () => {
             : { kind: 'header', name: invalid === 'bearer-sink' ? 'X-Token' : 'Authorization' },
         ...(invalid === 'bearer-sink' ? { presentation: 'bearer' } : {}),
       };
-      const response = await postCatalog(f.app, `${root}/mcp/echo/binding`, {
-        allowedTools: ['echo'],
-        bindingRevision: 1,
-        enabled: true,
-        expectedRevision: 1,
-        requestId: crypto.randomUUID(),
-        schemaPolicy: 'tracking',
-        credentialBindings:
-          invalid === 'duplicate-destination'
-            ? [
-                binding,
-                { ...binding, slot: 'other', sink: { kind: 'header', name: 'authorization' } },
-              ]
-            : [binding],
+      const response = await postCatalog(f.app, 'catalog.mcp-binding', {
+        workspaceId: f.workspace.id,
+        mcpId: 'echo',
+        ...{
+          allowedTools: ['echo'],
+          bindingRevision: 1,
+          enabled: true,
+          expectedRevision: 1,
+          requestId: crypto.randomUUID(),
+          schemaPolicy: 'tracking',
+          credentialBindings:
+            invalid === 'duplicate-destination'
+              ? [
+                  binding,
+                  { ...binding, slot: 'other', sink: { kind: 'header', name: 'authorization' } },
+                ]
+              : [binding],
+        },
       });
       expect(response.status).toBe(400);
       expect(response.headers.get('content-type')).toContain('application/json');
@@ -257,16 +294,15 @@ describe('resource catalog routes', () => {
   it('returns JSON invalid_request for a malformed catalog body', async () => {
     const f = catalogFixture();
     try {
-      const response = await postCatalog(
-        f.app,
-        `/api/app/workspaces/${f.workspace.id}/catalog/mcp`,
-        { displayName: 42 }
-      );
+      const response = await postCatalog(f.app, 'catalog.mcp-create', {
+        workspaceId: f.workspace.id,
+        ...{ displayName: 42 },
+      });
       expect(response.status).toBe(400);
       expect(response.headers.get('content-type')).toContain('application/json');
       expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
         code: 'invalid_request',
-        message: 'Invalid MCP configuration request.',
+        message: 'Invalid operation input.',
       });
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
     } finally {
@@ -290,7 +326,17 @@ describe('resource catalog routes', () => {
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
-      const empty = await app.request(`/api/app/workspaces/${workspace.id}/catalog`);
+      const empty = await app.request(
+        ...operationRequest(
+          'catalog.read',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: workspace.id }),
+          }
+        )
+      );
       expect(empty.status).toBe(200);
       expect(GetWorkspaceCatalogResponseSchema.parse(await empty.json())).toMatchObject({
         candidates: [],
@@ -300,29 +346,51 @@ describe('resource catalog routes', () => {
         skills: [],
       });
 
-      const imported = await app.request(`/api/app/workspaces/${workspace.id}/catalog/skills`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          activate: true,
-          displayName: 'Repo guidelines',
-          expectedRevision: 0,
-          requestId: '00000000-0000-4000-8000-000000000001',
-          tree: [
-            {
-              contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
-              kind: 'file',
-              path: 'SKILL.md',
+      const imported = await app.request(
+        ...operationRequest(
+          'catalog.skill-import',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              ...{ 'content-type': 'application/json' },
+              'content-type': 'application/json',
             },
-          ],
-        }),
-      });
+            body: JSON.stringify({
+              workspaceId: workspace.id,
+              ...{
+                activate: true,
+                displayName: 'Repo guidelines',
+                expectedRevision: 0,
+                requestId: '00000000-0000-4000-8000-000000000001',
+                tree: [
+                  {
+                    contentBase64: Buffer.from('# Hello\n', 'utf8').toString('base64'),
+                    kind: 'file',
+                    path: 'SKILL.md',
+                  },
+                ],
+              },
+            }),
+          }
+        )
+      );
       expect(imported.status).toBe(201);
       const importedBody = ImportSkillResponseSchema.parse(await imported.json());
       expect(importedBody.entry.id).toBe('repo-guidelines');
       expect(importedBody.version.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
 
-      const summary = await app.request(`/api/app/workspaces/${workspace.id}/catalog`);
+      const summary = await app.request(
+        ...operationRequest(
+          'catalog.read',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: workspace.id }),
+          }
+        )
+      );
       expect(GetWorkspaceCatalogResponseSchema.parse(await summary.json()).skills).toEqual([
         expect.objectContaining({
           currentDigest: importedBody.version.digest,
@@ -351,22 +419,34 @@ describe('resource catalog routes', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
     try {
-      const escaped = await app.request(`/api/app/workspaces/${workspace.id}/catalog/plugins`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          expectedRevision: 0,
-          install: true,
-          requestId: '00000000-0000-4000-8000-000000000002',
-          tree: [
-            {
-              contentBase64: Buffer.from('x').toString('base64'),
-              kind: 'file',
-              path: '../../outside.txt',
+      const escaped = await app.request(
+        ...operationRequest(
+          'catalog.plugin-import',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              ...{ 'content-type': 'application/json' },
+              'content-type': 'application/json',
             },
-          ],
-        }),
-      });
+            body: JSON.stringify({
+              workspaceId: workspace.id,
+              ...{
+                expectedRevision: 0,
+                install: true,
+                requestId: '00000000-0000-4000-8000-000000000002',
+                tree: [
+                  {
+                    contentBase64: Buffer.from('x').toString('base64'),
+                    kind: 'file',
+                    path: '../../outside.txt',
+                  },
+                ],
+              },
+            }),
+          }
+        )
+      );
       expect(escaped.status).toBe(400);
     } finally {
       rmSync(dataRoot, { force: true, recursive: true });

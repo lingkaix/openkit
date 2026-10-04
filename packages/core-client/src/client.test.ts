@@ -1489,10 +1489,12 @@ describe('createCoreClient', () => {
     expect('runtimeConfig' in client).toBe(false);
     expect(client.auth.email).toBeDefined();
     expect(client.capabilities).toBeDefined();
-    expect(client.agents).toBeDefined();
+    expect(client).not.toHaveProperty('agents');
+    expect(client.operations['agent.list']).toBeTypeOf('function');
     expect('actionCenter' in client).toBe(false);
     expect(client.operations['attention.list']).toBeTypeOf('function');
-    expect(client.catalog).toBeDefined();
+    expect(client).not.toHaveProperty('catalog');
+    expect(client.operations['catalog.read']).toBeTypeOf('function');
     expect('repositories' in client).toBe(false);
     expect('updateArtifactMetadata' in client.core).toBe(false);
     expect(client.operations['artifact.review-list']).toBeTypeOf('function');
@@ -3249,11 +3251,11 @@ describe('createCoreClient', () => {
       'GET /api/app/search?q=protocol%20design': {
         body: { items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }] },
       },
-      'POST /api/app/workspaces/ws_demo/agents/health/refresh': {
+      'POST /api/app/operations/agent.health-refresh': {
         body: { items: [], sessions: [] },
       },
-      'GET /api/app/agents': { body: { items: [agent()] } },
-      'GET /api/app/agents/agent_demo': { body: agent() },
+      'POST /api/app/operations/agent.list': { body: { items: [agent()] } },
+      'POST /api/app/operations/agent.read': { body: agent() },
       'POST /api/app/operations/attention.list': { body: { items: [] } },
       'POST /api/app/operations/recovery.worker-list': {
         body: { items: [interruptedWorkerState()] },
@@ -3695,9 +3697,13 @@ describe('createCoreClient', () => {
     await expect(client.app.search('protocol design')).resolves.toEqual({
       items: [{ kind: 'workspace', id: 'ws_demo', title: 'Demo' }],
     });
-    await expect(client.agents.refreshHealth('ws_demo')).resolves.not.toHaveProperty('sessions');
-    await expect(client.agents.list()).resolves.toEqual({ items: [agent()] });
-    await expect(client.agents.get('agent_demo')).resolves.toEqual(agent());
+    await expect(
+      client.operations['agent.health-refresh']({ workspaceId: 'ws_demo' })
+    ).resolves.not.toHaveProperty('sessions');
+    await expect(client.operations['agent.list']({})).resolves.toEqual({ items: [agent()] });
+    await expect(client.operations['agent.read']({ agentId: 'agent_demo' })).resolves.toEqual(
+      agent()
+    );
     await expect(client.operations['attention.list']({ workspaceId: 'ws_demo' })).resolves.toEqual({
       items: [],
     });
@@ -3794,9 +3800,9 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.repair.suggest',
       'POST /api/app/operations/knowledge.health.check',
       'GET /api/app/search?q=protocol%20design',
-      'POST /api/app/workspaces/ws_demo/agents/health/refresh',
-      'GET /api/app/agents',
-      'GET /api/app/agents/agent_demo',
+      'POST /api/app/operations/agent.health-refresh',
+      'POST /api/app/operations/agent.list',
+      'POST /api/app/operations/agent.read',
       'POST /api/app/operations/attention.list',
       'POST /api/app/operations/recovery.worker-list',
       'POST /api/app/operations/recovery.checkpoint-retry',

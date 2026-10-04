@@ -124,6 +124,8 @@ Reuse NanoCore storage, command, permission, audit, composed setup, AEP, and run
 
 ## Current Implementation Projection
 
+The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
+
 Workspace Skill versions, candidates, pins, and current selection live in `workspaces/<id>/catalog/catalog.json` with immutable snapshot trees under `catalog/skill-snapshots/`. App API, Core Client, CLI, and the Web Catalog screen expose ordinary-user import, candidate, pin, and selection operations. AEP supply resolves catalog pins or current digests onto the AgentSession-private `worker-supply` root; the Codex thin adapter projects those imported trees into `$CODEX_HOME/skills`. Native plugin loading and a retained real-worker combined Skill/MCP story are not yet advertised.
 
 The target uses the existing server and Workspace storage owners with a canonical catalog document per owner scope, immutable installed payload directories, and derived indexes. `docs/specs/20260703-storage_layout_record_ownership.md` owns their physical layout; implementation must project these accepted contracts into the existing schemas and storage modules.

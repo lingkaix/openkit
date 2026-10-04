@@ -118,3 +118,5 @@ Addressed ordinary Turn targets declare the closed `not-found` or `interrupt-fai
 `turn.start` keeps its existing Product Turn schema and HTTP 202 binding; its definition describes the durable admission response and current-owner replay. Worker completion is observed through existing product reads and exact replay.
 
 `runtime-config-operations.ts` and `provider-subscription-operations.ts` declare ten configuration and eleven subscription operations. Their complete inputs preserve CAS, exact provider-slot selectors and native environment extension tolerance. Both deletion definitions declare bodyless HTTP 204 with logical `null`; all other results reuse the complete existing public schemas.
+
+`src/agent-operations.ts`, `src/worker-operations.ts` and `src/catalog-operations.ts` declare seventeen strict browser-safe JSON operations over the existing complete payload schemas. Skill default selection refuses a null digest while Skill pin removal accepts it; model views preserve this distinction. Each family is composed once into the public operation table.

@@ -32,13 +32,7 @@ import {
 /**
  * Workspace Skill, MCP, and Agent Plugin catalog (product workflow, not an API console).
  *
- * Live reads use `catalog.get`. Skill import uploads a SKILL.md file or a Skill
- * folder of regular files. Browser File API uploads cannot preserve executable
- * flags or empty directories. Owners can pin, select, and review candidates.
- * Fresh create/import fields stay empty and show examples only as native placeholders.
- * MCP create stays inactive until enabled; stdio enablement remains a
- * deployment-admin authority on the server. Plugin import takes a package
- * directory. Writes stay disabled while disconnected.
+ * Live reads use `operations['catalog.read']`. Skill import uploads a SKILL.md file or a Skill folder of regular files. Browser File API uploads cannot preserve executable flags or empty directories. Owners can pin, select, and review candidates. Fresh create/import fields stay empty and show examples only as native placeholders. MCP create stays inactive until enabled; stdio enablement remains a deployment-admin authority on the server. Plugin import takes a package directory. Writes stay disabled while disconnected.
  */
 export function CatalogScreen() {
   const workspaceId = useCurrentWorkspaceId();

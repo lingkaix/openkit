@@ -44,9 +44,9 @@ export type AttentionRow = Awaited<
 export type AgentEntry = Awaited<
   ReturnType<CoreClient['operations']['workspace.resources']>
 >['agents'][number];
-/** Current Worker row from `client.app.listWorkspaceWorkers`. */
+/** Current Worker row from `client.operations['worker.list']`. */
 export type WorkspaceWorkerRow = Awaited<
-  ReturnType<CoreClient['app']['listWorkspaceWorkers']>
+  ReturnType<CoreClient['operations']['worker.list']>
 >['items'][number];
 /** Knowledge entry from `operations['knowledge.list']`. */
 export type KnowledgeItem = KnowledgeEntry;
@@ -192,13 +192,13 @@ export function useAgents(workspaceId: string | null) {
  * Read current Workers for one selected Workspace.
  *
  * @param workspaceId Selected Workspace identity, or null before selection settles.
- * @returns TanStack query for `client.app.listWorkspaceWorkers`.
+ * @returns TanStack query for `client.operations['worker.list']`.
  */
 export function useWorkspaceWorkers(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.workers(workspaceId ?? ''),
-    queryFn: () => client.app.listWorkspaceWorkers(workspaceId as string),
+    queryFn: () => client.operations['worker.list']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
     retry: false,
   });
@@ -210,13 +210,13 @@ export function useWorkspaceWorkers(workspaceId: string | null) {
  * @param workspaceId Selected Workspace that owns the agent row.
  * @param agentId Exact catalog id from the current list row.
  * @param enabled Whether the details disclosure is open.
- * @returns Lazy TanStack query for `client.agents.get`.
+ * @returns Lazy TanStack query for `client.operations['agent.read']`.
  */
 export function useAgent(workspaceId: string | null, agentId: string, enabled: boolean) {
   const client = useCoreClient();
   return useQuery({
     queryKey: [...workspaceKeys.agents(workspaceId ?? ''), agentId],
-    queryFn: () => client.agents.get(agentId),
+    queryFn: () => client.operations['agent.read']({ agentId }),
     enabled: Boolean(workspaceId) && enabled,
     retry: false,
   });
@@ -227,7 +227,7 @@ export function useRefreshAgentHealth() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (workspaceId: string) => client.agents.refreshHealth(workspaceId),
+    mutationFn: (workspaceId: string) => client.operations['agent.health-refresh']({ workspaceId }),
     retry: false,
     onSuccess: async (response, workspaceId) => {
       await queryClient.invalidateQueries({
@@ -759,8 +759,8 @@ export function agentHue(index: number): 'scout' | 'quill' | 'ledger' | 'pixel' 
   return hues[index % hues.length]!;
 }
 
-/** Workspace catalog summary from `catalog.get`. */
-export type WorkspaceCatalogSummary = Awaited<ReturnType<CoreClient['catalog']['get']>>;
+/** Workspace catalog summary from `operations['catalog.read']`. */
+export type WorkspaceCatalogSummary = Awaited<ReturnType<CoreClient['operations']['catalog.read']>>;
 
 /**
  * Reads the selected-Workspace Skill, MCP, and plugin catalog.
@@ -772,7 +772,7 @@ export function useWorkspaceCatalog(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.catalog(workspaceId ?? ''),
-    queryFn: () => client.catalog.get(workspaceId as string),
+    queryFn: () => client.operations['catalog.read']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
     retry: false,
   });
@@ -781,7 +781,7 @@ export function useWorkspaceCatalog(workspaceId: string | null) {
 /** Exact Skill import bound to one Workspace revision. */
 export type ImportSkillCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['catalog']['importSkill']>[1];
+  input: Omit<Parameters<CoreClient['operations']['catalog.skill-import']>[0], 'workspaceId'>;
 };
 
 /** @returns Mutation that imports one Skill and refreshes the catalog. */
@@ -790,7 +790,10 @@ export function useImportSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: ImportSkillCommand) =>
-      client.catalog.importSkill(command.workspaceId, command.input),
+      client.operations['catalog.skill-import']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
     onSuccess: async (_response, command) => {
       await queryClient.invalidateQueries({
@@ -815,7 +818,9 @@ export function useSetSkillPin() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: SetSkillPinCommand) =>
-      client.catalog.setSkillPin(command.workspaceId, command.skillId, {
+      client.operations['catalog.skill-pin']({
+        workspaceId: command.workspaceId,
+        skillId: command.skillId,
         digest: command.digest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
@@ -834,7 +839,10 @@ export function useSetSkillPin() {
 export type SubmitSkillCandidateCommand = {
   workspaceId: string;
   skillId: string;
-  input: Parameters<CoreClient['catalog']['submitSkillCandidate']>[2];
+  input: Omit<
+    Parameters<CoreClient['operations']['catalog.skill-candidate-submit']>[0],
+    'workspaceId' | 'skillId'
+  >;
 };
 
 /** @returns Mutation that submits one Skill candidate. */
@@ -843,7 +851,11 @@ export function useSubmitSkillCandidate() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: SubmitSkillCandidateCommand) =>
-      client.catalog.submitSkillCandidate(command.workspaceId, command.skillId, command.input),
+      client.operations['catalog.skill-candidate-submit']({
+        workspaceId: command.workspaceId,
+        skillId: command.skillId,
+        ...command.input,
+      }),
     retry: false,
     onSuccess: async (_response, command) => {
       await queryClient.invalidateQueries({
@@ -868,7 +880,9 @@ export function useDecideSkillCandidate() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: DecideSkillCandidateCommand) =>
-      client.catalog.decideSkillCandidate(command.workspaceId, command.candidateId, {
+      client.operations['catalog.skill-candidate-decide']({
+        workspaceId: command.workspaceId,
+        candidateId: command.candidateId,
         decision: command.decision,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
@@ -897,7 +911,9 @@ export function useSelectSkillDefault() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: SelectSkillDefaultCommand) =>
-      client.catalog.selectSkillDefault(command.workspaceId, command.skillId, {
+      client.operations['catalog.skill-select']({
+        workspaceId: command.workspaceId,
+        skillId: command.skillId,
         digest: command.digest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
@@ -926,7 +942,9 @@ export function useSelectMcpVersion() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: SelectMcpVersionCommand) =>
-      client.catalog.selectMcpVersion(command.workspaceId, command.mcpId, {
+      client.operations['catalog.mcp-select']({
+        workspaceId: command.workspaceId,
+        mcpId: command.mcpId,
         digest: command.digest,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),
@@ -961,7 +979,9 @@ export function useUpdateMcpBinding() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: UpdateMcpBindingCommand) =>
-      client.catalog.updateMcpBinding(command.workspaceId, command.mcpId, {
+      client.operations['catalog.mcp-binding']({
+        workspaceId: command.workspaceId,
+        mcpId: command.mcpId,
         allowedTools: command.allowedTools,
         approvalRequiredTools: command.approvalRequiredTools,
         bindingRevision: command.bindingRevision,
@@ -985,7 +1005,7 @@ export function useUpdateMcpBinding() {
 /** Exact MCP configuration create bound to one Workspace revision. */
 export type CreateMcpConfigCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['catalog']['createMcpConfig']>[1];
+  input: Omit<Parameters<CoreClient['operations']['catalog.mcp-create']>[0], 'workspaceId'>;
 };
 
 /** @returns Mutation that creates one inactive MCP configuration. */
@@ -994,7 +1014,10 @@ export function useCreateMcpConfig() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: CreateMcpConfigCommand) =>
-      client.catalog.createMcpConfig(command.workspaceId, command.input),
+      client.operations['catalog.mcp-create']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
     onSuccess: async (_response, command) => {
       await queryClient.invalidateQueries({
@@ -1008,7 +1031,7 @@ export function useCreateMcpConfig() {
 /** Exact plugin import bound to one Workspace revision. */
 export type ImportPluginCommand = {
   workspaceId: string;
-  input: Parameters<CoreClient['catalog']['importPlugin']>[1];
+  input: Omit<Parameters<CoreClient['operations']['catalog.plugin-import']>[0], 'workspaceId'>;
 };
 
 /** @returns Mutation that imports one Agent Plugin package. */
@@ -1017,7 +1040,10 @@ export function useImportPlugin() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: ImportPluginCommand) =>
-      client.catalog.importPlugin(command.workspaceId, command.input),
+      client.operations['catalog.plugin-import']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
     onSuccess: async (_response, command) => {
       await queryClient.invalidateQueries({

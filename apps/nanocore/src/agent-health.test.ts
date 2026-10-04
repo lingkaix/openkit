@@ -3,12 +3,13 @@ import {
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { createApp } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
+import { operationRequest } from './test-support/operation-request.js';
 
-describe('agent health diagnostics app API', () => {
+describe('Agent inventory and health operations', () => {
   it('lists and reads product-visible Agent Catalog entries', async () => {
     const store = createDemoStore();
     const app = createApp({
@@ -16,14 +17,34 @@ describe('agent health diagnostics app API', () => {
       store,
       turnExecutor: new SimulatedTurnExecutor(),
     });
-    const listRes = await app.request('/api/app/agents');
+    const listRes = await app.request(
+      ...operationRequest(
+        'agent.list',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      )
+    );
 
     expect(listRes.status).toBe(200);
     const listPayload = ListAgentCatalogResponseSchema.parse(await listRes.json());
     expect(listPayload.items.map((agent) => agent.id)).toContain('agent_codex_host');
     expect(JSON.stringify(listPayload)).not.toContain('"config"');
 
-    const getRes = await app.request('/api/app/agents/agent_codex_host');
+    const getRes = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_codex_host' }),
+        }
+      )
+    );
 
     expect(getRes.status).toBe(200);
     const getPayload = GetAgentCatalogEntryResponseSchema.parse(await getRes.json());
@@ -42,9 +63,17 @@ describe('agent health diagnostics app API', () => {
       store,
       turnExecutor: new SimulatedTurnExecutor(),
     });
-    const res = await app.request('/api/app/workspaces/ws_demo/agents/health/refresh', {
-      method: 'POST',
-    });
+    const res = await app.request(
+      ...operationRequest(
+        'agent.health-refresh',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        }
+      )
+    );
 
     expect(res.status).toBe(200);
     const payload = await res.json();

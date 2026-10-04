@@ -666,14 +666,7 @@ function createDeferred<T>() {
 
 /** Build a fake CoreClient; per-test overrides replace individual methods. */
 function makeClient(
-  overrides: {
-    operations?: MethodOverrides;
-    core?: MethodOverrides;
-    app?: MethodOverrides;
-    agents?: MethodOverrides;
-    repositories?: MethodOverrides;
-    catalog?: MethodOverrides;
-  } = {}
+  overrides: { operations?: MethodOverrides; core?: MethodOverrides; app?: MethodOverrides } = {}
 ): CoreClient {
   return {
     core: {
@@ -681,36 +674,29 @@ function makeClient(
 
       ...overrides.core,
     },
-    app: {
-      listWorkspaceWorkers: vi.fn().mockImplementation(async (workspaceId: string) => ({
-        workspaceId,
-        items: [],
-      })),
-      ...overrides.app,
-    },
-    agents: {
-      list: vi.fn().mockResolvedValue({ items: [] }),
-      get: vi.fn().mockResolvedValue(AGENT_READY),
-      refreshHealth: vi.fn().mockResolvedValue({ items: [] }),
-      ...overrides.agents,
-    },
-    catalog: {
-      get: vi
+    app: { ...overrides.app },
+    operations: {
+      'worker.list': vi
+        .fn()
+        .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
+          workspaceId,
+          items: [],
+        })),
+      'agent.list': vi.fn().mockResolvedValue({ items: [] }),
+      'agent.read': vi.fn().mockResolvedValue(AGENT_READY),
+      'agent.health-refresh': vi.fn().mockResolvedValue({ items: [] }),
+      'catalog.read': vi
         .fn()
         .mockResolvedValue({ revision: 1, candidates: [], skills: [], mcp: [], plugins: [] }),
-      importSkill: vi.fn(),
-      setSkillPin: vi.fn(),
-      submitSkillCandidate: vi.fn(),
-      decideSkillCandidate: vi.fn(),
-      selectSkillDefault: vi.fn(),
-      createMcpConfig: vi.fn(),
-      selectMcpVersion: vi.fn(),
-      updateMcpBinding: vi.fn(),
-      importPlugin: vi.fn(),
-      ...overrides.catalog,
-    },
-
-    operations: {
+      'catalog.skill-import': vi.fn(),
+      'catalog.skill-pin': vi.fn(),
+      'catalog.skill-candidate-submit': vi.fn(),
+      'catalog.skill-candidate-decide': vi.fn(),
+      'catalog.skill-select': vi.fn(),
+      'catalog.mcp-create': vi.fn(),
+      'catalog.mcp-select': vi.fn(),
+      'catalog.mcp-binding': vi.fn(),
+      'catalog.plugin-import': vi.fn(),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.create': vi.fn().mockResolvedValue({
         id: 'ws-new',
@@ -750,7 +736,6 @@ function makeClient(
       'pending-request.withdraw': vi.fn().mockResolvedValue({}),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
-
       'artifact.review.decide': vi.fn().mockResolvedValue({}),
       'knowledge.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
@@ -778,8 +763,12 @@ function makeClient(
       ...overrides.core,
       ...overrides.app,
       'workspace.resources': vi.fn().mockImplementation(async () => {
-        const listAgents = overrides.agents?.list as CoreClient['agents']['list'] | undefined;
-        const listed = overrides.agents?.list ? await listAgents?.() : { items: [] };
+        const listAgents = overrides.operations?.['agent.list'] as
+          | CoreClient['operations']['agent.list']
+          | undefined;
+        const listed = overrides.operations?.['agent.list']
+          ? await listAgents?.({})
+          : { items: [] };
         return {
           knowledge: [],
           skills: [],
@@ -976,7 +965,10 @@ const KNOWLEDGE_DRAFT_WRITES = [
 ] as const;
 
 /** Counts Core client calls issued for one Workspace identity. */
-function callsOn(method: { mock: { calls: unknown[][] } }, workspaceId: string) {
+function callsOn(
+  method: { mock: { calls: Array<Array<{ workspaceId: string }>> } },
+  workspaceId: string
+) {
   return method.mock.calls.filter(
     (call) =>
       (typeof call[0] === 'object' && call[0] !== null && 'workspaceId' in call[0]
@@ -1188,7 +1180,7 @@ function expectWorkspaceBSourceDraftRetained() {
 /** Clicks a remaining retry if enabled and proves the write never retargeted to another Workspace. */
 async function proveWriteDoesNotRetarget(
   user: ReturnType<typeof userEvent.setup>,
-  method: { mock: { calls: unknown[][] } },
+  method: { mock: { calls: Array<Array<{ workspaceId: string }>> } },
   workspaceId: string
 ) {
   const retry = screen.queryByRole('button', { name: /try again/i });
@@ -1199,7 +1191,7 @@ async function proveWriteDoesNotRetarget(
   ) {
     await user.click(retry);
   }
-  expect(method.mock.calls.every((call) => call[0] === workspaceId)).toBe(true);
+  expect(method.mock.calls.every((call) => call[0]?.workspaceId === workspaceId)).toBe(true);
 }
 
 /** Viewer-authorized conversation activity used by Overview ongoing work. */
@@ -1927,8 +1919,8 @@ describe('Overview / Action Center (board 07)', () => {
 describe('Agents (board 08)', () => {
   it('explains that a disabled agent cannot start work without inferring its private reason', async () => {
     const client = makeClient({
-      agents: {
-        list: vi.fn().mockResolvedValue({
+      operations: {
+        'agent.list': vi.fn().mockResolvedValue({
           items: [{ ...AGENT_READY, status: 'disabled' }],
         }),
       },
@@ -1941,8 +1933,8 @@ describe('Agents (board 08)', () => {
 
   it('lists agents with plain-language readiness', async () => {
     const client = makeClient({
-      agents: {
-        list: vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] }),
+      operations: {
+        'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] }),
       },
     });
     renderApp('/agents', client);
@@ -1955,7 +1947,7 @@ describe('Agents (board 08)', () => {
   it('reveals diagnostics behind View details', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+      operations: { 'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
     });
     renderApp('/agents', client);
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
@@ -1985,9 +1977,7 @@ describe('Agents (board 08)', () => {
       '/agents',
       makeClient({
         core: {},
-        agents: { list },
-
-        operations: { 'workspace.resources': getWorkspaceResources },
+        operations: { 'agent.list': list, 'workspace.resources': getWorkspaceResources },
       })
     );
 
@@ -2044,11 +2034,11 @@ describe('Catalog', () => {
     const get = vi
       .fn()
       .mockResolvedValue({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] });
-    renderApp('/catalog', makeClient({ catalog: { get } }));
+    renderApp('/catalog', makeClient({ operations: { 'catalog.read': get } }));
     expect(await screen.findByText('No skills yet')).toBeInTheDocument();
     expect(screen.getByText('No MCP servers')).toBeInTheDocument();
     expect(screen.getByText('No plugins')).toBeInTheDocument();
-    await waitFor(() => expect(get).toHaveBeenCalledWith(WORKSPACE_A.id));
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id }));
   });
 
   it('keeps fresh catalog values empty so placeholders cannot submit', async () => {
@@ -2058,7 +2048,16 @@ describe('Catalog', () => {
     const get = vi
       .fn()
       .mockResolvedValue({ revision: 2, candidates: [], skills: [], mcp: [], plugins: [] });
-    renderApp('/catalog', makeClient({ catalog: { get, importSkill, createMcpConfig } }));
+    renderApp(
+      '/catalog',
+      makeClient({
+        operations: {
+          'catalog.read': get,
+          'catalog.skill-import': importSkill,
+          'catalog.mcp-create': createMcpConfig,
+        },
+      })
+    );
     expect(await screen.findByRole('button', { name: 'Import SKILL.md' })).toBeDisabled();
 
     const [skillName, mcpName] = screen.getAllByRole('textbox', { name: 'Display name' });
@@ -2151,7 +2150,10 @@ describe('Catalog', () => {
         mcp: [],
         plugins: [],
       });
-    renderApp('/catalog', makeClient({ catalog: { get, importSkill } }));
+    renderApp(
+      '/catalog',
+      makeClient({ operations: { 'catalog.read': get, 'catalog.skill-import': importSkill } })
+    );
     expect(await screen.findByText('Import SKILL.md')).toBeInTheDocument();
     await user.type(
       screen.getAllByRole('textbox', { name: 'Display name' })[0]!,
@@ -2160,8 +2162,8 @@ describe('Catalog', () => {
     const file = new File(['# Hello\n'], 'SKILL.md', { type: 'text/markdown' });
     await user.upload(screen.getByLabelText('Skill markdown file'), file);
     await waitFor(() => expect(importSkill).toHaveBeenCalled());
-    expect(importSkill.mock.calls[0]?.[0]).toBe(WORKSPACE_A.id);
-    expect(importSkill.mock.calls[0]?.[1]).toMatchObject({
+    expect(importSkill.mock.calls[0]?.[0]?.workspaceId).toBe(WORKSPACE_A.id);
+    expect(importSkill.mock.calls[0]?.[0]).toMatchObject({
       activate: true,
       displayName: 'Repo guidelines',
       expectedRevision: 2,
@@ -2207,7 +2209,12 @@ describe('Catalog', () => {
       mcp: [],
       plugins: [],
     });
-    renderApp('/catalog', makeClient({ catalog: { get, submitSkillCandidate } }));
+    renderApp(
+      '/catalog',
+      makeClient({
+        operations: { 'catalog.read': get, 'catalog.skill-candidate-submit': submitSkillCandidate },
+      })
+    );
     expect(await screen.findByRole('button', { name: 'Propose update' })).toBeInTheDocument();
     await user.type(
       screen.getByRole('textbox', { name: 'Candidate summary' }),
@@ -2217,8 +2224,8 @@ describe('Catalog', () => {
     const file = new File(['# v2\n'], 'SKILL.md', { type: 'text/markdown' });
     await user.upload(screen.getByLabelText('Skill candidate markdown file'), file);
     await waitFor(() => expect(submitSkillCandidate).toHaveBeenCalled());
-    expect(submitSkillCandidate.mock.calls[0]?.[1]).toBe('repo-guidelines');
-    expect(submitSkillCandidate.mock.calls[0]?.[2]).toMatchObject({
+    expect(submitSkillCandidate.mock.calls[0]?.[0]?.skillId).toBe('repo-guidelines');
+    expect(submitSkillCandidate.mock.calls[0]?.[0]).toMatchObject({
       baseDigest: digest,
       summary: 'Clarify the rollback section.',
     });
@@ -2281,12 +2288,12 @@ describe('Catalog', () => {
     renderApp(
       '/catalog',
       makeClient({
-        catalog: {
-          get,
-          importSkill,
-          submitSkillCandidate,
-          selectSkillDefault,
-          decideSkillCandidate,
+        operations: {
+          'catalog.read': get,
+          'catalog.skill-import': importSkill,
+          'catalog.skill-candidate-submit': submitSkillCandidate,
+          'catalog.skill-select': selectSkillDefault,
+          'catalog.skill-candidate-decide': decideSkillCandidate,
         },
       })
     );
@@ -2300,12 +2307,12 @@ describe('Catalog', () => {
       catalogRelativeFile('Do not skip rollback.\n', 'repo-guidelines/references/rollback.md'),
     ]);
     await waitFor(() => expect(importSkill).toHaveBeenCalled());
-    expect(importSkill.mock.calls[0]?.[1]).toMatchObject({
+    expect(importSkill.mock.calls[0]?.[0]).toMatchObject({
       activate: true,
       displayName: 'Repo guidelines',
       expectedRevision: 2,
     });
-    expect(importSkill.mock.calls[0]?.[1].tree).toEqual([
+    expect(importSkill.mock.calls[0]?.[0].tree).toEqual([
       {
         contentBase64: btoa('# Hello\n'),
         kind: 'file',
@@ -2332,14 +2339,14 @@ describe('Catalog', () => {
       catalogRelativeFile('Clarify rollback.\n', 'repo-guidelines/references/rollback.md'),
     ]);
     await waitFor(() => expect(submitSkillCandidate).toHaveBeenCalled());
-    expect(submitSkillCandidate.mock.calls[0]?.[1]).toBe('repo-guidelines');
-    expect(submitSkillCandidate.mock.calls[0]?.[2]).toMatchObject({
+    expect(submitSkillCandidate.mock.calls[0]?.[0]?.skillId).toBe('repo-guidelines');
+    expect(submitSkillCandidate.mock.calls[0]?.[0]).toMatchObject({
       baseDigest: digest,
       expectedRevision: 3,
       summary: 'Clarify the rollback section.',
     });
-    expect(submitSkillCandidate.mock.calls[0]?.[2]).not.toHaveProperty('activate');
-    expect(submitSkillCandidate.mock.calls[0]?.[2].tree).toEqual([
+    expect(submitSkillCandidate.mock.calls[0]?.[0]).not.toHaveProperty('activate');
+    expect(submitSkillCandidate.mock.calls[0]?.[0].tree).toEqual([
       {
         contentBase64: btoa('# v2\n'),
         kind: 'file',
@@ -2384,7 +2391,14 @@ describe('Catalog', () => {
     });
     renderApp(
       '/catalog',
-      makeClient({ catalog: { get, importSkill, submitSkillCandidate, importPlugin } })
+      makeClient({
+        operations: {
+          'catalog.read': get,
+          'catalog.skill-import': importSkill,
+          'catalog.skill-candidate-submit': submitSkillCandidate,
+          'catalog.plugin-import': importPlugin,
+        },
+      })
     );
     const displayNames = await screen.findAllByRole('textbox', { name: 'Display name' });
     await user.type(displayNames[0]!, 'Repo guidelines');
@@ -2417,7 +2431,7 @@ describe('Catalog', () => {
     );
 
     expect(importSkill).toHaveBeenCalled();
-    expect(importSkill.mock.calls[0]?.[1].tree).toEqual([
+    expect(importSkill.mock.calls[0]?.[0].tree).toEqual([
       {
         contentBase64: btoa('# Hello\n'),
         kind: 'file',
@@ -2434,7 +2448,7 @@ describe('Catalog', () => {
       },
     ]);
     expect(submitSkillCandidate).toHaveBeenCalled();
-    expect(submitSkillCandidate.mock.calls[0]?.[2].tree).toEqual([
+    expect(submitSkillCandidate.mock.calls[0]?.[0].tree).toEqual([
       {
         contentBase64: btoa('# v2\n'),
         kind: 'file',
@@ -2450,9 +2464,9 @@ describe('Catalog', () => {
         path: 'references/rollback.md',
       },
     ]);
-    expect(submitSkillCandidate.mock.calls[0]?.[2]).not.toHaveProperty('activate');
+    expect(submitSkillCandidate.mock.calls[0]?.[0]).not.toHaveProperty('activate');
     expect(importPlugin).toHaveBeenCalled();
-    expect(importPlugin.mock.calls[0]?.[1].tree).toEqual([
+    expect(importPlugin.mock.calls[0]?.[0].tree).toEqual([
       {
         contentBase64: btoa('{"name":"demo"}\n'),
         kind: 'file',
@@ -2500,11 +2514,14 @@ describe('Catalog', () => {
       ],
       plugins: [],
     });
-    renderApp('/catalog', makeClient({ catalog: { get, updateMcpBinding } }));
+    renderApp(
+      '/catalog',
+      makeClient({ operations: { 'catalog.read': get, 'catalog.mcp-binding': updateMcpBinding } })
+    );
     expect(await screen.findByRole('button', { name: 'Enable' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Enable' }));
     await waitFor(() => expect(updateMcpBinding).toHaveBeenCalled());
-    expect(updateMcpBinding.mock.calls[0]?.[2]).toMatchObject({
+    expect(updateMcpBinding.mock.calls[0]?.[0]).toMatchObject({
       allowedTools: ['echo'],
       approvalRequiredTools: ['danger'],
       deniedTools: ['secret'],
@@ -2528,8 +2545,8 @@ describe('Agents roster continued', () => {
       );
     const list = vi.fn().mockResolvedValue({ items: [AGENT_READY, AGENT_WORKING] });
     const client = makeClient({
-      agents: { list },
       operations: {
+        'agent.list': list,
         'workspace.list': vi.fn().mockResolvedValue({
           items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
             workspace,
@@ -2566,13 +2583,13 @@ describe('Agents roster continued', () => {
   it('marks readiness stale when disconnected', async () => {
     const client = makeClient({
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
-      app: {
-        listWorkspaceWorkers: vi.fn().mockResolvedValue({
+      operations: {
+        'worker.list': vi.fn().mockResolvedValue({
           workspaceId: WORKSPACE_A.id,
           items: [workspaceWorker({ stale: false })],
         }),
+        'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
       },
-      agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
     });
     renderApp('/agents', client);
     expect(await screen.findByText('Implement inventory')).toBeInTheDocument();
@@ -2599,13 +2616,16 @@ describe('Agents roster continued', () => {
         items: [{ ...AGENT_READY, health: { ...AGENT_READY.health, message: 'Rechecked' } }],
       });
     const refreshHealth = vi.fn().mockResolvedValue({ items: [] });
-    renderApp('/agents', makeClient({ agents: { list, refreshHealth } }));
+    renderApp(
+      '/agents',
+      makeClient({ operations: { 'agent.list': list, 'agent.health-refresh': refreshHealth } })
+    );
 
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
     expect(refreshHealth).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
 
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith('ws1'));
+    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('Rechecked')).toBeInTheDocument();
     expect(refreshHealth).toHaveBeenCalledTimes(1);
@@ -2617,7 +2637,10 @@ describe('Agents roster continued', () => {
     renderApp(
       '/agents',
       makeClient({
-        agents: { get, list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: {
+          'agent.read': get,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+        },
       })
     );
 
@@ -2626,7 +2649,7 @@ describe('Agents roster continued', () => {
     const details = screen.getByText('View details').closest('details') as HTMLElement;
     await user.click(within(details).getByText('View details'));
 
-    await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_READY.id));
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ agentId: AGENT_READY.id }));
     expect(within(details).getByText(/gpt-authoritative/i)).toBeInTheDocument();
     expect(within(details).getByText(/Authoritative health/i)).toBeInTheDocument();
     expect(within(details).queryByText(/gpt-test/i)).not.toBeInTheDocument();
@@ -2641,7 +2664,10 @@ describe('Agents roster continued', () => {
     renderApp(
       '/agents',
       makeClient({
-        agents: { get, list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: {
+          'agent.read': get,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+        },
       })
     );
 
@@ -2649,7 +2675,7 @@ describe('Agents roster continued', () => {
     const details = screen.getByText('View details').closest('details') as HTMLElement;
     await user.click(within(details).getByText('View details'));
 
-    await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_READY.id));
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ agentId: AGENT_READY.id }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load|try again/i);
     expect(alert).not.toHaveTextContent('Agent not found.');
@@ -2683,21 +2709,25 @@ describe('Agents roster continued', () => {
     renderApp(
       '/agents',
       makeClient({
-        agents: { get, list, refreshHealth },
+        operations: {
+          'agent.read': get,
+          'agent.list': list,
+          'agent.health-refresh': refreshHealth,
+        },
       })
     );
 
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
     const details = screen.getByText('View details').closest('details') as HTMLElement;
     await user.click(within(details).getByText('View details'));
-    await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_READY.id));
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ agentId: AGENT_READY.id }));
     expect(within(details).getByText(/Authoritative health/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith('ws1'));
+    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: 'ws1' }));
     expect(refreshHealth).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
-    expect(get.mock.calls).toEqual([[AGENT_READY.id], [AGENT_READY.id]]);
+    expect(get.mock.calls).toEqual([[{ agentId: AGENT_READY.id }], [{ agentId: AGENT_READY.id }]]);
     expect(within(details).getByText(/Rechecked detail/i)).toBeInTheDocument();
     expect(within(details).queryByText(/Authoritative health/i)).not.toBeInTheDocument();
   });
@@ -2711,12 +2741,9 @@ describe('Agents roster continued', () => {
       '/agents',
       makeClient({
         core: {},
-        agents: {
-          list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
-          refreshHealth,
-        },
-
         operations: {
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+          'agent.health-refresh': refreshHealth,
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,
@@ -2732,7 +2759,9 @@ describe('Agents roster continued', () => {
 
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith(WORKSPACE_A.id));
+    await waitFor(() =>
+      expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id })
+    );
     expect(refreshHealth).toHaveBeenCalledTimes(1);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't refresh/i);
@@ -2740,10 +2769,12 @@ describe('Agents roster continued', () => {
 
     act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
     await waitFor(() =>
-      expect(refreshHealth.mock.calls.every((call) => call[0] === WORKSPACE_A.id)).toBe(true)
+      expect(
+        refreshHealth.mock.calls.every((call) => call[0]?.workspaceId === WORKSPACE_A.id)
+      ).toBe(true)
     );
     await proveWriteDoesNotRetarget(user, refreshHealth, WORKSPACE_A.id);
-    expect(refreshHealth).not.toHaveBeenCalledWith(WORKSPACE_B.id);
+    expect(refreshHealth).not.toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id });
   });
 
   it('keeps a failed health refresh retry connection-guarded', async () => {
@@ -2756,16 +2787,18 @@ describe('Agents roster continued', () => {
       '/agents',
       makeClient({
         core: { meta },
-        agents: {
-          list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
-          refreshHealth,
+        operations: {
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+          'agent.health-refresh': refreshHealth,
         },
       })
     );
 
     expect(await screen.findByText('Ledger')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /refresh health/i }));
-    await waitFor(() => expect(refreshHealth).toHaveBeenCalledWith(WORKSPACE_A.id));
+    await waitFor(() =>
+      expect(refreshHealth).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id })
+    );
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't refresh/i);
     expect(within(alert).getByRole('button', { name: /try again/i })).toBeEnabled();
@@ -2782,7 +2815,7 @@ describe('Agents roster continued', () => {
     expect(retry).toBeDisabled();
     await user.click(retry);
     expect(refreshHealth).toHaveBeenCalledTimes(1);
-    expect(refreshHealth.mock.calls).toEqual([[WORKSPACE_A.id]]);
+    expect(refreshHealth.mock.calls).toEqual([[{ workspaceId: WORKSPACE_A.id }]]);
   });
 });
 
@@ -2795,8 +2828,10 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: { listWorkspaceWorkers },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: {
+          'worker.list': listWorkspaceWorkers,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+        },
       })
     );
 
@@ -2814,14 +2849,14 @@ describe('Agents actual Workers', () => {
     expect(within(workers).getByText('Setup outdated')).toBeInTheDocument();
     expect(within(workers).queryByText('Stale')).not.toBeInTheDocument();
     expect(screen.queryByText('Worker read may be stale')).not.toBeInTheDocument();
-    expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_A.id);
+    expect(listWorkspaceWorkers).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id });
   });
 
   it('keeps catalog-only supply when the Worker read returns no rows', async () => {
     renderApp(
       '/agents',
       makeClient({
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: { 'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
       })
     );
 
@@ -2840,9 +2875,8 @@ describe('Agents actual Workers', () => {
       '/agents',
       makeClient({
         core: {},
-        app: { listWorkspaceWorkers },
-
         operations: {
+          'worker.list': listWorkspaceWorkers,
           'workspace.list': vi.fn().mockResolvedValue({
             items: [].map((workspace) => ({
               workspace,
@@ -2890,8 +2924,10 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: { listWorkspaceWorkers },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: {
+          'worker.list': listWorkspaceWorkers,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+        },
       })
     );
 
@@ -2924,8 +2960,8 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: {
-          listWorkspaceWorkers: vi.fn().mockResolvedValue({
+        operations: {
+          'worker.list': vi.fn().mockResolvedValue({
             workspaceId: WORKSPACE_A.id,
             items: [
               workspaceWorker({
@@ -2935,8 +2971,8 @@ describe('Agents actual Workers', () => {
               }),
             ],
           }),
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
         },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
       })
     );
 
@@ -2952,8 +2988,8 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: {
-          listWorkspaceWorkers: vi.fn().mockResolvedValue({
+        operations: {
+          'worker.list': vi.fn().mockResolvedValue({
             workspaceId: WORKSPACE_A.id,
             items: [
               workspaceWorker({
@@ -2976,8 +3012,8 @@ describe('Agents actual Workers', () => {
               }),
             ],
           }),
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
         },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
       })
     );
 
@@ -3012,8 +3048,10 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: { listWorkspaceWorkers },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
+        operations: {
+          'worker.list': listWorkspaceWorkers,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+        },
       })
     );
 
@@ -3041,8 +3079,11 @@ describe('Agents actual Workers', () => {
     renderApp(
       '/agents',
       makeClient({
-        app: { listWorkspaceWorkers },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }), refreshHealth },
+        operations: {
+          'worker.list': listWorkspaceWorkers,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
+          'agent.health-refresh': refreshHealth,
+        },
       })
     );
 
@@ -3055,29 +3096,30 @@ describe('Agents actual Workers', () => {
 
   it('queries Workers only for the selected Workspace and replaces the previous Workspace rows', async () => {
     const user = userEvent.setup();
-    const listWorkspaceWorkers = vi.fn().mockImplementation((workspaceId: string) =>
-      Promise.resolve({
-        workspaceId,
-        items:
-          workspaceId === WORKSPACE_A.id
-            ? [workspaceWorker({ threadTitle: 'Visible A thread', threadId: 'th_a' })]
-            : [
-                workspaceWorker({
-                  threadTitle: 'Visible B thread',
-                  threadId: 'th_b',
-                  agentName: 'Scout',
-                }),
-              ],
-      })
-    );
+    const listWorkspaceWorkers = vi
+      .fn()
+      .mockImplementation(({ workspaceId }: { workspaceId: string }) =>
+        Promise.resolve({
+          workspaceId,
+          items:
+            workspaceId === WORKSPACE_A.id
+              ? [workspaceWorker({ threadTitle: 'Visible A thread', threadId: 'th_a' })]
+              : [
+                  workspaceWorker({
+                    threadTitle: 'Visible B thread',
+                    threadId: 'th_b',
+                    agentName: 'Scout',
+                  }),
+                ],
+        })
+      );
     renderApp(
       '/agents',
       makeClient({
         core: {},
-        app: { listWorkspaceWorkers },
-        agents: { list: vi.fn().mockResolvedValue({ items: [AGENT_READY] }) },
-
         operations: {
+          'worker.list': listWorkspaceWorkers,
+          'agent.list': vi.fn().mockResolvedValue({ items: [AGENT_READY] }),
           'workspace.list': vi.fn().mockResolvedValue({
             items: [WORKSPACE_A, WORKSPACE_B].map((workspace) => ({
               workspace,
@@ -3093,17 +3135,19 @@ describe('Agents actual Workers', () => {
 
     expect(await screen.findByText('Visible A thread')).toBeInTheDocument();
     expect(screen.queryByText('Visible B thread')).not.toBeInTheDocument();
-    await waitFor(() => expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_A.id));
+    await waitFor(() =>
+      expect(listWorkspaceWorkers).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A.id })
+    );
 
     await user.click(screen.getByRole('button', { name: WORKSPACE_A.name }));
     await user.click(await screen.findByRole('menuitem', { name: WORKSPACE_B.name }));
 
     expect(await screen.findByText('Visible B thread')).toBeInTheDocument();
     expect(screen.queryByText('Visible A thread')).not.toBeInTheDocument();
-    expect(listWorkspaceWorkers).toHaveBeenCalledWith(WORKSPACE_B.id);
+    expect(listWorkspaceWorkers).toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id });
     expect(
       listWorkspaceWorkers.mock.calls.every(
-        ([id]) => id === WORKSPACE_A.id || id === WORKSPACE_B.id
+        ([input]) => input.workspaceId === WORKSPACE_A.id || input.workspaceId === WORKSPACE_B.id
       )
     ).toBe(true);
   });

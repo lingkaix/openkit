@@ -2852,10 +2852,10 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
     ],
     [
       'worker.list',
-      'listWorkspaceWorkers',
-      'listWorkspaceWorkers',
+      'worker.list',
+      'worker.list',
       { workspaceId: 'ws_team' },
-      ['ws_team'],
+      [{ workspaceId: 'ws_team' }],
     ],
   ]) {
     const entry = operationCatalog.find((candidate) => candidate.id === id);
@@ -2872,7 +2872,8 @@ test('dashboard and search catalog mappings replace exactly their exclusions', a
         client: {
           [id === 'thread.dashboard' ||
           id === 'conversation.navigation' ||
-          id === 'workspace.dashboard'
+          id === 'workspace.dashboard' ||
+          id === 'worker.list'
             ? 'operations'
             : 'app']: {
             [method]: async (...values) => {
@@ -2902,7 +2903,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
       '/api/app/operations/thread.dashboard',
     ],
     ['app.search', { query: 'private needle' }, '/api/app/search?q=private%20needle'],
-    ['worker.list', { workspaceId: 'ws_team' }, '/api/app/workspaces/ws_team/workers'],
+    ['worker.list', { workspaceId: 'ws_team' }, '/api/app/operations/worker.list'],
   ]) {
     for (const status of [401, 403, 404]) {
       const result = await runCli(
@@ -2915,7 +2916,7 @@ test('bundled dashboard and search reads retain authorization errors without lea
         [
           dataModule(`
         globalThis.fetch = async (url, options) => {
-          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
+          if (new URL(url).pathname + new URL(url).search !== ${JSON.stringify(path)} || options.method !== ${JSON.stringify(operation === 'thread.dashboard' || operation === 'workspace.dashboard' || operation === 'worker.list' ? 'POST' : 'GET')}) throw new Error('unexpected transport');
           if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fake_visibility') throw new Error('missing actor');
           return new Response(JSON.stringify({ code: 'access_denied', message: 'Access denied.', protocolVersion: '0.5.0', token: 'okt_fake_visibility' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };

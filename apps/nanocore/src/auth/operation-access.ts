@@ -201,20 +201,14 @@ registerOperations(
     scope: 'workspace',
   }
 );
-registerOperations(catalog, ['listAgentCatalog', 'getAgentCatalogEntry', 'searchApp'], {
+registerOperations(catalog, ['searchApp'], {
   mutating: false,
   policyOperation: 'workspace.read',
   resolver: 'authorized-workspace-set',
   scope: 'workspace',
 });
 
-registerOperations(catalog, ['refreshAgentHealth'], {
-  mutating: true,
-  policyOperation: 'turn.run',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(catalog, ['listWorkspaceWorkers', 'listWorkspaceMaterials'], {
+registerOperations(catalog, ['listWorkspaceMaterials'], {
   mutating: false,
   policyOperation: 'workspace.read',
   resolver: 'path-workspace',
@@ -262,41 +256,6 @@ registerOperations(
   {
     mutating: false,
     policyOperation: 'vault.admin',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(
-  catalog,
-  ['getWorkspaceCatalog', 'listSkillCatalog', 'listMcpCatalog', 'listPluginCatalog'],
-  {
-    mutating: false,
-    policyOperation: 'workspace.read',
-    resolver: 'path-workspace',
-    scope: 'workspace',
-  }
-);
-registerOperations(catalog, ['submitSkillCandidate'], {
-  mutating: true,
-  policyOperation: 'workspace.write',
-  resolver: 'path-workspace',
-  scope: 'workspace',
-});
-registerOperations(
-  catalog,
-  [
-    'importSkill',
-    'decideSkillCandidate',
-    'selectSkillDefault',
-    'setSkillPin',
-    'createMcpConfig',
-    'selectMcpVersion',
-    'updateMcpBinding',
-    'importPlugin',
-  ],
-  {
-    mutating: true,
-    policyOperation: 'workspace.configure',
     resolver: 'path-workspace',
     scope: 'workspace',
   }

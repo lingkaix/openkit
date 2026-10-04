@@ -57,6 +57,14 @@ export class McpBindingValidationError extends Error {
   }
 }
 
+/** Invalid authored catalog supply, including unsupported plugin declarations and unrepresentable ids. */
+export class CatalogInputError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'CatalogInputError';
+  }
+}
+
 /** Missing catalog resource. */
 export class CatalogNotFoundError extends Error {
   public constructor(message: string) {
@@ -1038,12 +1046,12 @@ function parsePluginPackage(root: string): {
 function pluginMcpDeclaration(server: Record<string, unknown>): McpValidatedDeclaration {
   if (typeof server.url === 'string' || typeof server.endpoint === 'string') {
     if (Object.hasOwn(server, 'auth')) {
-      throw new Error(
+      throw new CatalogInputError(
         'Upstream OAuth connection required; NanoCore OAuth onboarding and refresh are not implemented'
       );
     }
     if (Object.hasOwn(server, 'query')) {
-      throw new Error('MCP HTTP query options are unsupported.');
+      throw new CatalogInputError('MCP HTTP query options are unsupported.');
     }
     return McpValidatedDeclarationSchema.parse({
       endpoint: String(server.url ?? server.endpoint),
@@ -1125,7 +1133,7 @@ function skillIdFromDisplayName(value: string): string {
     .replaceAll(/[^a-z0-9]+/g, '-')
     .replaceAll(/^-+|-+$/g, '');
   if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(normalized)) {
-    throw new Error(`Cannot derive a catalog id from name: ${value}`);
+    throw new CatalogInputError(`Cannot derive a catalog id from name: ${value}`);
   }
   return normalized;
 }

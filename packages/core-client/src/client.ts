@@ -1,13 +1,9 @@
-import type { AgentCatalogClient } from './agents.js';
-import { createAgentCatalogClient } from './agents.js';
 import type { AppApiClient } from './app.js';
 import { createAppApiClient } from './app.js';
 import type { EmailAuthClient } from './auth.js';
 import { createEmailAuthClient } from './auth.js';
 import type { CapabilitiesClient } from './capabilities.js';
 import { createCapabilitiesClient } from './capabilities.js';
-import type { ResourceCatalogClient } from './catalog.js';
-import { createResourceCatalogClient } from './catalog.js';
 import type { CoreProjectionClient } from './core.js';
 import { createCoreProjectionClient } from './core.js';
 import { createOperationClient, type OperationClient } from './operations.js';
@@ -38,10 +34,6 @@ export interface CoreClient {
   };
   /** First-class capability discovery helper backed by `/api/meta`. */
   readonly capabilities: CapabilitiesClient;
-  /** Product-facing Agent Catalog read-model client. */
-  readonly agents: AgentCatalogClient;
-  /** Product-facing Workspace Skill, MCP, and Agent Plugin catalog client. */
-  readonly catalog: ResourceCatalogClient;
 }
 
 /** Creates a composed OpenKit client from one shared HTTP/SSE transport. */
@@ -51,16 +43,12 @@ export function createCoreClient(options: CreateCoreClientOptions): CoreClient {
   const app = createAppApiClient(transport);
   const email = createEmailAuthClient(transport);
   const capabilities = createCapabilitiesClient(core.meta);
-  const agents = createAgentCatalogClient(transport);
-  const catalog = createResourceCatalogClient(transport);
 
   return {
     operations: createOperationClient(transport),
-    agents,
     app,
     auth: { email },
     capabilities,
-    catalog,
     core,
   };
 }

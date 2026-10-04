@@ -16,3 +16,5 @@ This directory owns authored agent definitions and the resolution path from conf
 Run the focused catalog, readiness, selector, setup resolver, setup ledger, and configuration loader tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
 
 Setup composition resolves selected-profile `reasoningEffort` before the base Agent `models.reasoningEffort`. Unknown values fail through setup diagnostics before launch. This default applies at a new Turn admission; editing it cannot rewrite an admitted Turn or its immutable package.
+
+Agent discovery, detail and health refresh use the exact `createAgentOperationImplementations` map; current Worker inventory uses `createWorkerOperationImplementations` in `workspace-workers.ts`. Their canonical inputs and outputs come from the shared family tables. Workspace candidates, Thread audience, current administrator eligibility, exact package pointers and audit-controlled usage remain with their native owners.

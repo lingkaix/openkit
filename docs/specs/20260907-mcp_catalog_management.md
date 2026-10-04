@@ -102,6 +102,8 @@ Extend the existing MCP catalog resolver and management surface, keeping the Gat
 
 ## Current Implementation Projection
 
+The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
+
 Workspace MCP configuration versions and bindings live in `workspaces/<id>/catalog/catalog.json`. NanoCore projects enabled bindings into the Gateway's existing effective catalog; `mcp-servers.jsonc` is not a competing authority. Stdio declarations carry non-secret environment values and optional `cwd`; HTTP declarations carry non-secret headers. Ordinary-user catalog create/select/binding operations are on the App API, CLI, and Web Catalog screen. Stdio enablement still requires deployment-admin authority. The update-binding App API and CLI operation carries optional credential bindings, replacing them when supplied and preserving existing bindings when omitted. Credential bindings preserve optional raw/bearer presentation through management, storage, and the effective projection. The foreign HTTP plugin importer rejects an explicit `auth` object and a `query` field with fixed management reasons, and accepts a query string already part of the endpoint URL. Immutable configuration history is implemented; raw restricted package inspection and original-package export remain deferred.
 
 ## Alternatives Considered

@@ -448,6 +448,8 @@ A worker-local export, shell-local change or native-written environment file is 
 
 ## Current Implementation Projection
 
+The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
+
 The current implementation follows the composed logical-model contract:
 
 - `packages/config-schema/src/agent.ts` strictly validates `schemaVersion: 1` `.agent.jsonc` files and rejects historical top-level `provider`, `mode`, `deployment`, `transport`, and unstructured `runtimeConfig` fields. An authored runtime supplies an opaque kind and adapter, one exact image reference or bounded build, and a non-empty list of absolute worker-local binary paths.

@@ -7,11 +7,9 @@ import {
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
-import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
-import type { AuthVariables } from '../auth/middleware.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
@@ -19,11 +17,11 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { projectAgentCatalogEntries } from './catalog-projection.js';
-import { registerAgentCatalogRoutes } from './catalog-routes.js';
 
-describe('agent catalog routes', () => {
+describe('agent.list and agent.read operations', () => {
   it('opens only the authorized Workspace ids', async () => {
     const store = new FsStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-authorized-')),
@@ -51,26 +49,73 @@ describe('agent catalog routes', () => {
       skillIds: [],
       status: 'enabled',
     });
+    const coreDb = openCoreDb(store.getDataRoot()!);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'user_local',
+      workspaceId: allowedWorkspace.id,
+    });
+    const app = createApp({
+      store,
+      coreDb,
+      agentManifests: [
+        createTestAgentSetup({ agentId: 'agent_allowed_only', displayName: 'Allowed Agent' })
+          .manifest,
+      ],
+    });
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Agent catalog must not discover physical Workspaces.');
     });
-    const app = new Hono<{ Variables: AuthVariables }>();
-    registerAgentCatalogRoutes({
-      app,
-      authorizedWorkspaceIds: () => [allowedWorkspace.id],
-      requestStore: () => store,
-    });
 
-    const list = await app.request('/api/app/agents');
+    const resources = vi.spyOn(store, 'getWorkspaceResources');
+
+    const list = await app.request(
+      ...operationRequest(
+        'agent.list',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      )
+    );
     const listBody = ListAgentCatalogResponseSchema.parse(await list.json());
-    const allowedDetail = await app.request('/api/app/agents/agent_allowed_only');
-    const deniedDetail = await app.request('/api/app/agents/agent_denied_only');
+    const allowedDetail = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_allowed_only' }),
+        }
+      )
+    );
+    const deniedDetail = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_denied_only' }),
+        }
+      )
+    );
 
     expect(list.status).toBe(200);
     expect(listBody.items.map((agent) => agent.id)).toEqual(['agent_allowed_only']);
     expect(allowedDetail.status).toBe(200);
     expect(deniedDetail.status).toBe(404);
     expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(resources.mock.calls.map(([workspaceId]) => workspaceId)).toContain(allowedWorkspace.id);
+    expect(resources.mock.calls.map(([workspaceId]) => workspaceId)).not.toContain(
+      deniedWorkspace.id
+    );
+    coreDb.sqlite.close();
   });
 
   it('limits global catalog reads to workspaces visible to scoped tokens', async () => {
@@ -142,13 +187,39 @@ describe('agent catalog routes', () => {
 
     try {
       const adminHeaders = { authorization: `Bearer ${serverAdmin.secret}` };
-      const adminList = await app.request('/api/app/agents', { headers: adminHeaders });
-      const adminDetail = await app.request('/api/app/agents/agent_denied_only', {
-        headers: adminHeaders,
-      });
-      const adminMissing = await app.request('/api/app/agents/agent_missing', {
-        headers: adminHeaders,
-      });
+      const adminList = await app.request(
+        ...operationRequest(
+          'agent.list',
+          {},
+          {
+            method: 'POST',
+            headers: { ...adminHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          }
+        )
+      );
+      const adminDetail = await app.request(
+        ...operationRequest(
+          'agent.read',
+          {},
+          {
+            method: 'POST',
+            headers: { ...adminHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({ agentId: 'agent_denied_only' }),
+          }
+        )
+      );
+      const adminMissing = await app.request(
+        ...operationRequest(
+          'agent.read',
+          {},
+          {
+            method: 'POST',
+            headers: { ...adminHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({ agentId: 'agent_missing' }),
+          }
+        )
+      );
       const adminListBody = ListAgentCatalogResponseSchema.parse(await adminList.json());
 
       expect(adminList.status).toBe(200);
@@ -160,12 +231,62 @@ describe('agent catalog routes', () => {
 
       for (const token of [workspace, readonly]) {
         const headers = { authorization: `Bearer ${token.secret}` };
-        const list = await app.request('/api/app/agents', { headers });
+        const list = await app.request(
+          ...operationRequest(
+            'agent.list',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({}),
+            }
+          )
+        );
         const listBody = ListAgentCatalogResponseSchema.parse(await list.json());
-        const allowedDetail = await app.request('/api/app/agents/agent_allowed_only', { headers });
-        const otherDetail = await app.request('/api/app/agents/agent_other_supply', { headers });
-        const deniedDetail = await app.request('/api/app/agents/agent_denied_only', { headers });
-        const missingDetail = await app.request('/api/app/agents/agent_missing', { headers });
+        const allowedDetail = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_allowed_only' }),
+            }
+          )
+        );
+        const otherDetail = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_other_supply' }),
+            }
+          )
+        );
+        const deniedDetail = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_denied_only' }),
+            }
+          )
+        );
+        const missingDetail = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_missing' }),
+            }
+          )
+        );
         const allowedResources = await app.request('/api/app/operations/workspace.resources', {
           ...{ headers },
           method: 'POST',
@@ -223,9 +344,39 @@ describe('agent catalog routes', () => {
 
       for (const token of [workspace, readonly]) {
         const headers = { authorization: `Bearer ${token.secret}` };
-        const list = await app.request('/api/app/agents', { headers });
-        const detail = await app.request('/api/app/agents/agent_allowed_only', { headers });
-        const missing = await app.request('/api/app/agents/agent_missing', { headers });
+        const list = await app.request(
+          ...operationRequest(
+            'agent.list',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({}),
+            }
+          )
+        );
+        const detail = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_allowed_only' }),
+            }
+          )
+        );
+        const missing = await app.request(
+          ...operationRequest(
+            'agent.read',
+            {},
+            {
+              method: 'POST',
+              headers: { ...headers, 'content-type': 'application/json' },
+              body: JSON.stringify({ agentId: 'agent_missing' }),
+            }
+          )
+        );
 
         expect(list.status).toBe(200);
         await expect(list.json()).resolves.toMatchObject({ items: [] });
@@ -279,13 +430,61 @@ describe('agent catalog routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId: 'ws_demo' }),
     });
-    const listRes = await app.request('/api/app/agents');
-    const configuredDetailRes = await app.request('/api/app/agents/agent_configured');
-    const unreadyDetailRes = await app.request('/api/app/agents/agent_unready');
-    const persistedDetailRes = await app.request('/api/app/agents/agent_persisted_only');
-    const healthRes = await app.request('/api/app/workspaces/ws_demo/agents/health/refresh', {
-      method: 'POST',
-    });
+    const listRes = await app.request(
+      ...operationRequest(
+        'agent.list',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      )
+    );
+    const configuredDetailRes = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_configured' }),
+        }
+      )
+    );
+    const unreadyDetailRes = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_unready' }),
+        }
+      )
+    );
+    const persistedDetailRes = await app.request(
+      ...operationRequest(
+        'agent.read',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ agentId: 'agent_persisted_only' }),
+        }
+      )
+    );
+    const healthRes = await app.request(
+      ...operationRequest(
+        'agent.health-refresh',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        }
+      )
+    );
     const resources = WorkspaceResourcesResponseSchema.parse(await resourcesRes.json());
     const list = ListAgentCatalogResponseSchema.parse(await listRes.json());
     const configuredDetail = GetAgentCatalogEntryResponseSchema.parse(

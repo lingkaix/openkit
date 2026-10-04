@@ -3993,11 +3993,19 @@ describe('nanocore server', () => {
         },
       ],
     });
-    const app = createApp({ store: createDemoStore(), turnExecutor });
+    const app = createApp({ store: createDemoStore(), turnExecutor }, true);
 
-    const response = await app.request('/api/app/workspaces/ws_demo/agents/health/refresh', {
-      method: 'POST',
-    });
+    const response = await app.request(
+      ...operationRequest(
+        'agent.health-refresh',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: 'ws_demo' }),
+        }
+      )
+    );
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);

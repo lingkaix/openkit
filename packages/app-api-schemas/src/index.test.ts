@@ -5218,7 +5218,7 @@ describe('app api schemas', () => {
             kind: 'refresh_agent_readiness',
             label: 'Refresh',
             method: 'POST',
-            href: '/api/app/workspaces/ws_demo/agents/health/refresh',
+            href: '/api/app/operations/agent.health-refresh',
           },
         ],
       },

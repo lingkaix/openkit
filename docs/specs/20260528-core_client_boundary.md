@@ -83,7 +83,7 @@ The public client is grouped by boundary:
 - `client.operations[id]` for the provider-subscription family: provider inventory and provider-subscription account list, create, update, delete, status, login, cancellation, logout, and quota routes.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
-- `client.agents`: Agent Catalog list, get, and health refresh routes.
+- `client.operations`: Canonical Agent inventory, detail and health refresh operations.
 - `client.operations['attention.list']`: unified Human Attention read-model operation.
 - `client.repositories`: workspace repository resource list, diagnostics, and default repository setup routes.
 
@@ -111,19 +111,9 @@ The prior `client.oauth.openaiCodex` namespace and every root-level or nested al
 
 ## Agent Catalog Slice
 
-NanoCore exposes:
+Agent inventory, detail and health refresh use the canonical definitions `agent.list`, `agent.read` and `agent.health-refresh` with complete logical input objects through `client.operations`. The Agent family derives its HTTP, OpenAPI, CLI and MCP projections from the same schemas; its list and detail return product-visible entries without adapter-native runtime configuration, and discovery remains candidate-first across authorized Workspaces.
 
-- `GET /api/app/agents`
-- `GET /api/app/agents/:agentId`
-- `POST /api/app/workspaces/:workspaceId/agents/health/refresh`
-
-The list and detail routes return product-visible agent catalog entries without adapter-native runtime config.
-
-The client exposes `client.agents.list()`, `client.agents.get(agentId)`, and `client.agents.refreshHealth(workspaceId)`.
-
-Stable agent catalog records continue to come from `@openkit/protocol`.
-
-App API wrappers add only NanoCore-local read-model behavior.
+Stable Agent catalog records continue to come from `@openkit/protocol`. The distinct selected-Workspace current Worker read uses `client.operations['worker.list']({ workspaceId })`, preserving Thread audience, exact package supply and the separate audit requirement for usage. Workspace Skill, MCP and Plugin catalog operations likewise use `client.operations` with explicit Workspace and child selectors, existing request identities and immutable selection semantics. The drained `client.agents` and `client.catalog` namespaces and the former `client.app.listWorkspaceWorkers` member are absent.
 
 ## Unified Conversation Slice
 

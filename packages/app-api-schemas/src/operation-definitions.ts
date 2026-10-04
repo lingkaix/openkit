@@ -1,7 +1,9 @@
 import type { z } from 'zod';
+import { AGENT_OPERATION_DEFINITIONS } from './agent-operations.js';
 import { ARTIFACT_OPERATION_DEFINITIONS } from './artifact-operations.js';
 import { ATTENTION_OPERATION_DEFINITIONS } from './attention-operations.js';
 import { AUTOMATION_OPERATION_DEFINITIONS } from './automation-operations.js';
+import { CATALOG_OPERATION_DEFINITIONS } from './catalog-operations.js';
 import {
   CONVERSATION_OPERATION_DEFINITIONS,
   TASK_OPERATION_DEFINITIONS,
@@ -27,6 +29,7 @@ import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
+import { WORKER_OPERATION_DEFINITIONS } from './worker-operations.js';
 import { WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS } from './workspace-lifecycle-operations.js';
 import { WORKSPACE_OPERATION_DEFINITIONS } from './workspace-operations.js';
 import { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from './workspace-transfer.js';
@@ -91,7 +94,10 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   CONVERSATION_OPERATION_DEFINITIONS,
   TASK_OPERATION_DEFINITIONS,
   ATTENTION_OPERATION_DEFINITIONS,
-  PENDING_REQUEST_OPERATION_DEFINITIONS
+  PENDING_REQUEST_OPERATION_DEFINITIONS,
+  AGENT_OPERATION_DEFINITIONS,
+  CATALOG_OPERATION_DEFINITIONS,
+  WORKER_OPERATION_DEFINITIONS
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */

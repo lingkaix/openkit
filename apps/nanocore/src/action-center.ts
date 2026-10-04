@@ -835,7 +835,7 @@ function agentReadinessRows(store: FsStore, workspaceId: string): HumanAttention
           kind: 'refresh_agent_readiness',
           label: 'Refresh',
           method: 'POST',
-          href: `/api/app/workspaces/${workspaceId}/agents/health/refresh`,
+          href: '/api/app/operations/agent.health-refresh',
         },
         {
           kind: 'switch_agent',

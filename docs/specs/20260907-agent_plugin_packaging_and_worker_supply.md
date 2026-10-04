@@ -126,6 +126,8 @@ Implement thin package parsing/composition over the Skill and MCP owners, one sc
 
 ## Current Implementation Projection
 
+The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
+
 Workspace Agent Plugin versions and installations live in `workspaces/<id>/catalog/catalog.json` with immutable package snapshots under `catalog/plugin-snapshots/`. Import parses `plugin.json`, records independent Skill and MCP members, and optionally installs selected members. Worker Skill trees are imported through the existing `worker-supply` identity; the Codex adapter uses a thin Skill-directory plus loopback-MCP projection and does not advertise native plugins. Combined real-worker Skill/MCP proof is not yet retained.
 
 Implementation seams are the existing NanoCore setup/catalog resolver, AEP supply schemas, NanoHost/Sandbox Integration declared-file carriage, Worker Shim materialization, and runtime adapters. The existing layout, setup, AEP, Gateway, and data-boundary specifications own the aligned contracts; implementation must project them into their existing schemas and modules, not a second package registry.

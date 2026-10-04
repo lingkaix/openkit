@@ -33,15 +33,7 @@ import {
 /**
  * Agents surface (WP-6, board 08).
  *
- * Current Workers come from `client.app.listWorkspaceWorkers` for the selected
- * Workspace and sit above the configured catalog. Catalog health refresh stays
- * on `client.agents.refreshHealth` and does not refill a failed Worker read.
- * Worker rows use the server Thread key, recorded status, Last recorded
- * timestamp, exact known Goal/Task assignment, and the existing Task
- * conversation route. Package
- * preference, last-used model, MCP policy, and bounded policy counts stay behind
- * native details. Empty Worker success is only an empty `items` list for a
- * selected Workspace. An absent selection is not an empty inventory.
+ * Current Workers come from `client.operations['worker.list']` for the selected Workspace and sit above the configured catalog. Catalog health refresh stays on `client.operations['agent.health-refresh']` and does not refill a failed Worker read. Worker rows use the server Thread key, recorded status, Last recorded timestamp, exact known Goal/Task assignment, and the existing Task conversation route. Package preference, last-used model, MCP policy, and bounded policy counts stay behind native details. Empty Worker success is only an empty `items` list for a selected Workspace. An absent selection is not an empty inventory.
  */
 export function AgentsScreen() {
   const workspaceId = useCurrentWorkspaceId();

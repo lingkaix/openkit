@@ -1,109 +1,96 @@
 import {
+  type WORKER_OPERATION_DEFINITIONS,
   type WorkspaceWorker,
   type WorkspaceWorkerLastUsedModel,
   type WorkspaceWorkerPackageDetails,
   type WorkspaceWorkerPolicyDimension,
   WorkspaceWorkerStatusSchema,
-  WorkspaceWorkersResponseSchema,
   type WorkspaceWorkerWork,
 } from '@openkit/app-api-schemas';
-import type { Context, Hono } from 'hono';
 
-import { asApiError, publishedErrorMessage } from '../api-errors.js';
-import type { AuthVariables } from '../auth/middleware.js';
-import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { readLatestCurrentAgentSessionLlmUsage } from '../capability/usage-ledger.js';
 import type { AgentSession, FsStore } from '../lib/store.js';
-import { registerAppApiRoute } from '../openapi.js';
+import { StoreRecordNotFoundError } from '../lib/store.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
+import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
+import { OperationError } from '../operation-error.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   listThreadWorkerCheckpoints,
   type WorkerCheckpointRecord,
 } from '../runtime/worker-checkpoints.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 
-/**
- * Registers the selected-Workspace current Worker inventory read.
- *
- * @param dependencies Hono app and concrete Workspace owners.
- */
-export function registerWorkspaceWorkerRoutes({
-  app,
+/** Joins the selected-Workspace Worker inventory to current sessions, exact package supply and audit-owned usage. */
+export function createWorkerOperationImplementations({
   coreDb,
   repositoryWorkspaceDb,
-  requestStore,
-}: {
-  readonly app: Hono<{ Variables: AuthVariables }>;
-  readonly coreDb: CoreDb | undefined;
-  readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
-}): void {
-  registerAppApiRoute(app, 'listWorkspaceWorkers', (c) => {
-    const store = requestStore(c);
-    const workspaceId = c.req.param('workspaceId');
-    const actor = c.get('actor');
-    let workspaceDb: WorkspaceDb | undefined;
-    try {
-      store.getWorkspace(workspaceId);
-      workspaceDb = repositoryWorkspaceDb(workspaceId);
-      const openedWorkspaceDb = workspaceDb;
-      const canReadUsage =
-        coreDb !== undefined &&
-        Boolean(actor) &&
-        isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
-          mutating: false,
-          policyOperation: 'audit.read',
-        });
-      const catalogById = new Map(
-        store.getWorkspaceResources(workspaceId).agents.map((agent) => [agent.id, agent])
-      );
-      const items = store
-        .listWorkspaceAgentSessions(workspaceId)
-        .filter(
-          (session) => session.threadId !== null && isCurrentAgentSessionStatus(session.status)
-        )
-        .flatMap((session) => {
-          const threadId = session.threadId;
-          if (!threadId) {
-            return [];
-          }
-          let thread: ReturnType<FsStore['getThread']> | undefined;
-          try {
-            thread = store.getThread(workspaceId, threadId);
-          } catch {
-            return [];
-          }
-          if (!thread || !isThreadVisible(store, thread, actor?.userId)) {
-            return [];
-          }
-          return [
-            projectWorkspaceWorker({
-              canReadUsage,
-              catalogName: catalogById.get(session.agentId)?.name ?? null,
-              session,
-              store,
-              threadTitle: thread.name ?? thread.preview ?? thread.id,
-              workspaceDb: openedWorkspaceDb,
-              workspaceId,
-            }),
-          ];
-        })
-        .sort((left, right) => left.threadId.localeCompare(right.threadId));
-
-      return c.json(
-        WorkspaceWorkersResponseSchema.parse({
-          items,
-          workspaceId,
-        })
-      );
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
-    } finally {
-      workspaceDb?.sqlite.close();
-    }
-  });
+  store,
+}: OperationInvocationDependencies) {
+  return {
+    'worker.list': ({ workspaceId }, context) => {
+      const owner = store!;
+      const actor = publicOperationActor(context);
+      let workspaceDb: WorkspaceDb | undefined;
+      try {
+        owner.getWorkspace(workspaceId);
+        workspaceDb = repositoryWorkspaceDb!(workspaceId);
+        const openedWorkspaceDb = workspaceDb;
+        const canReadUsage =
+          coreDb !== undefined &&
+          isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
+            mutating: false,
+            policyOperation: 'audit.read',
+          });
+        const administratorEligible =
+          coreDb !== undefined && isCurrentDeploymentAdministrator(coreDb, actor);
+        const catalogById = new Map(
+          owner.getWorkspaceResources(workspaceId).agents.map((agent) => [agent.id, agent])
+        );
+        const items = owner
+          .listWorkspaceAgentSessions(workspaceId)
+          .filter(
+            (session) => session.threadId !== null && isCurrentAgentSessionStatus(session.status)
+          )
+          .flatMap((session) => {
+            const threadId = session.threadId;
+            if (!threadId) return [];
+            let thread: ReturnType<FsStore['getThread']>;
+            try {
+              thread = owner.getThread(workspaceId, threadId);
+            } catch {
+              return [];
+            }
+            if (!isThreadVisible(owner, thread, actor.userId, administratorEligible)) return [];
+            return [
+              projectWorkspaceWorker({
+                canReadUsage,
+                catalogName: catalogById.get(session.agentId)?.name ?? null,
+                session,
+                store: owner,
+                threadTitle: thread.name ?? thread.preview ?? thread.id,
+                workspaceDb: openedWorkspaceDb,
+                workspaceId,
+              }),
+            ];
+          })
+          .sort((left, right) => left.threadId.localeCompare(right.threadId));
+        return { items, workspaceId };
+      } catch (error) {
+        if (error instanceof StoreRecordNotFoundError)
+          throw new OperationError('not_found', error.message, 404, { cause: error });
+        throw error;
+      } finally {
+        workspaceDb?.sqlite.close();
+      }
+    },
+  } satisfies FamilyImplementations<typeof WORKER_OPERATION_DEFINITIONS>;
 }
 
 /**

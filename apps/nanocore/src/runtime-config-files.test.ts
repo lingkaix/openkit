@@ -331,19 +331,41 @@ describe('runtime config file API', () => {
 
     try {
       const app = createApp({ coreDb, dataRoot, store });
-      const created = await app.request('/api/app/workspaces/ws_demo/catalog/mcp', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          allowedTools: ['echo'],
-          declaration: { args: [], command: 'node', kind: 'stdio' },
-          displayName: 'Echo',
-          expectedRevision: 0,
-          id: 'echo',
-          requestId: '00000000-0000-4000-8000-000000000101',
-        }),
-      });
-      const listed = await app.request('/api/app/workspaces/ws_demo/catalog/mcp');
+      const created = await app.request(
+        ...operationRequest(
+          'catalog.mcp-create',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              ...{ 'content-type': 'application/json' },
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              workspaceId: 'ws_demo',
+              ...{
+                allowedTools: ['echo'],
+                declaration: { args: [], command: 'node', kind: 'stdio' },
+                displayName: 'Echo',
+                expectedRevision: 0,
+                id: 'echo',
+                requestId: '00000000-0000-4000-8000-000000000101',
+              },
+            }),
+          }
+        )
+      );
+      const listed = await app.request(
+        ...operationRequest(
+          'catalog.mcp-list',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
       const files = await app.request(...operationRequest('runtime.file-list', {}));
       const fileList = (await files.json()) as { files: Array<{ id: string; kind: string }> };
 

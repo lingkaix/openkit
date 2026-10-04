@@ -200,7 +200,7 @@ describe('app api openapi projection', () => {
   });
 
   it('keeps AgentSession identity out of ordinary agent health refresh OpenAPI', () => {
-    const schema = createAppOpenApiDocument().components.schemas.AgentHealthRefreshResponse;
+    const schema = createAppOpenApiDocument().components.schemas['agent.health-refresh.output'];
 
     expect(schema).not.toHaveProperty('properties.sessions');
     expect(JSON.stringify(schema)).not.toContain('AgentSession');
@@ -374,55 +374,38 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(
-      document.paths['/api/app/workspaces/{workspaceId}/agents/health/refresh']?.post
-    ).toMatchObject({
-      operationId: 'refreshAgentHealth',
-      tags: ['app-utils'],
-      parameters: [expect.objectContaining({ name: 'workspaceId', in: 'path', required: true })],
+    expect(document.paths['/api/app/operations/agent.health-refresh']?.post).toMatchObject({
+      operationId: 'agent.health-refresh',
       responses: {
         '200': {
           content: {
             'application/json': {
-              schema: {
-                $ref: '#/components/schemas/AgentHealthRefreshResponse',
-              },
+              schema: { $ref: '#/components/schemas/agent.health-refresh.output' },
             },
           },
         },
       },
     });
-    expect(document.components.schemas.ListAgentCatalogResponse).toMatchObject({
+    expect(document.components.schemas['agent.list.output']).toMatchObject({
       type: 'object',
       required: ['items'],
     });
-    expect(document.paths['/api/app/agents']?.get).toMatchObject({
-      operationId: 'listAgentCatalog',
-      tags: ['agents'],
+    expect(document.paths['/api/app/operations/agent.list']?.post).toMatchObject({
+      operationId: 'agent.list',
       responses: {
         '200': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/ListAgentCatalogResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/agent.list.output' } },
           },
         },
       },
     });
-    expect(document.paths['/api/app/agents/{agentId}']?.get).toMatchObject({
-      operationId: 'getAgentCatalogEntry',
-      tags: ['agents'],
-      parameters: [expect.objectContaining({ name: 'agentId', in: 'path', required: true })],
+    expect(document.paths['/api/app/operations/agent.read']?.post).toMatchObject({
+      operationId: 'agent.read',
       responses: {
         '200': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/GetAgentCatalogEntryResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/agent.read.output' } },
           },
         },
       },
@@ -473,17 +456,12 @@ describe('app api openapi projection', () => {
         },
       },
     });
-    expect(document.paths['/api/app/workspaces/{workspaceId}/workers']?.get).toMatchObject({
-      operationId: 'listWorkspaceWorkers',
-      tags: ['agents'],
+    expect(document.paths['/api/app/operations/worker.list']?.post).toMatchObject({
+      operationId: 'worker.list',
       responses: {
         '200': {
           content: {
-            'application/json': {
-              schema: {
-                $ref: '#/components/schemas/WorkspaceWorkersResponse',
-              },
-            },
+            'application/json': { schema: { $ref: '#/components/schemas/worker.list.output' } },
           },
         },
       },
@@ -2069,22 +2047,6 @@ describe('app api openapi projection', () => {
       'excludeThreadMaterial',
       'restoreThreadMaterial',
       'searchApp',
-      'listAgentCatalog',
-      'getAgentCatalogEntry',
-      'listWorkspaceWorkers',
-      'getWorkspaceCatalog',
-      'listSkillCatalog',
-      'importSkill',
-      'submitSkillCandidate',
-      'decideSkillCandidate',
-      'selectSkillDefault',
-      'setSkillPin',
-      'listMcpCatalog',
-      'createMcpConfig',
-      'selectMcpVersion',
-      'updateMcpBinding',
-      'listPluginCatalog',
-      'importPlugin',
       'getCapabilityUsage',
       'listWorkspaceEvidenceBundles',
       'listWorkspaceRuntimeEvidence',
@@ -2095,7 +2057,6 @@ describe('app api openapi projection', () => {
       'listWorkspaceVaultInjectionPlans',
       'listWorkspaceVaultInjectionReceipts',
       'listServerPermissionDecisions',
-      'refreshAgentHealth',
       ...Object.keys(OPERATION_DEFINITIONS),
       'listAgentEnvironmentPackageSnapshots',
       'getAgentEnvironmentPackageSnapshot',

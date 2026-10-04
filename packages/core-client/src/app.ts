@@ -178,8 +178,6 @@ import {
   WorkspaceSharingErrorSchema,
   type WorkspaceVaultGrant,
   WorkspaceVaultGrantSchema,
-  type WorkspaceWorkersResponse,
-  WorkspaceWorkersResponseSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { ApiCallError } from './errors.js';
@@ -362,8 +360,6 @@ export interface AppApiClient {
     materialId: string,
     input: RestoreThreadMaterialInput
   ): Promise<RestoreThreadMaterialResponse>;
-  /** Reads current Workers visible in the selected Workspace, preserving restricted details. */
-  listWorkspaceWorkers(workspaceId: string): Promise<WorkspaceWorkersResponse>;
   /** Lists durable Agent Environment Package snapshots for one workspace. */
   listAgentEnvironmentPackageSnapshots(
     workspaceId: string
@@ -634,11 +630,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
         RestoreThreadMaterialResponseSchema
       );
     },
-    listWorkspaceWorkers: (workspaceId) =>
-      transport.getJson(
-        `/api/app/workspaces/${encodeURIComponent(workspaceId)}/workers`,
-        WorkspaceWorkersResponseSchema
-      ),
     listAgentEnvironmentPackageSnapshots: (workspaceId) =>
       transport.getJson(
         `/api/app/workspaces/${workspaceId}/agent-environment/snapshots`,

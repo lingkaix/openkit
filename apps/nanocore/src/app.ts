@@ -24,11 +24,9 @@ import {
   createAdministrationEnvironmentTools,
 } from './administration/environment-tools.js';
 import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
-import { registerAgentCatalogRoutes } from './agents/catalog-routes.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
-import { registerWorkspaceWorkerRoutes } from './agents/workspace-workers.js';
 import { asApiError } from './api-errors.js';
 import { registerAppUpdateRoutes } from './app-update/app-update-routes.js';
 import {
@@ -62,7 +60,6 @@ import {
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
-import { registerResourceCatalogRoutes } from './catalog/catalog-routes.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
@@ -114,7 +111,6 @@ import {
 } from './providers/vault-credential-resolver.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
 import { registerAgentEnvironmentRoutes } from './runtime/agent-environment-routes.js';
-import { registerAgentHealthRoutes } from './runtime/agent-health-routes.js';
 import {
   evaluateCapturedPendingCall,
   executeCapturedPendingCall,
@@ -1700,29 +1696,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerSearchRoutes({ app, authorizedWorkspaceIds, coreDb: options.coreDb, requestStore });
 
-  registerAgentCatalogRoutes({ app, authorizedWorkspaceIds, requestStore });
-  registerWorkspaceWorkerRoutes({
-    app,
-    coreDb: options.coreDb,
-    repositoryWorkspaceDb,
-    requestStore,
-  });
-
-  registerResourceCatalogRoutes({
-    app,
-    afterMutation: (workspaceId) => {
-      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
-      void workerMcpGateway.closeWorkspace(workspaceId);
-    },
-    dataRoot: () => {
-      const root = dataRoot ?? sharedStore.getDataRoot();
-      if (!root) {
-        throw new Error('Workspace catalog operations require a data root.');
-      }
-      return root;
-    },
-  });
-
   registerGovernanceRoutes({
     app,
     coreDb: options.coreDb,
@@ -1739,11 +1712,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
     goalServices,
-  });
-
-  registerAgentHealthRoutes({
-    app,
-    requestStore,
   });
 
   const pendingWorkerDelivery = {

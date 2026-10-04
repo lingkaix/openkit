@@ -8,7 +8,6 @@ import {
 } from '@openkit/config-schema';
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import * as usageLedger from '../capability/usage-ledger.js';
@@ -21,6 +20,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
@@ -28,7 +28,7 @@ const timestamp = '2026-09-17T02:00:00.000Z';
 const digest = `sha256:${'a'.repeat(64)}`;
 
 /**
- * Opens a migrated Core database for current Worker route tests.
+ * Opens a migrated Core database for current Worker operation tests.
  *
  * @returns Migrated Core database handle.
  */
@@ -39,7 +39,7 @@ function createCoreDb(): CoreDb {
 }
 
 /**
- * Opens a migrated workspace database for current Worker route tests.
+ * Opens a migrated workspace database for current Worker operation tests.
  *
  * @param coreDb Core database whose data root owns the workspace database.
  * @returns Migrated workspace database handle.
@@ -284,7 +284,7 @@ function recordSessionLlmUsage(
   });
 }
 
-describe('workspace workers route', () => {
+describe('worker.list operation', () => {
   it('keeps catalog-only supply and internal-role Turns out of current Worker inventory', async () => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -297,7 +297,17 @@ describe('workspace workers route', () => {
     const app = createAuthorizedApp(coreDb, store);
 
     try {
-      const workersRes = await app.request('/api/app/workspaces/ws_demo/workers');
+      const workersRes = await app.request(
+        ...operationRequest(
+          'worker.list',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
       const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -429,7 +439,17 @@ describe('workspace workers route', () => {
     });
 
     try {
-      const response = await app.request('/api/app/workspaces/ws_demo/workers');
+      const response = await app.request(
+        ...operationRequest(
+          'worker.list',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
       const body = WorkspaceWorkersResponseSchema.parse(await response.json());
       const byThread = Object.fromEntries(body.items.map((item) => [item.threadId, item]));
 
@@ -488,7 +508,17 @@ describe('workspace workers route', () => {
           requestId: '00000000-0000-4000-8000-000000000398',
           requestInputHash: digest,
         });
-        const response = await app.request('/api/app/workspaces/ws_demo/workers');
+        const response = await app.request(
+          ...operationRequest(
+            'worker.list',
+            {},
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ workspaceId: 'ws_demo' }),
+            }
+          )
+        );
         expect(response.status).toBe(200);
         const body = WorkspaceWorkersResponseSchema.parse(await response.json());
         expect(body.items.find((item) => item.threadId === thread.id)?.work).toEqual({
@@ -614,14 +644,35 @@ describe('workspace workers route', () => {
     const usageSpy = vi.spyOn(usageLedger, 'readLatestCurrentAgentSessionLlmUsage');
 
     try {
-      const ownerRes = await ownerApp.request('/api/app/workspaces/ws_demo/workers');
+      const ownerRes = await ownerApp.request(
+        ...operationRequest(
+          'worker.list',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
       const ownerBody = WorkspaceWorkersResponseSchema.parse(await ownerRes.json());
       const ownerWorker = ownerBody.items.find((item) => item.threadId === thread.id);
       const publicJson = JSON.stringify(ownerBody);
       usageSpy.mockClear();
-      const viewerRes = await viewerApp.request('/api/app/workspaces/ws_demo/workers', {
-        headers: { authorization: `Bearer ${viewerToken.secret}` },
-      });
+      const viewerRes = await viewerApp.request(
+        ...operationRequest(
+          'worker.list',
+          {},
+          {
+            method: 'POST',
+            headers: {
+              ...{ authorization: `Bearer ${viewerToken.secret}` },
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
       const viewerBody = WorkspaceWorkersResponseSchema.parse(await viewerRes.json());
       const viewerWorker = viewerBody.items.find((item) => item.threadId === thread.id);
 
@@ -660,4 +711,100 @@ describe('workspace workers route', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+it('admits current administrators to foreign private Threads under the accepted rule with HTTP and MCP Worker field parity', async () => {
+  const coreDb = createCoreDb();
+  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const foreign = store.createThread(
+    'ws_demo',
+    'Foreign private Worker',
+    undefined,
+    'conversation',
+    { visibility: 'private', privateOwnerUserId: 'user_foreign' }
+  );
+  createCurrentWorkerSession(store, {
+    agentId: 'agent_codex_host',
+    sessionId: 'as_foreign_private',
+    threadId: foreign.id,
+    turnId: 'turn_foreign_private',
+  });
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+  const app = createApp({
+    coreDb,
+    dataRoot: coreDb.dataRoot,
+    store,
+    mode: 'server',
+    auth: {
+      api: { getSession: async () => null },
+      handler: async () => new Response(null, { status: 404 }),
+    },
+    agentManifests: [createTestAgentSetup().manifest],
+  });
+  const admin = createOpenKitAccessTokenRecord(coreDb, {
+    ownerUserId: 'user_local',
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  const member = createOpenKitAccessTokenRecord(coreDb, {
+    ownerUserId: 'user_local',
+    scope: 'workspace',
+    workspaceIds: ['ws_demo'],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  try {
+    const http = async (secret: string) =>
+      app.request(
+        ...operationRequest(
+          'worker.list',
+          {},
+          {
+            headers: { authorization: `Bearer ${secret}` },
+            body: JSON.stringify({ workspaceId: 'ws_demo' }),
+          }
+        )
+      );
+    const hidden = await http(member.secret);
+    expect(hidden.status).toBe(200);
+    expect(await hidden.json()).toEqual({ items: [], workspaceId: 'ws_demo' });
+    const visible = await http(admin.secret);
+    expect(visible.status).toBe(200);
+    const expected = WorkspaceWorkersResponseSchema.parse(await visible.json());
+    expect(expected.items).toEqual([
+      expect.objectContaining({
+        threadId: foreign.id,
+        threadTitle: 'Foreign private Worker',
+        agentId: 'agent_codex_host',
+        packageDetails: { kind: 'unavailable' },
+        lastUsedModel: { kind: 'unavailable' },
+        work: { kind: 'none' },
+      }),
+    ]);
+    const remote = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${admin.secret}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'call',
+          arguments: { operation: 'worker.list', input: { workspaceId: 'ws_demo' } },
+        },
+      }),
+    });
+    expect(remote.status).toBe(200);
+    const body = await remote.json();
+    expect(body.error).toBeUndefined();
+    expect(body.result.isError).not.toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toEqual(expected);
+  } finally {
+    coreDb.sqlite.close();
+  }
 });

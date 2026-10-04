@@ -38,7 +38,7 @@ NanoCore App API payloads come from `@openkit/app-api-schemas`.
 - `client.operations[id]`: the eleven `provider-subscription.*` operations for fixed provider inventory plus provider-scoped account, device-code login, logout, quota, and auto-top-up routes. Quota and auto-top-up omit missing percentages and monetary fields rather than inferring zero; a successful quota with no percentage is Provider did not report usage.
 - `client.auth.email`: Better Auth email sign-up, sign-in, and sign-out routes.
 - `client.capabilities`: `refresh`, `snapshot`, `supports`, and `require` helpers over `/api/meta`.
-- `client.agents`: Agent Catalog list, detail, and health refresh routes.
+- `client.operations`: Canonical Agent inventory, detail and health refresh operations.
 - `client.operations['attention.list']`: definition-derived unified Human Attention read model with one selector object.
 
 `parseWorkspaceSharingError(error)` narrows a generic `ApiCallError` only when it validates as the closed Workspace sharing error family.
@@ -47,7 +47,7 @@ Deprecated flat aliases are not exported.
 
 `client.app.prepareAppUpdate`, `startAppUpdate` and `getAppUpdateStatus` project the deployment-admin App-update contract. Keep the host-assigned request ID before starting; an uncertain response requires status for that ID, not a new update. The client does not perform host effects or infer completion from a successful HTTP submission.
 
-`client.catalog.updateMcpBinding` sends optional Vault credential bindings through the existing Workspace binding operation. A supplied array replaces those bindings, including an empty array to clear them; omission preserves current credentials for policy-only updates. Input and response types remain derived from the shared App API schemas.
+`client.operations['catalog.mcp-binding']` sends optional Vault credential bindings through the existing Workspace binding operation. A supplied array replaces those bindings, including an empty array to clear them; omission preserves current credentials for policy-only updates. Input and response types remain derived from the shared App API schemas.
 
 ## Commands
 
@@ -62,7 +62,7 @@ Deprecated flat aliases are not exported.
 
 `client.operations['conversation.navigation']` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
 
-`client.app.listWorkspaceWorkers` reads the selected-Workspace current Worker projection, including exact recorded work and separately labeled package preference and last-used model. NanoCore owns Thread visibility and the additional audit permission for usage; the client validates the response without joining records or exposing hidden runtime identity.
+`client.operations['worker.list']` reads the selected-Workspace current Worker projection, including exact recorded work and separately labeled package preference and last-used model. NanoCore owns Thread visibility and the additional audit permission for usage; the client validates the response without joining records or exposing hidden runtime identity.
 
 ## Native Environment Administration
 
@@ -93,3 +93,5 @@ Workspace synchronization uses `client.operations['sync.review-decide']({ worksp
 Workspace sharing, invitation decisions, leave, ownership transfer, access recovery, user disable, Workspace deletion and deleted-resource recovery use the sixteen canonical lifecycle definitions through `client.operations[id](input)`. Inputs retain logical `workspaceId`, `invitationId` and `targetUserId` selectors, with command identity in `x-openkit-request-id`; invitation creation returns HTTP 201 and deletion retains HTTP 200/202. Their former App methods and input aliases are removed, while `parseWorkspaceSharingError` still validates safe typed owner failures.
 
 Ordinary Workspace, Thread and Turn commands, Workspace dashboard, Turn feedback and Quick Chat use `client.operations[id](input)` with complete logical selectors. Request identity stays in `x-openkit-request-id`; `client.core` retains metadata and the Thread event stream. The eleven former named Core and App methods are removed without aliases.
+
+All seventeen Agent, Worker and resource catalog operations use `client.operations[id](input)` with complete logical selectors. Request identities retain caller values or use the existing generator when omitted; catalog request bodies and redacted results reuse their shared schemas. The drained Agent and resource catalog namespaces and the old Worker-list App member are removed.
