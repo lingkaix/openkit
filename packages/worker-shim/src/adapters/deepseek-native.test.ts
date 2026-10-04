@@ -370,6 +370,7 @@ it('removes a stale managed root on exact successor resume while retaining a loc
   expect(await successor.nativeHandle()).toEqual(handle);
 }, 180_000);
 
+// CI measured this cold native fixture at 5411 ms; RPC and stop bounds stay adapter-owned.
 it.each([
   'acp',
   'llm-pi-ai',
@@ -387,7 +388,7 @@ it.each([
   );
   expect(inference.requests[0]?.body.model).toBe('probe-model');
   expect(inference.requests[0]?.headers.authorization).toBe('Bearer native-inference');
-});
+}, 180_000);
 
 it('refuses publication over a child created during staging and leaves both trees intact', async () => {
   const source = join(image, '.dsh');

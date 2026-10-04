@@ -2893,7 +2893,8 @@ describe('W4 round-eight refused setup cleanup', () => {
       let kill!: ChildProcess['kill'];
       let prompts = 0;
       const adapter = createOpenCodeAdapter({
-        stopTimeoutMs: stop === 'proved' ? 2000 : 30,
+        // Forced cleanup needs native signal delivery time; only unproved cleanup uses a short window.
+        stopTimeoutMs: stop === 'unproved' ? 30 : 2000,
         loadClient: async () => {
           const real = await import('@opencode/client');
           return {

@@ -73,6 +73,8 @@ The OpenCode unknown-finish regression transforms the collected native message t
 
 DeepSeek malformed-frame and stdout-tail regressions allow five seconds for complete native stop proof. Fault admission can be immediate while the owned two-stage stop uses both two-second signal windows; the native result and confirmed child absence remain required.
 
+DeepSeek's native disabled-binding collision regressions use the existing 180-second native-fixture budget for cold process startup under CI scheduling. OpenCode's round-eight forced-cleanup regression uses the production two-second stop-signal window; only the deliberately unproved-stop variant shortens that window to 30 ms. Completion, unchanged authored bytes, warnings, stop confirmation, disposable-input cleanup, and the forced native-flush refusal remain asserted. Adapter RPC, signal, drain, and Harness cleanup bounds remain unchanged.
+
 Rejected-settlement regressions wait for the inspected cleanup outcome after interrupt invocation; the invocation counter alone does not prove that asynchronous input removal finished.
 
 Successful Turn closeout stops periodic heartbeat scheduling and waits for any in-flight lease heartbeat and its transcript event's live acceptance before writing `turn.settled` and draining loopback requests. The heartbeat timer's cancellation signal is separate from control delivery, so barrier shutdown cannot cancel an immutable heartbeat request or a transcript event's append. Live rejection still fails the Turn, and the separate local transcript queue can seal a failed terminal record under the existing control-outage rules.
