@@ -90,9 +90,40 @@ export const WORKER_ARTIFACT_RECOVERY_REQUIRED = 'worker_artifact_recovery_requi
 
 /** Safe classification of a historical native-proof provenance refusal; carries no retained payload. */
 export class WorkerNativeProofValidationError extends Error {
-  /** Fixed authority check that refused the proof. */
+  /** First fixed predicate that refused package lineage, or the subsequent proof/storage check. */
   public readonly failedCheck:
-    | 'package-binding-lineage'
+    | 'package-binding-lineage/anchor-missing'
+    | 'package-binding-lineage/attachment-missing'
+    | 'package-binding-lineage/lease-missing'
+    | 'package-binding-lineage/admission-missing'
+    | 'package-binding-lineage/normalized-package'
+    | 'package-binding-lineage/harness-key'
+    | 'package-binding-lineage/agent-session-key'
+    | 'package-binding-lineage/sandbox-key'
+    | 'package-binding-lineage/actor'
+    | 'package-binding-lineage/request'
+    | 'package-binding-lineage/snapshot-lease'
+    | 'package-binding-lineage/anchor-workspace'
+    | 'package-binding-lineage/anchor-thread'
+    | 'package-binding-lineage/anchor-turn'
+    | 'package-binding-lineage/anchor-agent-session'
+    | 'package-binding-lineage/anchor-snapshot'
+    | 'package-binding-lineage/lease-workspace'
+    | 'package-binding-lineage/lease-thread'
+    | 'package-binding-lineage/lease-turn'
+    | 'package-binding-lineage/lease-agent-session'
+    | 'package-binding-lineage/lease-snapshot'
+    | 'package-binding-lineage/lease-sandbox-binding'
+    | 'package-binding-lineage/attachment-workspace'
+    | 'package-binding-lineage/attachment-thread'
+    | 'package-binding-lineage/attachment-target'
+    | 'package-binding-lineage/attachment-deployment'
+    | 'package-binding-lineage/attachment-epoch'
+    | 'package-binding-lineage/backend-kind'
+    | 'package-binding-lineage/backend-image'
+    | 'package-binding-lineage/backend-session'
+    | 'package-binding-lineage/staging-directory'
+    | 'package-binding-lineage/transient-provider'
     | 'accepted-ready-binding'
     | 'retained-storage-association'
     | 'live-storage-association';

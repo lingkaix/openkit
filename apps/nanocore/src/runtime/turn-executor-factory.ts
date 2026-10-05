@@ -3797,7 +3797,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       .prepare(
         `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
               agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
-              sandbox_binding_ref AS sandboxBindingRef, target_id AS targetId
+              sandbox_binding_ref AS sandboxBindingRef
        FROM scheduler_session_leases WHERE lease_id = ?`
       )
       .get(leaseId) as
@@ -3808,51 +3808,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           agentSessionId: string;
           packageSnapshotId: string;
           sandboxBindingRef: string;
-          targetId: string;
         }
       | undefined;
     const admission = lease
       ? requireSchedulerSessionLeaseAdmissionContext(this.coreDb, leaseId)
       : undefined;
-    if (
-      !anchor ||
-      !attachment ||
-      !lease ||
-      !admission ||
-      !isDeepStrictEqual(environmentPackage, normalizedSnapshot) ||
-      attachment.harnessCompatibilityKey !== nanoHostHarnessCompatibilityKey(retainedSnapshot) ||
-      attachment.agentSessionCompatibilityKey !==
-        nanoHostAgentSessionCompatibilityKey(retainedSnapshot) ||
-      attachment.sandboxCompatibilityKey !== nanoHostSandboxCompatibilityKey(retainedSnapshot) ||
-      !isDeepStrictEqual(scope.triggerActor, admission.triggerActor) ||
-      scope.requestId !== admission.requestId ||
-      this.requireLeaseId(environmentPackage.snapshotId) !== leaseId ||
-      anchor.workspaceId !== scope.workspaceId ||
-      anchor.threadId !== scope.threadId ||
-      anchor.turnId !== scope.turnId ||
-      anchor.agentSessionId !== scope.agentSessionId ||
-      anchor.packageSnapshotId !== environmentPackage.snapshotId ||
-      lease.workspaceId !== scope.workspaceId ||
-      lease.threadId !== scope.threadId ||
-      lease.turnId !== scope.turnId ||
-      lease.agentSessionId !== scope.agentSessionId ||
-      lease.packageSnapshotId !== environmentPackage.snapshotId ||
-      lease.sandboxBindingRef !== anchor.sandboxBindingRef ||
-      lease.targetId !== anchor.runtimeTargetId ||
-      attachment.workspaceId !== scope.workspaceId ||
-      attachment.threadId !== scope.threadId ||
-      attachment.runtimeTargetId !== anchor.runtimeTargetId ||
-      attachment.deploymentId !== anchor.deploymentId ||
-      attachment.originPhysicalEpoch !== anchor.originPhysicalEpoch ||
-      anchor.backendKind !== 'openshell' ||
-      !sessionMatchesRuntimeImage(anchor, environmentPackage.runtime.image) ||
-      anchor.backendSessionId !==
-        `${nanoHostSandboxId(attachment.sandboxCompatibilityKey)}-${createHash('sha256').update(environmentPackage.snapshotId).digest('hex').slice(0, 16)}` ||
-      anchor.stagingDirectoryRef !==
-        `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}` ||
-      anchor.transientProviderInstanceId !== null
-    ) {
-      throw new WorkerNativeProofValidationError('package-binding-lineage', {
+    // First refusal wins in source order; only fixed predicate names enter App diagnostics.
+    const reject: (failedCheck: WorkerNativeProofValidationError['failedCheck']) => never = (
+      failedCheck
+    ) => {
+      throw new WorkerNativeProofValidationError(failedCheck, {
         proofAgentSessionId: scope.agentSessionId,
         packageSnapshotId: environmentPackage.snapshotId,
         leaseId,
@@ -3865,7 +3830,68 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             ? attachment.originPhysicalEpoch
             : null,
       });
-    }
+    };
+    if (!anchor) reject('package-binding-lineage/anchor-missing');
+    if (!attachment) reject('package-binding-lineage/attachment-missing');
+    if (!lease) reject('package-binding-lineage/lease-missing');
+    if (!admission) reject('package-binding-lineage/admission-missing');
+    if (!isDeepStrictEqual(environmentPackage, normalizedSnapshot))
+      reject('package-binding-lineage/normalized-package');
+    if (attachment.harnessCompatibilityKey !== nanoHostHarnessCompatibilityKey(retainedSnapshot))
+      reject('package-binding-lineage/harness-key');
+    if (
+      attachment.agentSessionCompatibilityKey !==
+      nanoHostAgentSessionCompatibilityKey(retainedSnapshot)
+    )
+      reject('package-binding-lineage/agent-session-key');
+    if (attachment.sandboxCompatibilityKey !== nanoHostSandboxCompatibilityKey(retainedSnapshot))
+      reject('package-binding-lineage/sandbox-key');
+    if (!isDeepStrictEqual(scope.triggerActor, admission.triggerActor))
+      reject('package-binding-lineage/actor');
+    if (scope.requestId !== admission.requestId) reject('package-binding-lineage/request');
+    if (this.requireLeaseId(environmentPackage.snapshotId) !== leaseId)
+      reject('package-binding-lineage/snapshot-lease');
+    if (anchor.workspaceId !== scope.workspaceId)
+      reject('package-binding-lineage/anchor-workspace');
+    if (anchor.threadId !== scope.threadId) reject('package-binding-lineage/anchor-thread');
+    if (anchor.turnId !== scope.turnId) reject('package-binding-lineage/anchor-turn');
+    if (anchor.agentSessionId !== scope.agentSessionId)
+      reject('package-binding-lineage/anchor-agent-session');
+    if (anchor.packageSnapshotId !== environmentPackage.snapshotId)
+      reject('package-binding-lineage/anchor-snapshot');
+    if (lease.workspaceId !== scope.workspaceId) reject('package-binding-lineage/lease-workspace');
+    if (lease.threadId !== scope.threadId) reject('package-binding-lineage/lease-thread');
+    if (lease.turnId !== scope.turnId) reject('package-binding-lineage/lease-turn');
+    if (lease.agentSessionId !== scope.agentSessionId)
+      reject('package-binding-lineage/lease-agent-session');
+    if (lease.packageSnapshotId !== environmentPackage.snapshotId)
+      reject('package-binding-lineage/lease-snapshot');
+    if (lease.sandboxBindingRef !== anchor.sandboxBindingRef)
+      reject('package-binding-lineage/lease-sandbox-binding');
+    if (attachment.workspaceId !== scope.workspaceId)
+      reject('package-binding-lineage/attachment-workspace');
+    if (attachment.threadId !== scope.threadId) reject('package-binding-lineage/attachment-thread');
+    if (attachment.runtimeTargetId !== anchor.runtimeTargetId)
+      reject('package-binding-lineage/attachment-target');
+    if (attachment.deploymentId !== anchor.deploymentId)
+      reject('package-binding-lineage/attachment-deployment');
+    if (attachment.originPhysicalEpoch !== anchor.originPhysicalEpoch)
+      reject('package-binding-lineage/attachment-epoch');
+    if (anchor.backendKind !== 'openshell') reject('package-binding-lineage/backend-kind');
+    if (!sessionMatchesRuntimeImage(anchor, environmentPackage.runtime.image))
+      reject('package-binding-lineage/backend-image');
+    if (
+      anchor.backendSessionId !==
+      `${nanoHostSandboxId(attachment.sandboxCompatibilityKey)}-${createHash('sha256').update(environmentPackage.snapshotId).digest('hex').slice(0, 16)}`
+    )
+      reject('package-binding-lineage/backend-session');
+    if (
+      anchor.stagingDirectoryRef !==
+      `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`
+    )
+      reject('package-binding-lineage/staging-directory');
+    if (anchor.transientProviderInstanceId !== null)
+      reject('package-binding-lineage/transient-provider');
     return { ...attachment, anchor };
   }
 

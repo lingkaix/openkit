@@ -900,7 +900,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       scenario === 'typed-preview'
         ? new TurnStartValidationError('preparation_refused', 'Fixed preparation refusal.', 403)
         : scenario === 'native-proof'
-          ? new WorkerNativeProofValidationError('package-binding-lineage', {
+          ? new WorkerNativeProofValidationError('package-binding-lineage/attachment-target', {
               proofAgentSessionId: 'as_original_proof',
               packageSnapshotId: 'snapshot_original_proof',
               leaseId: 'lease_original_proof',
@@ -989,7 +989,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             : 'Worker backend materialization capacity inspection failed.',
         failedCheck:
           scenario === 'native-proof'
-            ? 'package-binding-lineage'
+            ? 'package-binding-lineage/attachment-target'
             : 'materialization-capacity-inspection',
       });
       expect(JSON.stringify(log)).not.toMatch(

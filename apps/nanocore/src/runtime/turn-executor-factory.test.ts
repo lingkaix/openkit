@@ -26,6 +26,7 @@ import {
   createSchedulerPlacementPlan,
   createSchedulerSessionLease,
   dispatchNextSchedulerEntry,
+  ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
@@ -8786,6 +8787,7 @@ describe('createConfiguredTurnExecutor', () => {
     'cross-thread-closed-handoff',
     'cross-thread-old-epoch-handoff',
     'ignored-package-proof-handoff',
+    'ignored-package-cross-thread-handoff',
     'ignored-package-restoration',
     'known-package-proof-handoff',
     'known-package-restoration',
@@ -8808,7 +8810,7 @@ describe('createConfiguredTurnExecutor', () => {
     for (const setup of setups) admitTestNativeEnvironment(coreDb, setup.manifest);
     coreDb.sqlite
       .prepare(
-        `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('target_resume', 'identity_resume', 'deployment_resume', 1, 1, 1, 1, ?, ?, 1)`
+        `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('staging-nanohost-a2', 'identity_resume', 'staging-a2', 1, 1, 1, 1, ?, ?, 1)`
       )
       .run('a'.repeat(64), '2999-10-03T00:00:00.000Z');
     for (const [index, setup] of setups.entries())
@@ -8877,38 +8879,9 @@ describe('createConfiguredTurnExecutor', () => {
         };
       },
     });
-    upsertSchedulerWorkerPool(coreDb, {
-      allowedBackendKinds: ['openshell'],
-      allowedPlacements: ['local'],
-      allowedWorkspaceScopes: ['local'],
-      budgetClass: 'interactive',
-      currentAdmittedSessionCount: 0,
-      currentQueueDepth: 0,
-      defaultTimeoutMs: 900_000,
-      healthSummary: 'ready',
-      maxConcurrentSessions: 1,
-      poolId: 'pool_resume',
-      queueLimit: 20,
-      status: 'active',
-    });
-    upsertSchedulerCapacityRecord(coreDb, {
-      capacityClass: 'local',
-      concurrencyCeiling: 1,
-      inUseCount: 0,
-      observationSource: 'configured',
-      observedAt: '2999-10-03T00:00:00.000Z',
-      poolId: 'pool_resume',
-      queueDepth: 0,
-      targetId: 'target_resume',
-    });
-    upsertSchedulerTargetHealthRecord(coreDb, {
-      checkResults: [],
-      consecutiveFailureCount: 0,
-      consecutiveSuccessCount: 1,
-      healthState: 'healthy',
-      lastProbeAt: '2999-10-03T00:00:00.000Z',
-      nextProbeAt: '2999-01-01T00:00:00.000Z',
-      targetId: 'target_resume',
+    ensureConfiguredSchedulerBaseline(coreDb, {
+      placement: 'local',
+      now: () => '2999-10-03T00:00:00.000Z',
     });
     const providerRegistry = new ProviderRegistry([
       {
@@ -9018,6 +8991,18 @@ describe('createConfiguredTurnExecutor', () => {
     try {
       await run(1, 0);
       const original = effects.find((effect) => effect.kind === 'sandbox.create')!.input.storage;
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT target_id AS targetId, pool_id AS poolId FROM scheduler_session_leases')
+          .get()
+      ).toEqual({ targetId: 'target_local', poolId: 'pool_local' });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT runtime_target_id AS targetId, deployment_id AS deploymentId FROM worker_backend_sessions'
+          )
+          .get()
+      ).toEqual({ targetId: 'staging-nanohost-a2', deploymentId: 'staging-a2' });
       expect.soft(store.getAgentSession('as_resume_1')).toMatchObject({
         nativeHandleDigest: digest,
         retainedStorage: {
@@ -9161,6 +9146,11 @@ describe('createConfiguredTurnExecutor', () => {
               })
             )
             .digest('hex');
+          const historicalSandboxKey = (
+            coreDb.sqlite
+              .prepare('SELECT sandbox_compatibility_key AS key FROM sandbox_runtime_records')
+              .get() as { key: string }
+          ).key;
           const historicalSessionKey = deriveNanoHostAgentSessionCompatibilityKey({
             adapterId: aep.control.adapter.targetRuntime,
             adapterVersion: aep.agent.runtimeVersion,
@@ -9207,8 +9197,8 @@ describe('createConfiguredTurnExecutor', () => {
               }
             ): void;
           };
+          const recorder = vi.spyOn(internal, 'recordNativeHandleDigest');
           if (scenario.startsWith('known-package-')) {
-            const recorder = vi.spyOn(internal, 'recordNativeHandleDigest');
             const effectsBefore = [...effects];
             const bindingsBefore = coreDb.sqlite
               .prepare('SELECT * FROM agent_session_runtime_bindings')
@@ -9278,7 +9268,20 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb.sqlite
             .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
             .run('f'.repeat(64));
-          const inspect = () => restoredBackend.inspectMaterializationCapacity!(normalized);
+          const desired =
+            scenario === 'ignored-package-cross-thread-handoff'
+              ? {
+                  ...normalized,
+                  snapshotId: 'snapshot_fresh_cross_thread',
+                  scope: {
+                    ...normalized.scope,
+                    agentSessionId: 'as_resume_2',
+                    threadId: 'thread_resume_1',
+                    turnId: 'turn_resume_2',
+                  },
+                }
+              : normalized;
+          const inspect = () => restoredBackend.inspectMaterializationCapacity!(desired);
           const effectsBefore = [...effects];
           const acceptedInspection = inspectNanoHostAgentSessionContinuity(coreDb, {
             agentSessionId: predecessor.id,
@@ -9306,28 +9309,93 @@ describe('createConfiguredTurnExecutor', () => {
               .prepare(`UPDATE agent_session_runtime_bindings SET ${field} = ?`)
               .run(altered);
             expect(handoff).toThrow();
+            expect(recorder).not.toHaveBeenCalled();
             expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
             coreDb.sqlite
               .prepare(`UPDATE agent_session_runtime_bindings SET ${field} = ?`)
               .run(original.value);
           }
           // These corruptions retain the ignored field, so tolerance cannot mask failed authority checks.
-          for (const [table, field, altered] of [
-            ['worker_backend_sessions', 'thread_id', 'wrong-thread'],
-            ['worker_backend_sessions', 'origin_physical_epoch', 'e'.repeat(64)],
-            ['worker_backend_sessions', 'lease_id', 'wrong-lease'],
-            ['agent_session_runtime_bindings', 'thread_id', 'wrong-thread'],
-            ['agent_session_runtime_bindings', 'agent_session_compatibility_key', 'e'.repeat(64)],
-            ['worker_storage_bindings', 'current_sandbox_binding_ref', 'wrong-binding'],
+          for (const [table, field, altered, failedCheck] of [
+            [
+              'worker_backend_sessions',
+              'thread_id',
+              'wrong-thread',
+              'package-binding-lineage/anchor-thread',
+            ],
+            [
+              'worker_backend_sessions',
+              'origin_physical_epoch',
+              'e'.repeat(64),
+              'package-binding-lineage/attachment-epoch',
+            ],
+            [
+              'worker_backend_sessions',
+              'backend_lineage_json',
+              JSON.stringify({ imageRef: `sha256:${'7'.repeat(64)}` }),
+              'package-binding-lineage/backend-image',
+            ],
+            [
+              'worker_backend_sessions',
+              'backend_session_id',
+              'wrong-backend-session',
+              'package-binding-lineage/backend-session',
+            ],
+            [
+              'worker_backend_sessions',
+              'runtime_target_id',
+              'wrong-nanohost-target',
+              'package-binding-lineage/attachment-target',
+            ],
+            [
+              'worker_backend_sessions',
+              'lease_id',
+              'wrong-lease',
+              'package-binding-lineage/lease-missing',
+            ],
+            [
+              'agent_session_runtime_bindings',
+              'thread_id',
+              'wrong-thread',
+              'package-binding-lineage/attachment-thread',
+            ],
+            [
+              'agent_session_runtime_bindings',
+              'agent_session_compatibility_key',
+              'e'.repeat(64),
+              'package-binding-lineage/agent-session-key',
+            ],
+            [
+              'worker_storage_bindings',
+              'current_sandbox_binding_ref',
+              'wrong-binding',
+              'retained-storage-association',
+            ],
           ]) {
             const original = coreDb.sqlite
               .prepare(`SELECT ${field} AS value FROM ${table}`)
               .get() as { value: string };
             coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(altered);
-            expect(() => inspect()).toThrow();
+            expect(inspect).toThrow(
+              expect.objectContaining({ name: 'WorkerNativeProofValidationError', failedCheck })
+            );
+            expect(effects).toEqual(effectsBefore);
+            expect(recorder).not.toHaveBeenCalled();
             expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
             coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(original.value);
           }
+          coreDb.sqlite
+            .prepare(
+              "UPDATE worker_backend_sessions SET thread_id = 'wrong-thread', runtime_target_id = 'wrong-nanohost-target'"
+            )
+            .run();
+          expect(inspect).toThrow(
+            expect.objectContaining({ failedCheck: 'package-binding-lineage/anchor-thread' })
+          );
+          expect(recorder).not.toHaveBeenCalled();
+          coreDb.sqlite
+            .prepare('UPDATE worker_backend_sessions SET thread_id = ?, runtime_target_id = ?')
+            .run(predecessor.threadId, 'staging-nanohost-a2');
           const originalBytes = readFileSync(snapshotPath, 'utf8');
           retained.snapshot.scope.threadId = 'wrong-package-thread';
           writeFileSync(snapshotPath, JSON.stringify(retained));
@@ -9358,10 +9426,17 @@ describe('createConfiguredTurnExecutor', () => {
               .digest('hex');
             writeFileSync(snapshotPath, JSON.stringify(changedAdmission));
             expect(() => inspect()).toThrow();
+            expect(recorder).not.toHaveBeenCalled();
             expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
             writeFileSync(snapshotPath, originalBytes);
           }
+          expect(recorder).not.toHaveBeenCalled();
           expect(inspect()).toBe('available');
+          expect(recorder).toHaveBeenCalledExactlyOnceWith(
+            predecessor.id,
+            digest,
+            predecessor.retainedStorage
+          );
           expect(readFileSync(snapshotPath, 'utf8')).toBe(originalBytes);
           expect(effects).toEqual(effectsBefore);
           expect(store.getAgentSession(predecessor.id)).toMatchObject({
@@ -9380,6 +9455,36 @@ describe('createConfiguredTurnExecutor', () => {
               )
               .get()
           ).toEqual({ key: historicalSessionKey });
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT sandbox_compatibility_key AS key FROM sandbox_runtime_records')
+              .get()
+          ).toEqual({ key: historicalSandboxKey });
+          if (scenario === 'ignored-package-cross-thread-handoff') {
+            // Observe durable handoff while the victim still exists, then admit another Thread.
+            expect(
+              coreDb.sqlite
+                .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+                .get(predecessor.id)
+            ).toBeDefined();
+            await run(2, 1);
+            expect(opens).toHaveLength(2);
+            expect(opens[1]).toMatchObject({ resume: null });
+            expect(
+              coreDb.sqlite
+                .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+                .get(predecessor.id)
+            ).toBeUndefined();
+            expect(readFileSync(snapshotPath, 'utf8')).toBe(originalBytes);
+            expect(store.getAgentSession(predecessor.id)).toMatchObject({
+              nativeHandleDigest: digest,
+              retainedStorage: predecessor.retainedStorage,
+            });
+            expect(store.getAgentSession('as_resume_2').retainedStorage?.storageRef).not.toBe(
+              predecessor.retainedStorage?.storageRef
+            );
+            return;
+          }
           // Once Core has accepted a pair, a changed ready digest must not replace it.
           coreDb.sqlite
             .prepare('UPDATE agent_session_runtime_bindings SET native_handle_digest = ?')
