@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-
 import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
@@ -10,11 +9,10 @@ import {
   WorkerControlResponseEnvelopeSchema,
   type WorkerLineage,
 } from '@openkit/worker-protocol';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 import { containTurnLifecycleRecorder, type TurnLifecycleRecorder } from './turn-timeline.js';
 
-const WORKER_CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_OUTAGE_BUDGET_MS = 300_000;
-const WORKER_CONTROL_RETRY_DELAY_MS = 250;
 
 /**
  * Minimal fetch response surface used by the worker control client.
@@ -139,7 +137,7 @@ export class WorkerControlClient {
   private readonly lineage: WorkerLineage;
   private nextHeartbeatSequence = 0;
   private heartbeatQueue: Promise<unknown> = Promise.resolve();
-  private outageStartedAt: number | null = null;
+  private outageDeadline: LifecycleDeadline | null = null;
   /** Pending recoveries keep the shared budget anchored despite independent successful traffic. */
   private retryingRequests = 0;
   private postLaunchRecoveryEnabled = false;
@@ -406,26 +404,28 @@ export class WorkerControlClient {
     if (!this.postLaunchRecoveryEnabled || !isRetryableFailure(error)) {
       throw error;
     }
-    this.outageStartedAt ??= performance.now();
-    if (performance.now() - this.outageStartedAt >= WORKER_CONTROL_OUTAGE_BUDGET_MS) {
+    this.outageDeadline ??= new LifecycleDeadline(WORKER_CONTROL_OUTAGE_BUDGET_MS);
+    if (this.outageDeadline.remainingMs() <= 0) {
       throw error;
     }
   }
 
   /** Waits once inside the original outage budget. */
   private async waitForRetry(signal?: AbortSignal): Promise<void> {
-    await delay(WORKER_CONTROL_RETRY_DELAY_MS, undefined, signal ? { signal } : undefined);
-    if (
-      this.outageStartedAt !== null &&
-      performance.now() - this.outageStartedAt >= WORKER_CONTROL_OUTAGE_BUDGET_MS
-    ) {
+    await delay(
+      this.outageDeadline?.remainingMs(LIFECYCLE_DEFAULTS.workerControlRetryMs) ??
+        LIFECYCLE_DEFAULTS.workerControlRetryMs,
+      undefined,
+      signal ? { signal } : undefined
+    );
+    if (this.outageDeadline && this.outageDeadline.remainingMs() <= 0) {
       throw new Error('Worker control outage budget expired.');
     }
   }
 
   /** Clears the shared outage timer after acceptance only when no logical request still needs recovery. */
   private clearOutage(): void {
-    if (this.retryingRequests === 0) this.outageStartedAt = null;
+    if (this.retryingRequests === 0) this.outageDeadline = null;
   }
 
   /**
@@ -441,6 +441,10 @@ export class WorkerControlClient {
     signal?: AbortSignal
   ): Promise<T> {
     signal?.throwIfAborted();
+    const remaining =
+      this.outageDeadline?.remainingMs(LIFECYCLE_DEFAULTS.workerControlRequestMs) ??
+      LIFECYCLE_DEFAULTS.workerControlRequestMs;
+    if (remaining <= 0) throw new Error('Worker control outage budget expired.');
     const requestController = new AbortController();
     let abortParent: (() => void) | null = null;
     const abortFailure = new Promise<never>((_resolve, reject) => {
@@ -468,7 +472,7 @@ export class WorkerControlClient {
         );
         requestController.abort(error);
         reject(error);
-      }, WORKER_CONTROL_REQUEST_TIMEOUT_MS);
+      }, remaining);
     });
 
     try {

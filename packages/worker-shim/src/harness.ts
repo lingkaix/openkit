@@ -32,6 +32,7 @@ import {
   SANDBOX_NATIVE_INFERENCE_BASE_URL,
   type SandboxIntegrationClient,
 } from './integration-client.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 import {
   describeWorkerStartupFailure,
   initializeSessionWorkspace,
@@ -42,8 +43,6 @@ import {
 
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
-const HARNESS_POLL_MINIMUM_MS = 250;
-const HARNESS_REQUEST_TIMEOUT_MS = 1_000;
 const HARNESS_OUTAGE_BUDGET_MS = 300_000;
 /** Open AgentSessions one Harness serves; active Turns stay at one per Harness. */
 const HARNESS_MAX_OPEN_SESSIONS = 8;
@@ -746,7 +745,7 @@ export async function runWorkerHarness(
     process.stdout.write('OPENKIT_WORKER_SHIM_ENTRY_V1\n');
     await integration.ready;
     while (!options.signal?.aborted) {
-      const pollStartedAt = performance.now();
+      const pollDeadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.harnessPollMinimumMs);
       const response = await requestWithOutageBudget(
         integration,
         HARNESS_POLL_PATH,
@@ -756,7 +755,7 @@ export async function runWorkerHarness(
       if (response.status === 204) {
         // A timer may fire early against the monotonic clock, so wait until the minimum elapsed.
         for (;;) {
-          const remaining = HARNESS_POLL_MINIMUM_MS - (performance.now() - pollStartedAt);
+          const remaining = pollDeadline.remainingMs();
           if (remaining <= 0) break;
           await delay(Math.ceil(remaining), undefined, { signal: options.signal });
         }
@@ -805,11 +804,18 @@ async function requestWithOutageBudget(
   body: string,
   signal: AbortSignal | undefined
 ) {
-  const outageStartedAt = performance.now();
+  const deadline = new LifecycleDeadline(HARNESS_OUTAGE_BUDGET_MS);
+  let failure: unknown = new Error('Harness request outage budget expired.');
   for (;;) {
-    const timeout = AbortSignal.timeout(HARNESS_REQUEST_TIMEOUT_MS);
-    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    let failure: unknown;
+    signal?.throwIfAborted();
+    const remaining = deadline.remainingMs(LIFECYCLE_DEFAULTS.harnessRequestMs);
+    if (remaining <= 0) throw failure;
+    const timeout = new AbortController();
+    const timer = setTimeout(
+      () => timeout.abort(new Error('Harness request timed out.')),
+      remaining
+    );
+    const requestSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
       const response = await integration.harnessControlFetch(path, {
         body,
@@ -817,18 +823,22 @@ async function requestWithOutageBudget(
         method: 'POST',
         signal: requestSignal,
       });
+      const text = await response.text();
       if (!isRetryableHttpStatus(response.status)) {
-        return response;
+        return { ok: response.ok, status: response.status, text: async () => text };
       }
       failure = new Error(`Harness request failed with retryable HTTP ${response.status}.`);
     } catch (error) {
       signal?.throwIfAborted();
       failure = error;
+    } finally {
+      clearTimeout(timer);
     }
-    if (performance.now() - outageStartedAt >= HARNESS_OUTAGE_BUDGET_MS) {
+    const retryRemaining = deadline.remainingMs(LIFECYCLE_DEFAULTS.harnessPollMinimumMs);
+    if (retryRemaining <= 0) {
       throw failure;
     }
-    await delay(HARNESS_POLL_MINIMUM_MS, undefined, { signal });
+    await delay(retryRemaining, undefined, { signal });
   }
 }
 

@@ -4,6 +4,7 @@ import { codexResidentAdapter } from './adapters/codex.js';
 import { deepseekResidentAdapter } from './adapters/deepseek.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piResidentAdapter } from './adapters/pi.js';
+import type { LifecycleDeadline } from './lifecycle-deadline.js';
 import type { RuntimeCaptureInput } from './runtime-capture.js';
 import type { TurnLifecycleRecorder } from './turn-timeline.js';
 
@@ -62,12 +63,26 @@ export interface WorkerAdapterRuntimeProvenance {
   readonly streamManifestPath: '/openkit/session/runtime/raw-streams.json';
 }
 
+/** Independent adapter observations; omitted means unreported, false means unproved, and true means proved. No proof implies another. */
+export interface WorkerNativeEvidence {
+  /** A correlated native terminal was observed, separately from forced host stop. */
+  readonly nativeTerminal?: boolean;
+  /** The addressed host exited; says nothing about inherited pipe writers or native flush. */
+  readonly processExited?: boolean;
+  /** The owned native output streams reached their complete drain boundary. */
+  readonly pipesDrained?: boolean;
+  /** The pin's retaining-close predicate was proved; physical exit alone is insufficient. */
+  readonly persistencePreservingClose?: boolean;
+}
+
 /** Product-safe normalized result returned by an adapter. */
 export interface WorkerAdapterResult {
   /** Final assistant candidate, or null when none is trustworthy. */
   readonly assistantText: string | null;
   /** Optional bounded diagnostics for native delivery and settlement. */
   readonly diagnostics?: Readonly<Record<string, string>> | undefined;
+  /** Independent native proofs preserved through shared Turn closeout. */
+  readonly nativeEvidence?: WorkerNativeEvidence;
   /** Normalized terminal status. */
   readonly status: 'completed' | 'failed' | 'interrupted';
   /** Product-safe terminal reason. */
@@ -150,7 +165,7 @@ export interface WorkerResidentTurn {
   /** Resolves with a normalized result only after native settlement is proved; rejects when settlement cannot be proved, requiring bounded Harness stop confirmation or fencing. */
   readonly settled: Promise<WorkerAdapterResult>;
   /** Requests interruption and resolves only after the addressed native work is proved stopped; rejection or non-resolution does not prove settlement. */
-  interrupt(): Promise<void>;
+  interrupt(deadline?: LifecycleDeadline): Promise<void>;
 }
 
 /** One resident native binding that outlives its Turns. */
@@ -163,6 +178,8 @@ export interface WorkerResidentSession {
   close(): Promise<void>;
   /** Proves the current restricted native handle without starting work. */
   nativeHandle(): Promise<WorkerNativeHandle>;
+  /** Reports current native proofs without starting work; omission supplies no implicit proof. */
+  nativeEvidence?(): WorkerNativeEvidence;
   /** Returns accepted native work or an unproved attempt for Harness cleanup; rejects only when the runtime did not accept the Turn and no native Turn work remains live. */
   startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn>;
 }

@@ -13,11 +13,13 @@ import {
 } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
+  WorkerNativeEvidence,
   WorkerResidentSession,
   WorkerResidentTurn,
 } from './adapter-registry.js';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 import { type WorkerTerminalOutcomeInput, WorkerTranscriptWriter } from './transcript.js';
 import { TurnTimeline } from './turn-timeline.js';
 import {
@@ -26,12 +28,6 @@ import {
   type WorkspaceGitInput,
 } from './workspace-git.js';
 
-const WORKER_CONTROL_READINESS_TIMEOUT_MS = 10_000;
-/**
- * Bound on one native stop: a resident Turn whose `interrupt()` neither resolves nor rejects in
- * this time is treated as a stop that could not be proved.
- */
-const NATIVE_STOP_TIMEOUT_MS = 10_000;
 const WORKER_MCP_CAPABILITY_ROUTES = [
   'mcp.list_servers',
   'mcp.list_tools',
@@ -118,15 +114,19 @@ export function isNativeSettlementUnknown(error: unknown): boolean {
  * @returns True once `interrupt()` resolved, which by contract means the Turn settled.
  */
 async function stopNativeTurn(turn: WorkerResidentTurn): Promise<boolean> {
+  const deadline = new LifecycleDeadline(
+    LIFECYCLE_DEFAULTS.nativeStopMs,
+    LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+  );
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      turn.interrupt().then(
+      turn.interrupt(deadline).then(
         () => true,
         () => false
       ),
       new Promise<boolean>((resolveTimeout) => {
-        timer = setTimeout(() => resolveTimeout(false), NATIVE_STOP_TIMEOUT_MS);
+        timer = setTimeout(() => resolveTimeout(false), deadline.remainingMs());
       }),
     ]);
   } finally {
@@ -136,6 +136,8 @@ async function stopNativeTurn(turn: WorkerResidentTurn): Promise<boolean> {
 
 /** Worker-local outcome of one resident Turn. */
 export interface ResidentTurnResult {
+  /** Adapter-owned observations, never inferred from normalized status or host liveness. */
+  readonly nativeEvidence?: WorkerNativeEvidence;
   /** Normalized worker terminal status. */
   readonly status: 'completed' | 'failed' | 'interrupted';
 }
@@ -475,7 +477,10 @@ async function runResidentTurnImplementation(
       controlAbortController.signal
     );
     await Promise.race([terminalPublication, heartbeatFailure]);
-    return { status };
+    return {
+      ...(adapterResult.nativeEvidence ? { nativeEvidence: adapterResult.nativeEvidence } : {}),
+      status,
+    };
   } catch (error) {
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
@@ -781,13 +786,14 @@ async function waitForWorkerControlReadiness<T>(
   readiness: () => Promise<T>,
   controller: AbortController
 ): Promise<T> {
+  const deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.workerControlReadinessMs);
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const timeoutFailure = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
       const error = new Error('Worker control readiness timed out.');
       controller.abort(error);
       reject(error);
-    }, WORKER_CONTROL_READINESS_TIMEOUT_MS);
+    }, deadline.remainingMs());
   });
 
   let request: Promise<T> | null = null;
@@ -1525,7 +1531,10 @@ async function runWorkerHeartbeatLoop(
   eventFailure.catch(() => undefined);
   while (!signal.aborted) {
     try {
-      await Promise.race([delay(1000, undefined, { signal }), eventFailure]);
+      await Promise.race([
+        delay(LIFECYCLE_DEFAULTS.workerHeartbeatIntervalMs, undefined, { signal }),
+        eventFailure,
+      ]);
       if (!signal.aborted) {
         delivery.request = client.recordHeartbeat(
           { message: 'Worker shim running.', status: 'running' },

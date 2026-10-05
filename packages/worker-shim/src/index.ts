@@ -3,6 +3,7 @@ export {
   type WorkerAdapterLlmRoute,
   type WorkerAdapterResult,
   type WorkerAdapterRuntimeProvenance,
+  type WorkerNativeEvidence,
   type WorkerNativeHandle,
   type WorkerResidentAdapter,
   type WorkerResidentLoopback,
@@ -28,6 +29,7 @@ export {
   SANDBOX_INTEGRATION_TARGET,
   type SandboxIntegrationClient,
 } from './integration-client.js';
+export { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 export {
   type WorkerArtifactInput,
   type WorkerAssistantMessageInput,

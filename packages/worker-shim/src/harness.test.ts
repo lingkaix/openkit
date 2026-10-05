@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { HarnessSuccessBodySchemas } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterResult,
@@ -27,7 +28,7 @@ import { WorkerControlClient, type WorkerControlFetch } from './control-client.j
 import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { WorkerTranscriptWriter } from './transcript.js';
-import { initializeSessionWorkspace } from './turn.js';
+import { initializeSessionWorkspace, runResidentTurn } from './turn.js';
 import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
 
 const loopFixture = vi.hoisted(() => ({
@@ -943,15 +944,13 @@ describe('Worker Harness loop', () => {
     await expect(runWorkerHarness()).rejects.toThrow(/Harness poll failed with HTTP 404/u);
 
     let clock = 0;
-    vi.spyOn(performance, 'now').mockImplementation(() => {
-      clock += 100_000;
-      return clock;
-    });
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
     let attempts = 0;
     loopFixture.client = {
       close: async () => undefined,
       harnessControlFetch: async () => {
         attempts += 1;
+        clock += 100_000;
         return { ok: false, status: 502, text: async () => '' };
       },
       ready: Promise.resolve(),
@@ -3079,6 +3078,272 @@ describe('N4c local input cleanup proof', () => {
       disposition: 'refused',
       body: { reasonCode: 'cleanup_required' },
     });
+  });
+});
+
+describe('shared lifecycle evidence and deadlines', () => {
+  it('preserves separate native proofs in the Turn result without inferring close from exit', async () => {
+    const f = harnessFixture();
+    f.writePackage('as-evidence', 'turn-evidence');
+    const nativeEvidence = {
+      nativeTerminal: true,
+      processExited: true,
+      pipesDrained: false,
+      persistencePreservingClose: false,
+    };
+    const result = await runResidentTurn({
+      adapterId: ADAPTER,
+      credentialValues: [],
+      environment: {},
+      integration: f.integration.client,
+      lineage: {
+        agentSessionId: 'as-evidence',
+        packageSnapshotId: 'package-turn-evidence',
+        threadId: 'thread-one',
+        turnId: 'turn-evidence',
+        workspaceId: 'workspace-one',
+      },
+      onStarted() {},
+      packagePath: f.packagePath('as-evidence'),
+      resident: {
+        exited: new Promise(() => undefined),
+        childState: () => 'absent',
+        close: async () => {
+          throw new Error('Retaining close is unproved.');
+        },
+        nativeHandle: async () => ({ state: 'unknown' }),
+        startTurn: async () => ({
+          interrupt: async () => undefined,
+          settled: Promise.resolve({
+            assistantText: null,
+            status: 'failed',
+            stopReason: 'native-failure',
+            nativeEvidence,
+          }),
+        }),
+      },
+      runtimeEnvironmentNames: new Set(),
+      nativeEnvironment: null,
+      sessionDir: join(f.sandboxRoot, 'session'),
+      signal: new AbortController().signal,
+      tokens: {
+        controlToken: 'control',
+        inferenceToken: 'inference',
+        capabilityToken: 'capability',
+      },
+      turnDirectory: join(f.privateRoot, 'turn-evidence'),
+    });
+    expect(result).toEqual({ status: 'failed', nativeEvidence });
+    expect(f.integration.finalStatuses.at(-1)?.body).not.toHaveProperty('nativeEvidence');
+    expect(f.integration.finalStatuses.at(-1)?.body.diagnostics).not.toHaveProperty(
+      'nativeEvidence'
+    );
+  });
+
+  it('keeps binding evidence local while inspection obeys its wire schema', async () => {
+    const f = harnessFixture({ adapter: fakeAdapter({ closeFails: true }) });
+    const nativeEvidence = {
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: false,
+    };
+    const open = f.fake.adapter.openSession;
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => ({
+      ...(await open(input)),
+      childState: () => 'absent',
+      nativeEvidence: () => nativeEvidence,
+    }));
+    await f.open('as-binding-evidence');
+    const inspection = await f.send('session.inspect', f.selector('as-binding-evidence'));
+    expect(inspection).toMatchObject({
+      body: { childState: 'absent' },
+    });
+    expect(HarnessSuccessBodySchemas['session.inspect'].safeParse(inspection.body).success).toBe(
+      true
+    );
+    expect(inspection.body).not.toHaveProperty('nativeEvidence');
+    expect(await f.send('session.close', f.selector('as-binding-evidence'))).toMatchObject({
+      disposition: 'refused',
+      body: { reasonCode: 'cleanup_required' },
+    });
+    const failedInspection = await f.send('session.inspect', f.selector('as-binding-evidence'));
+    expect(failedInspection).toMatchObject({
+      body: { cleanupState: 'unknown', state: 'failed' },
+    });
+    expect(
+      HarnessSuccessBodySchemas['session.inspect'].safeParse(failedInspection.body).success
+    ).toBe(true);
+    expect(failedInspection.body).not.toHaveProperty('nativeEvidence');
+  });
+
+  it('passes one stop deadline with a reserved cleanup tail to the adapter', async () => {
+    const f = harnessFixture();
+    const entered = observation();
+    let deadline: import('./lifecycle-deadline.js').LifecycleDeadline | undefined;
+    let finish!: () => void;
+    const open = f.fake.adapter.openSession;
+    vi.spyOn(f.fake.adapter, 'openSession').mockImplementation(async (input) => {
+      const binding = await open(input);
+      return {
+        ...binding,
+        startTurn: async (input) => {
+          const turn = await binding.startTurn(input);
+          return {
+            ...turn,
+            interrupt: async (enclosing) => {
+              deadline = enclosing;
+              entered.resolve();
+              await new Promise<void>((resolve) => {
+                finish = resolve;
+              });
+              await turn.interrupt(enclosing);
+            },
+          };
+        },
+      };
+    });
+    await f.open('as-stop');
+    f.fake.script.push({ kind: 'hold' });
+    const clock = controlSchedulingTime();
+    let interruption: ReturnType<typeof f.send> | undefined;
+    try {
+      await f.start('as-stop', 'turn-stop');
+      interruption = f.send('turn.interrupt', {
+        ...f.selector('as-stop'),
+        leaseId: 'lease-turn-stop',
+        purpose: 'interrupt',
+        turnId: 'turn-stop',
+      });
+      await entered.promise;
+      expect(deadline).toBeDefined();
+      expect(deadline!.remainingMs()).toBe(10_000);
+      expect(deadline!.workRemainingMs()).toBe(6_000);
+      await clock.advance(6_000);
+      expect(deadline!.workRemainingMs()).toBe(0);
+      expect(deadline!.remainingMs()).toBe(4_000);
+      await clock.advance(4_000);
+      await interruption;
+      expect(await f.send('session.inspect', f.selector('as-stop'))).toMatchObject({
+        body: { cleanupState: 'unknown', state: 'failed' },
+      });
+      expect(deadline!.remainingMs()).toBe(0);
+    } finally {
+      finish?.();
+      await clock.advance(10_000);
+      if (interruption) await interruption;
+      clock.restore();
+    }
+  });
+
+  it('caps worker-control recovery requests by the same remaining outage budget', async () => {
+    const clock = controlSchedulingTime();
+    const failed = observation();
+    const held = observation();
+    const controller = new AbortController();
+    let time = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => time);
+    let requests = 0;
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage: {
+        agentSessionId: 'as-tail',
+        packageSnapshotId: 'package-tail',
+        requestId: null,
+        threadId: 'thread-one',
+        turnId: 'turn-tail',
+        workspaceId: 'workspace-one',
+      },
+      token: 'control',
+      fetch: async (_url, init) => {
+        requests += 1;
+        if (requests === 1) {
+          failed.resolve();
+          return { ok: false, status: 503, text: async () => '{}' };
+        }
+        held.resolve();
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    });
+    client.enablePostLaunchRecovery();
+    let finished = false;
+    const outcome = client
+      .recordHeartbeat({ status: 'running' }, controller.signal)
+      .catch(() => undefined)
+      .finally(() => {
+        finished = true;
+      });
+    try {
+      await failed.promise;
+      // Let the retry owner record its first failure at the original clock anchor.
+      await clock.advance(0);
+      time = 299_750;
+      await clock.advance(250);
+      await held.promise;
+      time = 300_000;
+      await clock.advance(250);
+      expect(finished).toBe(true);
+      expect(requests).toBe(2);
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      await outcome;
+      vi.restoreAllMocks();
+      clock.restore();
+    }
+  });
+
+  it('caps each private request by the enclosing outage deadline instead of restarting its timeout', async () => {
+    const clock = controlSchedulingTime();
+    const controller = new AbortController();
+    const firstRequest = observation();
+    const secondRequest = observation();
+    let time = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => time);
+    let requests = 0;
+    loopFixture.client = {
+      ready: Promise.resolve(),
+      close: async () => undefined,
+      harnessControlFetch: async (_path: string, init: { signal: AbortSignal }) => {
+        requests += 1;
+        if (requests === 1) {
+          time = 299_500;
+          firstRequest.resolve();
+          return { ok: false, status: 503, text: async () => '' };
+        }
+        time = 299_750;
+        secondRequest.resolve();
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        });
+      },
+    } as unknown as SandboxIntegrationClient;
+    let finished = false;
+    const run = runWorkerHarness({ signal: controller.signal });
+    const outcome = run
+      .catch(() => undefined)
+      .finally(() => {
+        finished = true;
+      });
+    try {
+      await firstRequest.promise;
+      // Controlled elapsed time leaves just one retry interval and a partial request window.
+      time = 299_750;
+      await clock.advance(250);
+      await secondRequest.promise;
+      expect(performance.now()).toBe(299_750);
+      time = 300_000;
+      await clock.advance(250);
+      expect(finished).toBe(true);
+      expect(requests).toBe(2);
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      await outcome;
+      vi.restoreAllMocks();
+      clock.restore();
+    }
   });
 });
 
