@@ -13,6 +13,9 @@ mod image_store;
 mod image_store_cli;
 mod nanocore_session;
 mod openshell_client;
+mod openshell_policy;
+
+use openshell_policy::render_sandbox_policy;
 mod openshell_release;
 mod persistent_volume;
 mod sandbox_bridge;
@@ -45,10 +48,7 @@ use openshell_client::{
     LifecycleEffectKind, LifecycleEffectRequest, NanoHostOpenShellClient, WorkerBootstrapRequest,
 };
 use openshell_sdk::SandboxSpec;
-use openshell_sdk::raw::proto::{
-    FilesystemPolicy, L7Allow, L7Rule, LandlockPolicy, NetworkBinary, NetworkEndpoint,
-    NetworkPolicyRule, ProcessPolicy, SandboxPolicy,
-};
+use openshell_sdk::raw::proto::SandboxPolicy;
 use persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageTargetBinding};
 use sandbox_bridge::{
     FILE_EFFECT_MAX_BYTES, FileEffectKind, FileEffectPresence, FileEffectRequest,
@@ -157,290 +157,6 @@ enum ExecutedEffectResult {
     FileExport(RetainedExportResult),
     /// `workspace.collect` file-data result, either exact JSON or the candidate body.
     WorkspaceCollect(workspace_collect::WorkspaceCollectDelivery),
-}
-
-/// Parses one complete NanoCore-derived policy into the pinned OpenShell proto.
-///
-/// # Errors
-///
-/// Returns a bounded failure for every missing, unknown, malformed, or unsupported field.
-fn parse_sandbox_policy(value: &serde_json::Value) -> Result<SandboxPolicy, &'static str> {
-    let exact_keys = |object: &serde_json::Map<String, serde_json::Value>, keys: &[&str]| {
-        object.len() == keys.len() && keys.iter().all(|key| object.contains_key(*key))
-    };
-    let text = |value: &serde_json::Value| {
-        value
-            .as_str()
-            .filter(|value| !value.is_empty() && !value.contains(['\r', '\n', '\0']))
-            .map(str::to_string)
-            .ok_or("sandbox policy string invalid")
-    };
-    let absolute_path = |value: &serde_json::Value| {
-        let path = text(value)?;
-        if !path.starts_with('/') {
-            return Err("sandbox policy path must be absolute");
-        }
-        Ok(path)
-    };
-    let object = value.as_object().ok_or("sandbox policy invalid")?;
-    if !exact_keys(
-        object,
-        &[
-            "filesystem",
-            "landlock",
-            "networkMiddlewares",
-            "networkPolicies",
-            "process",
-            "version",
-        ],
-    ) || object.get("version").and_then(serde_json::Value::as_u64) != Some(1)
-    {
-        return Err("sandbox policy invalid");
-    }
-
-    let filesystem = object
-        .get("filesystem")
-        .and_then(serde_json::Value::as_object)
-        .ok_or("sandbox filesystem policy invalid")?;
-    if !exact_keys(filesystem, &["includeWorkdir", "readOnly", "readWrite"]) {
-        return Err("sandbox filesystem policy invalid");
-    }
-    let read_only = filesystem
-        .get("readOnly")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("sandbox filesystem policy invalid")?
-        .iter()
-        .map(&absolute_path)
-        .collect::<Result<Vec<_>, _>>()?;
-    let read_write = filesystem
-        .get("readWrite")
-        .and_then(serde_json::Value::as_array)
-        .ok_or("sandbox filesystem policy invalid")?
-        .iter()
-        .map(&absolute_path)
-        .collect::<Result<Vec<_>, _>>()?;
-    let include_workdir = filesystem
-        .get("includeWorkdir")
-        .and_then(serde_json::Value::as_bool)
-        .ok_or("sandbox filesystem policy invalid")?;
-
-    let landlock = object
-        .get("landlock")
-        .and_then(serde_json::Value::as_object)
-        .filter(|value| exact_keys(value, &["compatibility"]))
-        .ok_or("sandbox Landlock policy invalid")?;
-    let compatibility = text(
-        landlock
-            .get("compatibility")
-            .ok_or("sandbox Landlock policy invalid")?,
-    )?;
-    let process = object
-        .get("process")
-        .and_then(serde_json::Value::as_object)
-        .filter(|value| exact_keys(value, &["runAsGroup", "runAsUser"]))
-        .ok_or("sandbox process policy invalid")?;
-    let run_as_group = text(
-        process
-            .get("runAsGroup")
-            .ok_or("sandbox process policy invalid")?,
-    )?;
-    let run_as_user = text(
-        process
-            .get("runAsUser")
-            .ok_or("sandbox process policy invalid")?,
-    )?;
-    if include_workdir
-        || compatibility != "best_effort"
-        || run_as_group != "sandbox"
-        || run_as_user != "sandbox"
-        || !object
-            .get("networkMiddlewares")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(serde_json::Map::is_empty)
-    {
-        return Err("sandbox policy fixed fields invalid");
-    }
-
-    let policies = object
-        .get("networkPolicies")
-        .and_then(serde_json::Value::as_object)
-        .ok_or("sandbox network policies invalid")?;
-    let mut network_policies = HashMap::new();
-    for (key, value) in policies {
-        let policy = value
-            .as_object()
-            .filter(|value| exact_keys(value, &["binaries", "endpoints", "name"]))
-            .ok_or("sandbox network policy invalid")?;
-        let name = text(policy.get("name").ok_or("sandbox network policy invalid")?)?;
-        let mut identifier = name.bytes();
-        if name != *key
-            || !identifier
-                .next()
-                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-            || !identifier.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
-            return Err("sandbox network policy identity invalid");
-        }
-        let binaries = policy
-            .get("binaries")
-            .and_then(serde_json::Value::as_array)
-            .filter(|value| !value.is_empty())
-            .ok_or("sandbox network policy binaries invalid")?
-            .iter()
-            .map(|value| {
-                let binary = value
-                    .as_object()
-                    .filter(|value| exact_keys(value, &["path"]))
-                    .ok_or("sandbox network policy binary invalid")?;
-                Ok(NetworkBinary {
-                    path: absolute_path(
-                        binary
-                            .get("path")
-                            .ok_or("sandbox network policy binary invalid")?,
-                    )?,
-                    ..NetworkBinary::default()
-                })
-            })
-            .collect::<Result<Vec<_>, &'static str>>()?;
-        let endpoint_values = policy
-            .get("endpoints")
-            .and_then(serde_json::Value::as_array)
-            .filter(|value| value.len() == 1)
-            .ok_or("sandbox network policy endpoint invalid")?;
-        let endpoint = endpoint_values[0]
-            .as_object()
-            .ok_or("sandbox network policy endpoint invalid")?;
-        let has_access = endpoint.contains_key("access");
-        let has_rules = endpoint.contains_key("rules");
-        let expected_endpoint_keys = if has_access {
-            &["access", "enforcement", "host", "port", "protocol"][..]
-        } else {
-            &["enforcement", "host", "port", "protocol", "rules"][..]
-        };
-        if has_access == has_rules || !exact_keys(endpoint, expected_endpoint_keys) {
-            return Err("sandbox network policy endpoint invalid");
-        }
-        let enforcement = text(
-            endpoint
-                .get("enforcement")
-                .ok_or("sandbox network policy endpoint invalid")?,
-        )?;
-        if enforcement != "enforce" {
-            return Err("sandbox network policy endpoint invalid");
-        }
-        let access = if has_access {
-            let access = text(
-                endpoint
-                    .get("access")
-                    .ok_or("sandbox network policy endpoint invalid")?,
-            )?;
-            if access != "read-only" && access != "read-write" {
-                return Err("sandbox network policy endpoint invalid");
-            }
-            access
-        } else {
-            String::new()
-        };
-        let rules = if has_rules {
-            endpoint
-                .get("rules")
-                .and_then(serde_json::Value::as_array)
-                .filter(|value| !value.is_empty())
-                .ok_or("sandbox network policy rules invalid")?
-                .iter()
-                .map(|value| {
-                    let rule = value
-                        .as_object()
-                        .filter(|value| exact_keys(value, &["allow"]))
-                        .ok_or("sandbox network policy rule invalid")?;
-                    let allow = rule
-                        .get("allow")
-                        .and_then(serde_json::Value::as_object)
-                        .filter(|value| exact_keys(value, &["method", "path"]))
-                        .ok_or("sandbox network policy rule invalid")?;
-                    let method = text(
-                        allow
-                            .get("method")
-                            .ok_or("sandbox network policy rule invalid")?,
-                    )?;
-                    if method != "GET" && method != "POST" {
-                        return Err("sandbox network policy rule invalid");
-                    }
-                    let path = text(
-                        allow
-                            .get("path")
-                            .ok_or("sandbox network policy rule invalid")?,
-                    )?;
-                    if !path.starts_with('/') {
-                        return Err("sandbox network policy rule invalid");
-                    }
-                    Ok(L7Rule {
-                        allow: Some(L7Allow {
-                            method,
-                            path,
-                            ..L7Allow::default()
-                        }),
-                    })
-                })
-                .collect::<Result<Vec<_>, &'static str>>()?
-        } else {
-            Vec::new()
-        };
-        let port = endpoint
-            .get("port")
-            .and_then(serde_json::Value::as_u64)
-            .filter(|value| *value > 0 && *value <= u16::MAX as u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or("sandbox network policy endpoint invalid")?;
-        let protocol = text(
-            endpoint
-                .get("protocol")
-                .ok_or("sandbox network policy endpoint invalid")?,
-        )?;
-        if protocol != "rest" {
-            return Err("sandbox network policy protocol invalid");
-        }
-        let host = text(
-            endpoint
-                .get("host")
-                .ok_or("sandbox network policy endpoint invalid")?,
-        )?;
-        if host.trim().is_empty() {
-            return Err("sandbox network policy host invalid");
-        }
-        network_policies.insert(
-            key.clone(),
-            NetworkPolicyRule {
-                name,
-                binaries,
-                endpoints: vec![NetworkEndpoint {
-                    host,
-                    port,
-                    protocol,
-                    enforcement,
-                    access,
-                    rules,
-                    ..NetworkEndpoint::default()
-                }],
-            },
-        );
-    }
-
-    Ok(SandboxPolicy {
-        version: 1,
-        filesystem: Some(FilesystemPolicy {
-            include_workdir,
-            read_only,
-            read_write,
-        }),
-        landlock: Some(LandlockPolicy { compatibility }),
-        process: Some(ProcessPolicy {
-            run_as_user,
-            run_as_group,
-        }),
-        network_policies,
-        network_middlewares: HashMap::new(),
-    })
 }
 
 /// Exit status for a terminal credential hold.
@@ -655,7 +371,7 @@ fn execute_effect_command(
                             "imageDigest",
                             "leaseId",
                             "packageSnapshotId",
-                            "policy",
+                            "policyIntent",
                             "requestId",
                             "sandboxId",
                             "storage",
@@ -692,10 +408,10 @@ fn execute_effect_command(
                 None
             };
             let create_policy = if command.kind == RuntimeEffectKind::CreateSandbox {
-                Some(parse_sandbox_policy(
+                Some(render_sandbox_policy(
                     command
                         .input
-                        .get("policy")
+                        .get("policyIntent")
                         .ok_or("sandbox policy missing")?,
                 )?)
             } else {
@@ -1578,89 +1294,11 @@ mod tests {
 
     use super::{
         CREDENTIAL_HELD_EXIT_STATUS, NanoHostRunFailure, image_store_cli_error_message,
-        parse_nanohost_session_inputs, parse_sandbox_environment, parse_sandbox_policy,
-        parse_storage_attachment, storage_targets_allowed,
+        parse_nanohost_session_inputs, parse_sandbox_environment, parse_storage_attachment,
+        render_sandbox_policy, storage_targets_allowed,
     };
     use crate::epoch_coordinator::{RuntimeBackend, configured_backend};
     use crate::nanocore_session::{OuterSessionFailure, OuterSessionOperation, OuterSessionStage};
-
-    #[test]
-    fn nanocore_authored_policy_reaches_current_sdk_and_rejects_invalid_grants() {
-        let value: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/support/openshell-worker-policy.json"
-        ))
-        .expect("shared NanoCore-authored policy fixture");
-        let policy = parse_sandbox_policy(&value).expect("NanoCore policy must reach the SDK");
-        let filesystem = policy.filesystem.expect("filesystem grants");
-        assert!(
-            filesystem
-                .read_only
-                .contains(&"/opt/toolchains".to_string())
-        );
-        assert!(
-            filesystem
-                .read_write
-                .contains(&"/sandbox/.cache/npm".to_string())
-        );
-        let direct = &policy.network_policies["direct_api"];
-        assert_eq!(direct.binaries[0].path, "/usr/local/bin/codex");
-        assert_eq!(direct.endpoints[0].access, "read-only");
-        assert_eq!(direct.endpoints[0].enforcement, "enforce");
-        let git = &policy.network_policies["github_git_read"].endpoints[0];
-        assert!(git.access.is_empty());
-        assert_eq!(git.rules.len(), 2);
-        let read = git.rules[0].allow.as_ref().expect("exact GET rule");
-        assert_eq!(
-            (read.method.as_str(), read.path.as_str()),
-            ("GET", "/**/info/refs*")
-        );
-        let upload = git.rules[1].allow.as_ref().expect("exact POST rule");
-        assert_eq!(
-            (upload.method.as_str(), upload.path.as_str()),
-            ("POST", "/**/git-upload-pack")
-        );
-
-        let mut empty_binaries = value.clone();
-        empty_binaries["networkPolicies"]["direct_api"]["binaries"] = serde_json::json!([]);
-        assert!(parse_sandbox_policy(&empty_binaries).is_err());
-        let mut ambiguous = value.clone();
-        ambiguous["networkPolicies"]["github_git_read"]["endpoints"][0]["access"] =
-            serde_json::json!("read-write");
-        assert!(parse_sandbox_policy(&ambiguous).is_err());
-        for (pointer, unsupported) in [
-            ("/filesystem/readOnly/0", "relative/path"),
-            ("/filesystem/readWrite/0", "relative/path"),
-            (
-                "/networkPolicies/direct_api/binaries/0/path",
-                "relative/path",
-            ),
-            (
-                "/networkPolicies/direct_api/endpoints/0/protocol",
-                "unsupported",
-            ),
-            ("/networkPolicies/direct_api/endpoints/0/host", "   "),
-        ] {
-            let mut invalid = value.clone();
-            *invalid.pointer_mut(pointer).expect("fixture grant exists") =
-                serde_json::json!(unsupported);
-            assert!(
-                parse_sandbox_policy(&invalid).is_err(),
-                "unsupported grant at {pointer}"
-            );
-        }
-        let mut bad_name = value.clone();
-        let mut entry = bad_name["networkPolicies"]
-            .as_object_mut()
-            .expect("policy map")
-            .remove("direct_api")
-            .expect("named policy");
-        entry["name"] = serde_json::json!("bad/name");
-        bad_name["networkPolicies"]["bad/name"] = entry;
-        assert!(parse_sandbox_policy(&bad_name).is_err());
-        let mut unknown = value;
-        unknown["unrecognized"] = serde_json::json!(true);
-        assert!(parse_sandbox_policy(&unknown).is_err());
-    }
 
     /// Returns the exact non-secret execution-host environment projection.
     fn valid_nanohost_environment() -> BTreeMap<String, String> {
@@ -1718,11 +1356,11 @@ mod tests {
 
     #[test]
     fn retained_mount_targets_must_be_writable_under_the_admitted_policy() {
-        let policy_value: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/support/openshell-worker-policy.json"
-        ))
+        let policy = render_sandbox_policy(&serde_json::json!({
+            "additionalFilesystemGrants": [],
+            "additionalNetworkEndpoints": []
+        }))
         .unwrap();
-        let policy = parse_sandbox_policy(&policy_value).unwrap();
         let storage = parse_storage_attachment(Some(&serde_json::json!({
             "storageRef": "storage-one",
             "scopeDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

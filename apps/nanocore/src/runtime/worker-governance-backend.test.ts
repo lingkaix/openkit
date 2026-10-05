@@ -13,7 +13,6 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
-import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
 import {
   openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
@@ -283,21 +282,6 @@ describe('public exact grant materialization', () => {
         rules: rule.rules,
       },
     ]);
-    const policy = projectOpenShellWorkerPolicy({ additionalNetworkEndpoints: endpoints });
-    expect(policy.networkPolicies.public_search).toEqual({
-      name: 'public_search',
-      binaries: [{ path: '/usr/local/bin/node' }],
-      endpoints: [
-        {
-          enforcement: 'enforce',
-          host: rule.host,
-          port: rule.port,
-          protocol: 'rest',
-          rules: [{ allow: { method: 'POST', path: '/mcp' } }],
-        },
-      ],
-    });
-    expect(policy.networkMiddlewares).toEqual({});
     expect(marked.credentials.declarations).toEqual([]);
   });
 });

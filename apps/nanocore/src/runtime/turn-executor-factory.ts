@@ -66,7 +66,6 @@ import type {
   NanoHostEffectOperation,
   NanoHostSessionDispatch,
 } from './nanohost-session-dispatch.js';
-import { projectOpenShellWorkerPolicy } from './openshell-policy.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import type { TurnExecutor } from './types.js';
 import {
@@ -2373,12 +2372,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           environment: {},
           imageDigest,
           leaseId,
-          policy: projectOpenShellWorkerPolicy({
+          policyIntent: {
             additionalFilesystemGrants:
               openShellFilesystemGrantsFromPackagePolicy(environmentPackage),
             additionalNetworkEndpoints:
               openShellNetworkEndpointsFromPackagePolicy(environmentPackage),
-          }),
+          },
           sandboxId,
           storage: {
             attachmentGeneration: storageBinding.attachmentGeneration,

@@ -15,12 +15,71 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { z } from 'zod';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
-import type { OpenShellFilesystemGrant, OpenShellNetworkEndpoint } from './openshell-policy.js';
 import type { WorkerTranscriptPayload } from './worker-transcript.js';
+
+/** Canonical absolute filesystem paths in Core's bounded authorization intent. */
+const WorkerPolicyPathSchema = z.string().refine(
+  (path) =>
+    path.startsWith('/') &&
+    !/[\r\n\0]/.test(path) &&
+    (path === '/' ||
+      path
+        .slice(1)
+        .split('/')
+        .every((part) => part !== '' && part !== '.' && part !== '..')),
+  'Worker policy path must be canonical and absolute.'
+);
+
+/** Exact Core-owned filesystem authorization, without native policy defaults. */
+const WorkerFilesystemGrantSchema = z
+  .object({
+    access: z.enum(['read-only', 'read-write']),
+    path: WorkerPolicyPathSchema,
+  })
+  .strict();
+
+/** Exact Core-owned endpoint authorization; NanoHost selects the native enforcement representation. */
+const WorkerNetworkEndpointSchema = z
+  .object({
+    access: z.enum(['read-only', 'read-write']).optional(),
+    binaries: z
+      .array(z.string().refine((path) => path.startsWith('/') && !/[\r\n\0]/.test(path)))
+      .min(1),
+    host: z.string().refine((host) => host.trim().length > 0 && !/[\r\n\0]/.test(host)),
+    name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    port: z.number().int().min(1).max(65535),
+    protocol: z.literal('rest').optional(),
+    rules: z
+      .array(
+        z
+          .object({
+            method: z.enum(['GET', 'POST']),
+            path: z.string().refine((path) => path.startsWith('/') && !/[\r\n\0]/.test(path)),
+          })
+          .strict()
+      )
+      .optional(),
+  })
+  .strict()
+  .refine((endpoint) => !endpoint.access || !endpoint.rules?.length);
+
+/** Authority-bearing sandbox policy intent; every object boundary refuses unknown fields. */
+export const WorkerSandboxPolicyIntentSchema = z
+  .object({
+    additionalFilesystemGrants: z.array(WorkerFilesystemGrantSchema),
+    additionalNetworkEndpoints: z.array(WorkerNetworkEndpointSchema),
+  })
+  .strict();
+
+/** Filesystem grant derived from the accepted AEP. */
+export type WorkerFilesystemGrant = z.infer<typeof WorkerFilesystemGrantSchema>;
+/** Endpoint grant derived from the accepted AEP. */
+export type WorkerNetworkEndpoint = z.infer<typeof WorkerNetworkEndpointSchema>;
 
 /** Existing maximum for one restricted runtime-provenance manifest. */
 export const MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES = 1024 * 1024;
@@ -983,7 +1042,7 @@ type SessionWorkspaceProjection = Pick<
  */
 export function openShellFilesystemGrantsFromPackagePolicy(
   environmentPackage: AgentEnvironmentPackage
-): OpenShellFilesystemGrant[] {
+): WorkerFilesystemGrant[] {
   return (environmentPackage.policy.filesystem?.rules ?? []).flatMap((rule) => {
     if (!isRecord(rule) || typeof rule.workerPath !== 'string') {
       return [];
@@ -1014,7 +1073,7 @@ export function openShellFilesystemGrantsFromPackagePolicy(
  */
 export function openShellNetworkEndpointsFromPackagePolicy(
   environmentPackage: AgentEnvironmentPackage
-): OpenShellNetworkEndpoint[] {
+): WorkerNetworkEndpoint[] {
   return (environmentPackage.policy.network?.rules ?? []).flatMap((rule) => {
     if (
       !isRecord(rule) ||
@@ -1032,7 +1091,7 @@ export function openShellNetworkEndpointsFromPackagePolicy(
     if (name === 'openkit_worker_control' || name === 'openkit_worker_inference') {
       return [];
     }
-    let exactRules: OpenShellNetworkEndpoint['rules'];
+    let exactRules: WorkerNetworkEndpoint['rules'];
     if (rule.rules !== undefined) {
       if (!Array.isArray(rule.rules) || rule.rules.length === 0) {
         throw new Error(`OpenShell policy contains unsupported exact REST rules: ${rule.id}`);
@@ -1053,7 +1112,7 @@ export function openShellNetworkEndpointsFromPackagePolicy(
     }
 
     return [
-      {
+      WorkerNetworkEndpointSchema.parse({
         ...(rule.access === 'read-only' || rule.access === 'read-write'
           ? { access: rule.access }
           : {}),
@@ -1063,7 +1122,7 @@ export function openShellNetworkEndpointsFromPackagePolicy(
         port: rule.port,
         ...(typeof rule.protocol === 'string' ? { protocol: rule.protocol } : {}),
         ...(exactRules ? { rules: exactRules } : {}),
-      },
+      }),
     ];
   });
 }

@@ -35,6 +35,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import { listWorkerBackendSessions } from './worker-backend-sessions.js';
+import { WorkerSandboxPolicyIntentSchema } from './worker-governance-backend.js';
 import {
   readWorkerImageSettlement,
   type WorkerImageSettlement,
@@ -90,6 +91,19 @@ export const NANO_HOST_EFFECT_OPERATIONS = [
   'file.export',
   'reference.import',
   'workspace.collect',
+] as const;
+
+/** Complete owned key set for the authority-bearing sandbox create instruction. */
+const SANDBOX_CREATE_INPUT_KEYS = [
+  'backendSessionId',
+  'environment',
+  'imageDigest',
+  'leaseId',
+  'packageSnapshotId',
+  'policyIntent',
+  'requestId',
+  'sandboxId',
+  'storage',
 ] as const;
 
 /** One fixed NanoHost-owned runtime effect operation. */
@@ -486,19 +500,9 @@ export function createNanoHostSessionDispatch(
         } else if (operation === 'storage.inspect' || operation === 'storage.purge') {
           command = requireStorageCommand(request.input, requestId);
         } else {
-          const allowed =
+          const allowed: readonly string[] =
             operation === 'sandbox.create'
-              ? [
-                  'backendSessionId',
-                  'environment',
-                  'imageDigest',
-                  'leaseId',
-                  'packageSnapshotId',
-                  'policy',
-                  'requestId',
-                  'sandboxId',
-                  'storage',
-                ]
+              ? SANDBOX_CREATE_INPUT_KEYS
               : operation === 'image.acquire'
                 ? [
                     'backendSessionId',
@@ -1573,6 +1577,19 @@ function requireEffectRequest(request: NanoHostSessionEffectRequest): {
 } {
   if (!isNanoHostEffectOperation(request.kind)) {
     throw new Error('NanoHost effect operation is not enabled.');
+  }
+  if (request.kind === 'sandbox.create') {
+    if (
+      Object.keys(request.input).some(
+        (key) => !(SANDBOX_CREATE_INPUT_KEYS as readonly string[]).includes(key)
+      )
+    ) {
+      throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
+    }
+    const intent = WorkerSandboxPolicyIntentSchema.safeParse(request.input.policyIntent);
+    if (!intent.success) {
+      throw effectTransportError(400, 'NanoHost sandbox policy intent is invalid.');
+    }
   }
   const requestId = request.requestId ?? readRequestId(request.input);
   return { operation: request.kind, requestId };

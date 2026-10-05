@@ -297,7 +297,7 @@ The V1 enforcement bridge exists, but full alignment with the standard-aligned p
 - The local deterministic Goal Mode supervise route records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` before starting its worker turn through `startGoalTaskWorkerTurn`, giving the worker-launch path its first product permission-decision producer. That Goal route is current implementation that the Goal implementation replaces. It is unavailable until then, and its retained decisions stay readable. A Goal task launch is not the continuing contract.
 - `runWorkerTurnLoop` now records a workspace-scoped durable `runtime.launch` allow decision in the owning `workspace.sqlite` after creating the worker turn and before starting the worker boundary, so the real bounded worker loop also leaves a product permission-decision row.
 - The governed worker executor stores the same first worker-launch policy snapshot id on the created AgentSession and the resolved AEP policy block, binding the durable session lineage and backend launch snapshot to the `runtime.launch` decision snapshot for that turn.
-- `apps/nanocore/src/runtime/openshell-policy.ts` validates NanoCore-authored filesystem and network intent and projects it as the structured policy consumed by NanoHost. NanoHost strictly parses that input into the current OpenShell SDK type before requesting a sandbox, so malformed, unknown, or unsupported policy fails before an OpenShell effect.
+- `apps/nanocore/src/runtime/worker-governance-backend.ts` defines the Core-derived typed filesystem and network authorization intent. NanoCore validates that exact intent before carriage, and `apps/nanohost/src/openshell_policy.rs` renders it into native OpenShell policy and strictly parses it into the current SDK type before requesting a sandbox. Malformed, unknown, or unsupported intent and policy fail before an OpenShell effect.
 - `recordProductPermissionDecision` persists the accepted seven-value product decision result set, including `require_approval` and `require_escalation`, fails closed when a `require_approval` decision does not name the required approval kind, and emits linked server- or workspace-scoped `AuditEvent` rows with `permissionDecisionId` filled. Current producers record individual outcomes; no shared implementation currently combines multiple mandatory results under the Core precedence, so a future multi-input enforcement point must add that conformance before admitting effects. Server-owned decisions are exposed through `POST /api/app/operations/permission.server-list`, `client.operations['permission.server-list']`, and the remote MCP and administrator CLI `permission.server-list` operation; workspace-owned decisions are exposed through `POST /api/app/operations/permission.workspace-list`, `client.operations['permission.workspace-list']`, and the remote MCP and administrator CLI `permission.workspace-list` operation.
 - `apps/nanocore/src/policy/approval-gates.ts` creates the first policy-originated approval gate by recording a `require_approval` permission decision, creating the matching `ApprovalRequest`, creating the item-backed `approval-request`, and pausing the turn with `humanGate.kind: "approval"` so the existing Action Center projection can surface it; the agent communication redesign replaces the pause with a pending request that leaves the turn running. No current enforcement point produces a `require_escalation` workflow or higher-authority Action Center row.
 - Secret-injection plan creation applies the target-issuance predicate to the VaultGrant id, so Vault-reference re-binding cannot reactivate an imported grant.
@@ -311,7 +311,7 @@ The complete Kernel and Generative UI families derive access declarations from t
 
 ## Backend Policy Derivation
 
-NanoCore compiles derived backend policy from:
+NanoCore derives backend policy as typed authorization intent from:
 
 - permission decisions
 - AEP snapshot
@@ -321,7 +321,7 @@ NanoCore compiles derived backend policy from:
 - sandbox requirements
 - runtime placement
 
-For OpenShell, derived policy may become structured sandbox policy, credential injections, network rules, and file rules.
+For OpenShell, derived policy may become structured sandbox policy, credential injections, network rules, and file rules; NanoHost renders the typed intent into native OpenShell policy.
 
 Derived backend policy is evidence and enforcement material. It is not canonical OpenKit policy.
 

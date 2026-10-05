@@ -11289,6 +11289,7 @@ describe('nanocore server', () => {
           input: {
             backendSessionId: 'sandbox-session-main',
             requestId: 'request-sandbox-create-main',
+            policyIntent: { additionalFilesystemGrants: [], additionalNetworkEndpoints: [] },
           },
           kind: 'sandbox.create',
         })

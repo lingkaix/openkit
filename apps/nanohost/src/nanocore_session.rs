@@ -1730,7 +1730,7 @@ pub async fn poll_effect_command(
                 "imageDigest",
                 "leaseId",
                 "packageSnapshotId",
-                "policy",
+                "policyIntent",
                 "requestId",
                 "sandboxId",
                 "storage",
@@ -2868,8 +2868,10 @@ mod tests {
                     let text = |key: &str| input[key].as_str().unwrap();
                     match kind {
                         RuntimeEffectKind::CreateSandbox => {
-                            let policy = crate::parse_sandbox_policy(&input["policy"])
-                                .expect("Core-produced sandbox policy must parse for execution");
+                            let policy = crate::openshell_policy::render_sandbox_policy(
+                                &input["policyIntent"],
+                            )
+                            .expect("Core-produced sandbox policy must parse for execution");
                             let storage = crate::parse_storage_attachment(input.get("storage"))
                                 .expect("Core-produced storage must parse for execution");
                             crate::parse_sandbox_environment(input.get("environment"))

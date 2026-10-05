@@ -39,39 +39,18 @@
       "packageSnapshotId": "snapshot_producer_pin",
       "environment": {},
       "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "policy": {
-        "filesystem": {
-          "includeWorkdir": false,
-          "readOnly": [
-            "/usr",
-            "/lib",
-            "/proc",
-            "/dev/urandom",
-            "/app",
-            "/etc",
-            "/opt",
-            "/var/log",
-            "/openkit/sessions/as_factory_fixture/context"
-          ],
-          "readWrite": [
-            "/sandbox",
-            "/workspace",
-            "/openkit",
-            "/tmp/openkit-bootstrap",
-            "/dev/null",
-            "/workspace/worktrees/wsl_d507aa30f15d4458d7946c473eed7efa"
-          ]
-        },
-        "landlock": {
-          "compatibility": "best_effort"
-        },
-        "networkMiddlewares": {},
-        "networkPolicies": {},
-        "process": {
-          "runAsGroup": "sandbox",
-          "runAsUser": "sandbox"
-        },
-        "version": 1
+      "policyIntent": {
+        "additionalFilesystemGrants": [
+          {
+            "access": "read-only",
+            "path": "/openkit/sessions/as_factory_fixture/context"
+          },
+          {
+            "access": "read-write",
+            "path": "/workspace/worktrees/wsl_d507aa30f15d4458d7946c473eed7efa"
+          }
+        ],
+        "additionalNetworkEndpoints": []
       },
       "sandboxId": "nh-1111111111111111",
       "storage": {
@@ -97,39 +76,18 @@
       "packageSnapshotId": "snapshot_producer_pin",
       "environment": {},
       "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "policy": {
-        "filesystem": {
-          "includeWorkdir": false,
-          "readOnly": [
-            "/usr",
-            "/lib",
-            "/proc",
-            "/dev/urandom",
-            "/app",
-            "/etc",
-            "/opt",
-            "/var/log",
-            "/openkit/sessions/as_factory_fixture/context"
-          ],
-          "readWrite": [
-            "/sandbox",
-            "/workspace",
-            "/openkit",
-            "/tmp/openkit-bootstrap",
-            "/dev/null",
-            "/workspace/worktrees/wsl_d507aa30f15d4458d7946c473eed7efa"
-          ]
-        },
-        "landlock": {
-          "compatibility": "best_effort"
-        },
-        "networkMiddlewares": {},
-        "networkPolicies": {},
-        "process": {
-          "runAsGroup": "sandbox",
-          "runAsUser": "sandbox"
-        },
-        "version": 1
+      "policyIntent": {
+        "additionalFilesystemGrants": [
+          {
+            "access": "read-only",
+            "path": "/openkit/sessions/as_factory_fixture/context"
+          },
+          {
+            "access": "read-write",
+            "path": "/workspace/worktrees/wsl_d507aa30f15d4458d7946c473eed7efa"
+          }
+        ],
+        "additionalNetworkEndpoints": []
       },
       "sandboxId": "nh-1111111111111111",
       "storage": {

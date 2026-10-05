@@ -108,6 +108,67 @@ describe('authoritative NanoHost session dispatch', () => {
             message: expect.stringMatching(/unowned field|storage command is invalid/i),
           });
         }
+        if (kind === 'sandbox.create') {
+          const validIntent = {
+            additionalFilesystemGrants: [{ access: 'read-only', path: '/opt/toolchains' }],
+            additionalNetworkEndpoints: [
+              {
+                binaries: ['/usr/bin/git'],
+                host: 'github.com',
+                name: 'git_read',
+                port: 443,
+                rules: [{ method: 'GET', path: '/**/info/refs*' }],
+              },
+            ],
+          };
+          for (const invalidIntent of [
+            { ...validIntent, futureAuthority: true },
+            {
+              ...validIntent,
+              additionalFilesystemGrants: [
+                { ...validIntent.additionalFilesystemGrants[0], futureAuthority: true },
+              ],
+            },
+            {
+              ...validIntent,
+              additionalNetworkEndpoints: [
+                { ...validIntent.additionalNetworkEndpoints[0], futureAuthority: true },
+              ],
+            },
+            {
+              ...validIntent,
+              additionalNetworkEndpoints: [
+                { ...validIntent.additionalNetworkEndpoints[0], enforcement: 'audit' },
+              ],
+            },
+            {
+              ...validIntent,
+              additionalNetworkEndpoints: [
+                {
+                  ...validIntent.additionalNetworkEndpoints[0],
+                  rules: [{ method: 'GET', path: '/', futureAuthority: true }],
+                },
+              ],
+            },
+            {
+              ...validIntent,
+              additionalNetworkEndpoints: [
+                { ...validIntent.additionalNetworkEndpoints[0], protocol: 'unknown' },
+              ],
+            },
+          ]) {
+            const rejection = current
+              .effect({
+                ...request,
+                input: { ...request.input, policyIntent: invalidIntent },
+              })
+              .catch((error: unknown) => error);
+            expect(await current.poll(physical, kind)).toBeNull();
+            await expect(rejection).resolves.toMatchObject({
+              message: expect.stringMatching(/policy intent/i),
+            });
+          }
+        }
         void current.effect(request).catch(() => undefined);
         expect(await current.poll(physical, kind), `${fixture.producer} ${kind}`).toEqual(
           fixture.command
@@ -1626,6 +1687,7 @@ describe('authoritative NanoHost session dispatch', () => {
             leaseId: 'lease-create-cleanup-order',
             packageSnapshotId: 'aepsnap-create-cleanup-order',
             sandboxId: 'sandbox-create-cleanup-order',
+            policyIntent: { additionalFilesystemGrants: [], additionalNetworkEndpoints: [] },
           },
           kind: 'sandbox.create',
           requestId: createRequestId,

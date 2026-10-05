@@ -1018,6 +1018,7 @@ describe('createConfiguredTurnExecutor', () => {
         {
           imageDigest,
           sandboxId: 'sandbox-effect-carriage',
+          policyIntent: { additionalFilesystemGrants: [], additionalNetworkEndpoints: [] },
           storage: {
             attachmentGeneration: 1,
             layoutDigest: `sha256:${'a'.repeat(64)}`,
@@ -12008,48 +12009,21 @@ describe('createConfiguredTurnExecutor', () => {
           imageDigest: `sha256:${'b'.repeat(64)}`,
           leaseId: `lease-${snapshotId}`,
           packageSnapshotId: snapshotId,
-          policy: {
-            filesystem: {
-              includeWorkdir: false,
-              readOnly: [
-                '/usr',
-                '/lib',
-                '/proc',
-                '/dev/urandom',
-                '/app',
-                '/etc',
-                '/opt',
-                '/var/log',
-                '/workspace/vendor-sdk',
-              ],
-              readWrite: [
-                '/sandbox',
-                '/workspace',
-                '/openkit',
-                '/tmp/openkit-bootstrap',
-                '/dev/null',
-                '/sandbox/.cache/npm',
-              ],
-            },
-            landlock: { compatibility: 'best_effort' },
-            networkMiddlewares: {},
-            networkPolicies: {
-              artifact_api: {
-                binaries: [{ path: '/usr/bin/curl' }],
-                endpoints: [
-                  {
-                    access: 'read-only',
-                    enforcement: 'enforce',
-                    host: 'api.example.com',
-                    port: 443,
-                    protocol: 'rest',
-                  },
-                ],
+          policyIntent: {
+            additionalFilesystemGrants: [
+              { access: 'read-only', path: '/workspace/vendor-sdk' },
+              { access: 'read-write', path: '/sandbox/.cache/npm' },
+            ],
+            additionalNetworkEndpoints: [
+              {
+                access: 'read-only',
+                binaries: ['/usr/bin/curl'],
+                host: 'api.example.com',
                 name: 'artifact_api',
+                port: 443,
+                protocol: 'rest',
               },
-            },
-            process: { runAsGroup: 'sandbox', runAsUser: 'sandbox' },
-            version: 1,
+            ],
           },
           sandboxId: firstPlan.backendSessionId.slice(0, 19),
           storage: {
