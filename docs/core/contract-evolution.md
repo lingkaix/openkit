@@ -28,6 +28,8 @@ This model separates how long a contract must remain meaningful from the mechani
 
 Every owned data shape separates a closed core from an open extension. The shapes are storage records and file formats, directory layouts, configuration, and interface and protocol messages. The ruling is recorded in [Closed Core, Open Extension](../decisions/20260930-closed_core_open_extension.md).
 
+A shape that instructs its receiver to perform an effect or carries authority is authority-bearing and MUST refuse unknown fields; a descriptive shape MUST ignore unknown keys outside its closed core ([Open Extension Partition](../decisions/20261005-open_extension_partition.md)).
+
 Each core field's values are a closed set with one owner. An unknown core value fails closed at admission and is never coerced, defaulted, or passed on.
 
 Everything outside the core is open. A reader ignores unknown additive fields, members, files, and entries without an owner first declaring a tolerant location. Ignoring means the reader does not act on the content. Ignored content from a producer outside the reader's trust boundary is not persisted, forwarded, or displayed unless its owner defines that use. Hand-Written Configuration below adds a warning for an unknown key in operator- or user-authored configuration, and that warning does not apply the key.
