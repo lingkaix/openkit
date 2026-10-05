@@ -73,7 +73,7 @@ The unique first-release criterion is: for every class of information that will 
 ## Non-goals
 
 - Do not copy a durable-execution harness or invent a generic resume engine.
-- Do not resume the same execution identity after interruption; succession uses retained data plus a new Thread.
+- Do not resume the same execution identity after interruption; succession uses retained data on the same Thread only through a new authorized Turn under [Core AgentSession Replacement](../core/agent-session.md#replacement).
 - Do not snapshot working-tree bytes, CRDT world state, or keyboard capture.
 - Do not promise exactly-once external effects.
 - Do not add a second work state machine or a second product scheduler.
