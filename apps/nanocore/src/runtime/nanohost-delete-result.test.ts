@@ -304,7 +304,9 @@ describe('cleaned backend delete delivery discard', () => {
       await lostAcknowledgement.closed;
       expect(lostAcknowledgement.headers).toEqual([]);
       const storedBefore = fixture.coreDb.sqlite.serialize();
-      expect(await fixture.post(`${deletePath}/result`, retainedResult)).toEqual({
+      expect(
+        await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: true })
+      ).toEqual({
         status: 204,
         body: '',
       });
@@ -429,7 +431,6 @@ describe('cleaned backend delete delivery discard', () => {
     { state: 'failed' },
     { requestId: 'f'.repeat(64) },
     { requestId: requestId.toUpperCase() },
-    { extra: true },
     { failureCode: 'effect_failed' },
     { sandboxId: null },
   ])('rejects a malformed or uncorrelated retained result %j', async (change) => {
@@ -535,7 +536,9 @@ describe('cleaned backend delete delivery discard', () => {
       const pending = fixture.dispatch.expectResultOnly!([
         { kind: 'sandbox.delete', originPhysicalEpoch: 'a'.repeat(64), requestId },
       ]);
-      expect(await fixture.post(`${deletePath}/result`, retainedResult)).toEqual({
+      expect(
+        await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: true })
+      ).toEqual({
         status: 204,
         body: '',
       });
@@ -548,12 +551,38 @@ describe('cleaned backend delete delivery discard', () => {
     }
   });
 
+  it('strips inert delete additions before pending delivery and completed replay identity', async () => {
+    const fixture = await createFixture();
+    try {
+      const pending = fixture.dispatch.effect({
+        kind: 'sandbox.delete',
+        input: deleteInput,
+        requestId,
+      });
+      expect((await fixture.post(deletePath, {})).status).toBe(200);
+      expect(
+        await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: 'first' })
+      ).toEqual({ status: 204, body: '' });
+      await expect(pending).resolves.toEqual({ sandboxId, state: 'deleted' });
+      const before = fixture.coreDb.sqlite.serialize();
+      expect(
+        await fixture.post(`${deletePath}/result`, { ...retainedResult, extra: 'replay' })
+      ).toEqual({ status: 204, body: '' });
+      expect(
+        (await fixture.post(`${deletePath}/result`, { ...retainedResult, sandboxId: 'wrong' }))
+          .status
+      ).toBe(409);
+      expect(fixture.coreDb.sqlite.serialize()).toEqual(before);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it.each([
     { sandboxId: 'wrong' },
     { state: 'absent' },
     { sandboxId: undefined },
     { state: undefined },
-    { extra: true },
   ])('validates delete success fields before resolving ordinary pending results %j', async (change) => {
     const fixture = await createFixture();
     try {

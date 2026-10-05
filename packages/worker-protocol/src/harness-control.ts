@@ -1,11 +1,9 @@
-import { GitFailureExplanationSchema } from '@openkit/protocol';
+import { GitFailureExplanationReaderSchema, GitFailureExplanationSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { NativeEnvironmentValuesSchema } from './native-environment.js';
 
 /**
- * Private Harness control vocabulary owned by `docs/specs/20260703-worker_control_protocol.md`
- * (section Harness Control Operations). Sandbox Integration and NanoCore both validate against
- * these closed shapes, so the command and result field sets have one definition.
+ * Private Harness control vocabulary owned by `docs/specs/20260703-worker_control_protocol.md` (section Harness Control Operations). Exact producer assertions and descriptive readers share the known field definitions; effect-bearing command bodies remain exact.
  */
 
 /** Value-free pre-native startup diagnostics carried by a private Harness refusal. */
@@ -125,7 +123,7 @@ const HarnessSessionOpenQueuedBodyCoreSchema = z
     threadId: HarnessIdentitySchema,
     workspaceId: HarnessIdentitySchema,
   })
-  .strip();
+  .strict();
 
 /** `turn.start` fields NanoCore queues; the three upstream route tokens are minted at dispatch. */
 const HarnessTurnStartQueuedBodyCoreSchema = z
@@ -142,7 +140,7 @@ const HarnessTurnStartQueuedBodyCoreSchema = z
     turnSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     workspaceId: HarnessIdentitySchema,
   })
-  .strip();
+  .strict();
 
 /** Exact `session.open` wire body delivered in the live dispatch response. */
 const HarnessSessionOpenBodyCoreSchema = HarnessSessionOpenQueuedBodyCoreSchema.extend({
@@ -150,7 +148,7 @@ const HarnessSessionOpenBodyCoreSchema = HarnessSessionOpenQueuedBodyCoreSchema.
   inferenceLoopbackCredential: HarnessRouteCredentialSchema,
   runtimeEnvironment: HarnessRuntimeEnvironmentSchema.optional(),
 })
-  .strip()
+  .strict()
   .refine((body) => body.capabilityLoopbackCredential !== body.inferenceLoopbackCredential, {
     message: 'Session loopback credentials must be distinct.',
   });
@@ -161,7 +159,7 @@ const HarnessTurnStartBodyCoreSchema = HarnessTurnStartQueuedBodyCoreSchema.exte
   inferenceToken: HarnessRouteCredentialSchema,
   workerControlToken: HarnessRouteCredentialSchema,
 })
-  .strip()
+  .strict()
   .refine(
     (body) =>
       new Set([body.capabilityToken, body.inferenceToken, body.workerControlToken]).size === 3,
@@ -169,7 +167,7 @@ const HarnessTurnStartBodyCoreSchema = HarnessTurnStartQueuedBodyCoreSchema.exte
   );
 
 /** Exact `session.inspect` and `session.close` body. */
-const HarnessSessionSelectorBodyCoreSchema = z.object(AgentSessionSelectorShape).strip();
+const HarnessSessionSelectorBodyCoreSchema = z.object(AgentSessionSelectorShape).strict();
 
 /** Exact `turn.interrupt` body; the purpose is never inferred and has one value. */
 const HarnessTurnInterruptBodyCoreSchema = z
@@ -179,92 +177,25 @@ const HarnessTurnInterruptBodyCoreSchema = z
     purpose: z.literal('interrupt'),
     turnId: HarnessIdentitySchema,
   })
-  .strip();
+  .strict();
 
 /** Exact `harness.drain` body. */
-const HarnessDrainBodyCoreSchema = z.object({}).strip();
+const HarnessDrainBodyCoreSchema = z.object({}).strict();
 
-/** Ignores additive metadata while refusing unowned execution and required semantics. */
-function guardedCore<T extends z.ZodType>(schema: T, fields: readonly string[]) {
-  const authority = new Set([
-    'command',
-    'executable',
-    'argv',
-    'cwd',
-    'env',
-    'environment',
-    'shell',
-    'hostPath',
-    'providerEndpoint',
-    'apiKey',
-    'token',
-    'password',
-    'requiredFeatures',
-    'minCoreVersion',
-    'nativeEnvironment',
-    'runtimeEnvironment',
-    'storageRef',
-    'workSlotRef',
-    'resume',
-    'inferenceLoopbackCredential',
-    'capabilityLoopbackCredential',
-    'workerControlToken',
-    'inferenceToken',
-    'capabilityToken',
-  ]);
-  return z.preprocess((value, context) => {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      for (const key of Object.keys(value))
-        if (authority.has(key) && !fields.includes(key))
-          context.addIssue({
-            code: 'custom',
-            message: 'Unsupported Harness authority field.',
-            path: [key],
-          });
-    }
-    return value;
-  }, schema);
-}
-
-/** Validated operation core; ignored metadata is never forwarded. */
-export const HarnessSessionOpenQueuedBodySchema = guardedCore(
-  HarnessSessionOpenQueuedBodyCoreSchema,
-  Object.keys(HarnessSessionOpenQueuedBodyCoreSchema.shape)
-);
-/** Validated operation core; ignored metadata is never forwarded. */
-export const HarnessTurnStartQueuedBodySchema = guardedCore(
-  HarnessTurnStartQueuedBodyCoreSchema,
-  Object.keys(HarnessTurnStartQueuedBodyCoreSchema.shape)
-);
-/** Validated operation core; ignored metadata is never forwarded. */
-export const HarnessSessionSelectorBodySchema = guardedCore(
-  HarnessSessionSelectorBodyCoreSchema,
-  Object.keys(HarnessSessionSelectorBodyCoreSchema.shape)
-);
-/** Validated operation core; ignored metadata is never forwarded. */
-export const HarnessTurnInterruptBodySchema = guardedCore(
-  HarnessTurnInterruptBodyCoreSchema,
-  Object.keys(HarnessTurnInterruptBodyCoreSchema.shape)
-);
-/** Validated operation core; ignored metadata is never forwarded. */
-export const HarnessDrainBodySchema = guardedCore(
-  HarnessDrainBodyCoreSchema,
-  Object.keys(HarnessDrainBodyCoreSchema.shape)
-);
-/** Session delivery owns the two loopback credentials and the separate private map. */
-export const HarnessSessionOpenBodySchema = guardedCore(HarnessSessionOpenBodyCoreSchema, [
-  ...Object.keys(HarnessSessionOpenQueuedBodyCoreSchema.shape),
-  'capabilityLoopbackCredential',
-  'inferenceLoopbackCredential',
-  'runtimeEnvironment',
-]);
-/** Turn delivery owns exactly three route-token fields. */
-export const HarnessTurnStartBodySchema = guardedCore(HarnessTurnStartBodyCoreSchema, [
-  ...Object.keys(HarnessTurnStartQueuedBodyCoreSchema.shape),
-  'workerControlToken',
-  'inferenceToken',
-  'capabilityToken',
-]);
+/** Exact queued session-open instruction. */
+export const HarnessSessionOpenQueuedBodySchema = HarnessSessionOpenQueuedBodyCoreSchema;
+/** Exact queued Turn-start instruction. */
+export const HarnessTurnStartQueuedBodySchema = HarnessTurnStartQueuedBodyCoreSchema;
+/** Exact AgentSession selector instruction. */
+export const HarnessSessionSelectorBodySchema = HarnessSessionSelectorBodyCoreSchema;
+/** Exact Turn interruption instruction. */
+export const HarnessTurnInterruptBodySchema = HarnessTurnInterruptBodyCoreSchema;
+/** Exact drain instruction. */
+export const HarnessDrainBodySchema = HarnessDrainBodyCoreSchema;
+/** Exact live session-open instruction, including its two credentials. */
+export const HarnessSessionOpenBodySchema = HarnessSessionOpenBodyCoreSchema;
+/** Exact live Turn-start instruction, including its three credentials. */
+export const HarnessTurnStartBodySchema = HarnessTurnStartBodyCoreSchema;
 
 /** Parsed `session.open` wire body. */
 export type HarnessSessionOpenBody = z.infer<typeof HarnessSessionOpenBodySchema>;
@@ -322,8 +253,7 @@ export const HarnessRefusalReasonSchema = z.enum([
 export type HarnessRefusalReason = z.infer<typeof HarnessRefusalReasonSchema>;
 
 /**
- * Refusal body. `startupFailure` is the value-free pre-native stage and reason that a
- * `turn.start` `dependency_failed` refusal may carry; no other refusal carries it.
+ * Refusal body. `startupFailure` is the value-free pre-native stage and reason that a dependency-failed `turn.start` or workspace-materialization `session.open` refusal may carry.
  */
 export const HarnessRefusedBodySchema = z
   .object({
@@ -442,8 +372,70 @@ export function isHarnessResultBodyValid(
     return (
       refused.success &&
       (refused.data.startupFailure === undefined ||
-        (operation === 'turn.start' && refused.data.reasonCode === 'dependency_failed'))
+        (refused.data.reasonCode === 'dependency_failed' &&
+          (operation === 'turn.start' ||
+            (operation === 'session.open' &&
+              refused.data.startupFailure.stage === 'workspace_materialization'))))
     );
   }
   return HarnessSuccessBodySchemas[operation].safeParse(result.body).success;
 }
+
+/** Reads the descriptive command envelope; its effect-bearing body stays exact. */
+export const HarnessCommandEnvelopeReaderSchema = HarnessCommandEnvelopeSchema.strip();
+
+/** Reads normalized startup diagnostics, preserving all closed cross-field constraints. */
+export const WorkerStartupFailureReaderSchema = WorkerStartupFailureSchema.safeExtend({
+  explanation: GitFailureExplanationReaderSchema.optional(),
+}).strip();
+
+const HarnessRefusedBodyReaderSchema = HarnessRefusedBodySchema.extend({
+  startupFailure: WorkerStartupFailureReaderSchema.optional(),
+}).strip();
+const HarnessUnknownBodyReaderSchema = HarnessUnknownBodySchema.strip();
+const HarnessSuccessBodyReaderSchemas = {
+  'harness.drain': HarnessSuccessBodySchemas['harness.drain'].strip(),
+  'session.close': HarnessSuccessBodySchemas['session.close'].strip(),
+  'session.inspect': HarnessSuccessBodySchemas['session.inspect'].strip(),
+  'session.open': HarnessSuccessBodySchemas['session.open']
+    .safeExtend({
+      workspaceGitBaseline: WorkspaceGitBaselineSchema.strip().optional(),
+    })
+    .strip(),
+  'turn.interrupt': HarnessSuccessBodySchemas['turn.interrupt'].strip(),
+  'turn.start': HarnessSuccessBodySchemas['turn.start'].strip(),
+} as const;
+
+/**
+ * Reads the known result body for its dispatched operation before identity or use.
+ *
+ * @param operation Exact operation selected by the durable command owner.
+ * @param result Envelope-validated result.
+ * @returns Only the admitted descriptive core.
+ * @throws When required fields, closed values or operation-specific diagnostics disagree.
+ */
+export function parseHarnessResultBody(
+  operation: HarnessOperation,
+  result: Pick<HarnessResultEnvelope, 'body' | 'disposition'>
+): Record<string, unknown> {
+  if (result.body.startupFailure !== undefined && result.disposition !== 'refused')
+    throw new Error('Harness startup failure requires a dependency refusal.');
+  if (result.disposition === 'unknown') return HarnessUnknownBodyReaderSchema.parse(result.body);
+  if (result.disposition === 'refused') {
+    const body = HarnessRefusedBodyReaderSchema.parse(result.body);
+    if (
+      body.startupFailure !== undefined &&
+      (body.reasonCode !== 'dependency_failed' ||
+        (operation !== 'turn.start' &&
+          (operation !== 'session.open' ||
+            body.startupFailure.stage !== 'workspace_materialization')))
+    ) {
+      throw new Error('Harness startup failure is invalid for this operation.');
+    }
+    return body;
+  }
+  return HarnessSuccessBodyReaderSchemas[operation].parse(result.body);
+}
+
+/** Reads the descriptive result envelope; the durable operation selects its body reader. */
+export const HarnessResultEnvelopeReaderSchema = HarnessResultEnvelopeSchema.strip();

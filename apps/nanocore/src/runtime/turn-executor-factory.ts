@@ -4193,8 +4193,6 @@ function requireNanoHostSandboxStorageProof(
   }
   const record = storage as Record<string, unknown>;
   if (
-    Object.keys(record).sort().join(',') !==
-      'attachmentGeneration,layoutDigest,scopeDigest,storageRef,targets' ||
     record.storageRef !== binding.storageRef ||
     record.attachmentGeneration !== binding.attachmentGeneration ||
     record.scopeDigest !== binding.scopeDigest ||
@@ -4209,7 +4207,6 @@ function requireNanoHostSandboxStorageProof(
     }
     const entry = target as Record<string, unknown>;
     if (
-      Object.keys(entry).sort().join(',') !== 'initialized,target,volumeRef' ||
       typeof entry.initialized !== 'boolean' ||
       typeof entry.target !== 'string' ||
       typeof entry.volumeRef !== 'string'

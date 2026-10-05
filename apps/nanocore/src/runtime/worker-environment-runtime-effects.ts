@@ -295,14 +295,9 @@ export function parseNanoHostImageInspection(value: unknown): PreparedWorkerEnvi
   };
 }
 
-/** Parses the strict retained-storage inspection result. */
+/** Reads the known retained-storage inspection result. */
 function requireStorageInspection(value: unknown): WorkerEnvironmentStorageInspection {
   const record = requireRecord(value, 'storage inspection');
-  requireExactFields(
-    record,
-    ['attachment', 'capacity', 'layoutDigest', 'scopeDigest', 'state', 'storageRef', 'targets'],
-    'storage inspection'
-  );
   const states = new Set<WorkerEnvironmentStorageInspection['state']>([
     'missing',
     'initializing',
@@ -319,11 +314,11 @@ function requireStorageInspection(value: unknown): WorkerEnvironmentStorageInspe
     throw new Error('NanoHost storage inspection targets are invalid.');
   }
   const capacity = requireRecord(record.capacity, 'storage capacity');
-  requireExactFields(capacity, ['availableBytes', 'totalBytes'], 'storage capacity');
+
   let attachment: WorkerEnvironmentStorageInspection['attachment'] = null;
   if (record.attachment !== null) {
     const entry = requireRecord(record.attachment, 'storage attachment');
-    requireExactFields(entry, ['generation', 'sandboxId'], 'storage attachment');
+
     attachment = {
       generation: positiveInteger(entry.generation, 'attachment generation'),
       sandboxId: requiredString(entry.sandboxId, 'Sandbox'),
@@ -343,7 +338,7 @@ function requireStorageInspection(value: unknown): WorkerEnvironmentStorageInspe
     storageRef: requiredString(record.storageRef, 'storage'),
     targets: record.targets.map((target) => {
       const entry = requireRecord(target, 'storage target');
-      requireExactFields(entry, ['initialized', 'target', 'volumeRef'], 'storage target');
+
       if (typeof entry.initialized !== 'boolean') {
         throw new Error('NanoHost storage target initialization is invalid.');
       }
@@ -356,13 +351,13 @@ function requireStorageInspection(value: unknown): WorkerEnvironmentStorageInspe
   };
 }
 
-/** Parses the strict whole-association purge result. */
+/** Reads the known whole-association purge result. */
 function requirePurgeResult(value: unknown): {
   readonly state: 'purged' | 'retained' | 'unknown';
   readonly storageRef: string;
 } {
   const record = requireRecord(value, 'storage purge');
-  requireExactFields(record, ['state', 'storageRef'], 'storage purge');
+
   if (record.state !== 'purged' && record.state !== 'retained' && record.state !== 'unknown') {
     throw new Error('NanoHost storage purge state is invalid.');
   }
@@ -386,23 +381,12 @@ function effectRequestId(commandRequestId: string, operation: string): string {
   return createHash('sha256').update(`${operation}\0${requestId}`, 'utf8').digest('hex');
 }
 
-/** Requires one strict object. */
+/** Requires one JSON object. */
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`NanoHost ${label} is invalid.`);
   }
   return value as Record<string, unknown>;
-}
-
-/** Requires one exact object field set. */
-function requireExactFields(
-  value: Record<string, unknown>,
-  fields: readonly string[],
-  label: string
-): void {
-  if (Object.keys(value).sort().join(',') !== [...fields].sort().join(',')) {
-    throw new Error(`NanoHost ${label} contains an unowned field.`);
-  }
 }
 
 /** Requires one bounded identity-like string. */

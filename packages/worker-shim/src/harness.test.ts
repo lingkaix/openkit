@@ -836,7 +836,7 @@ describe('Worker Harness loop', () => {
     const controller = new AbortController();
     const results: Array<Record<string, unknown>> = [];
     const commands = [
-      { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-one' },
+      { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-one', note: 'ignored' },
       { ...command('harness.drain', 0, {}), harnessInstanceId: 'harness-two' },
       {
         ...command('session.inspect', 1, {

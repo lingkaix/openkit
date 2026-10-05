@@ -148,3 +148,5 @@ Linux seed validation uses the attribute size query only to size the bounded lis
 - Apps index: [apps/README.md](../README.md)
 
 Preparation image results may receive exact empty `503` while NanoCore cannot persist their validated outcome. NanoHost redelivers the identical result once per second on the same connection, pauses subsequent lifecycle effects including output collection, and never terminates the epoch merely because this deferral persists. Other operations and malformed responses retain their existing strict failure rules; independent member and connection failures still apply.
+
+Initial Harness poll recognition requires the known numeric `schemaVersion: 2` field and ignores inert additions; route and credential-header exclusions remain binding. Fixed effect command parsing stays exact.

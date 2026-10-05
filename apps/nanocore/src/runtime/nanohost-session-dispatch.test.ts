@@ -16,6 +16,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createNanoHostHarnessRuntime,
+  openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
@@ -96,7 +97,7 @@ describe('authoritative NanoHost session dispatch', () => {
         const current = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
         await current.readiness!(
           physical,
-          Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+          Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64), note: 'ignored' })),
           { ...target, coreDb }
         );
         if (kind !== 'workspace.collect') {
@@ -169,10 +170,74 @@ describe('authoritative NanoHost session dispatch', () => {
             });
           }
         }
-        void current.effect(request).catch(() => undefined);
+        const outcome = current.effect(request);
+        void outcome.catch(() => undefined);
         expect(await current.poll(physical, kind), `${fixture.producer} ${kind}`).toEqual(
           fixture.command
         );
+        if (kind !== 'workspace.collect' && kind !== 'file.export') {
+          const storage = fixture.command.storage as Record<string, unknown> | undefined;
+          const resultCore: Record<string, unknown> =
+            kind === 'bridge.open'
+              ? { accepted: true, integrationReady: true, state: 'open' }
+              : kind === 'reference.import'
+                ? {
+                    byteLength: fixture.command.byteLength,
+                    reference: `sandbox://${String(fixture.command.sandboxId)}/${String(fixture.command.slot)}/${String(fixture.command.relativePath)}`,
+                  }
+                : kind === 'storage.inspect'
+                  ? {
+                      attachment: null,
+                      capacity: { availableBytes: 1, totalBytes: 2 },
+                      layoutDigest: null,
+                      scopeDigest: null,
+                      state: 'missing',
+                      storageRef: fixture.command.storageRef,
+                      targets: [],
+                    }
+                  : kind === 'storage.purge'
+                    ? { state: 'purged', storageRef: fixture.command.storageRef }
+                    : kind === 'image.acquire' || kind === 'image.build' || kind === 'image.inspect'
+                      ? { digest: `sha256:${'d'.repeat(64)}` }
+                      : {
+                          sandboxId: fixture.command.sandboxId,
+                          state: kind === 'sandbox.create' ? 'created' : 'deleted',
+                          ...(storage
+                            ? {
+                                storage: {
+                                  ...storage,
+                                  targets: (storage.targets as Record<string, unknown>[]).map(
+                                    (entry) => ({ ...entry, initialized: true })
+                                  ),
+                                },
+                              }
+                            : {}),
+                        };
+          const extended: Record<string, unknown> = {
+            ...resultCore,
+            requestId: request.requestId,
+            note: 'ignored',
+          };
+          if (extended.storage) {
+            const proof = extended.storage as Record<string, unknown>;
+            extended.storage = {
+              ...proof,
+              note: 'ignored',
+              targets: (proof.targets as Record<string, unknown>[]).map((entry) => ({
+                ...entry,
+                note: 'ignored',
+              })),
+            };
+          }
+          await current.result(physical, kind, extended);
+          await expect(outcome).resolves.toEqual(resultCore);
+          if (kind !== 'bridge.open') {
+            // Completed-result identity ignores extensions as well as promise delivery.
+            await expect(
+              current.result(physical, kind, { ...extended, note: 'different ignored value' })
+            ).resolves.toBeUndefined();
+          }
+        }
         if (kind === 'workspace.collect')
           await current.result(
             physical,
@@ -237,20 +302,13 @@ describe('authoritative NanoHost session dispatch', () => {
       await expect(
         live.effect({ kind: 'file.export', requestId: 'c'.repeat(64), input: liveInput })
       ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
-      for (const invalid of [
-        { requestId: refusedId, state: 'refused', reasonCode: 'future' },
-        {
-          requestId: refusedId,
-          state: 'refused',
-          reasonCode: 'artifact_file_not_regular',
-          future: true,
-        },
-      ])
+      for (const invalid of [{ requestId: refusedId, state: 'refused', reasonCode: 'future' }])
         await expect(live.result(physical, 'file.export', invalid)).rejects.toThrow(/invalid/i);
       await live.result(physical, 'file.export', {
         requestId: refusedId,
         state: 'refused',
         reasonCode: 'artifact_file_not_regular',
+        note: 'ignored',
       });
       await expect(refused).resolves.toEqual({
         state: 'refused',
@@ -259,7 +317,11 @@ describe('authoritative NanoHost session dispatch', () => {
       const absentId = 'c'.repeat(64);
       const absent = live.effect({ kind: 'file.export', requestId: absentId, input: liveInput });
       await live.poll(physical, 'file.export');
-      await live.result(physical, 'file.export', { requestId: absentId, state: 'absent' });
+      await live.result(physical, 'file.export', {
+        requestId: absentId,
+        state: 'absent',
+        note: 'ignored',
+      });
       await expect(absent).resolves.toEqual({ state: 'absent' });
       const captureId = 'd'.repeat(64);
       const capture = live.effect({ kind: 'file.export', requestId: captureId, input: liveInput });
@@ -349,7 +411,9 @@ describe('authoritative NanoHost session dispatch', () => {
       const readinessPath = '/api/nanohost/transport/session/readiness';
       const epoch = 'a'.repeat(64);
       expect((await post(readinessPath, { physicalEpoch: epoch })).status).toBe(204);
-      expect(await post('/api/nanohost/transport/effects/sandbox.create', {})).toEqual({
+      expect(
+        await post('/api/nanohost/transport/effects/sandbox.create', { note: 'ignored' })
+      ).toEqual({
         status: 204,
         body: '',
       });
@@ -372,7 +436,9 @@ describe('authoritative NanoHost session dispatch', () => {
         status: 204,
         body: '',
       });
-      expect(await post('/api/nanohost/transport/effects/bridge.close', {})).toEqual({
+      expect(
+        await post('/api/nanohost/transport/effects/bridge.close', { note: 'ignored' })
+      ).toEqual({
         status: 204,
         body: '',
       });
@@ -807,7 +873,18 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it('acknowledges a prior Harness result without notifying the queued successor producer', async () => {
+  it.each([
+    { state: 'draining', retainedCollision: false },
+    { state: 'closed', retainedCollision: false },
+    { state: 'open', retainedCollision: false },
+    { state: 'closed', retainedCollision: true },
+    { state: 'open', retainedCollision: true },
+    { state: 'busy', retainedCollision: false },
+    { state: 'workspace_materialization', retainedCollision: false },
+  ])('acknowledges unchanged $state Harness replay across all candidate readers (retained collision=$retainedCollision)', async ({
+    state,
+    retainedCollision,
+  }) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-result-ack-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -887,41 +964,198 @@ describe('authoritative NanoHost session dispatch', () => {
         runtimeTargetId: target.identityId,
         timestamp: '2098-08-21T00:00:00.000Z',
       });
-      notify();
-      notify.mockClear();
-      const dispatched = await post('/worker-control/harness/poll', { schemaVersion: 2 });
+      if (state !== 'draining')
+        openNanoHostAgentSessionBinding(coreDb, {
+          agentSessionCompatibilityKey: 'c'.repeat(64),
+          agentSessionId: 'agent-session-ack',
+          agentSessionRuntimeBindingId: 'agent-session-binding-ack',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-ack',
+          threadId: 'thread-ack',
+          timestamp: '2098-08-21T00:00:00.000Z',
+          workspaceId: 'workspace-ack',
+        });
+      queueNanoHostHarnessOperation(coreDb, {
+        body:
+          state === 'workspace_materialization'
+            ? {
+                adapterId: 'codex',
+                agentSessionCompatibilityKey: 'c'.repeat(64),
+                agentSessionId: 'agent-session-ack',
+                agentSessionRuntimeBindingId: 'agent-session-binding-ack',
+                effectiveSetupGeneration: 1,
+                resume: null,
+                threadId: 'thread-ack',
+                workspaceId: 'workspace-ack',
+              }
+            : state === 'draining'
+              ? {}
+              : {
+                  agentSessionId: 'agent-session-ack',
+                  agentSessionRuntimeBindingId: 'agent-session-binding-ack',
+                },
+        harnessInstanceId: 'harness-ack',
+        operation:
+          state === 'workspace_materialization'
+            ? 'session.open'
+            : state === 'draining'
+              ? 'harness.drain'
+              : 'session.inspect',
+        timestamp: '2098-08-21T00:00:00.000Z',
+      });
+      const dispatched = await post('/worker-control/harness/poll', {
+        schemaVersion: 2,
+        note: 'ignored',
+      });
       expect(dispatched.status).toBe(200);
       const command = JSON.parse(dispatched.body);
+      const refused = state === 'busy' || state === 'workspace_materialization';
       const result = {
         schemaVersion: 2,
         harnessInstanceId: command.harnessInstanceId,
         operationId: command.operationId,
         sequence: command.sequence,
-        disposition: 'succeeded',
-        body: { state: 'draining', activeTurns: 0, openSessions: 0 },
+        disposition: refused ? 'refused' : 'succeeded',
+        body: (state === 'busy'
+          ? { reasonCode: 'busy' }
+          : state === 'workspace_materialization'
+            ? {
+                reasonCode: 'dependency_failed',
+                startupFailure: { stage: 'workspace_materialization', reason: 'git_fetch_failed' },
+              }
+            : state === 'draining'
+              ? { state, activeTurns: 0, openSessions: 0 }
+              : {
+                  state,
+                  nativeHandleState: state === 'closed' ? 'absent' : 'pending',
+                  nativeHandleDigest: null,
+                  childState: 'absent',
+                  cleanupState: 'clean',
+                }) as Record<string, unknown>,
       };
-      expect(await post('/worker-control/harness/result', result)).toEqual({
-        status: 204,
-        body: '',
-      });
-      const queued = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
-      expect(queued).toMatchObject({ operation_state: 'queued', operation_sequence: 1 });
-      expect(await post('/worker-control/harness/result', result)).toEqual({
+      expect(
+        await post('/worker-control/harness/result', {
+          ...result,
+          note: 'ignored',
+          body: { ...result.body, note: 'ignored' },
+        })
+      ).toEqual({
         status: 204,
         body: '',
       });
       expect(notify).toHaveBeenCalledTimes(1);
-      expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
+      expect(notify).toHaveBeenCalledWith(result);
+      notify.mockClear();
+      const collision =
+        state === 'closed'
+          ? { privateState: 'absent' }
+          : state === 'open'
+            ? { maxActiveTurns: 1 }
+            : {};
+      if (retainedCollision) {
+        const bytes = JSON.stringify({ ...result, body: { ...result.body, ...collision } });
+        coreDb.sqlite
+          .prepare('UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?')
+          .run(bytes, createHash('sha256').update(bytes).digest('hex'));
+      }
+      const queued = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
+      const before = coreDb.sqlite.serialize();
+      expect(queued).toMatchObject({ operation_state: 'queued', operation_sequence: 1 });
       expect(
         (
           await post('/worker-control/harness/result', {
             ...result,
-            body: { ...result.body, activeTurns: 1 },
+            body: {
+              ...result.body,
+              ...collision,
+              note: 'ignored replay addition',
+              ...(state === 'workspace_materialization'
+                ? {
+                    startupFailure: {
+                      ...(result.body.startupFailure as Record<string, unknown>),
+                      note: 'ignored',
+                    },
+                  }
+                : {}),
+            },
+          })
+        ).status
+      ).toBe(204);
+      expect(notify).not.toHaveBeenCalled();
+      expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
+      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(
+        (
+          await post('/worker-control/harness/result', {
+            ...result,
+            body: {
+              ...result.body,
+              ...collision,
+              ...(refused
+                ? { reasonCode: 'conflict' }
+                : state === 'draining'
+                  ? { activeTurns: 1 }
+                  : { cleanupState: 'unknown' }),
+            },
           })
         ).status
       ).toBe(409);
-      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).not.toHaveBeenCalled();
       expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
+      expect(coreDb.sqlite.serialize()).toEqual(before);
+      if (state === 'closed' || state === 'open') {
+        for (const missing of [
+          'cleanupState',
+          'childState',
+          'nativeHandleState',
+          'nativeHandleDigest',
+        ]) {
+          const body = { ...result.body, ...collision };
+          delete body[missing];
+          expect((await post('/worker-control/harness/result', { ...result, body })).status).toBe(
+            409
+          );
+          expect(coreDb.sqlite.serialize()).toEqual(before);
+          expect(notify).not.toHaveBeenCalled();
+        }
+        expect(
+          (
+            await post('/worker-control/harness/result', {
+              ...result,
+              body: { ...result.body, ...collision, cleanupState: 'future' },
+            })
+          ).status
+        ).toBe(409);
+        expect(coreDb.sqlite.serialize()).toEqual(before);
+      }
+      if (refused) {
+        const changedBodies = [
+          { ...result.body, reasonCode: 'future' },
+          ...(state === 'workspace_materialization'
+            ? [
+                {
+                  ...result.body,
+                  startupFailure: {
+                    stage: 'workspace_materialization',
+                    reason: 'git_checkout_failed',
+                  },
+                },
+                {
+                  ...result.body,
+                  startupFailure: { stage: 'native_spawn', reason: 'git_fetch_failed' },
+                },
+                { reasonCode: 'dependency_failed' },
+              ]
+            : []),
+        ];
+        for (const body of changedBodies) {
+          expect((await post('/worker-control/harness/result', { ...result, body })).status).toBe(
+            409
+          );
+          expect(coreDb.sqlite.serialize()).toEqual(before);
+          expect(notify).not.toHaveBeenCalled();
+        }
+      }
       const next = await post('/worker-control/harness/poll', { schemaVersion: 2 });
       expect(next.status).toBe(200);
       const nextCommand = JSON.parse(next.body);
@@ -929,7 +1163,7 @@ describe('authoritative NanoHost session dispatch', () => {
       const successor = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
       expect(successor).toMatchObject({ result_json: null, result_fingerprint: null });
       expect((await post('/worker-control/harness/result', result)).status).toBe(409);
-      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).not.toHaveBeenCalled();
       expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
         successor
       );
@@ -938,9 +1172,11 @@ describe('authoritative NanoHost session dispatch', () => {
           ...result,
           operationId: nextCommand.operationId,
           sequence: nextCommand.sequence,
+          disposition: 'succeeded',
+          body: { state: 'draining', activeTurns: 0, openSessions: 0 },
         })
       ).toEqual({ status: 204, body: '' });
-      expect(notify).toHaveBeenCalledTimes(2);
+      expect(notify).toHaveBeenCalledTimes(1);
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1020,7 +1256,7 @@ describe('authoritative NanoHost session dispatch', () => {
         requestId,
       });
       coreDb.sqlite.exec('PRAGMA query_only = ON');
-      const result = { requestId, digest: `sha256:${'c'.repeat(64)}` };
+      const result = { requestId, digest: `sha256:${'c'.repeat(64)}`, note: 'ignored' };
       await expect(dispatch.result(physical, 'image.acquire', result)).rejects.toMatchObject({
         status: 503,
       });
@@ -1284,7 +1520,11 @@ describe('authoritative NanoHost session dispatch', () => {
         requestId,
       });
       await expect(
-        dispatch.result(firstPhysical, 'image.acquire', { failureCode: 'effect_failed', requestId })
+        dispatch.result(firstPhysical, 'image.acquire', {
+          failureCode: 'effect_failed',
+          requestId,
+          note: 'ignored',
+        })
       ).resolves.toBeUndefined();
       await rejected;
 
@@ -1334,7 +1574,6 @@ describe('authoritative NanoHost session dispatch', () => {
       for (const conflicting of [
         { failureCode: 'effect_failed', requestId: 'b'.repeat(64) },
         { failureCode: 'other', requestId },
-        { extra: true, failureCode: 'effect_failed', requestId },
       ]) {
         await expect(
           dispatch.result(successorPhysical, 'image.acquire', conflicting)

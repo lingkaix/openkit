@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HarnessCommandBodySchemas,
+  HarnessCommandEnvelopeReaderSchema,
   HarnessCommandEnvelopeSchema,
   HarnessOperationSchema,
   HarnessQueuedCommandBodySchemas,
+  HarnessResultEnvelopeReaderSchema,
   HarnessResultEnvelopeSchema,
   isHarnessResultBodyValid,
+  parseHarnessResultBody,
+  WorkerStartupFailureReaderSchema,
 } from './index.js';
 
 const credential = (letter: string) => letter.repeat(43);
@@ -166,6 +170,15 @@ describe('private Harness command bodies', () => {
       sequence: 0,
     };
     expect(HarnessCommandEnvelopeSchema.safeParse(command).success).toBe(true);
+    expect(HarnessCommandEnvelopeReaderSchema.parse({ ...command, note: 'ignored' })).toEqual(
+      command
+    );
+    expect(
+      HarnessCommandEnvelopeSchema.safeParse({ ...command, note: 'emitter typo' }).success
+    ).toBe(false);
+    expect(
+      HarnessCommandEnvelopeReaderSchema.safeParse({ ...command, operation: 'shell.exec' }).success
+    ).toBe(false);
     expect(HarnessCommandEnvelopeSchema.safeParse({ ...command, adapterId: 'pi' }).success).toBe(
       false
     );
@@ -187,6 +200,12 @@ describe('private Harness results', () => {
 
   it('has a closed result envelope', () => {
     expect(HarnessResultEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(HarnessResultEnvelopeReaderSchema.parse({ ...envelope, note: 'ignored' })).toEqual(
+      envelope
+    );
+    expect(
+      HarnessResultEnvelopeReaderSchema.safeParse({ ...envelope, disposition: 'future' }).success
+    ).toBe(false);
     expect(HarnessResultEnvelopeSchema.safeParse({ ...envelope, extra: true }).success).toBe(false);
   });
 
@@ -256,6 +275,28 @@ describe('private Harness results', () => {
       ];
     for (const [operation, body] of valid) {
       expect(isHarnessResultBodyValid(operation, { body, disposition: 'succeeded' })).toBe(true);
+      expect(
+        parseHarnessResultBody(operation, {
+          body: { ...body, note: 'ignored' },
+          disposition: 'succeeded',
+        })
+      ).toEqual(body);
+      expect(
+        isHarnessResultBodyValid(operation, {
+          body: { ...body, note: 'emitter typo' },
+          disposition: 'succeeded',
+        })
+      ).toBe(false);
+      expect(() =>
+        parseHarnessResultBody(operation, {
+          body: { ...body, state: 'future' },
+          disposition: 'succeeded',
+        })
+      ).toThrow();
+      const { state: _state, ...missing } = body;
+      expect(() =>
+        parseHarnessResultBody(operation, { body: missing, disposition: 'succeeded' })
+      ).toThrow();
     }
     const invalid: Array<
       [Parameters<typeof isHarnessResultBodyValid>[0], Record<string, unknown>]
@@ -308,11 +349,11 @@ describe('private Harness results', () => {
 });
 
 /** Inert extensions cannot add native execution or required command semantics. */
-describe('open Harness core extensions', () => {
-  it('strips metadata and refuses unowned authority before forwarding', () => {
+describe('exact Harness effect instructions', () => {
+  it('refuses additions and unowned authority before forwarding', () => {
     const schema = HarnessQueuedCommandBodySchemas['session.inspect'];
     const core = { agentSessionId: 'as_1', agentSessionRuntimeBindingId: 'asrb_1' };
-    expect(schema.parse({ ...core, note: 'ignored' })).toEqual(core);
+    expect(schema.safeParse({ ...core, note: 'ignored' }).success).toBe(false);
     for (const field of [
       'command',
       'env',
@@ -324,5 +365,96 @@ describe('open Harness core extensions', () => {
       'resume',
     ])
       expect(schema.safeParse({ ...core, [field]: {} }).success).toBe(false);
+  });
+});
+
+/** Refusal and uncertainty are descriptive, while diagnostic applicability remains closed. */
+describe('Harness descriptive diagnostics', () => {
+  it('strips refused and unknown bodies and refuses unknown core reasons or unrelated startup failures', () => {
+    expect(
+      parseHarnessResultBody('session.inspect', {
+        disposition: 'refused',
+        body: { reasonCode: 'missing', note: 'ignored' },
+      })
+    ).toEqual({ reasonCode: 'missing' });
+    expect(
+      parseHarnessResultBody('session.inspect', {
+        disposition: 'unknown',
+        body: { reasonCode: 'outcome_unknown', note: 'ignored' },
+      })
+    ).toEqual({ reasonCode: 'outcome_unknown' });
+    for (const disposition of ['refused', 'unknown'] as const) {
+      expect(() =>
+        parseHarnessResultBody('session.inspect', { disposition, body: { reasonCode: 'future' } })
+      ).toThrow();
+      expect(() => parseHarnessResultBody('session.inspect', { disposition, body: {} })).toThrow();
+    }
+    expect(() =>
+      parseHarnessResultBody('session.inspect', {
+        disposition: 'unknown',
+        body: {
+          reasonCode: 'outcome_unknown',
+          startupFailure: { stage: 'workspace_materialization', reason: 'failed' },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      parseHarnessResultBody('turn.interrupt', {
+        disposition: 'succeeded',
+        body: {
+          state: 'interrupted',
+          startupFailure: { stage: 'workspace_materialization', reason: 'failed' },
+        },
+      })
+    ).toThrow();
+    expect(() =>
+      parseHarnessResultBody('session.inspect', {
+        disposition: 'refused',
+        body: {
+          reasonCode: 'dependency_failed',
+          startupFailure: { stage: 'workspace_materialization', reason: 'failed' },
+        },
+      })
+    ).toThrow();
+  });
+  it('reads nested Git explanation additions while keeping cross-field constraints', () => {
+    const core = {
+      stage: 'workspace_materialization',
+      reason: 'git_fetch_http_refused',
+      explanation: {
+        code: 'git_fetch_http_refused',
+        stage: 'workspace_materialization',
+        operation: 'git.fetch',
+        dependency: 'git_remote',
+        producer: 'worker-shim',
+        observedAt: '2026-09-22T00:00:00.000Z',
+        basis: 'direct_observation',
+        subprocess: 'exit',
+        httpStatus: 403,
+        enforcement: 'unavailable',
+        evidence: { availability: 'partial', outputTruncated: false },
+      },
+    };
+    expect(
+      WorkerStartupFailureReaderSchema.parse({
+        ...core,
+        note: 'ignored',
+        explanation: {
+          ...core.explanation,
+          note: 'ignored',
+          evidence: { ...core.explanation.evidence, note: 'ignored' },
+        },
+      })
+    ).toEqual(core);
+    expect(
+      WorkerStartupFailureReaderSchema.safeParse({ ...core, reason: 'git_fetch_tls_failed' })
+        .success
+    ).toBe(false);
+    expect(
+      WorkerStartupFailureReaderSchema.safeParse({
+        ...core,
+        explanation: { ...core.explanation, httpStatus: null },
+      }).success
+    ).toBe(false);
   });
 });

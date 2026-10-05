@@ -238,13 +238,15 @@ describe('Worker environment runtime effects', () => {
       workspaceId: 'workspace_test',
     } satisfies WorkerStorageBinding;
     const dispatch = createDispatch(async () => ({
-      attachment: null,
-      capacity: { availableBytes: 2048, totalBytes: 4096 },
+      note: 'ignored',
+      attachment: { generation: 2, sandboxId: 'sandbox_test', note: 'ignored' },
+      capacity: { availableBytes: 2048, totalBytes: 4096, note: 'ignored' },
       layoutDigest: binding.layoutDigest,
       scopeDigest: `sha256:${'f'.repeat(64)}`,
       state: 'available',
       storageRef: binding.storageRef,
       targets: binding.targets.map(({ initialized, target, volumeRef }) => ({
+        note: 'ignored',
         initialized,
         target,
         volumeRef,
@@ -258,10 +260,73 @@ describe('Worker environment runtime effects', () => {
         binding,
         commandRequestId: 'command_status',
       })
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
+      attachment: { generation: 2, sandboxId: 'sandbox_test' },
       capacity: { availableBytes: 2048, totalBytes: 4096 },
+      layoutDigest: binding.layoutDigest,
+      scopeDigest: `sha256:${'f'.repeat(64)}`,
       state: 'conflicted',
+      storageRef: binding.storageRef,
+      targets: binding.targets.map(({ initialized, target, volumeRef }) => ({
+        initialized,
+        target,
+        volumeRef,
+      })),
     });
+  });
+
+  it('strips purge additions and refuses missing association or unknown outcomes', async () => {
+    const binding = {
+      state: 'purge-pending',
+      storageRef: 'wst_test',
+      attachmentGeneration: 2,
+    } as WorkerStorageBinding;
+    let result: Record<string, unknown> = {
+      state: 'purged',
+      storageRef: binding.storageRef,
+      note: 'ignored',
+    };
+    const effects = createWorkerEnvironmentRuntimeEffects(createDispatch(async () => result));
+    const request = { authorize: () => true, binding, commandRequestId: 'purge_test' };
+    await expect(effects.purgeStorage(request)).resolves.toEqual({
+      state: 'purged',
+      storageRef: binding.storageRef,
+    });
+    for (const invalid of [
+      { state: 'future', storageRef: binding.storageRef },
+      { state: 'purged' },
+    ]) {
+      result = invalid;
+      await expect(effects.purgeStorage(request)).rejects.toThrow();
+    }
+  });
+
+  it('refuses missing and unknown storage core facts after ignoring additions', async () => {
+    const binding = { storageRef: 'wst_test', attachmentGeneration: 2 } as WorkerStorageBinding;
+    const core = {
+      attachment: { generation: 2, sandboxId: 'sandbox_test' },
+      capacity: { availableBytes: 1, totalBytes: 2 },
+      layoutDigest: null,
+      scopeDigest: null,
+      state: 'missing',
+      storageRef: binding.storageRef,
+      targets: [{ initialized: true, target: '/workspace', volumeRef: 'wsv_test' }],
+    };
+    const { storageRef: _storageRef, ...missing } = core;
+    for (const result of [
+      missing,
+      { ...core, state: 'future' },
+      { ...core, capacity: { availableBytes: 3, totalBytes: 2 } },
+      { ...core, attachment: { generation: 0, sandboxId: 'sandbox_test' } },
+      { ...core, targets: [{ target: '/workspace', volumeRef: 'wsv_test' }] },
+    ]) {
+      const effects = createWorkerEnvironmentRuntimeEffects(
+        createDispatch(async () => ({ ...result, note: 'ignored' }))
+      );
+      await expect(
+        effects.inspectStorage({ authorize: () => true, binding, commandRequestId: 'inspect_test' })
+      ).rejects.toThrow();
+    }
   });
 
   it('requires current authorization before storage effects', async () => {

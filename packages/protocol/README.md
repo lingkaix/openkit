@@ -35,3 +35,5 @@ Agent catalog `kind` is a role, with null for supply that does not declare one. 
 `ReasoningEffortSchema` validates explicit Turn preferences using the canonical vocabulary. `turn.start`, canonical Turns, terminal events, and product Turn projections preserve optional `reasoningEffort`; retained absence stays absent. Turn admission freezes the preference and command identity includes the supplied field.
 
 CapabilityCall admits optional namespaced extensions. `openkit.gateway/routeLineage` defines unavailable members and reached attempts with closed failure and terminal-result values; unknown extension namespaces are ignored, while unknown values in the recognized core fail validation. The canonical system-prompt digest restriction remains unchanged.
+
+`GitFailureExplanationReaderSchema` strips descriptive additions, including nested evidence, while preserving code/status/subprocess relationships. `GitFailureExplanationSchema` remains the exact producer assertion.

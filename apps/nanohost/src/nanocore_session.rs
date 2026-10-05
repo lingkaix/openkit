@@ -304,7 +304,7 @@ fn send_nested_status(
         .map_err(|_| "nested route response failed")
 }
 
-/// Recognizes the exact Integration-scoped poll eligible for the readiness latch.
+/// Recognizes the known Integration-scoped poll eligible for the readiness latch.
 fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     if method != Method::POST
         || path != HARNESS_POLL_PATH
@@ -317,11 +317,10 @@ fn is_initial_harness_poll(method: &Method, path: &str, headers: &HeaderMap, bod
         .ok()
         .is_some_and(|value| {
             value.as_object().is_some_and(|object| {
-                object.len() == 1
-                    && object
-                        .get("schemaVersion")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(2)
+                object
+                    .get("schemaVersion")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(2)
             })
         })
 }
@@ -3304,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_harness_poll_is_exact_and_credential_free() {
+    fn initial_harness_poll_reads_core_and_is_credential_free() {
         let headers = http::HeaderMap::new();
         let body = br#"{"schemaVersion":2}"#;
         assert!(is_initial_harness_poll(
@@ -3319,18 +3318,30 @@ mod tests {
             &headers,
             body,
         ));
-        assert!(!is_initial_harness_poll(
+        assert!(is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
             &headers,
-            br#"{"schemaVersion":2,"nextExpectedSequence":1}"#,
+            br#"{"schemaVersion":2,"note":"ignored"}"#,
         ));
-        assert!(!is_initial_harness_poll(
+        assert!(is_initial_harness_poll(
             &Method::POST,
             "/worker-control/harness/poll",
             &headers,
-            br#"{"schemaVersion":2,"nextExpectedSequence":0}"#,
+            br#"{"schemaVersion":2,"retiredMarker":0}"#,
         ));
+        for invalid in [
+            br#"{}"#.as_slice(),
+            br#"{"schemaVersion":3}"#.as_slice(),
+            br#"{"schemaVersion":"2"}"#.as_slice(),
+        ] {
+            assert!(!is_initial_harness_poll(
+                &Method::POST,
+                HARNESS_POLL_PATH,
+                &headers,
+                invalid
+            ));
+        }
         let mut credential_headers = http::HeaderMap::new();
         credential_headers.insert(
             http::header::AUTHORIZATION,

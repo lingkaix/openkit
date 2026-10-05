@@ -3,9 +3,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   canonicalNativeEnvironment,
   HarnessQueuedCommandBodySchemas,
+  HarnessResultEnvelopeReaderSchema,
   NativeEnvironmentRecordSchema,
-  WorkerStartupFailureSchema,
-  WorkspaceGitBaselineSchema,
+  parseHarnessResultBody,
 } from '@openkit/worker-protocol';
 
 import { bindSchedulerLeaseRouteTokenHashes } from '../scheduler-records.js';
@@ -110,6 +110,8 @@ export interface SettleNanoHostHarnessOperationInput {
   readonly sandboxIntegrationBindingRef: string;
   readonly result: NanoHostHarnessResult;
   readonly timestamp: string;
+  /** Called after durable first settlement with only the admitted result core. */
+  readonly onSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
 }
 
 /** Input for widening one dispatched operation to unknown cleanup. */
@@ -204,6 +206,7 @@ interface HarnessRow {
   readonly operation: NanoHostHarnessOperation | null;
   readonly command_body_json: string | null;
   readonly result_json: string | null;
+  readonly result_fingerprint: string | null;
   readonly updated_at: string;
 }
 
@@ -1079,7 +1082,7 @@ export function settleNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: SettleNanoHostHarnessOperationInput
 ): 'settled' | 'replayed' {
-  const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
+  input = { ...input, result: HarnessResultEnvelopeReaderSchema.parse(input.result) };
   coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     const harness = requireHarnessForIntegration(
@@ -1087,13 +1090,55 @@ export function settleNanoHostHarnessOperation(
       input.sandboxIntegrationBindingRef,
       input.result.harnessInstanceId
     );
-    if (
+    // Verify the retained representation before parsing or comparing a descriptive view.
+    if (harness.result_json && sha256(harness.result_json) !== harness.result_fingerprint)
+      throw new Error('NanoHost Harness retained result fingerprint conflicts.');
+    const retained = harness.result_json ? readJsonObject(harness.result_json) : null;
+    const isPriorReceipt =
       (harness.operation_state === 'settled' || harness.operation_state === 'queued') &&
-      harness.result_json === resultJson
-    ) {
+      retained?.operationId === input.result.operationId;
+    if (isPriorReceipt && retained) {
+      const receipt = HarnessResultEnvelopeReaderSchema.parse(retained);
+      // A queued successor overwrote operation provenance. Every plausible reader must see an unchanged core; shared refusal grammar needs no unique operation name, and a collision cannot hide a change seen by another reader.
+      const candidates =
+        harness.operation_state === 'queued'
+          ? NANO_HOST_HARNESS_OPERATIONS.filter((candidate) => {
+              try {
+                requireHarnessResult(candidate, receipt);
+                return true;
+              } catch {
+                return false;
+              }
+            })
+          : harness.operation
+            ? [harness.operation]
+            : [];
+      if (candidates.length === 0)
+        throw new Error(
+          'NanoHost Harness result replay conflicts with unmatched retained operation.'
+        );
+      for (const operation of candidates) {
+        let identical = false;
+        try {
+          identical =
+            canonicalJson(
+              requireHarnessResult(operation, receipt) as unknown as Record<string, unknown>
+            ) ===
+            canonicalJson(
+              requireHarnessResult(operation, input.result) as unknown as Record<string, unknown>
+            );
+        } catch {
+          // Reader refusal is a replay conflict, just like a changed normalized core.
+        }
+        if (!identical)
+          throw new Error('NanoHost Harness result replay conflicts with the settled result.');
+      }
       coreDb.sqlite.exec('COMMIT');
       return 'replayed';
+    } else if (harness.operation) {
+      input = { ...input, result: requireHarnessResult(harness.operation, input.result) };
     }
+    const resultJson = canonicalJson(input.result as unknown as Record<string, unknown>);
     if (harness.operation_state === 'settled') {
       throw new Error('NanoHost Harness result replay conflicts with the settled result.');
     }
@@ -1105,7 +1150,6 @@ export function settleNanoHostHarnessOperation(
     ) {
       throw new Error('NanoHost Harness result does not match the dispatched operation.');
     }
-    requireHarnessResult(harness.operation, input.result);
     if (
       input.result.disposition === 'refused' &&
       input.result.body.reasonCode === 'cleanup_required'
@@ -1120,36 +1164,37 @@ export function settleNanoHostHarnessOperation(
     if (input.result.disposition === 'unknown') {
       setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
       coreDb.sqlite.exec('COMMIT');
-      return 'settled';
-    }
-    if (input.result.disposition === 'succeeded') {
-      projectSuccessfulResult(coreDb, harness, input.result.body, input.timestamp);
-    }
-    const update = coreDb.sqlite
-      .prepare(
-        `UPDATE harness_instance_records
+    } else {
+      if (input.result.disposition === 'succeeded') {
+        projectSuccessfulResult(coreDb, harness, input.result.body, input.timestamp);
+      }
+      const update = coreDb.sqlite
+        .prepare(
+          `UPDATE harness_instance_records
          SET operation_state = 'settled', result_json = ?, result_fingerprint = ?,
              next_sequence = next_sequence + 1, updated_at = ?
          WHERE harness_instance_id = ? AND operation_state = 'dispatched'
            AND operation_id = ? AND operation_sequence = ?`
-      )
-      .run(
-        resultJson,
-        sha256(resultJson),
-        input.timestamp,
-        harness.harness_instance_id,
-        input.result.operationId,
-        input.result.sequence
-      );
-    if (update.changes !== 1) {
-      throw new Error('NanoHost Harness result settlement changed concurrently.');
+        )
+        .run(
+          resultJson,
+          sha256(resultJson),
+          input.timestamp,
+          harness.harness_instance_id,
+          input.result.operationId,
+          input.result.sequence
+        );
+      if (update.changes !== 1) {
+        throw new Error('NanoHost Harness result settlement changed concurrently.');
+      }
+      coreDb.sqlite.exec('COMMIT');
     }
-    coreDb.sqlite.exec('COMMIT');
-    return 'settled';
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
+  input.onSettled?.(input.result);
+  return 'settled';
 }
 
 /** Marks one exact dispatched operation unknown and drains the Harness before capacity returns. */
@@ -1463,7 +1508,7 @@ function requireOperationLineage(
   }
 }
 
-/** Validates consumed core semantics and strips inert additions before identity or forwarding. */
+/** Requires the exact queued effect instruction before identity or dispatch. */
 function requireHarnessOperationBody(
   operation: NanoHostHarnessOperation,
   body: Readonly<Record<string, unknown>>
@@ -1473,159 +1518,26 @@ function requireHarnessOperationBody(
   return parsed.data;
 }
 
-/** Validates one exact result envelope and its operation-specific body. */
+/** Reads the result core and preserves the admitted descriptor's single active-Turn proof. */
 function requireHarnessResult(
   operation: NanoHostHarnessOperation,
   result: NanoHostHarnessResult
-): void {
-  requireExactFields(
-    result as unknown as Record<string, unknown>,
-    ['body', 'disposition', 'harnessInstanceId', 'operationId', 'schemaVersion', 'sequence'],
-    'Harness result'
-  );
-  if (
-    result.schemaVersion !== 2 ||
-    !Number.isSafeInteger(result.sequence) ||
-    result.sequence < 0 ||
-    !['succeeded', 'refused', 'unknown'].includes(result.disposition)
-  ) {
-    throw new Error('NanoHost Harness result envelope is invalid.');
-  }
-  requireSha256(result.operationId, 'Harness operation id');
-  requireIdentity(result.harnessInstanceId, 'Harness');
-  if (result.disposition === 'unknown') {
-    requireExactFields(result.body, ['reasonCode'], 'unknown result body');
-    if (result.body.reasonCode !== 'outcome_unknown') {
-      throw new Error('NanoHost Harness unknown result reason is invalid.');
-    }
-    return;
-  }
-  if (result.disposition === 'refused') {
-    requireExactFields(
-      result.body,
-      result.body.startupFailure === undefined ? ['reasonCode'] : ['reasonCode', 'startupFailure'],
-      'refused result body'
-    );
-    if (
-      result.body.startupFailure !== undefined &&
-      ((operation !== 'turn.start' && operation !== 'session.open') ||
-        (operation === 'session.open' &&
-          (result.body.startupFailure as { stage?: unknown }).stage !==
-            'workspace_materialization') ||
-        result.body.reasonCode !== 'dependency_failed' ||
-        !WorkerStartupFailureSchema.safeParse(result.body.startupFailure).success)
-    ) {
-      throw new Error('NanoHost Harness startup failure is invalid.');
-    }
-    if (
-      ![
-        'missing',
-        'stale',
-        'conflict',
-        'unsupported',
-        'busy',
-        'dependency_failed',
-        'cleanup_required',
-      ].includes(result.body.reasonCode as string)
-    ) {
-      throw new Error('NanoHost Harness refusal reason is invalid.');
-    }
-    return;
-  }
-  const fields: Record<NanoHostHarnessOperation, readonly string[]> = {
-    'session.open': ['maxActiveTurns', 'nativeHandleDigest', 'nativeHandleState', 'state'],
-    'session.inspect': [
-      'childState',
-      'cleanupState',
-      'nativeHandleDigest',
-      'nativeHandleState',
-      'state',
-    ],
-    'turn.start': ['nativeHandleDigest', 'nativeHandleState', 'state'],
-    'turn.interrupt': ['state'],
-    'session.close': ['privateState', 'state'],
-    'harness.drain': ['activeTurns', 'openSessions', 'state'],
-  };
-  // Interrupt and close may add host liveness, which is never the cancellation or close proof:
-  // a resident shared host stays running for its sibling bindings.
-  const optionalChildState =
-    (operation === 'turn.interrupt' || operation === 'session.close') &&
-    result.body.childState !== undefined;
-  if (operation === 'session.open' && result.body.workspaceGitBaseline !== undefined) {
-    WorkspaceGitBaselineSchema.parse(result.body.workspaceGitBaseline);
-    fields[operation] = [...fields[operation], 'workspaceGitBaseline'];
-  }
-  requireExactFields(
-    result.body,
-    optionalChildState ? [...fields[operation], 'childState'] : fields[operation],
-    `${operation} success body`
-  );
-  if (
-    optionalChildState &&
-    !['absent', 'running', 'stopping', 'unknown'].includes(result.body.childState as string)
-  ) {
-    throw new Error(`NanoHost Harness ${operation} host liveness is invalid.`);
+): NanoHostHarnessResult {
+  let body: Record<string, unknown>;
+  try {
+    body = parseHarnessResultBody(operation, result);
+  } catch (error) {
+    if (result.body.startupFailure !== undefined)
+      throw new Error('NanoHost Harness startup failure is invalid.', { cause: error });
+    throw new Error(`NanoHost Harness ${operation} result is invalid.`, { cause: error });
   }
   if (
     operation === 'session.open' &&
-    (result.body.state !== 'open' || result.body.maxActiveTurns !== 1)
-  ) {
+    result.disposition === 'succeeded' &&
+    body.maxActiveTurns !== 1
+  )
     throw new Error('NanoHost Harness session.open success is invalid.');
-  }
-  if (operation === 'turn.start' && result.body.state !== 'started') {
-    throw new Error('NanoHost Harness turn.start success is invalid.');
-  }
-  if (operation === 'turn.interrupt' && result.body.state !== 'interrupted') {
-    throw new Error('NanoHost Harness turn.interrupt success is invalid.');
-  }
-  if (operation === 'turn.interrupt') {
-    return;
-  }
-  if (
-    operation === 'session.close' &&
-    (result.body.state !== 'closed' || result.body.privateState !== 'absent')
-  ) {
-    throw new Error('NanoHost Harness session.close success is invalid.');
-  }
-  if (operation === 'session.close') {
-    return;
-  }
-  if (operation === 'harness.drain') {
-    if (
-      result.body.state !== 'draining' ||
-      !Number.isSafeInteger(result.body.openSessions) ||
-      !Number.isSafeInteger(result.body.activeTurns) ||
-      (result.body.openSessions as number) < 0 ||
-      (result.body.activeTurns as number) < 0
-    ) {
-      throw new Error('NanoHost Harness drain success is invalid.');
-    }
-    return;
-  }
-  if (operation === 'session.inspect') {
-    if (
-      !['open', 'active', 'closing', 'closed', 'failed'].includes(result.body.state as string) ||
-      !['absent', 'running', 'stopping', 'unknown'].includes(result.body.childState as string) ||
-      !['clean', 'pending', 'unknown'].includes(result.body.cleanupState as string)
-    ) {
-      throw new Error('NanoHost Harness session.inspect success is invalid.');
-    }
-  }
-  requireNativeHandle(result.body);
-}
-
-/** Validates the nullable native-handle state/digest pair. */
-function requireNativeHandle(body: Readonly<Record<string, unknown>>): void {
-  if (!['pending', 'ready', 'absent', 'unknown'].includes(body.nativeHandleState as string)) {
-    throw new Error('NanoHost Harness native handle state is invalid.');
-  }
-  if (body.nativeHandleState === 'ready') {
-    requireSha256(body.nativeHandleDigest, 'Native handle digest');
-    return;
-  }
-  if (body.nativeHandleDigest !== null) {
-    throw new Error('NanoHost Harness non-ready native handle digest must be null.');
-  }
+  return { ...result, body };
 }
 
 /** Widens uncertain execution to the existing Harness admission fence. */
@@ -1737,19 +1649,6 @@ function requireHarnessForIntegration(
     throw new Error('NanoHost Harness is not owned by the current Sandbox Integration.');
   }
   return row;
-}
-
-/** Requires an exact object field set. */
-function requireExactFields(
-  value: Readonly<Record<string, unknown>>,
-  fields: readonly string[],
-  label: string
-): void {
-  const actual = Object.keys(value).sort();
-  const expected = [...fields].sort();
-  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
-    throw new Error(`NanoHost ${label} fields are invalid.`);
-  }
 }
 
 /** Reads a canonical stored JSON object. */

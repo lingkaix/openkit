@@ -43,3 +43,8 @@ export const GitFailureExplanationSchema = z
 
 /** Normalized explanation; no raw diagnostics or runtime handles are admitted. */
 export type GitFailureExplanation = z.infer<typeof GitFailureExplanationSchema>;
+
+/** Descriptive Git observation reader; ignored explanatory additions never leave this boundary. */
+export const GitFailureExplanationReaderSchema = GitFailureExplanationSchema.safeExtend({
+  evidence: GitFailureExplanationSchema.shape.evidence.strip(),
+}).strip();

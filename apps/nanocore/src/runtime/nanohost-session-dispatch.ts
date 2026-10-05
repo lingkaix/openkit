@@ -425,7 +425,6 @@ export function createNanoHostSessionDispatch(
       !readiness ||
       readiness.runtimeTarget.coreDb !== coreDb ||
       !/^[0-9a-f]{64}$/.test(requestId) ||
-      Object.keys(result).length !== 2 ||
       typeof result.sandboxId !== 'string' ||
       result.state !== 'deleted'
     )
@@ -775,8 +774,8 @@ export function createNanoHostSessionDispatch(
       }
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       const readiness = parseJsonObject(body, 'NanoHost readiness body is invalid.');
-      if (Object.keys(readiness).length !== 1 || typeof readiness.physicalEpoch !== 'string') {
-        throw new Error('NanoHost readiness body must contain only physicalEpoch.');
+      if (typeof readiness.physicalEpoch !== 'string') {
+        throw new Error('NanoHost readiness body requires physicalEpoch.');
       }
       const physicalEpoch = requireNanoHostPhysicalEpoch(readiness.physicalEpoch);
       if (!runtimeTarget) {
@@ -818,6 +817,7 @@ export function createNanoHostSessionDispatch(
         );
       }
       const requestId = readRequestId(result);
+      result = readNanoHostEffectResult(operation, result);
       const resultNames = Object.keys(result);
       const carriesFailureCode = resultNames.includes('failureCode');
       const isExactEffectFailure =
@@ -959,8 +959,7 @@ export function createNanoHostSessionDispatch(
       if (
         operation === 'sandbox.delete' &&
         pending.command &&
-        (Object.keys(resultBody).length !== 2 ||
-          resultBody.sandboxId !== pending.command.sandboxId ||
+        (resultBody.sandboxId !== pending.command.sandboxId ||
           typeof resultBody.sandboxId !== 'string' ||
           resultBody.state !== 'deleted')
       ) {
@@ -1351,7 +1350,7 @@ export function registerNanoHostSessionSemanticRoutes(
         });
         const value = parseJsonObject(body, 'NanoHost private Harness body is invalid.');
         if (path === HARNESS_POLL_PATH) {
-          if (Object.keys(value).length !== 1 || value.schemaVersion !== 2) {
+          if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
           let command = dispatchNanoHostHarnessOperation(input.coreDb, {
@@ -1363,14 +1362,12 @@ export function registerNanoHostSessionSemanticRoutes(
           return command ? context.json(command, 200) : context.body(null, 204);
         }
         const result = value as unknown as NanoHostHarnessResult;
-        const settlement = settleNanoHostHarnessOperation(input.coreDb, {
+        settleNanoHostHarnessOperation(input.coreDb, {
           sandboxIntegrationBindingRef,
           result,
           timestamp: new Date().toISOString(),
+          onSettled: input.harnessResultSettled,
         });
-        if (settlement === 'settled') {
-          input.harnessResultSettled?.(result);
-        }
         return context.body(null, 204);
       }
       await input.dispatch.route(requirePhysicalConnection(context.env), {
@@ -1459,10 +1456,7 @@ export function registerNanoHostSessionEffectRoutes(
           fileDataTransferActive = true;
           reservedFileData = true;
         }
-        const body = await readBoundedJsonObject(context.req.raw);
-        if (Object.keys(body).length !== 0) {
-          throw new Error('NanoHost effect poll body must be an empty object.');
-        }
+        await readBoundedJsonObject(context.req.raw);
         const physicalConnection = requirePhysicalConnection(context.env);
         const command = await input.dispatch.poll(physicalConnection, operation);
         if (operation === 'reference.import' && command) {
@@ -1742,7 +1736,6 @@ function requireBridgeOpenResult(
   command: Readonly<Record<string, unknown>>
 ): void {
   if (
-    Object.keys(result).length !== 3 ||
     result.accepted !== true ||
     result.integrationReady !== true ||
     result.state !== 'open' ||
@@ -2497,11 +2490,10 @@ function requireAuthoritativeSession(
   }
 }
 
-/** Validates exact image result bytes before any durable write or retryable deferral. */
+/** Reads the known image outcome before durable write or replay comparison. */
 function imageSettlementOutcome(
   result: Readonly<Record<string, unknown>>
 ): WorkerImageSettlement['outcome'] {
-  if (Object.keys(result).length !== 1) throw new WorkerImageSettlementConflict();
   if (result.failureCode === 'effect_failed')
     return { kind: 'failure', failureCode: 'effect_failed' };
   if (typeof result.digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(result.digest)) {
@@ -2527,4 +2519,114 @@ function settledImageResult(
   if (known.outcome.kind === 'failure')
     throw effectTransportError(500, 'NanoHost effect failed: effect_failed.');
   return { digest: known.outcome.imageDigest };
+}
+
+/** Strips descriptive effect-result additions before receipt identity or any consumer sees them. */
+function readNanoHostEffectResult(
+  operation: NanoHostEffectOperation,
+  result: Readonly<Record<string, unknown>>
+): Record<string, unknown> {
+  if (Object.hasOwn(result, 'failureCode')) {
+    if (
+      ['digest', 'state', 'sandboxId', 'accepted', 'integrationReady'].some((name) =>
+        Object.hasOwn(result, name)
+      )
+    )
+      throw effectTransportError(409, 'NanoHost effect failure conflicts with success fields.');
+    return resultFields(result, ['requestId', 'failureCode']);
+  }
+  switch (operation) {
+    case 'image.acquire':
+    case 'image.build':
+      return resultFields(result, ['requestId', 'digest']);
+    case 'sandbox.delete':
+    case 'bridge.close':
+      return resultFields(result, ['requestId', 'sandboxId', 'state']);
+    case 'bridge.open':
+      return resultFields(result, ['requestId', 'accepted', 'integrationReady', 'state']);
+    case 'reference.import':
+      return resultFields(result, ['requestId', 'byteLength', 'reference']);
+    case 'file.export':
+      return resultFields(result, ['requestId', 'state', 'reasonCode']);
+    case 'storage.purge':
+      return resultFields(result, ['requestId', 'state', 'storageRef']);
+    case 'storage.inspect': {
+      const core = resultFields(result, [
+        'requestId',
+        'attachment',
+        'capacity',
+        'layoutDigest',
+        'scopeDigest',
+        'state',
+        'storageRef',
+        'targets',
+      ]);
+      if (core.attachment !== null && core.attachment !== undefined)
+        core.attachment = resultFields(core.attachment, ['generation', 'sandboxId']);
+      core.capacity = resultFields(core.capacity, ['availableBytes', 'totalBytes']);
+      if (Array.isArray(core.targets))
+        core.targets = core.targets.map((target) =>
+          resultFields(target, ['initialized', 'target', 'volumeRef'])
+        );
+      return core;
+    }
+    case 'sandbox.create': {
+      const core = resultFields(result, ['requestId', 'sandboxId', 'state', 'storage']);
+      if (core.storage !== undefined) {
+        const storage = resultFields(core.storage, [
+          'attachmentGeneration',
+          'layoutDigest',
+          'scopeDigest',
+          'storageRef',
+          'targets',
+        ]);
+        if (Array.isArray(storage.targets))
+          storage.targets = storage.targets.map((target) =>
+            resultFields(target, ['initialized', 'target', 'volumeRef'])
+          );
+        core.storage = storage;
+      }
+      return core;
+    }
+    case 'image.inspect': {
+      const core = resultFields(result, [
+        'requestId',
+        'digest',
+        'platform',
+        'storageLayout',
+        'environmentDefaults',
+      ]);
+      if (core.platform !== undefined)
+        core.platform = resultFields(core.platform, ['architecture', 'os']);
+      if (core.storageLayout !== undefined) {
+        const layout = resultFields(core.storageLayout, [
+          'family',
+          'gid',
+          'uid',
+          'version',
+          'workingDirectory',
+          'targets',
+        ]);
+        if (Array.isArray(layout.targets))
+          layout.targets = layout.targets.map((target) => resultFields(target, ['target']));
+        core.storageLayout = layout;
+      }
+      if (core.environmentDefaults !== undefined)
+        core.environmentDefaults = resultFields(core.environmentDefaults, [
+          'defaultsDigest',
+          'values',
+        ]);
+      return core;
+    }
+    case 'workspace.collect':
+      // Its existing wire reader already admitted the collection core above.
+      return { ...result };
+  }
+}
+
+/** Selects only known descriptive fields without inventing missing required values. */
+function resultFields(value: unknown, fields: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw effectTransportError(409, 'NanoHost effect result object is invalid.');
+  return Object.fromEntries(Object.entries(value).filter(([name]) => fields.includes(name)));
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { GitFailureExplanationSchema } from './errors/failure-explanation.js';
+import {
+  GitFailureExplanationReaderSchema,
+  GitFailureExplanationSchema,
+} from './errors/failure-explanation.js';
 import { TurnErrorSchema } from './models/turn.js';
 
 const explanation = {
@@ -17,6 +20,20 @@ const explanation = {
 };
 
 describe('durable failure explanation', () => {
+  it('strips descriptive additions recursively while keeping exact producer assertions', () => {
+    const extended = {
+      ...explanation,
+      note: 'ignored',
+      evidence: { ...explanation.evidence, note: 'ignored' },
+    };
+    expect(GitFailureExplanationReaderSchema.parse(extended)).toEqual(explanation);
+    expect(GitFailureExplanationSchema.safeParse(extended).success).toBe(false);
+    expect(
+      GitFailureExplanationReaderSchema.safeParse({ ...explanation, code: 'future' }).success
+    ).toBe(false);
+    const { observedAt: _observedAt, ...missing } = explanation;
+    expect(GitFailureExplanationReaderSchema.safeParse(missing).success).toBe(false);
+  });
   it.each([
     { ...explanation, code: 'sandbox_network_denied' },
     { ...explanation, httpStatus: null },

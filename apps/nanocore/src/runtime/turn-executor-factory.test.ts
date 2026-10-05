@@ -177,9 +177,11 @@ function nanoHostSandboxCreated(request: NanoHostSessionEffectRequest) {
   return {
     sandboxId: request.input.sandboxId,
     state: 'created',
+    note: 'ignored',
     storage: {
       ...storage,
-      targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+      note: 'ignored',
+      targets: storage.targets.map((target) => ({ ...target, initialized: true, note: 'ignored' })),
     },
   };
 }

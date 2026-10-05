@@ -289,10 +289,7 @@ function readBearerSecret(c: Context<{ Variables: AuthVariables }>): string | nu
  * @returns Parsed fields or an error message.
  */
 function parseAdmitBody(body: unknown): { ok: true } | { ok: false; message: string } {
-  return body !== null &&
-    typeof body === 'object' &&
-    !Array.isArray(body) &&
-    Object.keys(body).length === 0
+  return body !== null && typeof body === 'object' && !Array.isArray(body)
     ? { ok: true }
-    : { ok: false, message: 'Admit body must be an empty object.' };
+    : { ok: false, message: 'Admit body must be an object.' };
 }

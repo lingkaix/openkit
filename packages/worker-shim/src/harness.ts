@@ -7,13 +7,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   HarnessCommandBodySchemas,
   type HarnessCommandEnvelope,
-  HarnessCommandEnvelopeSchema,
+  HarnessCommandEnvelopeReaderSchema,
   type HarnessRefusalReason,
   type HarnessResultEnvelope,
+  HarnessResultEnvelopeSchema,
   type HarnessSessionOpenBody,
   type HarnessSessionSelectorBody,
   type HarnessTurnInterruptBody,
   type HarnessTurnStartBody,
+  isHarnessResultBodyValid,
   isProtectedNativeEnvironmentName,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
@@ -767,7 +769,7 @@ export async function runWorkerHarness(
       if (response.status !== 200) {
         throw new Error(`Harness poll failed with HTTP ${response.status}.`);
       }
-      const command = HarnessCommandEnvelopeSchema.parse(JSON.parse(await response.text()));
+      const command = HarnessCommandEnvelopeReaderSchema.parse(JSON.parse(await response.text()));
       let owner = harnesses.get(command.harnessInstanceId);
       if (!owner) {
         owner = {
@@ -779,7 +781,9 @@ export async function runWorkerHarness(
       if (owner.nextSequence !== command.sequence) {
         throw new Error('Harness command selected a stale or future sequence.');
       }
-      const settled = await owner.harness.handle(command);
+      const settled = HarnessResultEnvelopeSchema.parse(await owner.harness.handle(command));
+      if (!isHarnessResultBodyValid(command.operation, settled))
+        throw new Error('Harness emitted an invalid operation result.');
       const resultResponse = await requestWithOutageBudget(
         integration,
         HARNESS_RESULT_PATH,
