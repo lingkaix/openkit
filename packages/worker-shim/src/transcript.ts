@@ -200,6 +200,16 @@ export class WorkerTranscriptWriter {
   }
 
   /**
+   * Waits for all already-queued live event acknowledgements; terminal sealing prevents later events from extending this barrier.
+   *
+   * @returns Promise that resolves only after every queued event has live acceptance.
+   * @throws The deciding live-delivery error when an event was rejected.
+   */
+  public async drainLiveEvents(): Promise<void> {
+    await this.liveQueue;
+  }
+
+  /**
    * Writes one assistant-message item candidate.
    *
    * @param input Assistant-message item candidate.

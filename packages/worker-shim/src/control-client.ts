@@ -135,7 +135,10 @@ export class WorkerControlClient {
   private readonly fetch: WorkerControlFetch;
   private readonly lineage: WorkerLineage;
   private nextHeartbeatSequence = 0;
+  private heartbeatQueue: Promise<unknown> = Promise.resolve();
   private outageStartedAt: number | null = null;
+  /** Pending recoveries keep the shared budget anchored despite independent successful traffic. */
+  private retryingRequests = 0;
   private postLaunchRecoveryEnabled = false;
   private readonly processKey: string;
   private reconnecting: Promise<unknown> | null = null;
@@ -175,7 +178,7 @@ export class WorkerControlClient {
     input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
     signal?: AbortSignal
   ): Promise<unknown> {
-    const result = await this.sendSequencedHeartbeat(input, signal);
+    const result = await this.enqueueHeartbeat(input, signal);
 
     this.clearOutage();
     return result;
@@ -239,6 +242,26 @@ export class WorkerControlClient {
     );
   }
 
+  /** Serializes lease heartbeats and reconnect proof through their single sequence owner; an accepted intervening heartbeat already proves live authority for a queued recovery request. */
+  private enqueueHeartbeat(
+    input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
+    signal?: AbortSignal,
+    reconnectSequence?: number
+  ): Promise<unknown> {
+    const queued = this.heartbeatQueue.then(() => {
+      signal?.throwIfAborted();
+      if (reconnectSequence !== undefined && this.nextHeartbeatSequence > reconnectSequence) {
+        return undefined;
+      }
+      return this.sendSequencedHeartbeat(input, signal, reconnectSequence !== undefined);
+    });
+    this.heartbeatQueue = queued.then(
+      () => undefined,
+      () => undefined
+    );
+    return queued;
+  }
+
   /** Sends one logical heartbeat and advances its sequence only after exact acceptance. */
   private async sendSequencedHeartbeat(
     input: Omit<WorkerControlHeartbeatInput, 'sequence'>,
@@ -247,21 +270,27 @@ export class WorkerControlClient {
   ): Promise<unknown> {
     const heartbeat = Object.freeze({ ...input, sequence: this.nextHeartbeatSequence });
     let presentReconnectKey = reconnectFirst;
+    let retrying = false;
 
-    for (;;) {
-      try {
-        const result = await this.postHeartbeat(heartbeat, presentReconnectKey, signal);
+    try {
+      for (;;) {
+        try {
+          const result = await this.postHeartbeat(heartbeat, presentReconnectKey, signal);
 
-        this.nextHeartbeatSequence += 1;
-        return result;
-      } catch (error) {
-        this.requireRetryable(error);
-        if (isReconnectRequired(error) && !reconnectFirst) {
-          return this.reconnect(signal);
+          this.nextHeartbeatSequence += 1;
+          return result;
+        } catch (error) {
+          this.requireRetryable(error);
+          if (!retrying) {
+            retrying = true;
+            this.retryingRequests += 1;
+          }
+          presentReconnectKey = isReconnectRequired(error);
+          await this.waitForRetry(signal);
         }
-        presentReconnectKey = isReconnectRequired(error);
-        await this.waitForRetry(signal);
       }
+    } finally {
+      if (retrying) this.retryingRequests -= 1;
     }
   }
 
@@ -304,31 +333,40 @@ export class WorkerControlClient {
 
   /** Retries one immutable request and adopts the lease before replay when required. */
   private async retry<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    for (;;) {
-      try {
-        return await operation();
-      } catch (error) {
-        this.requireRetryable(error);
-        if (isReconnectRequired(error)) {
-          try {
-            await this.reconnect(signal);
-            continue;
-          } catch (reconnectError) {
-            this.requireRetryable(reconnectError);
+    let retrying = false;
+    try {
+      for (;;) {
+        try {
+          return await operation();
+        } catch (error) {
+          this.requireRetryable(error);
+          if (!retrying) {
+            retrying = true;
+            this.retryingRequests += 1;
           }
+          if (isReconnectRequired(error)) {
+            try {
+              await this.reconnect(signal);
+              continue;
+            } catch (reconnectError) {
+              this.requireRetryable(reconnectError);
+            }
+          }
+          await this.waitForRetry(signal);
         }
-        await this.waitForRetry(signal);
       }
+    } finally {
+      if (retrying) this.retryingRequests -= 1;
     }
   }
 
   /** Sends one exact-next reconnect heartbeat for all requests blocked by one restart. */
   private async reconnect(signal?: AbortSignal): Promise<unknown> {
     if (!this.reconnecting) {
-      const tracked = this.sendSequencedHeartbeat(
+      const tracked = this.enqueueHeartbeat(
         { message: 'Worker shim reconnecting.', status: 'running' },
         signal,
-        true
+        this.nextHeartbeatSequence
       ).finally(() => {
         if (this.reconnecting === tracked) {
           this.reconnecting = null;
@@ -362,9 +400,9 @@ export class WorkerControlClient {
     }
   }
 
-  /** Clears the outage timer after one caller-visible request is accepted. */
+  /** Clears the shared outage timer after acceptance only when no logical request still needs recovery. */
   private clearOutage(): void {
-    this.outageStartedAt = null;
+    if (this.retryingRequests === 0) this.outageStartedAt = null;
   }
 
   /**

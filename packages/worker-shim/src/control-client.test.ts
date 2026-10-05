@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -417,6 +418,67 @@ describe('WorkerControlClient', () => {
     }
   });
 
+  it('does not renew a pending event outage budget when independent heartbeats succeed', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const controller = new AbortController();
+    const attempts: string[] = [];
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control-fixture',
+      fetch: async (url, init) => {
+        if (url.endsWith('/heartbeat')) {
+          return { ok: true, status: 200, text: async () => '{}' };
+        }
+        attempts.push(init.body);
+        return {
+          ok: false,
+          status: 503,
+          text: async () => JSON.stringify({ code: 'worker_control_unavailable' }),
+        };
+      },
+    });
+    let outcome: unknown;
+    let pending: Promise<void> | undefined;
+    try {
+      await client.recordHeartbeat({ status: 'starting' });
+      client.enablePostLaunchRecovery();
+      pending = client
+        .appendEvent(
+          {
+            kind: 'event',
+            lineage,
+            schemaVersion: 1,
+            sequence: 0,
+            event: { type: 'worker.ready', data: {} },
+          },
+          controller.signal
+        )
+        .then(
+          (value) => {
+            outcome = { value };
+          },
+          (error: unknown) => {
+            outcome = { error };
+          }
+        );
+      await delay(0);
+      expect(attempts).toHaveLength(1);
+      await client.recordHeartbeat({ status: 'running' });
+      now = 300_001;
+      await delay(300);
+      expect(outcome).toMatchObject({
+        error: { message: 'Worker control outage budget expired.' },
+      });
+      expect(attempts).toHaveLength(1);
+    } finally {
+      controller.abort();
+      await pending;
+      clock.mockRestore();
+    }
+  });
+
   it('reconnects with the same process key before replaying one blocked request', async () => {
     const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
     let noticeAttempts = 0;
@@ -495,6 +557,90 @@ describe('WorkerControlClient', () => {
         .update(Buffer.from(String(reconnectKey), 'base64url'))
         .digest('base64url')
     ).toBe(processKeyHash);
+  });
+
+  it('serializes reconnect proof behind an in-flight lease heartbeat without reusing its sequence', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let heartbeatPending = false;
+    let eventAttempts = 0;
+    let reconnectAttempts = 0;
+    let activeHeartbeats = 0;
+    let maxActiveHeartbeats = 0;
+    let reconnected = false;
+    const acceptedSequences: number[] = [];
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control-fixture',
+      fetch: async (url, init) => {
+        const body = JSON.parse(init.body);
+        if (url.endsWith('/heartbeat')) {
+          activeHeartbeats += 1;
+          maxActiveHeartbeats = Math.max(maxActiveHeartbeats, activeHeartbeats);
+          try {
+            if (body.sequence === 1 && !body.reconnectKey) {
+              heartbeatPending = true;
+              await gate;
+              return {
+                ok: false,
+                status: 503,
+                text: async () => JSON.stringify({ code: 'worker_control_reconnect_required' }),
+              };
+            }
+            if (body.reconnectKey) {
+              reconnectAttempts += 1;
+              reconnected = true;
+            }
+            expect(body.sequence).toBe(acceptedSequences.length);
+            acceptedSequences.push(body.sequence);
+            return { ok: true, status: 200, text: async () => '{}' };
+          } finally {
+            activeHeartbeats -= 1;
+          }
+        }
+        eventAttempts += 1;
+        return reconnected
+          ? {
+              ok: true,
+              status: 200,
+              text: async () =>
+                JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+            }
+          : {
+              ok: false,
+              status: 503,
+              text: async () => JSON.stringify({ code: 'worker_control_reconnect_required' }),
+            };
+      },
+    });
+    await client.recordHeartbeat({ status: 'starting' });
+    client.enablePostLaunchRecovery();
+    const heartbeat = client.recordHeartbeat({ status: 'running' });
+    await vi.waitFor(() => expect(heartbeatPending).toBe(true));
+    const event = client.appendEvent({
+      kind: 'event',
+      lineage,
+      schemaVersion: 1,
+      sequence: 0,
+      event: { type: 'worker.ready', data: {} },
+    });
+    try {
+      await vi.waitFor(() => expect(eventAttempts).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(maxActiveHeartbeats).toBe(1);
+      expect(reconnectAttempts).toBe(0);
+    } finally {
+      release();
+      await Promise.allSettled([heartbeat, event]);
+    }
+    await expect(heartbeat).resolves.toEqual({});
+    await expect(event).resolves.toMatchObject({ accepted: true });
+    expect(acceptedSequences).toEqual([0, 1]);
+    expect(reconnectAttempts).toBe(1);
+    expect(maxActiveHeartbeats).toBe(1);
   });
 
   it('shares one reconnect heartbeat with a simultaneously blocked heartbeat', async () => {

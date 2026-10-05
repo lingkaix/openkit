@@ -140,7 +140,7 @@ export interface ResidentTurnResult {
 }
 
 /**
- * Runs one admitted Turn on a resident binding: validates the AEP, materializes supply and workspace inputs, binds routes, proves worker-control readiness, starts native work on the retained conversation, drains the loopback after settlement, publishes output, and reports final status. Setup and execution rejections retain their bounded, redacted explanation in final-status diagnostics while closed startup metadata stays value-free. The binding stays open.
+ * Runs one admitted Turn on a resident binding: validates the AEP, materializes supply and workspace inputs, binds routes, proves worker-control readiness, starts native work on the retained conversation, drains the loopback after settlement, publishes output, and reports final status. One lease-heartbeat schedule remains independent of transcript delivery through final-status acceptance or authority loss. Setup and execution rejections retain their bounded, redacted explanation in final-status diagnostics while closed startup metadata stays value-free. The binding stays open.
  *
  * @param options Turn inputs.
  * @returns The worker-local terminal status.
@@ -222,14 +222,18 @@ async function runResidentTurnImplementation(
       if (!controlSession) {
         throw new Error('Worker live event append requires initialized direct control.');
       }
-      await controlSession.appendEvent(
-        record,
-        controlAbortController.signal.aborted ? undefined : controlAbortController.signal
-      );
+      await controlSession.appendEvent(record, controlAbortController.signal);
     },
     lineage,
     sessionDir: options.sessionDir,
   });
+  let heartbeat: Promise<void> | null = null;
+  /** Retains the periodic request even when live-event failure wins its race. */
+  const heartbeatDelivery = {
+    request: null as Promise<unknown> | null,
+    signal: controlAbortController.signal,
+  };
+  let terminalPublication: Promise<void> | null = null;
   let terminalOutcomeAttempted = false;
   let workerControlReady = false;
   let residentTurn: WorkerResidentTurn | null = null;
@@ -289,10 +293,15 @@ async function runResidentTurnImplementation(
     if (interrupted) {
       progress.stage = null;
       terminalOutcomeAttempted = true;
-      await writeAndReportTerminalOutcome(writer, workerControlReady ? session : null, {
-        status: 'interrupted',
-        stopReason: 'aborted',
-      });
+      terminalPublication = writeAndReportTerminalOutcome(
+        writer,
+        workerControlReady ? session : null,
+        {
+          status: 'interrupted',
+          stopReason: 'aborted',
+        }
+      );
+      await terminalPublication;
       return { status: 'interrupted' };
     }
 
@@ -335,12 +344,23 @@ async function runResidentTurnImplementation(
     }
     options.onStarted();
     session.enablePostLaunchRecovery();
-    const heartbeat = runWorkerHeartbeatLoop(
+    heartbeat = runWorkerHeartbeatLoop(
       session,
       writer,
       heartbeatAbortController.signal,
-      controlAbortController.signal
+      heartbeatDelivery
     );
+    // Live rejection stops the same control owner immediately, including pending delivery.
+    const heartbeatFailure = heartbeat.then(
+      () => {
+        throw new Error('Worker control stopped before final status acceptance.');
+      },
+      (error: unknown) => {
+        controlAbortController.abort(error);
+        throw error;
+      }
+    );
+    heartbeatFailure.catch(() => undefined);
     let adapterResult: Awaited<WorkerResidentTurn['settled']>;
     // A resident host that ends on its own fails the Turn; it is not an interrupt, and the ended
     // host is the proof that its native work stopped.
@@ -353,10 +373,7 @@ async function runResidentTurnImplementation(
       const hostEnded = () => ({ error: hostEndedError });
       const outcome = await Promise.race([
         settlement,
-        heartbeat.then(
-          () => ({ error: new Error('Worker control stopped before the Turn settled.') }),
-          (error: unknown) => ({ error })
-        ),
+        heartbeatFailure.catch((error: unknown) => ({ error })),
         options.resident.exited.then(hostEnded, hostEnded),
         unprovedStop,
       ]);
@@ -372,17 +389,19 @@ async function runResidentTurnImplementation(
       throw error;
     }
 
-    // Stop scheduling heartbeats, then finish any already-written live event before sealing.
-    // Cancelling its control request during drain would leave transcript-only evidence.
-    heartbeatAbortController.abort();
-    await heartbeat;
-    await writer.writeAndAppendEvent({
-      data: { adapter: options.adapterId, status: 'turn.settled' },
-      type: 'worker.heartbeat',
-    });
+    // Lease authority continues through settlement, loopback drain, and terminal publication.
+    await Promise.race([
+      writer.writeAndAppendEvent({
+        data: { adapter: options.adapterId, status: 'turn.settled' },
+        type: 'worker.heartbeat',
+      }),
+      heartbeatFailure,
+    ]);
     // Turn barrier: loopback requests still in flight are drained, then cut, before collection.
-    await options.integration.drainTurn(options.lineage.agentSessionId);
-    controlAbortController.abort();
+    await Promise.race([
+      options.integration.drainTurn(options.lineage.agentSessionId),
+      heartbeatFailure,
+    ]);
     options.signal.removeEventListener('abort', onInterrupt);
     options.onTurnBarrier?.();
     const assistantOutputRejected = containsExactCredentialValue(
@@ -392,7 +411,10 @@ async function runResidentTurnImplementation(
     const status = assistantOutputRejected ? 'failed' : adapterResult.status;
 
     if (adapterResult.assistantText && status !== 'interrupted' && !assistantOutputRejected) {
-      await writer.writeAssistantMessage({ status, text: adapterResult.assistantText });
+      await Promise.race([
+        writer.writeAssistantMessage({ status, text: adapterResult.assistantText }),
+        heartbeatFailure,
+      ]);
     }
     const adapterDiagnostics = sanitizeAdapterDiagnostics(
       adapterResult.diagnostics,
@@ -414,37 +436,34 @@ async function runResidentTurnImplementation(
         status === 'completed' ? 'completed' : status === 'interrupted' ? 'aborted' : 'error',
     };
     terminalOutcomeAttempted = true;
-    const terminalRecord = await writer.writeTerminalOutcome(terminalInput);
-    const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(terminalRecord.event.data);
-    const terminalControlController = new AbortController();
-    const terminalHeartbeatPromise = runWorkerTerminalHeartbeatLoop(
+    terminalPublication = writeAndReportTerminalOutcome(
+      writer,
       session,
-      terminalControlController.signal
+      terminalInput,
+      controlAbortController.signal
     );
-    const finalStatusPromise = session.recordFinalStatus(
-      { ...terminalData, sequence: terminalRecord.sequence },
-      terminalControlController.signal
-    );
-    try {
-      await Promise.race([finalStatusPromise, terminalHeartbeatPromise]);
-    } finally {
-      terminalControlController.abort();
-      await Promise.allSettled([finalStatusPromise, terminalHeartbeatPromise]);
-    }
+    await Promise.race([terminalPublication, heartbeatFailure]);
     return { status };
   } catch (error) {
     if (!terminalOutcomeAttempted) {
       terminalOutcomeAttempted = true;
       // Keep the deciding native failure while the settlement wrapper retains cleanup ownership.
       const failure = error instanceof NativeSettlementUnknownError ? error.cause : error;
-      await writeAndReportTerminalOutcome(writer, workerControlReady ? controlSession : null, {
-        diagnostics: sanitizeAdapterDiagnostics(
-          { native: failure instanceof Error ? failure.message : String(failure) },
-          credentialValues
-        ),
-        status: 'failed',
-        stopReason: 'error',
-      }).catch(() => undefined);
+      terminalPublication = writeAndReportTerminalOutcome(
+        writer,
+        workerControlReady && !controlAbortController.signal.aborted ? controlSession : null,
+        {
+          diagnostics: sanitizeAdapterDiagnostics(
+            { native: failure instanceof Error ? failure.message : String(failure) },
+            credentialValues
+          ),
+          status: 'failed',
+          stopReason: 'error',
+        },
+        controlAbortController.signal
+      );
+      // Failure to publish cannot replace the deciding native, Integration, or control failure.
+      await terminalPublication.catch(() => undefined);
     }
     throw error;
   } finally {
@@ -452,6 +471,13 @@ async function runResidentTurnImplementation(
     controlSession?.disablePostLaunchRecovery();
     heartbeatAbortController.abort();
     controlAbortController.abort();
+    // Cancellation is not a join: settle both race losers and every queued live acknowledgement first.
+    await Promise.allSettled([
+      heartbeat,
+      heartbeatDelivery.request,
+      terminalPublication,
+      writer.drainLiveEvents(),
+    ]);
     options.integration.clearTurnRouteTokens(options.lineage.agentSessionId);
     await rm(options.turnDirectory, { force: true, recursive: true }).catch(() => undefined);
   }
@@ -672,24 +698,27 @@ export function describeWorkerStartupFailure(
 }
 
 /**
- * Persists one terminal transcript record and reports its exact final sequence to NanoCore.
+ * Persists one terminal transcript record and reports its exact final sequence only after all preceding live acknowledgements; failed live delivery retains local evidence without publication.
  *
  * @param writer Durable worker transcript writer.
- * @param client Live session coordinator, or null when control readiness never completed.
+ * @param client Existing session coordinator, or null when live publication is unavailable.
  * @param input Worker-local terminal outcome.
+ * @param signal Existing control-delivery cancellation; no fresh publication authority or retry budget is created.
  */
 async function writeAndReportTerminalOutcome(
   writer: WorkerTranscriptWriter,
   client: WorkerControlClient | null,
-  input: WorkerTerminalOutcomeInput
+  input: WorkerTerminalOutcomeInput,
+  signal?: AbortSignal
 ): Promise<void> {
   const record = await writer.writeTerminalOutcome(input);
+  if (!client) return;
+  // Sealing prevents new events from extending the barrier on normal and exceptional closeout.
+  await writer.drainLiveEvents();
+  signal?.throwIfAborted();
   const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(record.event.data);
 
-  await client?.recordFinalStatus({
-    ...terminalData,
-    sequence: record.sequence,
-  });
+  await client.recordFinalStatus({ ...terminalData, sequence: record.sequence }, signal);
 }
 
 /**
@@ -713,12 +742,15 @@ async function waitForWorkerControlReadiness<T>(
     }, WORKER_CONTROL_READINESS_TIMEOUT_MS);
   });
 
+  let request: Promise<T> | null = null;
   try {
-    return await Promise.race([readiness(), timeoutFailure]);
+    request = readiness();
+    return await Promise.race([request, timeoutFailure]);
   } finally {
     if (timeout) {
       clearTimeout(timeout);
     }
+    await request?.catch(() => undefined);
   }
 }
 
@@ -1423,52 +1455,44 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
     );
 }
 
-/** Keeps periodic heartbeats; scheduling cancellation lets an in-flight lease heartbeat and its transcript event finish on the separate control signal. */
+/**
+ * Keeps one serialized lease-heartbeat schedule through final-status acceptance; transcript delivery retains its ordered queue without delaying the next control heartbeat.
+ *
+ * @param client Sole lease-heartbeat and reconnect sequence owner.
+ * @param transcript Ordered local/live event owner, sealed before final publication.
+ * @param signal Stops scheduling at final acceptance or supervisor closeout.
+ * @param delivery Sole periodic request retained for closeout join, with the existing control signal.
+ * @returns Promise that resolves on scheduling cancellation and rejects on control or live-event failure.
+ */
 async function runWorkerHeartbeatLoop(
   client: WorkerControlClient,
   transcript: WorkerTranscriptWriter,
   signal: AbortSignal,
-  deliverySignal: AbortSignal
+  delivery: { request: Promise<unknown> | null; readonly signal: AbortSignal }
 ): Promise<void> {
+  let failEvent!: (error: unknown) => void;
+  const eventFailure = new Promise<never>((_resolve, reject) => {
+    failEvent = reject;
+  });
+  eventFailure.catch(() => undefined);
   while (!signal.aborted) {
     try {
-      await delay(1000, undefined, { signal });
+      await Promise.race([delay(1000, undefined, { signal }), eventFailure]);
       if (!signal.aborted) {
-        await recordWorkerHeartbeat(client, transcript, 'running', deliverySignal);
-      }
-    } catch (error) {
-      if (isSupervisorAbort(error, signal)) {
-        return;
-      }
-      throw error;
-    }
-  }
-}
-
-/**
- * Keeps the accepted worker lease live after terminal classification is sealed.
- *
- * @param client Session-level worker-control coordinator.
- * @param signal Terminal-report cancellation signal.
- * @returns Promise that resolves only when terminal reporting stops the loop.
- */
-async function runWorkerTerminalHeartbeatLoop(
-  client: WorkerControlClient,
-  signal: AbortSignal
-): Promise<void> {
-  while (!signal.aborted) {
-    try {
-      await delay(1000, undefined, { signal });
-      if (!signal.aborted) {
-        await client.recordHeartbeat(
-          { message: 'Worker shim completing.', status: 'running' },
-          signal
+        delivery.request = client.recordHeartbeat(
+          { message: 'Worker shim running.', status: 'running' },
+          delivery.signal
         );
+        await Promise.race([delivery.request, eventFailure]);
+        if (!transcript.eventTranscriptSealed) {
+          // Allocation and live delivery remain in the writer's sole sequence/append owner.
+          void transcript
+            .writeAndAppendEvent({ data: { status: 'running' }, type: 'worker.heartbeat' })
+            .catch(failEvent);
+        }
       }
     } catch (error) {
-      if (isSupervisorAbort(error, signal)) {
-        return;
-      }
+      if (isSupervisorAbort(error, signal)) return;
       throw error;
     }
   }
