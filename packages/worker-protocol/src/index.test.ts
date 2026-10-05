@@ -2,22 +2,36 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   buildWorkerCanonicalTerminalEventRecord,
-  WorkerCanonicalEventRecordSchema,
-  WorkerCanonicalTerminalEventDataSchema,
+  WorkerCanonicalEventRecordReaderSchema,
+  WorkerCanonicalEventRecordEmissionSchema as WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalTerminalEventDataReaderSchema,
+  WorkerCanonicalTerminalEventDataEmissionSchema as WorkerCanonicalTerminalEventDataSchema,
+  WorkerCapabilityCallSummaryReaderSchema,
   WorkerCapabilityCallSummarySchema,
+  WorkerControlHeartbeatRequestReaderSchema,
   WorkerControlHeartbeatRequestSchema,
   WorkerControlHeartbeatStatusSchema,
   WorkerControlOperationSchema,
+  WorkerControlRequestEnvelopeReaderSchema,
   WorkerControlRequestEnvelopeSchema,
+  WorkerControlResponseEnvelopeReaderSchema,
   WorkerControlResponseEnvelopeSchema,
+  WorkerControlSupplyRefreshAckBodyReaderSchema,
+  WorkerControlSupplyRefreshAckBodySchema,
+  WorkerErrorEnvelopeReaderSchema,
   WorkerErrorEnvelopeSchema,
   WorkerLineageSchema,
-  WorkerObservationContentChunkDataSchema,
-  WorkerObservationDataSchema,
-  WorkerObservationFactSchema,
+  WorkerObservationContentChunkDataReaderSchema,
+  WorkerObservationContentChunkDataEmissionSchema as WorkerObservationContentChunkDataSchema,
+  WorkerObservationDataReaderSchema,
+  WorkerObservationDataEmissionSchema as WorkerObservationDataSchema,
+  WorkerObservationFactEmissionSchema as WorkerObservationFactSchema,
+  WorkerRuntimeNativeOriginIndexEntryReaderSchema,
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeProvenanceFeatureSchema,
+  WorkerRuntimeRawStreamManifestReaderSchema,
   WorkerRuntimeRawStreamManifestSchema,
+  WorkerTranscriptItemRecordEmissionSchema,
   WorkerTranscriptRecordSchema,
 } from './index.js';
 
@@ -866,5 +880,302 @@ describe('worker protocol schemas', () => {
     ]) {
       expect(() => WorkerRuntimeNativeOriginIndexEntrySchema.parse(candidate)).toThrow();
     }
+  });
+});
+
+describe('descriptive reader extensions', () => {
+  const event = {
+    schemaVersion: 1,
+    kind: 'event',
+    lineage,
+    sequence: 1,
+    event: { type: 'worker.ready', data: {} },
+  };
+  const observation = {
+    observationId: 'obs_extension',
+    sourceRef: 'source_1',
+    sourceSequence: 0,
+    observedAt: '2026-10-06T00:00:00.000Z',
+    fact: {
+      kind: 'assistant',
+      runtimeOriginRef: null,
+      phase: 'completed',
+      messageRef: 'message_1',
+    },
+    content: { state: 'off' },
+  };
+  const stream = {
+    streamRef: 'stream-0000.jsonl',
+    sourceKind: 'primary',
+    bytes: 1,
+    sha256: `sha256:${'a'.repeat(64)}`,
+    frameCount: 1,
+    captureStatus: 'complete',
+    stableTerminal: true,
+  };
+  const cases = [
+    {
+      name: 'refresh acknowledgement',
+      schema: WorkerControlSupplyRefreshAckBodyReaderSchema,
+      emitter: WorkerControlSupplyRefreshAckBodySchema,
+      value: { refreshId: 'refresh_1', status: 'applied' },
+      core: 'status',
+    },
+    {
+      name: 'event',
+      schema: WorkerCanonicalEventRecordReaderSchema,
+      emitter: WorkerCanonicalEventRecordSchema,
+      value: event,
+      core: 'kind',
+    },
+    {
+      name: 'transcript',
+      schema: WorkerTranscriptRecordSchema,
+      emitter: WorkerTranscriptItemRecordEmissionSchema,
+      value: {
+        schemaVersion: 1,
+        kind: 'item',
+        lineage,
+        sequence: 1,
+        item: {
+          type: 'assistant-message',
+          status: 'completed',
+          parts: [{ type: 'text', text: 'done' }],
+        },
+      },
+      core: 'kind',
+    },
+    {
+      name: 'observation',
+      schema: WorkerObservationDataReaderSchema,
+      emitter: WorkerObservationDataSchema,
+      value: observation,
+      core: 'sourceRef',
+    },
+    {
+      name: 'chunk',
+      schema: WorkerObservationContentChunkDataReaderSchema,
+      emitter: WorkerObservationContentChunkDataSchema,
+      value: {
+        observationId: 'obs_extension',
+        chunkIndex: 0,
+        byteOffset: 0,
+        encoding: 'base64',
+        data: 'YQ==',
+      },
+      core: 'encoding',
+    },
+    {
+      name: 'manifest',
+      schema: WorkerRuntimeRawStreamManifestReaderSchema,
+      emitter: WorkerRuntimeRawStreamManifestSchema,
+      value: {
+        schemaVersion: 1,
+        lineage,
+        runtimeFamily: 'codex',
+        adapterVersion: '0.153.4',
+        primaryStreamRef: 'stream-0000.jsonl',
+        captureStatus: 'complete',
+        streams: [stream],
+      },
+      core: 'captureStatus',
+    },
+    {
+      name: 'native index',
+      schema: WorkerRuntimeNativeOriginIndexEntryReaderSchema,
+      emitter: WorkerRuntimeNativeOriginIndexEntrySchema,
+      value: {
+        schemaVersion: 1,
+        lineage,
+        runtimeFamily: 'codex',
+        adapterVersion: '0.153.4',
+        streamRef: 'stream-0000.jsonl',
+        frameSequence: 0,
+        byteOffset: 0,
+        byteLength: 1,
+        frameSha256: `sha256:${'a'.repeat(64)}`,
+        eventKind: 'thread.started',
+        parseStatus: 'parsed',
+      },
+      core: 'parseStatus',
+    },
+    {
+      name: 'capability',
+      schema: WorkerCapabilityCallSummaryReaderSchema,
+      emitter: WorkerCapabilityCallSummarySchema,
+      value: {
+        schemaVersion: 1,
+        lineage,
+        sequence: 1,
+        capabilityCallId: 'cap_1',
+        family: 'knowledge.search',
+        status: 'succeeded',
+        inputSummary: 'search',
+        diagnostics: [],
+      },
+      core: 'family',
+    },
+    {
+      name: 'heartbeat',
+      schema: WorkerControlHeartbeatRequestReaderSchema,
+      emitter: WorkerControlHeartbeatRequestSchema,
+      value: {
+        schemaVersion: 2,
+        lineage,
+        sequence: 1,
+        operation: 'heartbeat',
+        body: { status: 'running' },
+      },
+      core: 'operation',
+    },
+    {
+      name: 'request',
+      schema: WorkerControlRequestEnvelopeReaderSchema,
+      emitter: WorkerControlRequestEnvelopeSchema,
+      value: {
+        schemaVersion: 2,
+        lineage,
+        sequence: 1,
+        operation: 'final_status',
+        body: {},
+      },
+      core: 'operation',
+    },
+    {
+      name: 'response',
+      schema: WorkerControlResponseEnvelopeReaderSchema,
+      emitter: WorkerControlResponseEnvelopeSchema,
+      value: {
+        schemaVersion: 2,
+        accepted: true,
+        diagnostics: [],
+      },
+      core: 'accepted',
+    },
+    {
+      name: 'error',
+      schema: WorkerErrorEnvelopeReaderSchema,
+      emitter: WorkerErrorEnvelopeSchema,
+      value: {
+        code: 'worker_failed',
+        message: 'failed',
+        retryable: false,
+        diagnostics: [],
+      },
+      core: 'code',
+    },
+    {
+      name: 'terminal',
+      schema: WorkerCanonicalTerminalEventDataReaderSchema,
+      emitter: WorkerCanonicalTerminalEventDataSchema,
+      value: {
+        status: 'completed',
+        stopReason: 'completed',
+        evidenceManifestDigests: {},
+      },
+      core: 'status',
+    },
+  ];
+  it.each(cases)('strips inert additions from $name before use', ({ schema, value }) => {
+    expect(schema.parse({ ...value, futureNote: 'ignored' })).toEqual(value);
+  });
+  it.each(cases)('refuses unsupported required semantics in $name', ({ schema, value }) => {
+    expect(schema.safeParse({ ...value, requiredFeatures: ['unsupported.required'] }).success).toBe(
+      false
+    );
+  });
+  it('refuses unsupported requirements in nested descriptive members', () => {
+    const requiredFeatures = ['unsupported.required'];
+    expect(
+      WorkerCanonicalEventRecordReaderSchema.safeParse({
+        ...event,
+        event: { ...event.event, requiredFeatures },
+      }).success
+    ).toBe(false);
+    const item = {
+      type: 'assistant-message',
+      status: 'completed',
+      parts: [{ type: 'text', text: 'done' }],
+    };
+    const record = { schemaVersion: 1, kind: 'item', lineage, sequence: 1, item };
+    for (const candidate of [
+      { ...record, item: { ...item, requiredFeatures } },
+      { ...record, item: { ...item, parts: [{ ...item.parts[0], requiredFeatures }] } },
+    ]) {
+      expect(WorkerTranscriptRecordSchema.safeParse(candidate).success).toBe(false);
+    }
+    expect(
+      WorkerRuntimeRawStreamManifestReaderSchema.safeParse({
+        schemaVersion: 1,
+        lineage,
+        runtimeFamily: 'codex',
+        adapterVersion: '0.153.4',
+        primaryStreamRef: stream.streamRef,
+        captureStatus: 'complete',
+        streams: [{ ...stream, requiredFeatures }],
+      }).success
+    ).toBe(false);
+  });
+  it('refuses reconnect proof outside its request-only heartbeat slot', () => {
+    const key = Buffer.alloc(32, 2).toString('base64url');
+    const heartbeat = {
+      schemaVersion: 2,
+      lineage,
+      sequence: 1,
+      operation: 'heartbeat',
+      body: { status: 'running' },
+    };
+    expect(
+      WorkerControlRequestEnvelopeReaderSchema.safeParse({ ...heartbeat, reconnectKey: key })
+        .success
+    ).toBe(false);
+    expect(
+      WorkerControlHeartbeatRequestReaderSchema.safeParse({
+        ...heartbeat,
+        body: { ...heartbeat.body, reconnectKey: key },
+      }).success
+    ).toBe(false);
+  });
+  it('refuses worker-supplied actor authority on reporting envelopes', () => {
+    for (const schema of [
+      WorkerControlHeartbeatRequestReaderSchema,
+      WorkerControlRequestEnvelopeReaderSchema,
+    ]) {
+      const value = {
+        schemaVersion: 2,
+        lineage,
+        sequence: 1,
+        operation: 'heartbeat',
+        body: { status: 'running' },
+      };
+      expect(
+        schema.safeParse({ ...value, actor: { kind: 'user', id: 'user_spoofed' } }).success
+      ).toBe(false);
+      expect(schema.safeParse({ ...value, responsibleUserId: 'user_spoofed' }).success).toBe(false);
+    }
+  });
+  it.each(cases)('keeps exact producer assertions for $name', ({ emitter, value }) => {
+    expect(emitter.parse(value)).toEqual(value);
+    expect(emitter.safeParse({ ...value, futureNote: 'producer typo' }).success).toBe(false);
+  });
+  it.each(cases)('still refuses missing core in $name', ({ schema, value, core }) => {
+    const candidate: Record<string, unknown> = { ...value, futureNote: 'ignored' };
+    delete candidate[core];
+    expect(schema.safeParse(candidate).success).toBe(false);
+  });
+  it('strips nested descriptive additions while retaining observation constraints', () => {
+    expect(
+      WorkerObservationDataReaderSchema.parse({
+        ...observation,
+        fact: { ...observation.fact, futureNote: true },
+        content: { ...observation.content, futureNote: true },
+      })
+    ).toEqual(observation);
+    expect(
+      WorkerObservationDataReaderSchema.safeParse({
+        ...observation,
+        fact: { ...observation.fact, phase: 'invented' },
+      }).success
+    ).toBe(false);
   });
 });

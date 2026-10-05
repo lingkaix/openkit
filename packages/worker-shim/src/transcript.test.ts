@@ -48,6 +48,25 @@ const lineage: WorkerLineage = {
 };
 
 describe('WorkerTranscriptWriter', () => {
+  it('keeps exact producer assertions for nested text parts and terminal data before writing', async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-exact-'));
+    const writer = new WorkerTranscriptWriter({ lineage, sessionDir });
+    await expect(
+      writer.writeAssistantMessage({
+        status: 'completed',
+        parts: [{ type: 'text', text: 'done', futureNote: 'producer typo' } as never],
+      })
+    ).rejects.toThrow();
+    await expect(
+      writer.writeTerminalOutcome({
+        status: 'completed',
+        stopReason: 'completed',
+        futureNote: 'producer typo',
+      } as never)
+    ).rejects.toThrow();
+    expect(appendControl.completed.join('')).not.toContain('producer typo');
+  });
+
   it.each([
     'completed',
     'failed',

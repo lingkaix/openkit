@@ -4,12 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
+import { WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  createWorkerControlAcceptedRecordRecorder,
+  listWorkerControlAcceptedEvents,
+} from './worker-control-records.js';
+import { createWorkerControlSequenceRecorder } from './worker-control-sequences.js';
 import {
   createLocalSimulatorCredentialCheckValues,
   type WorkerCredentialCheckValues,
@@ -19,6 +25,7 @@ import {
   importWorkerTranscript,
   type LocalSimulatorTranscriptPayload,
   prepareWorkerArtifact,
+  type WorkerTranscriptImportOptions,
   type WorkerTranscriptPayload,
 } from './worker-transcript.js';
 
@@ -171,8 +178,8 @@ function transcriptItemHistory(fixture: ReturnType<typeof createTranscriptFixtur
 describe('worker transcript product-safe diagnostics', () => {
   it.each([
     'malformed-json',
-    'unrecognized-key',
-  ])('keeps Item %s diagnostics candidate-free alongside a guarded reply', (failure) => {
+    'descriptive-addition',
+  ])('keeps Item %s candidate bytes out of persistence and diagnostics alongside a guarded reply', (failure) => {
     const fixture = createTranscriptFixture();
     const value = 'privateZ';
     const payload = credentialItemPayload(
@@ -191,33 +198,43 @@ describe('worker transcript product-safe diagnostics', () => {
       payload,
       transcriptImportOptions
     );
-    expect(result.itemIds).toHaveLength(1);
+    expect(result.itemIds).toHaveLength(failure === 'malformed-json' ? 1 : 2);
+    for (const id of result.itemIds) {
+      expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+        expect.objectContaining({ id, text: 'Reply [redacted]' })
+      );
+    }
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    expect(JSON.stringify(reopened.listThreadItems('ws_demo', 'th_demo'))).not.toContain(value);
     expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
       expect.objectContaining({ id: result.itemIds[0], text: 'Reply [redacted]' })
     );
     expect(transcriptItemHistory(fixture)).not.toContain(value);
     expect(JSON.stringify(result.diagnostics)).not.toContain(value);
-    expect(result.diagnostics).toEqual([
-      {
-        code:
-          failure === 'malformed-json'
-            ? 'worker_transcript_invalid_json'
-            : 'worker_transcript_invalid_item',
-        path: '$.items[2]',
-        message:
-          failure === 'malformed-json'
-            ? 'Worker transcript line is invalid JSON.'
-            : 'Worker transcript item is invalid.',
-      },
-    ]);
+    expect(result.diagnostics).toEqual(
+      failure === 'malformed-json'
+        ? [
+            {
+              code: 'worker_transcript_invalid_json',
+              path: '$.items[2]',
+              message: 'Worker transcript line is invalid JSON.',
+            },
+          ]
+        : []
+    );
   });
 
   it.each([
     { failure: 'malformed-json', evidence: 'complete' },
-    { failure: 'unrecognized-key', evidence: 'complete' },
+    { failure: 'descriptive-addition', evidence: 'complete' },
     { failure: 'malformed-json', evidence: 'unavailable' },
-    { failure: 'unrecognized-key', evidence: 'unavailable' },
-  ])('keeps event $failure diagnostics candidate-free with $evidence evidence and retains the guarded reply', ({
+    { failure: 'missing-live-receipt', evidence: 'unavailable' },
+  ])('reconciles event $failure without persisting candidate bytes with $evidence evidence and retains the guarded reply', ({
     failure,
     evidence,
   }) => {
@@ -235,24 +252,69 @@ describe('worker transcript product-safe diagnostics', () => {
       transcriptImportOptions
     );
     const before = transcriptItemHistory(fixture);
-    // Event admission failures block publication; they must preserve the already guarded reply.
-    const event = {
+    // Failed event admission blocks publication; a stripped live receipt permits exact Item replay.
+    const knownEvent = {
       schemaVersion: 1,
       kind: 'event',
       sequence: 3,
       lineage: transcriptLineage(fixture),
       event: { type: 'worker.heartbeat', data: { status: 'running' } },
+    };
+    const event = {
+      ...knownEvent,
+      event: { ...knownEvent.event, [value]: true },
       [value]: true,
     };
+    const coreDb = openCoreDb(fixture.store.getDataRoot() as string);
+    applyMigrations(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    const options: WorkerTranscriptImportOptions = { ...transcriptImportOptions };
+    const matchedLive = failure === 'descriptive-addition';
+    if (matchedLive) {
+      const gateway = new WorkerControlGateway({
+        acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+        sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      });
+      const registration = gateway.registerSession(fixture.environmentPackage);
+      const input = {
+        authorization: `Bearer ${registration.token}`,
+        lineage: transcriptLineage(fixture),
+      };
+      expect(gateway.appendEvent({ ...input, record: event })).toMatchObject({ accepted: true });
+      // Removing only ignored additions must keep the same durable sequence identity.
+      expect(gateway.appendEvent({ ...input, record: knownEvent })).toMatchObject({
+        accepted: true,
+      });
+      options.acceptedLiveEvents = listWorkerControlAcceptedEvents(coreDb, input.lineage);
+      expect(options.acceptedLiveEvents).toEqual([knownEvent]);
+      expect(gateway.getSessionSnapshot(fixture.environmentPackage.snapshotId)?.events).toEqual([
+        knownEvent,
+      ]);
+    }
+    const receipts = coreDb.sqlite.prepare('SELECT * FROM worker_control_records').all();
+    const fingerprints = coreDb.sqlite
+      .prepare('SELECT * FROM worker_control_sequence_fingerprints')
+      .all();
+    expect(receipts).toHaveLength(matchedLive ? 1 : 0);
+    expect(fingerprints).toHaveLength(matchedLive ? 1 : 0);
+    expect(JSON.stringify({ receipts, fingerprints })).not.toContain(value);
+    if (!matchedLive) {
+      // A fresh candidate makes the publication fence observable in canonical history.
+      payload.itemsJsonl += `\n${JSON.stringify({
+        ...JSON.parse(payload.itemsJsonl!),
+        sequence: 2,
+        item: { type: 'assistant-message', status: 'completed', text: `Blocked ${value}` },
+      })}\n`;
+    }
     payload.eventsJsonl = `\n${failure === 'malformed-json' ? value : JSON.stringify(event)}\n`;
     if (evidence === 'unavailable') payload.credentialCheckValues = null;
     const result = importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
-      transcriptImportOptions
+      options
     );
-    expect(result.itemIds).toEqual([]);
+    expect(result.itemIds).toEqual(matchedLive ? admitted.itemIds : []);
     expect(result.artifactIds).toEqual([]);
     expect(transcriptItemHistory(fixture)).toBe(before);
     expect(before).not.toContain(value);
@@ -260,19 +322,36 @@ describe('worker transcript product-safe diagnostics', () => {
       expect.objectContaining({ id: admitted.itemIds[0], text: 'Reply [redacted]' })
     );
     expect(JSON.stringify(result.diagnostics)).not.toContain(value);
-    expect(result.diagnostics).toEqual([
-      {
-        code:
-          failure === 'malformed-json'
-            ? 'worker_transcript_invalid_json'
-            : 'worker_transcript_invalid_event',
-        path: '$.events[2]',
-        message:
-          failure === 'malformed-json'
-            ? 'Worker transcript line is invalid JSON.'
-            : 'Worker transcript event is invalid.',
-      },
-    ]);
+    expect(result.dedupedEventSequences).toEqual(matchedLive ? [3] : []);
+    expect(result.rejectedEventSequences).toEqual(failure === 'missing-live-receipt' ? [3] : []);
+    expect(result.diagnostics).toEqual(
+      matchedLive
+        ? []
+        : [
+            {
+              code:
+                failure === 'malformed-json'
+                  ? 'worker_transcript_invalid_json'
+                  : 'worker_transcript_live_event_missing',
+              path: '$.events[2]',
+              message:
+                failure === 'malformed-json'
+                  ? 'Worker transcript line is invalid JSON.'
+                  : 'Worker transcript event was not accepted through live worker control.',
+            },
+          ]
+    );
+    expect(coreDb.sqlite.prepare('SELECT * FROM worker_control_records').all()).toEqual(receipts);
+    expect(
+      coreDb.sqlite.prepare('SELECT * FROM worker_control_sequence_fingerprints').all()
+    ).toEqual(fingerprints);
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    expect(JSON.stringify(reopened.listThreadItems('ws_demo', 'th_demo'))).not.toContain(value);
   });
 });
 

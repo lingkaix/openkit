@@ -34,6 +34,8 @@ import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
   createWorkerRuntimeOriginRef,
   importWorkerRuntimeProvenance,
+  remintWorkerRuntimeProvenanceIndex,
+  WorkerRuntimeOriginIndexRowSchema,
 } from './worker-runtime-provenance.js';
 
 const ROOT_NATIVE_ID = '019f0000-0000-7000-8000-000000000001';
@@ -104,6 +106,119 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
+  it('remints only parsed normalized fields with a recomputed digest and exact producer assertions', () => {
+    const fixture = createImportFixture('openkit-provenance-remint-extension-');
+    const row = {
+      lineage: fixture.lineage,
+      streamRef: 'stream-0000.jsonl',
+      frameSequence: 0,
+      byteOffset: 0,
+      byteLength: 1,
+      frameSha256: `sha256:${'a'.repeat(64)}`,
+      eventKind: 'session_meta',
+      parseStatus: 'parsed',
+      runtimeOriginRef: `rto_${'a'.repeat(24)}`,
+      parentRuntimeOriginRef: null,
+      runtimeTurnRef: null,
+    };
+    try {
+      const source = `${JSON.stringify({ ...row, futureNote: 'ignored' })}\n`;
+      const targetLineage = { ...fixture.lineage, packageSnapshotId: 'package_reminted' };
+      const reminted = remintWorkerRuntimeProvenanceIndex(source, fixture.lineage, targetLineage);
+      expect(JSON.parse(reminted.text)).toMatchObject({ lineage: targetLineage });
+      expect(reminted.text).not.toContain('futureNote');
+      expect(
+        WorkerRuntimeOriginIndexRowSchema.strict().parse(JSON.parse(reminted.text))
+      ).toMatchObject({
+        lineage: targetLineage,
+      });
+      expect(reminted.digest).toBe(sha256(Buffer.from(reminted.text)));
+      expect(reminted.digest).not.toBe(sha256(Buffer.from(source)));
+      expect(
+        WorkerRuntimeOriginIndexRowSchema.strict().safeParse({ ...row, futureNote: 'typo' }).success
+      ).toBe(false);
+      expect(() =>
+        remintWorkerRuntimeProvenanceIndex(
+          JSON.stringify({ ...row, requiredFeatures: ['unsupported.required'] }),
+          fixture.lineage,
+          targetLineage
+        )
+      ).toThrow();
+      expect(() =>
+        remintWorkerRuntimeProvenanceIndex(
+          JSON.stringify({ ...row, parseStatus: 'invented' }),
+          fixture.lineage,
+          targetLineage
+        )
+      ).toThrow();
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
+  it('preserves original extension-bearing raw bytes and digests while publishing only normalized known fields', async () => {
+    const fixture = createImportFixture('openkit-provenance-extensions-');
+    const capture = createRuntimeCaptureFixture(
+      mkdtempSync(join(tmpdir(), 'openkit-provenance-extension-capture-')),
+      fixture.lineage
+    );
+    const manifestBytes = Buffer.from(
+      JSON.stringify({
+        ...capture.manifest,
+        futureNote: 'ignored',
+        streams: capture.manifest.streams.map((stream) => ({ ...stream, futureNote: 'ignored' })),
+      })
+    );
+    const indexBytes = Buffer.from(
+      `${capture.nativeOriginIndexBytes
+        .toString('utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.stringify({ ...JSON.parse(line), futureNote: 'ignored' }))
+        .join('\n')}\n`
+    );
+    writeFileSync(capture.streamManifestPath, manifestBytes);
+    writeFileSync(capture.nativeOriginIndexPath, indexBytes);
+    try {
+      const result = await importWorkerRuntimeProvenance({
+        backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+        capture,
+        collectedAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage: fixture.environmentPackage,
+        workspaceDb: fixture.workspaceDb,
+        workspaceRoot: fixture.workspaceRoot,
+      });
+      expect(result.complete).toBe(true);
+      const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', result.rawBundleId);
+      expect(readFileSync(join(rawRoot, 'raw-streams.json'))).toEqual(manifestBytes);
+      expect(readFileSync(join(rawRoot, 'native-origin-index.jsonl'))).toEqual(indexBytes);
+      const bundles = listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_demo');
+      expect(bundles.find((bundle) => bundle.id === result.rawBundleId)?.contentDigests).toEqual(
+        expect.arrayContaining([sha256(manifestBytes), sha256(indexBytes)])
+      );
+      const normalized = readFileSync(
+        join(
+          fixture.workspaceRoot,
+          'evidence',
+          'bundles',
+          result.indexBundleId,
+          'runtime-origin-index.jsonl'
+        ),
+        'utf8'
+      );
+      expect(normalized).not.toContain('futureNote');
+      for (const line of normalized.trim().split('\n')) {
+        expect(WorkerRuntimeOriginIndexRowSchema.strict().safeParse(JSON.parse(line)).success).toBe(
+          true
+        );
+      }
+      expect(readFileSync(capture.streamManifestPath)).toEqual(manifestBytes);
+      expect(readFileSync(capture.nativeOriginIndexPath)).toEqual(indexBytes);
+    } finally {
+      fixture.workspaceDb.sqlite.close();
+    }
+  });
+
   it('imports a complete forest with inherited parent history exactly and idempotently', async () => {
     const fixture = createImportFixture('openkit-runtime-provenance-import-');
     const capture = createRuntimeCaptureFixture(

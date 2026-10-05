@@ -328,6 +328,90 @@ function heartbeatEnvelope(
 }
 
 describe('worker control routes', () => {
+  it('strips descriptive heartbeat, final-status and refresh additions before gateway admission', async () => {
+    const { app, gateway, lineage, token, environmentPackage } = createWorkerControlRouteFixture();
+    const heartbeat = heartbeatEnvelope(lineage, 1, 'running', 'alive');
+    const cases = [
+      {
+        path: 'heartbeat',
+        body: { ...heartbeat, body: { ...heartbeat.body, futureNote: 'ignored' } },
+      },
+      {
+        path: 'supply-refresh-ack',
+        body: {
+          schemaVersion: 2,
+          lineage,
+          sequence: 1,
+          operation: 'supply_refresh_ack',
+          body: { refreshId: 'refresh_1', status: 'applied', futureNote: 'ignored' },
+        },
+      },
+      {
+        path: 'final-status',
+        body: {
+          schemaVersion: 2,
+          lineage,
+          sequence: 3,
+          operation: 'final_status',
+          body: {
+            status: 'completed',
+            stopReason: 'completed',
+            evidenceManifestDigests: {},
+            futureNote: 'ignored',
+          },
+        },
+      },
+    ];
+    for (const entry of cases) {
+      const response = await app.request(`/api/worker-control/${entry.path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ ...entry.body, futureNote: 'ignored' }),
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(await response.json())).not.toContain('futureNote');
+    }
+    const snapshot = gateway.getSessionSnapshot(environmentPackage.snapshotId);
+    expect(snapshot?.heartbeat).toMatchObject({ status: 'running', message: 'alive' });
+    expect(snapshot?.supplyRefreshAcks).toEqual([
+      expect.objectContaining({ refreshId: 'refresh_1', status: 'applied' }),
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain('futureNote');
+  });
+
+  it.each([
+    [
+      'heartbeat',
+      { schemaVersion: 2, sequence: 1, operation: 'heartbeat', body: { status: 'invented' } },
+    ],
+    [
+      'supply-refresh-ack',
+      {
+        schemaVersion: 2,
+        sequence: 1,
+        operation: 'supply_refresh_ack',
+        body: { status: 'invented', refreshId: 'refresh_1' },
+      },
+    ],
+    [
+      'final-status',
+      { schemaVersion: 2, sequence: 1, operation: 'final_status', body: { status: 'completed' } },
+    ],
+  ])('refuses invalid known core in %s before admission', async (path, body) => {
+    const { app, gateway, lineage, token, environmentPackage } = createWorkerControlRouteFixture();
+    const response = await app.request(`/api/worker-control/${path}`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, lineage, futureNote: 'ignored' }),
+    });
+    expect(response.status).toBe(400);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)).toMatchObject({
+      heartbeat: null,
+      events: [],
+      supplyRefreshAcks: [],
+    });
+  });
+
   it('keeps worker route planes ahead of product API middleware', () => {
     const routes = createApp()
       .routes.filter(({ path }) => path.startsWith('/api/worker-') || path === '/api/*')
@@ -2390,6 +2474,17 @@ describe('worker control routes', () => {
     const { app, lineage } = createWorkerControlRouteFixture();
     const padding = 'x'.repeat(70 * 1024);
     const requests = [
+      {
+        body: {
+          schemaVersion: 2,
+          lineage,
+          sequence: 1,
+          operation: 'supply_refresh_ack',
+          body: { refreshId: 'refresh_oversized', status: 'applied' },
+          futureNote: padding,
+        },
+        path: '/api/worker-control/supply-refresh-ack',
+      },
       {
         body: heartbeatEnvelope(lineage, 1, 'running', padding),
         path: '/api/worker-control/heartbeat',

@@ -211,7 +211,7 @@ const ObservationIdentifierSchema = z
   .regex(/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/);
 
 /** Strict source-reported facts; opaque refs carry evidence, never execution authority. */
-export const WorkerObservationFactSchema = z
+export const WorkerObservationFactEmissionSchema = z
   .object({
     kind: z.enum(['origin', 'tool', 'assistant', 'coverage']),
     runtimeOriginRef: ObservationRefSchema.nullable(),
@@ -356,14 +356,14 @@ export const WorkerObservationContentSchema = z.discriminatedUnion('state', [
 ]);
 
 /** Incremental metadata with package-scoped source ordering, independent of transport order. */
-export const WorkerObservationDataSchema = z
+export const WorkerObservationDataEmissionSchema = z
   .object({
     observationId: ObservationRefSchema,
     sourceRef: ObservationRefSchema,
     sourceSequence: WorkerSequenceSchema,
     observedAt: z.iso.datetime(),
     sourceTimestamp: z.iso.datetime({ offset: true }).optional(),
-    fact: WorkerObservationFactSchema,
+    fact: WorkerObservationFactEmissionSchema,
     content: WorkerObservationContentSchema,
   })
   .strict()
@@ -393,7 +393,7 @@ export const WorkerObservationDataSchema = z
   });
 
 /** Restricted content transport; Core owns cross-chunk continuity, digest checks and durability. */
-export const WorkerObservationContentChunkDataSchema = z
+export const WorkerObservationContentChunkDataEmissionSchema = z
   .object({
     observationId: ObservationRefSchema,
     chunkIndex: z
@@ -435,14 +435,14 @@ export const WorkerObservationContentChunkDataSchema = z
   });
 
 /** Source-reported observation fact. */
-export type WorkerObservationFact = z.infer<typeof WorkerObservationFactSchema>;
+export type WorkerObservationFact = z.infer<typeof WorkerObservationFactEmissionSchema>;
 /** Admitted observation content descriptor or explicit non-collection state. */
 export type WorkerObservationContent = z.infer<typeof WorkerObservationContentSchema>;
 /** Strict incremental observation metadata. */
-export type WorkerObservationData = z.infer<typeof WorkerObservationDataSchema>;
+export type WorkerObservationData = z.infer<typeof WorkerObservationDataEmissionSchema>;
 /** Strict restricted-content chunk, not product-safe transcript data. */
 export type WorkerObservationContentChunkData = z.infer<
-  typeof WorkerObservationContentChunkDataSchema
+  typeof WorkerObservationContentChunkDataEmissionSchema
 >;
 
 /**
@@ -495,7 +495,7 @@ export const WorkerCanonicalTerminalStatusSchema = z.enum([
 ]);
 
 /** Strict product-safe data shared by terminal transcript and final-status event records. */
-export const WorkerCanonicalTerminalEventDataSchema = z
+export const WorkerCanonicalTerminalEventDataEmissionSchema = z
   .object({
     diagnostics: z.record(z.string().min(1), z.string()).optional(),
     evidenceManifestDigests: z.record(z.string(), z.string().min(1)).default({}),
@@ -519,51 +519,130 @@ const WorkerCanonicalEventSchema = z
     z
       .object({
         type: z.literal('observation.recorded'),
-        data: WorkerObservationDataSchema,
+        data: WorkerObservationDataEmissionSchema,
       })
       .strict(),
     z
       .object({
         type: z.literal('observation.content.chunk'),
-        data: WorkerObservationContentChunkDataSchema,
+        data: WorkerObservationContentChunkDataEmissionSchema,
       })
       .strict(),
     z
       .object({
         type: WorkerCanonicalTerminalEventTypeSchema,
-        data: WorkerCanonicalTerminalEventDataSchema,
+        data: WorkerCanonicalTerminalEventDataEmissionSchema,
       })
       .strict(),
   ])
-  .superRefine((event, ctx) => {
-    if (event.type === 'turn.completed' && event.data.status !== 'completed') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'turn.completed requires completed status.',
-        path: ['data', 'status'],
-      });
-    }
-    if (event.type === 'turn.failed' && event.data.status === 'completed') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'turn.failed cannot use completed status.',
-        path: ['data', 'status'],
-      });
-    }
-  });
+  .superRefine(validateWorkerCanonicalEvent);
 
 /**
  * Canonical event append record emitted by a worker sidecar.
  */
-export const WorkerCanonicalEventRecordSchema = WorkerRecordBaseSchema.extend({
+export const WorkerCanonicalEventRecordEmissionSchema = WorkerRecordBaseSchema.extend({
   kind: z.literal('event'),
   event: WorkerCanonicalEventSchema,
 }).strict();
 
+/** Descriptive diagnostics discard additions; this family admits no extra required-feature gate. */
+export const WorkerDiagnosticReaderSchema = WorkerDiagnosticSchema.safeExtend({
+  requiredFeatures: z.never().optional(),
+}).strip();
+
+/** Descriptive observation facts keep their closed combinations after stripping additions. */
+export const WorkerObservationFactReaderSchema = WorkerObservationFactEmissionSchema.safeExtend({
+  requiredFeatures: z.never().optional(),
+}).strip();
+
+/** Descriptive WorkerObservationFact admission; producers use the exact emission schema. */
+export const WorkerObservationFactSchema = WorkerObservationFactReaderSchema;
+
+/** Descriptive content states discard additions without relaxing content admission. */
+export const WorkerObservationContentReaderSchema = z.discriminatedUnion('state', [
+  WorkerObservationContentSchema.options[0]
+    .safeExtend({ requiredFeatures: z.never().optional() })
+    .strip(),
+  WorkerObservationContentSchema.options[1]
+    .safeExtend({ requiredFeatures: z.never().optional() })
+    .strip(),
+  WorkerObservationContentSchema.options[2]
+    .safeExtend({ requiredFeatures: z.never().optional() })
+    .strip(),
+]);
+
+/** Observation metadata uses only parsed facts and content descriptors. */
+export const WorkerObservationDataReaderSchema = WorkerObservationDataEmissionSchema.safeExtend({
+  requiredFeatures: z.never().optional(),
+  fact: WorkerObservationFactReaderSchema,
+  content: WorkerObservationContentReaderSchema,
+}).strip();
+
+/** Descriptive WorkerObservationData admission; producers use the exact emission schema. */
+export const WorkerObservationDataSchema = WorkerObservationDataReaderSchema;
+
+/** Restricted chunks strip additions while retaining byte and coordinate checks. */
+export const WorkerObservationContentChunkDataReaderSchema =
+  WorkerObservationContentChunkDataEmissionSchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+  }).strip();
+
+/** Descriptive WorkerObservationContentChunkData admission; producers use the exact emission schema. */
+export const WorkerObservationContentChunkDataSchema =
+  WorkerObservationContentChunkDataReaderSchema;
+
+/** Descriptive terminal data strips additions while retaining closed status semantics. */
+export const WorkerCanonicalTerminalEventDataReaderSchema =
+  WorkerCanonicalTerminalEventDataEmissionSchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+  }).strip();
+
+/** Descriptive WorkerCanonicalTerminalEventData admission; producers use the exact emission schema. */
+export const WorkerCanonicalTerminalEventDataSchema = WorkerCanonicalTerminalEventDataReaderSchema;
+
+/** Descriptive event variants use the existing exact core refinements after stripping. */
+const WorkerCanonicalEventReaderSchema = z
+  .discriminatedUnion('type', [
+    WorkerCanonicalEventSchema.options[0]
+      .safeExtend({ requiredFeatures: z.never().optional() })
+      .strip(),
+    WorkerCanonicalEventSchema.options[1]
+      .safeExtend({
+        requiredFeatures: z.never().optional(),
+        data: WorkerObservationDataReaderSchema,
+      })
+      .strip(),
+    WorkerCanonicalEventSchema.options[2]
+      .safeExtend({
+        requiredFeatures: z.never().optional(),
+        data: WorkerObservationContentChunkDataReaderSchema,
+      })
+      .strip(),
+    WorkerCanonicalEventSchema.options[3]
+      .safeExtend({
+        requiredFeatures: z.never().optional(),
+        data: WorkerCanonicalTerminalEventDataReaderSchema,
+      })
+      .strip(),
+  ])
+  .superRefine(validateWorkerCanonicalEvent);
+
+/** Live and retained event readers strip additions before fingerprinting or persistence. */
+export const WorkerCanonicalEventRecordReaderSchema =
+  WorkerCanonicalEventRecordEmissionSchema.safeExtend({
+    actor: z.never().optional(),
+    responsibleUserId: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    event: WorkerCanonicalEventReaderSchema,
+  }).strip();
+
+/** Descriptive WorkerCanonicalEventRecord admission; producers use the exact emission schema. */
+export const WorkerCanonicalEventRecordSchema = WorkerCanonicalEventRecordReaderSchema;
+
 /** Input used to build one canonical terminal event record. */
 export interface BuildWorkerCanonicalTerminalEventRecordInput {
   /** Strict terminal event data, with empty evidence digests supplied by default. */
-  readonly data: z.input<typeof WorkerCanonicalTerminalEventDataSchema>;
+  readonly data: z.input<typeof WorkerCanonicalTerminalEventDataEmissionSchema>;
   /** Package-scoped worker lineage. */
   readonly lineage: WorkerLineage;
   /** Final worker transcript sequence. */
@@ -580,9 +659,9 @@ export interface BuildWorkerCanonicalTerminalEventRecordInput {
 export function buildWorkerCanonicalTerminalEventRecord(
   input: BuildWorkerCanonicalTerminalEventRecordInput
 ): WorkerCanonicalEventRecord {
-  const data = WorkerCanonicalTerminalEventDataSchema.parse(input.data);
+  const data = WorkerCanonicalTerminalEventDataEmissionSchema.parse(input.data);
 
-  return WorkerCanonicalEventRecordSchema.parse({
+  return WorkerCanonicalEventRecordEmissionSchema.parse({
     event: {
       data,
       type: data.status === 'completed' ? 'turn.completed' : 'turn.failed',
@@ -605,9 +684,9 @@ export const WorkerTextPartSchema = z
   .strict();
 
 /**
- * Worker transcript item record collected from `/openkit/session/items.jsonl`.
+ * Exact worker transcript item emitted into `/openkit/session/items.jsonl`.
  */
-export const WorkerTranscriptItemRecordSchema = WorkerRecordBaseSchema.extend({
+export const WorkerTranscriptItemRecordEmissionSchema = WorkerRecordBaseSchema.extend({
   kind: z.literal('item'),
   item: z
     .object({
@@ -619,10 +698,29 @@ export const WorkerTranscriptItemRecordSchema = WorkerRecordBaseSchema.extend({
     .strict(),
 }).strict();
 
+/** Retained assistant candidates strip unknown item and text-part metadata before import. */
+export const WorkerTranscriptItemRecordSchema = WorkerTranscriptItemRecordEmissionSchema.safeExtend(
+  {
+    actor: z.never().optional(),
+    responsibleUserId: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    item: WorkerTranscriptItemRecordEmissionSchema.shape.item
+      .safeExtend({
+        requiredFeatures: z.never().optional(),
+        parts: z
+          .array(
+            WorkerTextPartSchema.safeExtend({ requiredFeatures: z.never().optional() }).strip()
+          )
+          .optional(),
+      })
+      .strip(),
+  }
+).strip();
+
 /**
  * Worker transcript event record collected from `/openkit/session/events.jsonl`.
  */
-export const WorkerTranscriptEventRecordSchema = WorkerCanonicalEventRecordSchema;
+export const WorkerTranscriptEventRecordSchema = WorkerCanonicalEventRecordReaderSchema;
 
 /**
  * Union of canonical worker transcript records collected through the data plane.
@@ -795,7 +893,7 @@ export type WorkerRuntimeNativeOriginIndexEntry = z.infer<
 /** Worker text part inferred TypeScript type. */
 export type WorkerTextPart = z.infer<typeof WorkerTextPartSchema>;
 /** Canonical worker event record inferred TypeScript type. */
-export type WorkerCanonicalEventRecord = z.infer<typeof WorkerCanonicalEventRecordSchema>;
+export type WorkerCanonicalEventRecord = z.infer<typeof WorkerCanonicalEventRecordEmissionSchema>;
 /** Canonical worker event type inferred TypeScript type. */
 export type WorkerCanonicalEventType = z.infer<typeof WorkerCanonicalEventTypeSchema>;
 /** Canonical non-terminal worker event type inferred TypeScript type. */
@@ -804,15 +902,14 @@ export type WorkerCanonicalNonTerminalEventType = z.infer<
 >;
 /** Canonical terminal event data inferred TypeScript type. */
 export type WorkerCanonicalTerminalEventData = z.infer<
-  typeof WorkerCanonicalTerminalEventDataSchema
+  typeof WorkerCanonicalTerminalEventDataEmissionSchema
 >;
 /** Canonical terminal event data input inferred TypeScript type. */
 export type WorkerCanonicalTerminalEventDataInput = z.input<
-  typeof WorkerCanonicalTerminalEventDataSchema
+  typeof WorkerCanonicalTerminalEventDataEmissionSchema
 >;
 /** Worker transcript record inferred TypeScript type. */
 export type WorkerTranscriptRecord = z.infer<typeof WorkerTranscriptRecordSchema>;
-/** Worker workspace change manifest inferred TypeScript type. */
 /** Worker capability call summary inferred TypeScript type. */
 export type WorkerCapabilityCallSummary = z.infer<typeof WorkerCapabilityCallSummarySchema>;
 /** Worker heartbeat lifecycle status inferred TypeScript type. */
@@ -848,3 +945,103 @@ export function workerSessionInputPaths(agentSessionId: string | undefined) {
     supplyRelativePath: `${agentSessionId}/supply/inputs`,
   };
 }
+
+/** Restricted manifest readers preserve source bytes separately from this known-core view. */
+export const WorkerRuntimeRawStreamManifestReaderSchema =
+  WorkerRuntimeRawStreamManifestSchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+    streams: z
+      .array(
+        WorkerRuntimeRawStreamSchema.safeExtend({ requiredFeatures: z.never().optional() }).strip()
+      )
+      .min(1),
+  }).strip();
+
+/** Restricted index readers discard additions without rewriting digest-covered source bytes. */
+export const WorkerRuntimeNativeOriginIndexEntryReaderSchema =
+  WorkerRuntimeNativeOriginIndexEntrySchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+  }).strip();
+
+/** Capability reports strip descriptive additions before durable admission. */
+export const WorkerCapabilityCallSummaryReaderSchema = WorkerCapabilityCallSummarySchema.safeExtend(
+  {
+    actor: z.never().optional(),
+    responsibleUserId: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    diagnostics: z.array(WorkerDiagnosticReaderSchema).default([]),
+  }
+).strip();
+
+/** Heartbeat readers retain process-key and sequence validation after stripping descriptive keys. */
+export const WorkerControlHeartbeatRequestReaderSchema =
+  WorkerControlHeartbeatEnvelopeBaseSchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+    actor: z.never().optional(),
+    responsibleUserId: z.never().optional(),
+    body: WorkerControlHeartbeatBodySchema.safeExtend({
+      reconnectKey: z.never().optional(),
+      requiredFeatures: z.never().optional(),
+    }).strip(),
+  })
+    .strip()
+    .extend({ reconnectKey: WorkerProcessKeySchema.optional() })
+    .superRefine(validateWorkerControlHeartbeat);
+
+/** Generic reporting envelopes strip metadata; each route must parse its operation-specific body. */
+export const WorkerControlRequestEnvelopeReaderSchema =
+  WorkerControlRequestEnvelopeSchema.safeExtend({
+    reconnectKey: z.never().optional(),
+    requiredFeatures: z.never().optional(),
+    actor: z.never().optional(),
+    responsibleUserId: z.never().optional(),
+  }).strip();
+
+/** Accepted-response readers return only known envelope and diagnostic fields. */
+export const WorkerControlResponseEnvelopeReaderSchema =
+  WorkerControlResponseEnvelopeSchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+    diagnostics: z.array(WorkerDiagnosticReaderSchema).default([]),
+  }).strip();
+
+/** Error readers strip descriptive additions before returning diagnostics. */
+export const WorkerErrorEnvelopeReaderSchema = WorkerErrorEnvelopeSchema.safeExtend({
+  requiredFeatures: z.never().optional(),
+  diagnostics: z.array(WorkerDiagnosticReaderSchema).default([]),
+}).strip();
+
+/** Retains the terminal type/status invariant for exact emitters and stripping readers. */
+function validateWorkerCanonicalEvent(
+  event: { type: string; data: Record<string, unknown> },
+  ctx: z.RefinementCtx
+): void {
+  if (event.type === 'turn.completed' && event.data.status !== 'completed') {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'turn.completed requires completed status.',
+      path: ['data', 'status'],
+    });
+  }
+  if (event.type === 'turn.failed' && event.data.status === 'completed') {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'turn.failed cannot use completed status.',
+      path: ['data', 'status'],
+    });
+  }
+}
+
+/** Exact supply-refresh acknowledgement body emitted by a Worker. */
+export const WorkerControlSupplyRefreshAckBodySchema = z
+  .object({
+    refreshId: z.string().min(1),
+    status: z.enum(['applied', 'rejected', 'unsupported']),
+    message: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+
+/** Descriptive refresh acknowledgements discard additions before persistence and replay identity. */
+export const WorkerControlSupplyRefreshAckBodyReaderSchema =
+  WorkerControlSupplyRefreshAckBodySchema.safeExtend({
+    requiredFeatures: z.never().optional(),
+  }).strip();

@@ -3,12 +3,12 @@ import { join } from 'node:path';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
+  WorkerCanonicalEventRecordEmissionSchema,
   type WorkerCanonicalNonTerminalEventType,
   type WorkerCanonicalTerminalEventDataInput,
   type WorkerLineage,
   type WorkerTextPart,
-  WorkerTranscriptEventRecordSchema,
-  WorkerTranscriptItemRecordSchema,
+  WorkerTranscriptItemRecordEmissionSchema,
 } from '@openkit/worker-protocol';
 
 import {
@@ -107,7 +107,7 @@ export class WorkerTranscriptWriter {
     if (this.eventsSealed) {
       throw new Error('Worker transcript events are sealed after the terminal outcome.');
     }
-    const record = WorkerTranscriptEventRecordSchema.parse({
+    const record = WorkerCanonicalEventRecordEmissionSchema.parse({
       ...this.nextBaseRecord('event'),
       event: {
         data: input.data ?? {},
@@ -138,7 +138,7 @@ export class WorkerTranscriptWriter {
     } else if (input.content.state !== 'expected' && body !== undefined) {
       throw new Error('Runtime observation body was not admitted.');
     }
-    const record = WorkerTranscriptEventRecordSchema.parse({
+    const record = WorkerCanonicalEventRecordEmissionSchema.parse({
       ...this.nextBaseRecord('event'),
       event: { type: 'observation.recorded', data: input },
     });
@@ -152,7 +152,7 @@ export class WorkerTranscriptWriter {
       await this.appendEvent?.(record);
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
-        const chunk = WorkerTranscriptEventRecordSchema.parse({
+        const chunk = WorkerCanonicalEventRecordEmissionSchema.parse({
           kind: 'event',
           lineage: this.lineage,
           schemaVersion: 1,
@@ -213,7 +213,7 @@ export class WorkerTranscriptWriter {
    * @returns Promise that resolves after the line is durable.
    */
   public async writeAssistantMessage(input: WorkerAssistantMessageInput): Promise<void> {
-    const record = WorkerTranscriptItemRecordSchema.parse({
+    const record = WorkerTranscriptItemRecordEmissionSchema.parse({
       ...this.nextBaseRecord('item'),
       item: {
         ...(input.text === undefined ? {} : { text: input.text }),

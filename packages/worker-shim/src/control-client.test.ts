@@ -57,6 +57,32 @@ const notice = {
 };
 
 describe('WorkerControlClient', () => {
+  it('strips additive acknowledgement fields before returning the accepted result', async () => {
+    const fixture = createFetchFixture([
+      {
+        body: {
+          schemaVersion: 2,
+          accepted: true,
+          diagnostics: [{ code: 'ok', message: 'accepted', futureNote: true }],
+          futureNote: 'ignored',
+        },
+      },
+    ]);
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control',
+      fetch: fixture.fetch,
+    });
+    await expect(
+      client.recordFinalStatus({ sequence: 1, status: 'completed', stopReason: 'completed' })
+    ).resolves.toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      diagnostics: [{ code: 'ok', message: 'accepted' }],
+    });
+  });
+
   it('contains throwing recorder callbacks without changing heartbeat transport outcomes', async () => {
     const fixture = createFetchFixture([
       { body: { accepted: true } },

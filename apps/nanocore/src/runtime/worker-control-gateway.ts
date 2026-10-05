@@ -1,20 +1,39 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerControlHeartbeatStatus as ProtocolWorkerControlHeartbeatStatus,
   type WorkerCanonicalEventRecord,
-  WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalEventRecordReaderSchema,
   WorkerCanonicalTerminalEventDataSchema,
   type WorkerCapabilityCallSummary,
-  WorkerCapabilityCallSummarySchema,
+  WorkerCapabilityCallSummaryReaderSchema,
   type WorkerControlHeartbeatRequest,
-  WorkerControlHeartbeatRequestSchema,
+  WorkerControlHeartbeatRequestReaderSchema,
+  WorkerControlHeartbeatStatusSchema,
   type WorkerControlResponseEnvelope,
   WorkerControlResponseEnvelopeSchema,
+  WorkerControlSupplyRefreshAckBodyReaderSchema,
   type WorkerLineage,
+  WorkerSequenceSchema,
 } from '@openkit/worker-protocol';
+import { z } from 'zod';
+
+/** Descriptive retained heartbeat view; the lease remains the liveness authority. */
+const WorkerControlHeartbeatSnapshotReaderSchema = z.object({
+  lastHeartbeatAt: z.iso.datetime(),
+  message: z.string().min(1).nullable(),
+  sequence: WorkerSequenceSchema,
+  status: WorkerControlHeartbeatStatusSchema,
+});
+
+/** Descriptive retained refresh result; acknowledgement never grants refresh authority. */
+const WorkerControlSupplyRefreshAckSnapshotReaderSchema =
+  WorkerControlSupplyRefreshAckBodyReaderSchema.extend({
+    acknowledgedAt: z.iso.datetime(),
+    message: z.string().min(1).nullable(),
+    sequence: WorkerSequenceSchema,
+  });
 
 /** Sanitizes restricted transport frames before any server fingerprint, receipt or snapshot. */
 export function workerControlEventReceipt(record: WorkerCanonicalEventRecord): unknown {
@@ -684,16 +703,24 @@ export class WorkerControlGateway {
       );
     }
 
-    const events = [...(input.events ?? [])].map(cloneCanonicalEventRecord);
+    const events = [...(input.events ?? [])].map((event) =>
+      cloneCanonicalEventRecord(WorkerCanonicalEventRecordReaderSchema.parse(event))
+    );
     const snapshot: WorkerControlSessionSnapshot = {
       agentSessionId: input.lineage.agentSessionId,
       artifacts: [...(input.artifacts ?? [])].map((artifact) => ({ ...artifact })),
-      capabilitySummaries: [...(input.capabilitySummaries ?? [])].map(cloneCapabilitySummary),
+      capabilitySummaries: [...(input.capabilitySummaries ?? [])].map((summary) =>
+        cloneCapabilitySummary(WorkerCapabilityCallSummaryReaderSchema.parse(summary))
+      ),
       events,
-      heartbeat: input.heartbeat ? { ...input.heartbeat } : null,
+      heartbeat: input.heartbeat
+        ? WorkerControlHeartbeatSnapshotReaderSchema.parse(input.heartbeat)
+        : null,
       packageSnapshotId: input.lineage.packageSnapshotId,
       registeredAt: input.registeredAt,
-      supplyRefreshAcks: [...(input.supplyRefreshAcks ?? [])].map((ack) => ({ ...ack })),
+      supplyRefreshAcks: [...(input.supplyRefreshAcks ?? [])].map((ack) =>
+        WorkerControlSupplyRefreshAckSnapshotReaderSchema.parse(ack)
+      ),
       threadId: input.lineage.threadId,
       turnId: input.lineage.turnId,
       workspaceId: input.lineage.workspaceId,
@@ -727,7 +754,7 @@ export class WorkerControlGateway {
   public recordHeartbeat(
     input: AuthenticatedWorkerControlInput & WorkerControlHeartbeatRequest
   ): WorkerControlHeartbeat {
-    const request = WorkerControlHeartbeatRequestSchema.parse({
+    const request = WorkerControlHeartbeatRequestReaderSchema.parse({
       body: input.body,
       lineage: input.lineage,
       operation: input.operation,
@@ -899,12 +926,13 @@ export class WorkerControlGateway {
       message?: string | null;
     }
   ): WorkerControlSupplyRefreshAck {
+    const body = WorkerControlSupplyRefreshAckBodyReaderSchema.parse(input);
     const state = this.requireSession(input);
     const sequence = acceptSequencedControlOperation(
       state,
       'supply_refresh_ack',
       input.sequence,
-      input,
+      { ...body, lineage: input.lineage, sequence: input.sequence },
       input.lineage,
       this.sequenceRecorder
     );
@@ -925,10 +953,10 @@ export class WorkerControlGateway {
 
     const ack: WorkerControlSupplyRefreshAck = {
       acknowledgedAt: this.now(),
-      message: input.message ?? null,
-      refreshId: input.refreshId,
+      message: body.message ?? null,
+      refreshId: body.refreshId,
       sequence: input.sequence,
-      status: input.status,
+      status: body.status,
     };
 
     state.snapshot.supplyRefreshAcks.push(ack);
@@ -957,7 +985,7 @@ export class WorkerControlGateway {
     }
   ): WorkerControlResponseEnvelope {
     const state = this.requireSession(input);
-    const parsed = WorkerCapabilityCallSummarySchema.safeParse(input.summary);
+    const parsed = WorkerCapabilityCallSummaryReaderSchema.safeParse(input.summary);
 
     if (!parsed.success) {
       throw new WorkerControlGatewayError(
@@ -1075,7 +1103,7 @@ export class WorkerControlGateway {
     }
   ): WorkerControlResponseEnvelope {
     const state = this.requireSession(input);
-    const parsed = WorkerCanonicalEventRecordSchema.safeParse(input.record);
+    const parsed = WorkerCanonicalEventRecordReaderSchema.safeParse(input.record);
 
     if (!parsed.success) {
       throw new WorkerControlGatewayError(

@@ -188,6 +188,80 @@ function heartbeatRequest(
   };
 }
 
+describe('descriptive admission normalization', () => {
+  it('persists and publishes only the parsed event and capability core and ignores extension-only replay changes', () => {
+    const { environmentPackage, lineage } = createWorkerControlFixture('extensions');
+    const persisted: unknown[] = [];
+    const gateway = new WorkerControlGateway({
+      createToken: () => 'token_extensions',
+      acceptedRecordRecorder: {
+        record: (value) => {
+          persisted.push(value);
+        },
+      },
+    });
+    const registration = gateway.registerSession(environmentPackage);
+    const authorization = `Bearer ${registration.token}`;
+    const event = createEventRecord(lineage, 1);
+    const summary = createCapabilitySummary(lineage, 1);
+    gateway.appendEvent({
+      authorization,
+      lineage,
+      record: {
+        ...event,
+        futureNote: 'ignored',
+        event: { ...event.event, futureNote: 'ignored' },
+      },
+    });
+    gateway.recordCapabilitySummary({
+      authorization,
+      lineage,
+      summary: {
+        ...summary,
+        futureNote: 'ignored',
+        diagnostics: [{ code: 'ok', message: 'safe', futureNote: 'ignored' }],
+      },
+    });
+    expect(
+      gateway.appendEvent({ authorization, lineage, record: { ...event, futureNote: 'changed' } })
+    ).toMatchObject({ accepted: true });
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.events).toEqual([event]);
+    expect(gateway.getSessionSnapshot(environmentPackage.snapshotId)?.capabilitySummaries).toEqual([
+      { ...summary, diagnostics: [{ code: 'ok', message: 'safe' }] },
+    ]);
+    expect(persisted).toEqual([
+      expect.objectContaining({ record: event }),
+      expect.objectContaining({
+        record: { ...summary, diagnostics: [{ code: 'ok', message: 'safe' }] },
+      }),
+    ]);
+    expect(JSON.stringify(persisted)).not.toContain('futureNote');
+    expect(() =>
+      gateway.appendEvent({
+        authorization,
+        lineage,
+        record: {
+          ...event,
+          sequence: 2,
+          event: { type: 'invented', data: {} },
+        },
+      })
+    ).toThrow('canonical schema validation');
+    expect(() =>
+      gateway.recordCapabilitySummary({
+        authorization,
+        lineage,
+        summary: {
+          ...summary,
+          sequence: 2,
+          family: 'invented',
+        },
+      })
+    ).toThrow('canonical schema validation');
+    expect(persisted).toHaveLength(2);
+  });
+});
+
 describe('WorkerControlGateway', () => {
   it('persists rejected tool arguments and results under their exact expected observations', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-rejected-observation-'));

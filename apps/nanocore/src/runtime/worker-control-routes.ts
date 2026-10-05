@@ -1,9 +1,10 @@
 import {
-  WorkerCanonicalEventRecordSchema,
-  WorkerCanonicalTerminalEventDataSchema,
-  WorkerCapabilityCallSummarySchema,
-  WorkerControlHeartbeatRequestSchema,
-  WorkerControlRequestEnvelopeSchema,
+  WorkerCanonicalEventRecordReaderSchema,
+  WorkerCanonicalTerminalEventDataReaderSchema,
+  WorkerCapabilityCallSummaryReaderSchema,
+  WorkerControlHeartbeatRequestReaderSchema,
+  WorkerControlRequestEnvelopeReaderSchema,
+  WorkerControlSupplyRefreshAckBodyReaderSchema,
 } from '@openkit/worker-protocol';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
@@ -36,15 +37,8 @@ const WorkerControlArtifactNoticeRequestSchema = z.object({
 });
 const WorkerControlEventAppendRequestSchema = z.object({
   lineage: WorkerControlLineageRequestSchema,
-  record: WorkerCanonicalEventRecordSchema,
+  record: WorkerCanonicalEventRecordReaderSchema,
 });
-const WorkerControlSupplyRefreshAckBodySchema = z
-  .object({
-    refreshId: z.string().min(1),
-    status: z.enum(['applied', 'rejected', 'unsupported']),
-    message: z.string().min(1).nullable().optional(),
-  })
-  .strict();
 const WORKER_CONTROL_REQUEST_MAX_BYTES = 64 * 1024;
 const WORKER_CONTROL_EVENT_APPEND_MAX_BYTES = 256 * 1024;
 
@@ -63,7 +57,7 @@ export function registerWorkerControlRoutes({
   readonly workerControlGateway: WorkerControlGateway;
 }): void {
   app.post('/api/worker-control/heartbeat', async (c) => {
-    const parsed = await parseWorkerControlRequest(c, WorkerControlHeartbeatRequestSchema);
+    const parsed = await parseWorkerControlRequest(c, WorkerControlHeartbeatRequestReaderSchema);
 
     if (!parsed.success) {
       return parsed.response;
@@ -154,7 +148,7 @@ export function registerWorkerControlRoutes({
       return asInvalidRequestError(new Error('Worker control operation must be final_status.'));
     }
 
-    const body = WorkerCanonicalTerminalEventDataSchema.safeParse(parsed.data.body);
+    const body = WorkerCanonicalTerminalEventDataReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
       return asInvalidRequestError(body.error);
@@ -197,7 +191,7 @@ export function registerWorkerControlRoutes({
       );
     }
 
-    const body = WorkerControlSupplyRefreshAckBodySchema.safeParse(parsed.data.body);
+    const body = WorkerControlSupplyRefreshAckBodyReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
       return asInvalidRequestError(body.error);
@@ -256,7 +250,7 @@ export function registerWorkerControlRoutes({
       );
     }
 
-    const body = WorkerCapabilityCallSummarySchema.safeParse(parsed.data.body);
+    const body = WorkerCapabilityCallSummaryReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
       return asInvalidRequestError(body.error);
@@ -357,10 +351,10 @@ async function parseWorkerControlRequest<T>(
  */
 async function parseWorkerControlEnvelope(
   c: Context
-): Promise<ParsedJsonRequest<z.infer<typeof WorkerControlRequestEnvelopeSchema>>> {
+): Promise<ParsedJsonRequest<z.infer<typeof WorkerControlRequestEnvelopeReaderSchema>>> {
   return parseBoundedJsonRequest(
     c,
-    WorkerControlRequestEnvelopeSchema,
+    WorkerControlRequestEnvelopeReaderSchema,
     WORKER_CONTROL_REQUEST_MAX_BYTES,
     'Worker control envelope'
   );

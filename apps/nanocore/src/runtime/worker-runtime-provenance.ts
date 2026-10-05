@@ -21,9 +21,9 @@ import {
   type WorkerLineage,
   WorkerLineageSchema,
   type WorkerRuntimeNativeOriginIndexEntry,
-  WorkerRuntimeNativeOriginIndexEntrySchema,
+  WorkerRuntimeNativeOriginIndexEntryReaderSchema,
   type WorkerRuntimeRawStreamManifest,
-  WorkerRuntimeRawStreamManifestSchema,
+  WorkerRuntimeRawStreamManifestReaderSchema,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
@@ -126,6 +126,7 @@ export interface ImportWorkerRuntimeProvenanceResult {
 /** Product-safe normalized runtime origin row retained in portable indexes. */
 export const WorkerRuntimeOriginIndexRowSchema = z
   .object({
+    requiredFeatures: z.never().optional(),
     lineage: WorkerLineageSchema,
     streamRef: z.string().min(1),
     frameSequence: z.number().int().nonnegative(),
@@ -152,7 +153,7 @@ export const WorkerRuntimeOriginIndexRowSchema = z
       .optional(),
     runtimeDepth: z.number().int().nonnegative().optional(),
   })
-  .strict();
+  .strip();
 
 /** Product-safe normalized runtime origin row. */
 export type NormalizedRuntimeOriginRow = z.infer<typeof WorkerRuntimeOriginIndexRowSchema>;
@@ -406,7 +407,7 @@ async function verifyRuntimeProvenance(
   let manifest: WorkerRuntimeRawStreamManifest | null = null;
   if (manifestBytes) {
     try {
-      manifest = WorkerRuntimeRawStreamManifestSchema.parse(
+      manifest = WorkerRuntimeRawStreamManifestReaderSchema.parse(
         JSON.parse(manifestBytes.toString('utf8')) as unknown
       );
     } catch {
@@ -420,7 +421,9 @@ async function verifyRuntimeProvenance(
         continue;
       }
       try {
-        entries.push(WorkerRuntimeNativeOriginIndexEntrySchema.parse(JSON.parse(line) as unknown));
+        entries.push(
+          WorkerRuntimeNativeOriginIndexEntryReaderSchema.parse(JSON.parse(line) as unknown)
+        );
       } catch {
         errors.push(`Native index line ${lineIndex + 1} is invalid.`);
       }

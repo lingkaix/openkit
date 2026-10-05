@@ -120,7 +120,7 @@ Readers MUST reject unsupported `schemaVersion` major versions unless the owning
 
 Readers MUST reject unsupported `requiredFeatures`.
 
-Readers MAY ignore unknown optional fields when reading.
+Readers MUST ignore unknown optional descriptive fields when reading.
 
 Readers SHOULD preserve unknown optional fields on same-record writes when preservation is practical and safe.
 
@@ -173,9 +173,9 @@ The owning storage spec decides the concrete header field names per family; the 
 
 ## Storage Versus Protocol Strictness
 
-Storage tolerance never relaxes protocol strictness.
+Reader tolerance never relaxes emitted projection strictness.
 
-Protocol payloads, App API payloads, and generated JSON Schema surfaces remain strictly validated under `docs/core/contract-evolution.md`.
+Descriptive protocol and App API readers ignore unknown optional keys under `docs/core/contract-evolution.md`; effect instructions and authority-bearing shapes refuse unknown fields. Emitters and generated known-core fixtures remain strictly validated.
 
 When tolerant storage records project into protocol or App API payloads, the projection layer MUST emit strictly valid current-contract payloads and MUST drop unknown optional storage fields rather than forwarding them. A storage record that cannot project into a valid current payload after dropping unknown optional fields is a diagnostics case, not a reason to weaken protocol validation.
 
@@ -316,7 +316,7 @@ Unknown evidence may be retained as restricted evidence when storage policy allo
 - Canonical field names are camelCase on JSON/JSONL surfaces and snake_case on Markdown frontmatter surfaces, with a mechanical mapping owned by this spec.
 - Line-oriented families use a split envelope: minimal per-line header plus a file-level manifest.
 - The required feature registry ships in the first implementation slice; `requiredFeatures` is preferred over `minCoreVersion`.
-- Storage tolerance never relaxes protocol strictness; projections emit strictly valid current payloads.
+- Reader tolerance never relaxes emitted projection strictness; projections emit strictly valid current payloads.
 
 ## Deferred / Future Work
 

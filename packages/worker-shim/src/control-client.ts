@@ -2,11 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   type WorkerCanonicalEventRecord,
-  WorkerCanonicalEventRecordSchema,
+  WorkerCanonicalEventRecordEmissionSchema,
+  WorkerCanonicalTerminalEventDataEmissionSchema,
   type WorkerCanonicalTerminalEventDataInput,
-  WorkerCanonicalTerminalEventDataSchema,
   type WorkerControlResponseEnvelope,
-  WorkerControlResponseEnvelopeSchema,
+  WorkerControlResponseEnvelopeReaderSchema,
   type WorkerLineage,
 } from '@openkit/worker-protocol';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
@@ -212,7 +212,7 @@ export class WorkerControlClient {
   ): Promise<WorkerControlResponseEnvelope> {
     const { sequence, ...terminalData } = input;
     const envelope = {
-      body: WorkerCanonicalTerminalEventDataSchema.parse(terminalData),
+      body: WorkerCanonicalTerminalEventDataEmissionSchema.parse(terminalData),
       operation: 'final_status',
       schemaVersion: 2,
       sequence,
@@ -235,7 +235,7 @@ export class WorkerControlClient {
     record: WorkerCanonicalEventRecord,
     signal?: AbortSignal
   ): Promise<WorkerControlResponseEnvelope> {
-    const validated = WorkerCanonicalEventRecordSchema.parse(record);
+    const validated = WorkerCanonicalEventRecordEmissionSchema.parse(record);
     return this.request(
       async () =>
         requireAcceptedControlResponse(
@@ -599,7 +599,7 @@ function parseJson(text: string): unknown {
  * @throws Error when the response is malformed or explicitly rejected.
  */
 function requireAcceptedControlResponse(value: unknown): WorkerControlResponseEnvelope {
-  const result = WorkerControlResponseEnvelopeSchema.safeParse(value);
+  const result = WorkerControlResponseEnvelopeReaderSchema.safeParse(value);
 
   if (!result.success) {
     throw new WorkerControlError('worker_control_invalid_response', 200, result.error.message);
