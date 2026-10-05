@@ -29,6 +29,8 @@ import type {
   WorkerResidentSession,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
+import type { RuntimeObservation } from '../runtime-capture.js';
 import {
   failDeepSeekAdmission,
   withholdDeepSeekResumeAcknowledgement,
@@ -278,14 +280,32 @@ describe('deepseek permission and bounds', () => {
     });
   });
 
-  it('keeps an unproved stop pending so the Harness can fence it', async () => {
+  it('rejects an unproved stop within the caller deadline so the Harness can fence it', async () => {
     const surfaced = surfaceUnprovedDeepSeekTurn(new Error('still live'), async () => false);
     await expect(surfaced.settled).rejects.toThrow('still live');
     const winner = await Promise.race([
-      surfaced.interrupt().then(() => 'resolved'),
-      new Promise((resolve) => setTimeout(() => resolve('pending'), 30)),
+      surfaced.interrupt(new LifecycleDeadline(20)).then(
+        () => 'resolved',
+        () => 'rejected'
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('escaped deadline'), 150)),
     ]);
-    expect(winner).toBe('pending');
+    expect(winner).toBe('rejected');
+  });
+
+  it('bounds a stalled unproved-stop confirmation by its caller deadline', async () => {
+    const surfaced = surfaceUnprovedDeepSeekTurn(
+      new Error('still live'),
+      async () => new Promise(() => undefined)
+    );
+    const winner = await Promise.race([
+      surfaced.interrupt(new LifecycleDeadline(20)).then(
+        () => 'resolved',
+        () => 'rejected'
+      ),
+      new Promise((resolve) => setTimeout(() => resolve('escaped deadline'), 150)),
+    ]);
+    expect(winner).toBe('rejected');
   });
 
   it('resolves interrupt after an unproved stop is confirmed', async () => {
@@ -295,6 +315,463 @@ describe('deepseek permission and bounds', () => {
 });
 
 describe('deepseek resident adapter', () => {
+  it(
+    'ignores null-id terminal evidence before a prompt while preserving a correlated reply',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'correlated proof' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const native = session as unknown as { classifyNativeLine(line: string): string | null };
+      const error = JSON.stringify({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32700, message: 'Parse error' },
+      });
+      expect(native.classifyNativeLine(error)).toBe(error);
+      expect(session.nativeEvidence?.()).toEqual({});
+      const result = await (
+        await session.startTurn(turn(roots, inference, 'correlate', [], 'null-id-proof'))
+      ).settled;
+      expect(result).toMatchObject({
+        status: 'completed',
+        nativeEvidence: { nativeTerminal: true },
+      });
+    },
+    LIVE
+  );
+
+  it('caps control requests at the shared ceiling and honors a shorter enclosing work deadline', async () => {
+    const roots = tempRoots();
+    const session = await deepseekResidentAdapter.openSession({
+      agentSessionId: 'as-request-deadline',
+      controlRoot: roots.control,
+      stateRoot: roots.state,
+      environment: {},
+      loopback: {
+        inferenceBaseUrl: 'http://127.0.0.1:9',
+        inferenceCredential: INFERENCE,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
+        capabilityCredential: CAPABILITY,
+      },
+      resumeReference: null,
+    });
+    sessions.push(session);
+    const native = session as unknown as {
+      rpc<T>(work: () => Promise<T>, deadline: LifecycleDeadline): Promise<T>;
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      // Advance the real RPC supervisor's clock without starting a native host.
+      for (const [budget, cleanupTail, limit] of [
+        [
+          LIFECYCLE_DEFAULTS.nativeOpenMs,
+          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs,
+          LIFECYCLE_DEFAULTS.nativeRequestMs,
+        ],
+        [300, 100, 200],
+      ] as const) {
+        let settled = false;
+        const outcome = native
+          .rpc(() => new Promise<string>(() => {}), new LifecycleDeadline(budget, cleanupTail))
+          .then(
+            () => 'unexpected completion',
+            (error: Error) => error.message
+          );
+        void outcome.then(() => {
+          settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(limit - 1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(outcome).resolves.toBe('DeepSeek runtime is unavailable.');
+        expect(settled).toBe(true);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it(
+    'leaves native facts absent until their own observation or attempted proof',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'proof' }));
+      closers.push(() => inference.close());
+      const session = await open(tempRoots(), inference, null);
+      expect(session.nativeEvidence?.()).toEqual({});
+      await session.close();
+      expect(session.nativeEvidence?.()).toEqual({ persistencePreservingClose: true });
+    },
+    LIVE
+  );
+
+  it.each(['off', 'on'] as const)(
+    'collects structural facts with content %s',
+    async (value) => {
+      const inference = await startSyntheticInference(() => ({ text: 'captured outward text' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const input = turn(roots, inference, 'capture', [], 'capture-1');
+      const observations: RuntimeObservation[] = [];
+      const bodies: Uint8Array[] = [];
+      const active = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'workspace', value },
+          emit: async (record, body) => {
+            observations.push(record);
+            if (body) bodies.push(body);
+          },
+        },
+      });
+      const result = await active.settled;
+      expect(result.status).toBe('completed');
+      expect(
+        observations.some(({ fact }) => fact.kind === 'origin' && fact.phase === 'started')
+      ).toBe(true);
+      expect(
+        observations.some(({ fact }) => fact.kind === 'assistant' && fact.phase === 'completed')
+      ).toBe(true);
+      expect(result.nativeEvidence).toMatchObject({ nativeTerminal: true });
+      if (value === 'off') expect(bodies).toHaveLength(0);
+      else expect(Buffer.concat(bodies).toString()).toContain('captured outward text');
+      await session.close();
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        pipesDrained: true,
+        persistencePreservingClose: true,
+      });
+    },
+    LIVE
+  );
+
+  it(
+    'settles interruption while capture-off finalization remains held',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'accepted prefix' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const input = turn(roots, inference, 'capture hold', [], 'capture-held');
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      const observations: RuntimeObservation[] = [];
+      try {
+        const active = await session.startTurn({
+          ...input,
+          runtimeCapture: {
+            ...input.runtimeCapture,
+            emit: async (record) => {
+              if (record.fact.kind === 'coverage' && record.fact.coverage === 'ended') {
+                entered = true;
+                await held;
+              }
+              observations.push(record);
+            },
+          },
+        });
+        await waitFor(() => entered);
+        const interruptStarted = performance.now();
+        await active.interrupt(new LifecycleDeadline(800, 400));
+        const result = await active.settled;
+        expect(performance.now() - interruptStarted).toBeLessThan(1050);
+        expect(result.diagnostics?.runtimeCapture).toBe('incomplete');
+        expect(observations.some(({ fact }) => fact.kind === 'assistant')).toBe(true);
+        expect(
+          observations.some(
+            ({ fact }) => fact.kind === 'coverage' && fact.coverage === 'unavailable'
+          )
+        ).toBe(true);
+      } finally {
+        release();
+      }
+    },
+    LIVE
+  );
+
+  it(
+    'does not publish a captured success after terminal evidence is poisoned before settlement',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'unpublishable candidate' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const input = turn(roots, inference, 'poison while collecting', [], 'poison-collection');
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+      try {
+        const active = await session.startTurn({
+          ...input,
+          runtimeCapture: {
+            ...input.runtimeCapture,
+            emit: async (record) => {
+              if (record.fact.kind === 'coverage' && record.fact.coverage === 'ended') {
+                entered = true;
+                await held;
+              }
+            },
+          },
+        });
+        await waitFor(() => entered);
+        const native = session as unknown as {
+          child: import('node:child_process').ChildProcessWithoutNullStreams;
+        };
+        native.child.stdout.emit('data', Buffer.from('{invalid native tail}\n'));
+        const result = await active.settled;
+        expect(result).toMatchObject({
+          status: 'failed',
+          assistantText: null,
+          nativeEvidence: { nativeTerminal: false, processExited: true },
+        });
+      } finally {
+        release();
+      }
+    },
+    LIVE
+  );
+
+  it(
+    'bounds capture sink preparation before prompt admission',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'baseline' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'baseline', [], 'baseline'))).settled;
+      const count = inference.requests.length;
+      const input = turn(roots, inference, 'must not prompt', [], 'held-preparation');
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const native = session as unknown as {
+        admitTurn(input: WorkerResidentTurnInput, deadline: LifecycleDeadline): Promise<unknown>;
+      };
+      try {
+        const preparationStarted = performance.now();
+        await expect(
+          native.admitTurn(
+            { ...input, runtimeCapture: { ...input.runtimeCapture, emit: async () => held } },
+            new LifecycleDeadline(800, 400)
+          )
+        ).rejects.toThrow();
+        expect(performance.now() - preparationStarted).toBeLessThan(1050);
+        expect(inference.requests).toHaveLength(count);
+        expect(session.childState()).toBe('absent');
+      } finally {
+        release();
+      }
+    },
+    LIVE
+  );
+
+  it(
+    'bounds a short-deadline stop join without another signal owner',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'unused' }));
+      closers.push(() => inference.close());
+      const session = await open(tempRoots(), inference, null);
+      const native = session as unknown as {
+        stopPromise: Promise<boolean> | null;
+        stopProcess(deadline: LifecycleDeadline): Promise<boolean>;
+        stopProcessOnce(): Promise<boolean>;
+      };
+      let release: (stopped: boolean) => void = () => undefined;
+      const owner = new Promise<boolean>((resolve) => {
+        release = resolve;
+      });
+      native.stopPromise = owner;
+      const signalOwner = vi.spyOn(native, 'stopProcessOnce');
+      try {
+        const joined = native.stopProcess(new LifecycleDeadline(20));
+        const result = await Promise.race([
+          joined,
+          new Promise<string>((resolve) => setTimeout(() => resolve('join escaped deadline'), 150)),
+        ]);
+        expect(result).toBe(false);
+        expect(signalOwner).not.toHaveBeenCalled();
+        expect(session.nativeEvidence?.()).toEqual({ processExited: false });
+      } finally {
+        release(true);
+        native.stopPromise = null;
+        signalOwner.mockRestore();
+      }
+    },
+    LIVE
+  );
+
+  it(
+    'bounds a short-deadline interruption join without sending another cancel',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ hang: true }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const active = await session.startTurn(
+        turn(roots, inference, 'hold cancellation', [], 'join-interrupt')
+      );
+      const native = session as unknown as { agent: { cancel(): Promise<void> } };
+      const cancel = vi
+        .spyOn(native.agent, 'cancel')
+        .mockImplementation(async () => new Promise(() => undefined));
+      const owner = active.interrupt(new LifecycleDeadline(1000, 500));
+      try {
+        const joinStarted = performance.now();
+        await expect(active.interrupt(new LifecycleDeadline(20))).rejects.toThrow(
+          /joined interruption.*unproved/
+        );
+        expect(performance.now() - joinStarted).toBeLessThan(150);
+        expect(cancel).toHaveBeenCalledTimes(1);
+        await owner;
+        expect(session.childState()).toBe('absent');
+        expect((await active.settled).nativeEvidence).toMatchObject({ processExited: true });
+      } finally {
+        cancel.mockRestore();
+      }
+    },
+    LIVE
+  );
+
+  it.each(['stdout', 'stderr'] as const)(
+    'refuses retaining close without %s EOF',
+    async (pipe) => {
+      const inference = await startSyntheticInference(() => ({ text: 'retain' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'retain', [], 'pipe-eof'))).settled;
+      const native = session as unknown as {
+        child: { stdout: Readable; stderr: Readable };
+        pipesEnd: Promise<void>;
+      };
+      // Withhold the actual end callbacks while still allowing the real child to be reaped.
+      native.child[pipe].removeAllListeners('end');
+      native.pipesEnd = Promise.resolve();
+      await expect(session.close()).rejects.toThrow(/did not drain/);
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        pipesDrained: false,
+        persistencePreservingClose: false,
+      });
+    },
+    LIVE
+  );
+
+  it(
+    'validates a buffered native update after exit through stdout EOF before close proof',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'retain' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'retain', [], 'buffered-tail')))
+        .settled;
+      const native = session as unknown as {
+        child: import('node:child_process').ChildProcessWithoutNullStreams;
+        sessionId: string;
+      };
+      const child = native.child;
+      const originalEmit = child.stdout.emit.bind(child.stdout);
+      const emit = vi.spyOn(child.stdout, 'emit').mockImplementation((event, ...args) => {
+        if (event === 'end') {
+          const tailAndEof = () => {
+            expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+            originalEmit('data', Buffer.from(textChunk(native.sessionId, 'late context')));
+            originalEmit('end', ...args);
+          };
+          if (child.exitCode !== null || child.signalCode !== null) tailAndEof();
+          else child.once('exit', tailAndEof);
+          return true;
+        }
+        return originalEmit(event, ...args);
+      });
+      try {
+        await expect(session.close()).rejects.toThrow(/did not drain/);
+        expect(session.nativeEvidence?.()).toMatchObject({
+          processExited: true,
+          pipesDrained: true,
+          persistencePreservingClose: false,
+        });
+      } finally {
+        emit.mockRestore();
+      }
+    },
+    LIVE
+  );
+
+  it.each(['off', 'on'] as const)(
+    'collects native tool phases with content %s',
+    async (value) => {
+      const inference = await startSyntheticInference(() => ({ hang: true }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const observations: RuntimeObservation[] = [];
+      const bodies: Uint8Array[] = [];
+      const input = turn(roots, inference, 'tool phases', [], 'tool-capture');
+      const active = await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          captureCoverage: { scope: 'workspace', value },
+          emit: async (record, body) => {
+            observations.push(record);
+            if (body) bodies.push(body);
+          },
+        },
+      });
+      const native = session as unknown as {
+        child: import('node:child_process').ChildProcessWithoutNullStreams;
+        sessionId: string;
+      };
+      for (const update of [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'native-private-call',
+          title: 'private title',
+          status: 'pending',
+          rawInput: { arg: 'exact tool argument' },
+        },
+        {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'native-private-call',
+          status: 'completed',
+          rawOutput: { result: 'exact tool result' },
+        },
+      ])
+        native.child.stdout.emit(
+          'data',
+          Buffer.from(
+            `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: native.sessionId, update } })}\n`
+          )
+        );
+      await active.interrupt();
+      await active.settled;
+      expect(
+        observations.some(({ fact }) => fact.kind === 'tool' && fact.phase === 'started')
+      ).toBe(true);
+      expect(
+        observations.some(({ fact }) => fact.kind === 'tool' && fact.phase === 'completed')
+      ).toBe(true);
+      expect(JSON.stringify(observations)).not.toContain('native-private-call');
+      expect(JSON.stringify(observations)).not.toContain('private title');
+      if (value === 'off') expect(bodies).toHaveLength(0);
+      else {
+        expect(Buffer.concat(bodies).toString()).toContain('exact tool argument');
+        expect(Buffer.concat(bodies).toString()).toContain('exact tool result');
+      }
+    },
+    LIVE
+  );
+
   it(
     'completes, trims once, resumes the same conversation, and keeps credentials out of the runtime',
     async () => {

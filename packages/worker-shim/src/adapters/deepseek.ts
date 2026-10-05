@@ -34,6 +34,7 @@ import type { HarnessRefusalReason } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
+  WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
   WorkerResidentLoopback,
@@ -42,7 +43,9 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { RuntimeSemanticCapture, runtimeOriginRef, runtimeRef } from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 
 /** Accumulated `session/update` payload ceiling for one Turn. */
@@ -53,12 +56,6 @@ export const DEEPSEEK_DIAGNOSTIC_LIMIT_BYTES = 16 * 1024;
 const PROVIDER_ID = 'openkit-loopback';
 const SIDECAR_NAME = 'openkit-deepseek-binding.json';
 const PATCH_NAME = 'deepseek-loopback.patch.yml';
-const CLOSE_DRAIN_MS = 10_000;
-const INTERRUPT_CANCEL_MS = 2_000;
-/** Reserves the rest of the shared ten-second stop budget for confirmed host exit. */
-const FAILED_PROMPT_DRAIN_MS = 2_000;
-const INTERRUPT_SETTLE_MS = 4_000;
-const STOP_SIGNAL_MS = 2_000;
 const STDERR_CAPTURE_BYTES = 64 * 1024;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
@@ -97,6 +94,16 @@ interface LoopbackPatch {
 interface ActiveTurn {
   /** Observed native selection and bounded modality projection for this Turn only. */
   deliveryDiagnostics: Record<string, string>;
+  /** Existing structural collector, kept independent of native settlement proof. */
+  capture: RuntimeSemanticCapture | null;
+  captureQueue: Promise<void>;
+  captureAbandoned: boolean;
+  sourceRef: string;
+  originRef: string;
+  messageRef: string;
+  /** Releases settlement after proved native stop even if publication is still in flight. */
+  abandonCapture: () => void;
+  interruptPromise: Promise<void> | null;
   badContent: boolean;
   cancelRequested: boolean;
   readonly diagnostics: () => Record<string, string>;
@@ -243,9 +250,15 @@ export function classifyDeepSeekStop(input: {
  * Harness fences; they are not reported as a clean refusal.
  */
 async function openDeepSeekSession(input: WorkerResidentOpenInput): Promise<WorkerResidentSession> {
+  const deadline = new LifecycleDeadline(
+    LIFECYCLE_DEFAULTS.nativeOpenMs,
+    LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+  );
+  // Filesystem initialization completes before refusal so it cannot race a successor's home writes.
   await initializeNativeHome(input.stateRoot);
+  if (deadline.workRemainingMs() <= 0) throw new Error('DeepSeek open did not prepare.');
   const session = new DeepSeekSession(input);
-  if (input.resumeReference) await session.proveResume();
+  if (input.resumeReference) await session.proveResume(deadline);
   return session;
 }
 
@@ -301,6 +314,16 @@ class DeepSeekSession implements WorkerResidentSession {
   /** True once this binding's MCP set has been mounted. Later sets are refused. */
   private supplyMounted = false;
   private stopPromise: Promise<boolean> | null = null;
+  /** One preparation allowance, cleared before resident idle. */
+  private preparationDeadline: LifecycleDeadline | null = null;
+  private terminalEvidence: boolean | undefined;
+  private processExited: boolean | undefined;
+  private stdoutEnded = false;
+  private stderrEnded = false;
+  private pipeFailure = false;
+  private pipesDrainEvaluated = false;
+  private pipesEnd: Promise<void> = Promise.resolve();
+  private closeEvidence: boolean | undefined;
   /** Cleared at launch and invalid evidence; close cannot succeed without a positive proof. */
   private closeProof: DeepSeekCloseProof | null = { kind: 'never-launched' };
 
@@ -320,6 +343,20 @@ class DeepSeekSession implements WorkerResidentSession {
     return typeof child.pid === 'number' ? 'running' : 'unknown';
   }
 
+  /** Reports only independently observed or attempted native proofs. */
+  nativeEvidence(): WorkerNativeEvidence {
+    return {
+      ...(this.terminalEvidence !== undefined ? { nativeTerminal: this.terminalEvidence } : {}),
+      ...(this.processExited !== undefined ? { processExited: this.processExited } : {}),
+      ...(this.pipeFailure || this.pipesDrainEvaluated || (this.stdoutEnded && this.stderrEnded)
+        ? { pipesDrained: this.stdoutEnded && this.stderrEnded && !this.pipeFailure }
+        : {}),
+      ...(this.closeEvidence !== undefined
+        ? { persistencePreservingClose: this.closeEvidence }
+        : {}),
+    };
+  }
+
   /**
    * Drains the addressed session and ends the process. Retained native data stays.
    * Every caller shares one promise, including its rejection. A close does not settle {@link exited}.
@@ -333,16 +370,30 @@ class DeepSeekSession implements WorkerResidentSession {
 
   /** Bounds cancellation, native close, and process exit. Late output after that boundary fails close. */
   private async finishClose(): Promise<void> {
+    // Preserve the former two sequential ten-second drains plus cleanup, with one budget.
+    const deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeStopMs * 3,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    );
+    this.closeEvidence = false;
     let drainFailed = false;
     try {
-      await withTimeout(this.admission, CLOSE_DRAIN_MS, 'DeepSeek close did not drain.');
+      await withTimeout(
+        this.admission,
+        deadline.workRemainingMs(LIFECYCLE_DEFAULTS.nativeStopMs),
+        'DeepSeek close did not drain.'
+      );
     } catch {
       drainFailed = true;
       this.unknownIdentity = true;
       // Remember failed drain; native work has not yet been proved stopped.
     }
     try {
-      await withTimeout(this.drainSession(), CLOSE_DRAIN_MS, 'DeepSeek close did not drain.');
+      await withTimeout(
+        this.drainSession(deadline),
+        deadline.workRemainingMs(LIFECYCLE_DEFAULTS.nativeStopMs),
+        'DeepSeek close did not drain.'
+      );
     } catch {
       drainFailed = true;
       this.unknownIdentity = true;
@@ -353,28 +404,41 @@ class DeepSeekSession implements WorkerResidentSession {
     await new Promise<void>((resolve) => setImmediate(resolve));
     this.drainBoundary = true;
     const active = this.turn;
-    const stopped = await this.stopProcess();
+    const stopped = this.generation === 0 ? true : await this.stopProcess(deadline);
+    // An unproved writer stop already defeats close; do not delay its fence on pipe EOF.
+    if (this.generation > 0 && stopped) {
+      await withTimeout(
+        this.pipesEnd,
+        deadline.remainingMs(LIFECYCLE_DEFAULTS.nativeStopMs),
+        'DeepSeek output did not drain.'
+      ).catch(() => undefined);
+      this.pipesDrainEvaluated = true;
+    }
     if (!stopped) {
       this.exitUnproved = true;
       this.unknownIdentity = true;
     }
     if (active) {
-      if (stopped) active.fail('host_ended');
-      else active.failUnproved(new Error('DeepSeek runtime is unavailable.'));
+      if (stopped) {
+        active.fail('host_ended');
+        active.abandonCapture();
+      } else active.failUnproved(new Error('DeepSeek runtime is unavailable.'));
     }
     if (
       !stopped ||
       !this.closeProof ||
       drainFailed ||
       this.updatesAfterClose > 0 ||
-      this.exitUnproved
+      this.exitUnproved ||
+      (this.generation > 0 && (!this.stdoutEnded || !this.stderrEnded || this.pipeFailure))
     ) {
       throw new Error('DeepSeek close did not drain.');
     }
+    this.closeEvidence = true;
   }
 
   /** Requires one positive native cleanup proof; absence of a published id is not no launch. */
-  private async drainSession(): Promise<void> {
+  private async drainSession(deadline: LifecycleDeadline): Promise<void> {
     if (this.closeProof?.kind === 'never-launched' && this.generation === 0) return;
     if (this.unknownIdentity) throw new Error('DeepSeek close did not drain.');
     if (
@@ -401,7 +465,7 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.unknownIdentity || !this.processIsLive()) {
       throw new Error('DeepSeek close did not drain.');
     }
-    await this.rpc(this.agent.closeSession({ sessionId: this.sessionId }));
+    await this.rpc(() => this.agent!.closeSession({ sessionId: this.sessionId! }), deadline);
     // The acknowledgement cannot resurrect evidence invalidated while the RPC was pending.
     if (this.unknownIdentity) throw new Error('DeepSeek close did not drain.');
     this.closeProof = { kind: 'native-drained', generation: this.generation };
@@ -419,7 +483,8 @@ class DeepSeekSession implements WorkerResidentSession {
    * Proves the retained conversation and workspace without contacting the capability loopback.
    * MCP stays unmounted until the first Turn, after Integration has bound that Turn's routes.
    */
-  async proveResume(): Promise<void> {
+  async proveResume(deadline: LifecycleDeadline): Promise<void> {
+    this.preparationDeadline = deadline;
     const sessionId = decodeSessionId(this.input.resumeReference);
     if (!sessionId) {
       this.unknownIdentity = true;
@@ -429,7 +494,7 @@ class DeepSeekSession implements WorkerResidentSession {
       const record = await readBindingRecord(this.input.stateRoot, sessionId);
       if (!record) throw new Error('DeepSeek resume did not prove the native session.');
       await this.spawnHost(record);
-      const resumed = await this.rpc(
+      const resumed = await this.rpc(() =>
         this.agentConnection().resumeSession({
           cwd: record.cwd,
           mcpServers: [],
@@ -445,8 +510,10 @@ class DeepSeekSession implements WorkerResidentSession {
       this.unknownIdentity = true;
       this.sessionId = null;
       this.ready = false;
-      const stopped = await this.stopProcess();
+      const stopped = await this.stopProcess(deadline);
       if (!stopped) this.exitUnproved = true;
+    } finally {
+      this.preparationDeadline = null;
     }
   }
 
@@ -465,14 +532,25 @@ class DeepSeekSession implements WorkerResidentSession {
       release = resolve;
     });
     try {
-      return await this.admitTurn(input);
+      return await this.admitTurn(
+        input,
+        new LifecycleDeadline(
+          LIFECYCLE_DEFAULTS.nativeOpenMs,
+          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+        )
+      );
     } finally {
+      this.preparationDeadline = null;
       release();
     }
   }
 
   /** Preflight, one-time setup, then the prompt. Checks the close fence before any prompt. */
-  private async admitTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+  private async admitTurn(
+    input: WorkerResidentTurnInput,
+    deadline: LifecycleDeadline
+  ): Promise<WorkerResidentTurn> {
+    this.preparationDeadline = deadline;
     if ((this.exitUnproved || this.unknownIdentity) && this.processIsLive()) {
       return this.surfaceLiveProcess(
         new Error(
@@ -518,7 +596,7 @@ class DeepSeekSession implements WorkerResidentSession {
           : await this.selectModel(patch.model, sessionId);
       if (reasoning && effort !== undefined) {
         const value = effort === 'none' ? 'off' : effort;
-        const updated = await this.rpc(
+        const updated = await this.rpc(() =>
           this.agentConnection().setSessionConfigOption({
             configId: 'reasoning_effort',
             sessionId,
@@ -547,7 +625,15 @@ class DeepSeekSession implements WorkerResidentSession {
       );
       if (omitted?.length) deliveryDiagnostics.omittedModalities = [...new Set(omitted)].join(',');
       if (this.closing) throw new Error('DeepSeek binding is closing.');
-      const turn = this.beginTurn();
+      const turn = this.beginTurn(input);
+      await withTimeout(
+        turn.captureQueue,
+        deadline.workRemainingMs(),
+        'DeepSeek structural preparation did not finish.'
+      );
+      if (turn.captureAbandoned || deadline.workRemainingMs() <= 0 || this.closing)
+        throw new Error('DeepSeek preparation did not finish.');
+      this.terminalEvidence = undefined;
       turn.deliveryDiagnostics = deliveryDiagnostics;
       const pending = this.agentConnection().prompt({
         prompt: [{ type: 'text', text: input.turnInput }],
@@ -568,11 +654,11 @@ class DeepSeekSession implements WorkerResidentSession {
         }
       );
       return {
-        interrupt: () => this.interrupt(turn),
+        interrupt: (deadline) => this.interrupt(turn, deadline),
         settled: turn.settled,
       };
     } catch (error) {
-      return this.abandonUnaccepted(error);
+      return this.abandonUnaccepted(error, deadline);
     }
   }
 
@@ -600,9 +686,16 @@ class DeepSeekSession implements WorkerResidentSession {
    * Stops the process before a Turn rejection. When the exit is not observed, returns a Turn
    * the Harness has to fence instead of a rejection that would look like a clean refusal.
    */
-  private async abandonUnaccepted(error: unknown): Promise<WorkerResidentTurn> {
+  private async abandonUnaccepted(
+    error: unknown,
+    deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeStopMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    )
+  ): Promise<WorkerResidentTurn> {
     const active = this.turn;
-    const stopped = await this.stopProcess();
+    active?.abandonCapture();
+    const stopped = await this.stopProcess(deadline);
     if (active) {
       if (stopped) active.fail('missing_terminal_outcome');
       else active.failUnproved(error);
@@ -617,7 +710,7 @@ class DeepSeekSession implements WorkerResidentSession {
   /** Returns the unproved-stop Turn and remembers that `close` must not report success. */
   private surfaceLiveProcess(error: unknown): WorkerResidentTurn {
     this.exitUnproved = true;
-    return surfaceUnprovedDeepSeekTurn(error, () => this.stopProcess());
+    return surfaceUnprovedDeepSeekTurn(error, (deadline) => this.stopProcess(deadline));
   }
 
   /** Whether the dedicated process has not exited. */
@@ -633,7 +726,7 @@ class DeepSeekSession implements WorkerResidentSession {
     await this.spawnHost(createdRecord);
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     try {
-      const created = await this.rpc(
+      const created = await this.rpc(() =>
         this.agentConnection().newSession({
           cwd: input.workingDirectory,
           mcpServers: mcpServers(input.mcpServerIds, this.input.loopback),
@@ -667,9 +760,9 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     const ids = [...input.mcpServerIds];
     if (ids.length > 0) {
-      await this.rpc(this.agentConnection().closeSession({ sessionId }));
+      await this.rpc(() => this.agentConnection().closeSession({ sessionId }));
       if (this.closing) throw new Error('DeepSeek binding is closing.');
-      const resumed = await this.rpc(
+      const resumed = await this.rpc(() =>
         this.agentConnection().resumeSession({
           cwd: record.cwd,
           mcpServers: mcpServers(ids, this.input.loopback),
@@ -700,7 +793,7 @@ class DeepSeekSession implements WorkerResidentSession {
     let resumed: Awaited<ReturnType<ClientSideConnection['resumeSession']>>;
     this.idleResumeRequest = { id: null };
     try {
-      resumed = await this.rpc(
+      resumed = await this.rpc(() =>
         this.agentConnection().resumeSession({
           cwd: record.cwd,
           mcpServers: [],
@@ -738,7 +831,13 @@ class DeepSeekSession implements WorkerResidentSession {
   }
 
   /** A correlated prompt failure may drain natively; every other lost outcome keeps the cleanup fence. Settlement still waits for confirmed host stop. */
-  private async proveStopAfterPromptLoss(turn: ActiveTurn): Promise<void> {
+  private async proveStopAfterPromptLoss(
+    turn: ActiveTurn,
+    deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeStopMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    )
+  ): Promise<void> {
     if (
       turn.promptFailed &&
       !turn.terminalPoisoned &&
@@ -751,7 +850,7 @@ class DeepSeekSession implements WorkerResidentSession {
         // The native close owns persistence drain. Process absence alone cannot replace it.
         await withTimeout(
           this.agent.closeSession({ sessionId: this.sessionId }),
-          FAILED_PROMPT_DRAIN_MS,
+          deadline.workRemainingMs(),
           'DeepSeek close did not drain.'
         );
         if (!this.unknownIdentity) {
@@ -766,7 +865,7 @@ class DeepSeekSession implements WorkerResidentSession {
     }
     const nativeDrained = this.closeProof?.kind === 'native-drained' && !this.unknownIdentity;
     if (!nativeDrained) this.unknownIdentity = true;
-    const stopped = await this.stopProcess();
+    const stopped = await this.stopProcess(deadline);
     const drained = nativeDrained && !this.unknownIdentity && this.updatesAfterClose === 0;
     if (!drained) this.unknownIdentity = true;
     if (turn.promptFailed)
@@ -779,6 +878,7 @@ class DeepSeekSession implements WorkerResidentSession {
       if (turn.promptFailed) this.ended = true;
       turn.hostEnded = !turn.badContent && !turn.overLimit;
       turn.finish(undefined, turn.promptFailed);
+      turn.abandonCapture();
       this.resolveExited?.();
       this.resolveExited = null;
       return;
@@ -793,8 +893,8 @@ class DeepSeekSession implements WorkerResidentSession {
     );
   }
 
-  /** Starts a collector before the prompt so the first update cannot be missed. */
-  private beginTurn(): ActiveTurn {
+  /** Starts the existing semantic collector regardless of the content switch. */
+  private beginTurn(input?: WorkerResidentTurnInput): ActiveTurn {
     let resolveSettled: (result: WorkerAdapterResult) => void = () => undefined;
     let rejectSettled: (error: unknown) => void = () => undefined;
     const settled = new Promise<WorkerAdapterResult>((resolve, reject) => {
@@ -803,33 +903,114 @@ class DeepSeekSession implements WorkerResidentSession {
     });
     settled.catch(() => undefined);
     let done = false;
+    let nativeResult: Pick<WorkerAdapterResult, 'assistantText' | 'status' | 'stopReason'> | null =
+      null;
+    const publish = () => {
+      if (done || !nativeResult) return;
+      done = true;
+      // Collection can outlive native evidence; a later poisoned frame defeats unpublished success.
+      if (turn.terminalPoisoned)
+        nativeResult = failed(
+          turn.overLimit
+            ? 'output_limit'
+            : turn.badContent
+              ? 'unsupported_content'
+              : turn.promptFailed
+                ? 'prompt_failed'
+                : 'host_ended'
+        );
+      if (this.turn === turn) this.turn = null;
+      resolveSettled({
+        ...nativeResult,
+        diagnostics: turn.diagnostics(),
+        nativeEvidence: this.nativeEvidence(),
+      });
+    };
+    const finalize = () => {
+      if (!turn.capture) {
+        publish();
+        return;
+      }
+      this.queueCapture(turn, async () => {
+        const phase = nativeResult?.status ?? 'failed';
+        await turn.capture!.emit(turn.sourceRef, {
+          kind: 'assistant',
+          runtimeOriginRef: turn.originRef,
+          messageRef: turn.messageRef,
+          phase,
+          representation: 'snapshot',
+        });
+        await turn.capture!.flushCompleted();
+        if (phase !== 'completed') await turn.capture!.interrupt();
+        await turn.capture!.emit(turn.sourceRef, {
+          kind: 'origin',
+          runtimeOriginRef: turn.originRef,
+          phase,
+        });
+        await turn.capture!.emit(turn.sourceRef, {
+          kind: 'coverage',
+          runtimeOriginRef: turn.originRef,
+          family: 'primary-content',
+          coverage: 'ended',
+        });
+      });
+      void turn.captureQueue.then(publish, () => {
+        turn.abandonCapture();
+        publish();
+      });
+    };
     const turn: ActiveTurn = {
       deliveryDiagnostics: {},
+      capture: null,
+      captureQueue: Promise.resolve(),
+      captureAbandoned: false,
+      sourceRef: input
+        ? runtimeRef('rts', input.runtimeCapture.packageSnapshotId, input.turnId)
+        : '',
+      originRef: input
+        ? runtimeOriginRef(input.runtimeCapture.packageSnapshotId, this.sessionId!)
+        : '',
+      messageRef: input
+        ? runtimeRef('rtm', input.runtimeCapture.packageSnapshotId, input.turnId)
+        : '',
+      interruptPromise: null,
+      abandonCapture: () => {
+        if (turn.captureAbandoned) return;
+        turn.captureAbandoned = true;
+        turn.deliveryDiagnostics.runtimeCapture = 'incomplete';
+        // Subsequent calls are suppressed; an already-entered sink call remains in flight.
+        void turn.capture
+          ?.emit(turn.sourceRef, {
+            kind: 'coverage',
+            runtimeOriginRef: turn.originRef,
+            family: 'primary-content',
+            coverage: 'unavailable',
+            reason: 'collector-failed',
+          })
+          .catch(() => undefined);
+        publish();
+      },
       badContent: false,
       cancelRequested: false,
       diagnostics: () => this.turnDiagnostics(turn),
       fail: (stopReason) => {
         if (done) return;
-        done = true;
-        this.turn = null;
-        resolveSettled({
-          assistantText: null,
-          diagnostics: turn.diagnostics(),
-          status: 'failed',
-          stopReason,
-        });
+        if (!nativeResult) {
+          nativeResult = failed(stopReason);
+          finalize();
+        }
+        if (turn.captureAbandoned) publish();
       },
       failUnproved: (error) => {
         if (done) return;
         done = true;
-        this.turn = null;
+        turn.abandonCapture();
+        if (this.turn === turn) this.turn = null;
         rejectSettled(error);
       },
       finish: (stopReason, promptFailed) => {
-        if (done) return;
-        done = true;
-        this.turn = null;
-        const classified = classifyDeepSeekStop({
+        if (done || nativeResult) return;
+        nativeResult = classifyDeepSeekStop({
           badContent: turn.badContent,
           cancelRequested: turn.cancelRequested,
           hostEnded: turn.hostEnded,
@@ -838,7 +1019,8 @@ class DeepSeekSession implements WorkerResidentSession {
           stopReason,
           text: turn.text,
         });
-        resolveSettled({ ...classified, diagnostics: turn.diagnostics() });
+        finalize();
+        if (turn.captureAbandoned) publish();
       },
       hostEnded: false,
       overLimit: false,
@@ -852,8 +1034,49 @@ class DeepSeekSession implements WorkerResidentSession {
       terminalPoisoned: false,
       totalBytes: 0,
     };
+    if (input) {
+      turn.capture = new RuntimeSemanticCapture({
+        ...input.runtimeCapture,
+        credentialValues: [...input.runtimeCapture.credentialValues, ...secretValues(this.input)],
+        emit: async (record, body) => {
+          if (
+            !turn.captureAbandoned ||
+            (record.fact.kind === 'coverage' && record.fact.reason === 'collector-failed')
+          )
+            await input.runtimeCapture.emit(record, body);
+        },
+      });
+      this.queueCapture(turn, async () => {
+        for (const family of ['primary-content', 'child-metadata', 'child-content'] as const) {
+          await turn.capture!.emit(turn.sourceRef, {
+            kind: 'coverage',
+            runtimeOriginRef: turn.originRef,
+            family,
+            coverage:
+              family === 'primary-content'
+                ? input.runtimeCapture.captureCoverage.value === 'on'
+                  ? 'collecting'
+                  : 'off'
+                : 'unsupported',
+          });
+        }
+        await turn.capture!.emit(turn.sourceRef, {
+          kind: 'origin',
+          runtimeOriginRef: turn.originRef,
+          phase: 'started',
+        });
+      });
+    }
     this.turn = turn;
     return turn;
+  }
+
+  /** Serializes observations with backpressure while native control remains responsive. */
+  private queueCapture(turn: ActiveTurn, work: () => Promise<void>): void {
+    turn.captureQueue = turn.captureQueue.then(async () => {
+      if (!turn.captureAbandoned) await work();
+    });
+    turn.captureQueue.catch(() => undefined);
   }
 
   /** The live ACP client, or a setup failure when the process never connected. */
@@ -866,28 +1089,64 @@ class DeepSeekSession implements WorkerResidentSession {
    * Sends `session/cancel` only while this object is the active Turn.
    * A stale interrupt waits for the outcome that already won and does not cancel a successor.
    */
-  private async interrupt(turn: ActiveTurn): Promise<void> {
+  private interrupt(
+    turn: ActiveTurn,
+    deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeStopMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    )
+  ): Promise<void> {
+    if (turn.interruptPromise)
+      return withTimeout(
+        turn.interruptPromise,
+        deadline.remainingMs(),
+        'DeepSeek joined interruption timed out; cleanup unproved.'
+      );
+    const pending = this.interruptOnce(turn, deadline);
+    turn.interruptPromise = pending;
+    pending.catch(() => undefined);
+    return pending;
+  }
+
+  /** One cancel/stop owner; stalled collection cannot keep a proved stopped Turn pending. */
+  private async interruptOnce(turn: ActiveTurn, deadline: LifecycleDeadline): Promise<void> {
     if (this.turn !== turn) {
-      await turn.settled;
+      await withTimeout(
+        turn.settled,
+        deadline.remainingMs(),
+        'DeepSeek interruption settlement unproved.'
+      );
       return;
     }
     turn.cancelRequested = true;
-    if (this.agent && this.sessionId) {
-      try {
-        await withTimeout(
-          this.agent.cancel({ sessionId: this.sessionId }),
-          INTERRUPT_CANCEL_MS,
-          'DeepSeek cancel did not respond.'
-        );
-      } catch {
-        // The RPC rejection is not a cancelled outcome. Settlement still has to be proved.
-      }
+    if (this.agent && this.sessionId && deadline.workRemainingMs() > 0) {
+      await withTimeout(
+        this.agent.cancel({ sessionId: this.sessionId }),
+        deadline.workRemainingMs(LIFECYCLE_DEFAULTS.nativeRequestMs),
+        'DeepSeek cancel did not respond.'
+      ).catch(() => undefined);
     }
     try {
-      await withTimeout(turn.settled, INTERRUPT_SETTLE_MS, 'DeepSeek prompt did not settle.');
+      await withTimeout(
+        turn.settled,
+        deadline.workRemainingMs(),
+        'DeepSeek prompt did not settle.'
+      );
     } catch {
-      if (this.turn === turn) await this.proveStopAfterPromptLoss(turn);
-      await turn.settled;
+      if (!(await this.stopProcess(deadline))) {
+        this.exitUnproved = true;
+        turn.failUnproved(new Error('DeepSeek interruption cleanup unproved.'));
+        throw new Error('DeepSeek interruption cleanup unproved.');
+      }
+      this.terminalEvidence ??= false;
+      turn.hostEnded = true;
+      turn.finish(undefined, turn.promptFailed);
+      turn.abandonCapture();
+      await withTimeout(
+        turn.settled,
+        deadline.remainingMs(),
+        'DeepSeek interruption settlement unproved.'
+      );
     }
   }
 
@@ -945,6 +1204,24 @@ class DeepSeekSession implements WorkerResidentSession {
       return;
     }
     turn.text += content.text;
+    if (turn.capture)
+      this.queueCapture(turn, () =>
+        turn.capture!.emit(
+          turn.sourceRef,
+          {
+            kind: 'assistant',
+            runtimeOriginRef: turn.originRef,
+            messageRef: turn.messageRef,
+            phase: 'updated',
+            representation: 'delta',
+          },
+          {
+            bytes: Buffer.from(content.text),
+            mediaType: 'text/plain',
+            boundary: 'runtime.assistant.text',
+          }
+        )
+      );
   }
 
   /** Selects the loopback model pair and rejects any other advertised model. */
@@ -972,7 +1249,7 @@ class DeepSeekSession implements WorkerResidentSession {
   /** A setter acknowledgement is usable only when it proves the exact selected provider/model. */
   private async selectModel(model: string, sessionId: string) {
     const value = JSON.stringify([PROVIDER_ID, model]);
-    const updated = await this.rpc(
+    const updated = await this.rpc(() =>
       this.agentConnection().setSessionConfigOption({
         configId: 'model',
         sessionId,
@@ -1007,8 +1284,16 @@ class DeepSeekSession implements WorkerResidentSession {
     const executable = resolveDshExecutable();
     // Asynchronous setup cannot launch a host after close has fenced admission.
     if (this.closing) throw new Error('DeepSeek binding is closing.');
+    if (this.preparationDeadline && this.preparationDeadline.workRemainingMs() <= 0)
+      throw new Error('DeepSeek preparation did not finish.');
     this.closeProof = null;
     this.idleResumeRequest = null;
+    this.processExited = undefined;
+    this.stdoutEnded = false;
+    this.stderrEnded = false;
+    this.pipeFailure = false;
+    this.pipesDrainEvaluated = false;
+    this.closeEvidence = undefined;
     const generation = ++this.generation;
     const child = spawn(process.execPath, deepseekLaunchArgs(executable, patch), {
       cwd: record.cwd || this.input.controlRoot,
@@ -1016,6 +1301,18 @@ class DeepSeekSession implements WorkerResidentSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    this.pipesEnd = Promise.all(
+      [child.stdout, child.stderr].map(
+        (stream) => new Promise<void>((resolve) => stream.once('end', resolve))
+      )
+    ).then(() => undefined);
+    child.stderr.on('end', () => {
+      if (generation === this.generation) this.stderrEnded = true;
+    });
+    for (const stream of [child.stdout, child.stderr])
+      stream.on('error', () => {
+        if (generation === this.generation) this.pipeFailure = true;
+      });
     this.stderr = Buffer.alloc(0);
     if (typeof child.pid === 'number') {
       writeFileSync(join(this.input.controlRoot, 'deepseek-host.pid'), `${child.pid}\n`, {
@@ -1047,8 +1344,10 @@ class DeepSeekSession implements WorkerResidentSession {
       // `exit` is the only proof the process is gone. `error` with a pid can be a failed
       // signal or a broken pipe while the process is still running.
       child.once('exit', (code, signal) => {
-        if (generation === this.generation)
+        if (generation === this.generation) {
+          this.processExited = true;
           this.recordLifecycleFact?.({ label: 'host_exit', code, signal });
+        }
         finish();
       });
       child.once('error', () => {
@@ -1106,6 +1405,7 @@ class DeepSeekSession implements WorkerResidentSession {
     });
     child.stdout.on('end', () => {
       if (generation !== this.generation) return;
+      this.stdoutEnded = true;
       this.stdoutBuffer += this.stdoutDecoder.end();
       if (this.stdoutBuffer.length > 0) {
         const tail = this.stdoutBuffer;
@@ -1126,8 +1426,8 @@ class DeepSeekSession implements WorkerResidentSession {
       await this.stopProcess();
       throw new Error('DeepSeek binding is closing.');
     }
-    const initialized = await this.rpc(
-      this.agent.initialize({
+    const initialized = await this.rpc(() =>
+      this.agentConnection().initialize({
         clientInfo: { name: 'openkit', version: '0' },
         protocolVersion: PROTOCOL_VERSION,
       })
@@ -1152,58 +1452,67 @@ class DeepSeekSession implements WorkerResidentSession {
    *
    * @returns True only when no process remains. A failed signal or a missed exit is false.
    */
-  private stopProcess(): Promise<boolean> {
-    if (this.stopPromise) return this.stopPromise;
-    const pending = this.stopProcessOnce();
-    this.stopPromise = pending;
-    void pending.finally(() => {
-      if (this.stopPromise === pending) this.stopPromise = null;
+  private stopProcess(
+    deadline = this.preparationDeadline ??
+      new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs)
+  ): Promise<boolean> {
+    let pending: Promise<boolean>;
+    if (this.stopPromise) {
+      pending = withTimeout(
+        this.stopPromise,
+        deadline.remainingMs(),
+        'DeepSeek joined stop unproved.'
+      ).catch(() => false);
+    } else {
+      const owner = this.stopProcessOnce(deadline);
+      this.stopPromise = owner;
+      void owner.finally(() => {
+        if (this.stopPromise === owner) this.stopPromise = null;
+      });
+      pending = owner;
+    }
+    return pending.then((stopped) => {
+      // A timeout is an attempted proof, not an observation of an exit.
+      this.processExited ??= false;
+      return stopped;
     });
-    return pending;
   }
 
-  /** One stop attempt. Never throws. */
-  private async stopProcessOnce(): Promise<boolean> {
+  /** Escalates once within the caller's remaining cleanup time; never starts another budget. */
+  private async stopProcessOnce(deadline: LifecycleDeadline): Promise<boolean> {
     const child = this.child;
-    if (!child || child.exitCode !== null || child.signalCode !== null) {
-      this.child = null;
-      return true;
-    }
+    if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+    if (deadline.remainingMs() <= 0) return false;
     this.suppressExit = true;
     this.retireTransport?.();
-    const exited = this.processExit;
     try {
-      if (!child.kill('SIGTERM')) {
-        this.suppressExit = false;
-        return false;
+      const termWindow = deadline.remainingMs(
+        Math.min(LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2, deadline.remainingMs() / 2)
+      );
+      try {
+        child.kill('SIGTERM');
+      } catch (error) {
+        if (!isProcessGone(error)) return false;
       }
-    } catch (error) {
-      this.suppressExit = false;
-      if (isProcessGone(error) || child.exitCode !== null || child.signalCode !== null) {
-        this.child = null;
-        return true;
-      }
-      return false;
-    }
-    const killTimer = setTimeout(() => {
+      await withTimeout(this.processExit, termWindow, 'DeepSeek process exit unproved.').catch(
+        () => undefined
+      );
+      if (child.exitCode !== null || child.signalCode !== null) return true;
+      if (deadline.remainingMs() <= 0) return false;
       try {
         child.kill('SIGKILL');
-      } catch {
-        // The exit stays unproved when SIGKILL cannot be delivered.
+      } catch (error) {
+        if (!isProcessGone(error)) return false;
       }
-    }, STOP_SIGNAL_MS);
-    const confirmed = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), STOP_SIGNAL_MS + STOP_SIGNAL_MS);
-      void exited.then(() => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-    clearTimeout(killTimer);
-    this.suppressExit = false;
-    if (!confirmed || (child.exitCode === null && child.signalCode === null)) return false;
-    if (this.child === child) this.child = null;
-    return true;
+      await withTimeout(
+        this.processExit,
+        deadline.remainingMs(LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2),
+        'DeepSeek process exit unproved.'
+      ).catch(() => undefined);
+      return child.exitCode !== null || child.signalCode !== null;
+    } finally {
+      this.suppressExit = false;
+    }
   }
 
   /** Writes the secret-free sidecar used to resume this exact conversation and flushes it. */
@@ -1229,8 +1538,12 @@ class DeepSeekSession implements WorkerResidentSession {
   }
 
   /** Bounds one native RPC. The prompt itself is not bounded here; close bounds its drain. */
-  private rpc<T>(pending: Promise<T>): Promise<T> {
-    return withTimeout(pending, CLOSE_DRAIN_MS, 'DeepSeek runtime is unavailable.');
+  private rpc<T>(work: () => Promise<T>, deadline = this.preparationDeadline): Promise<T> {
+    const remaining = deadline
+      ? deadline.workRemainingMs(LIFECYCLE_DEFAULTS.nativeRequestMs)
+      : LIFECYCLE_DEFAULTS.nativeStopMs;
+    if (remaining <= 0) throw new Error('DeepSeek native request deadline expired.');
+    return withTimeout(work(), remaining, 'DeepSeek runtime is unavailable.');
   }
 
   /** Splits native stdout into JSON-RPC lines before the SDK validates them. */
@@ -1271,6 +1584,7 @@ class DeepSeekSession implements WorkerResidentSession {
   /** Invalid or conflicting required native evidence stops the binding before settlement. */
   private poisonNativeEvidence(turn: ActiveTurn | null): void {
     this.closeProof = null;
+    this.terminalEvidence = false;
     this.unknownIdentity = true;
     if (turn) {
       turn.terminalPoisoned = true;
@@ -1289,7 +1603,7 @@ class DeepSeekSession implements WorkerResidentSession {
    */
   private admitNativeLine(line: string): void {
     const forwarded = this.classifyNativeLine(line);
-    if (forwarded !== null) this.outbound?.write(`${forwarded}\n`);
+    if (forwarded !== null && !this.outbound?.writableEnded) this.outbound?.write(`${forwarded}\n`);
   }
 
   /** Returns the line to forward, or null when the SDK must not see it. */
@@ -1347,6 +1661,7 @@ class DeepSeekSession implements WorkerResidentSession {
           this.poisonNativeEvidence(this.turn);
           return null;
         }
+        this.terminalEvidence = true;
       }
     }
     if (message.method !== 'session/update' || 'id' in message) return line;
@@ -1388,6 +1703,25 @@ class DeepSeekSession implements WorkerResidentSession {
       if (turn) turn.sawCompaction = true;
       return null;
     }
+    if (sessionUpdate === 'tool_call' || sessionUpdate === 'tool_call_update') {
+      if (
+        typeof update.toolCallId !== 'string' ||
+        !update.toolCallId ||
+        (update.status !== undefined &&
+          !['pending', 'in_progress', 'completed', 'failed'].includes(String(update.status)))
+      ) {
+        if (turn) {
+          turn.badContent = true;
+          this.cancelActive();
+        }
+        return null;
+      }
+      if (turn?.capture) {
+        this.recordLifecycleFact?.({ label: 'native_event' });
+        this.captureTool(turn, update);
+      }
+      return null;
+    }
     if (sessionUpdate !== 'agent_message_chunk') return null;
     const content = isRecord(update.content) ? update.content : null;
     if (!content || content.type !== 'text' || typeof content.text !== 'string') {
@@ -1398,6 +1732,54 @@ class DeepSeekSession implements WorkerResidentSession {
       return null;
     }
     return line;
+  }
+
+  /** Positive-selects ACP tool phases and exposed argument/result bodies without retaining titles or raw ids. */
+  private captureTool(turn: ActiveTurn, update: Record<string, unknown>): void {
+    const callRef = runtimeRef('rtc', turn.originRef, update.toolCallId as string);
+    const phase: 'completed' | 'failed' | 'running' | 'started' | 'updated' =
+      update.status === 'completed'
+        ? 'completed'
+        : update.status === 'failed'
+          ? 'failed'
+          : update.status === 'in_progress'
+            ? 'running'
+            : update.sessionUpdate === 'tool_call'
+              ? 'started'
+              : 'updated';
+    this.queueCapture(turn, async () => {
+      const fact = { kind: 'tool' as const, runtimeOriginRef: turn.originRef, callRef, phase };
+      await turn.capture!.emit(turn.sourceRef, fact);
+      if (update.rawInput !== undefined)
+        await turn.capture!.emit(turn.sourceRef, fact, {
+          bytes: Buffer.from(JSON.stringify(update.rawInput)),
+          mediaType: 'application/json',
+          boundary: 'runtime.tool.arguments',
+        });
+      if (update.rawOutput !== undefined)
+        await turn.capture!.emit(turn.sourceRef, fact, {
+          bytes: Buffer.from(JSON.stringify(update.rawOutput)),
+          mediaType: 'application/json',
+          boundary: 'runtime.tool.result',
+        });
+      else if (Array.isArray(update.content)) {
+        for (const item of update.content) {
+          if (
+            isRecord(item) &&
+            item.type === 'content' &&
+            isRecord(item.content) &&
+            item.content.type === 'text' &&
+            typeof item.content.text === 'string'
+          )
+            await turn.capture!.emit(turn.sourceRef, fact, {
+              bytes: Buffer.from(item.content.text),
+              mediaType: 'text/plain',
+              boundary: 'runtime.tool.result',
+            });
+        }
+      }
+      await turn.capture!.flushCompleted();
+    });
   }
 
   /** Bounded diagnostics for the active Turn. Credential values are redacted first. */
@@ -1681,16 +2063,26 @@ function privateHome(stateRoot: string): string {
  */
 export function surfaceUnprovedDeepSeekTurn(
   error: unknown,
-  confirmStopped: () => Promise<boolean>
+  confirmStopped: (deadline?: LifecycleDeadline) => Promise<boolean>
 ): WorkerResidentTurn {
   const settled = Promise.reject(error);
   settled.catch(() => undefined);
   return {
-    interrupt: async () => {
-      if (await confirmStopped()) return;
-      await new Promise<void>(() => {
-        // The process is still live. An interrupt that never resolves is the Harness fence.
-      });
+    interrupt: async (
+      deadline = new LifecycleDeadline(
+        LIFECYCLE_DEFAULTS.nativeStopMs,
+        LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+      )
+    ) => {
+      if (
+        await withTimeout(
+          confirmStopped(deadline),
+          deadline.remainingMs(),
+          'DeepSeek native stop remains unproved.'
+        )
+      )
+        return;
+      throw new Error('DeepSeek native stop remains unproved.');
     },
     settled,
   };

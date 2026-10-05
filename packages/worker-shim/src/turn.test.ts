@@ -203,7 +203,10 @@ describe('normalized Turn failure cause', () => {
           },
           turnDirectory: join(root, 'turn'),
         })
-      ).resolves.toEqual({ status: 'failed' });
+      ).resolves.toEqual({
+        status: 'failed',
+        ...('nativeError' in testCase ? { nativeEvidence: { nativeTerminal: true } } : {}),
+      });
       expect(finalStatuses).toHaveLength(1);
       for (const canary of CAUSE_CANARIES) {
         expect(JSON.stringify(finalStatuses)).not.toContain(canary);
