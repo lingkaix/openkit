@@ -2,6 +2,10 @@
 export const LIFECYCLE_DEFAULTS = {
   harnessPollMinimumMs: 250,
   harnessRequestMs: 1_000,
+  /** Experience default: loaded-host startup missed the former 8s listen ceiling, and the controlled slow-listen regression takes 8.25s. The former listen/session/MCP windows total 24s plus 4s cleanup; 60s leaves loading and preparation margin. */
+  nativeOpenMs: 60_000,
+  /** Preserves the existing eight-second native control exchange ceiling. */
+  nativeRequestMs: 8_000,
   nativeStopMs: 10_000,
   /** Two existing two-second dedicated-process signal windows belong to cleanup. */
   nativeStopCleanupTailMs: 4_000,

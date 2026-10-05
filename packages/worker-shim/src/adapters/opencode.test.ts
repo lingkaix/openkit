@@ -31,6 +31,8 @@ import type {
 import { WORKER_ADAPTERS } from '../adapter-registry.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
+import { LifecycleDeadline } from '../lifecycle-deadline.js';
+import { type RuntimeObservation, RuntimeSemanticCapture } from '../runtime-capture.js';
 import {
   type SyntheticCapability,
   startSyntheticCapability,
@@ -75,10 +77,11 @@ afterEach(async () => {
 
 describe('OpenCode resident adapter', () => {
   /** Uses the existing SDK-shaped double and child peer to observe retained conversation collection. */
-  function timelineFixture(second: 'new' | 'empty' | 'failed') {
+  function timelineFixture(second: 'new' | 'empty' | 'failed', parts: object[] = []) {
     const layout = makeRoots();
     const creds = loopback('timeline-history', 'http://127.0.0.1:9');
     const child = stubbornChild([]);
+    let environment: NodeJS.ProcessEnv = {};
     child.kill = () => {
       Object.assign(child, { exitCode: 0 });
       child.emit('exit', 0, null);
@@ -99,7 +102,7 @@ describe('OpenCode resident adapter', () => {
             id: `answer-${turn}`,
             type: 'assistant',
             finish: turn === 1 ? 'stop' : 'error',
-            content: [{ type: 'text', text: 'answer' }],
+            content: [{ type: 'text', text: 'answer' }, ...parts],
           },
           { id: `idle-${turn}`, type: 'idle', outcome: turn === 1 ? 'succeeded' : 'failed' },
         ];
@@ -121,10 +124,675 @@ describe('OpenCode resident adapter', () => {
     const adapter = createOpenCodeAdapter({
       loadClient: async () => module,
       resolveBinary: () => '/unused',
-      spawnServer: () => child,
+      spawnServer: (_binary, _args, options) => {
+        environment = options.env;
+        return child;
+      },
     });
-    return { adapter, child, layout, creds };
+    return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  it('reports native terminal, exit, pipe drain and retained close independently', async () => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    expect(session.nativeEvidence?.()).toEqual({});
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'first', 'prompt-model'));
+    expect((await turn.settled).nativeEvidence).toEqual({
+      nativeTerminal: true,
+    });
+    Object.assign(f.child, { exitCode: 17 });
+    f.child.emit('exit', 17, null);
+    expect(session.nativeEvidence?.()).toMatchObject({
+      nativeTerminal: true,
+      processExited: true,
+    });
+    f.child.emit('close', 17, null);
+    expect(session.nativeEvidence?.().pipesDrained).toBe(false);
+    f.child.stdout?.emit('end');
+    f.child.stderr?.emit('end');
+    expect(session.nativeEvidence?.().pipesDrained).toBe(true);
+    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+  });
+
+  it('round-three: interrupt settles held structural finalization with capture off', async () => {
+    const f = timelineFixture('new');
+    f.client.session.interrupt = async () => ({ interrupted: true }) as never;
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const finalizing = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const observations: RuntimeObservation[] = [];
+    const input = turnInput(f.layout, f.creds, 'held-capture', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value: 'off' },
+        emit: async (record) => {
+          observations.push(record);
+          if (record.fact.kind === 'coverage' && record.fact.coverage === 'ended') {
+            reached();
+            await held;
+          }
+        },
+      },
+    });
+    try {
+      await finalizing;
+      const started = performance.now();
+      await turn.interrupt(new LifecycleDeadline(120, 80));
+      const result = await Promise.race([turn.settled, delay(300).then(() => null)]);
+      expect(result).not.toBeNull();
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(result?.status).toBe('failed');
+      expect(result?.nativeEvidence?.nativeTerminal).toBe(true);
+      expect(result?.diagnostics?.native).toMatch(/collection|capture/i);
+      expect(observations.map((record) => record.fact)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+          expect.objectContaining({
+            kind: 'coverage',
+            coverage: 'unavailable',
+            reason: 'collector-failed',
+          }),
+        ])
+      );
+    } finally {
+      release();
+      await turn.settled.catch(() => undefined);
+    }
+  });
+
+  it.each([
+    'completion',
+    'body',
+  ] as const)('round-four: accepts only the entered %s sink effect after interrupted settlement', async (effect) => {
+    const f = timelineFixture('new');
+    f.client.session.interrupt = async () => ({ interrupted: true }) as never;
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let acceptedEntered!: () => void;
+    const acceptedHold = new Promise<void>((resolve) => {
+      acceptedEntered = resolve;
+    });
+    let afterSettlement = false;
+    type Acceptance = { record: RuntimeObservation; body?: Uint8Array; afterSettlement: boolean };
+    const accepted: Acceptance[] = [];
+    let inFlight: Omit<Acceptance, 'afterSettlement'> | undefined;
+    // Observe the next collector invocation independently of whether its sink call is suppressed.
+    const emissions = vi.spyOn(RuntimeSemanticCapture.prototype, 'emit');
+    const input = turnInput(f.layout, f.creds, 'held-acceptance', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value: effect === 'body' ? 'on' : 'off' },
+        emit: async (record, body) => {
+          const selected =
+            effect === 'body'
+              ? body !== undefined
+              : record.fact.kind === 'origin' && record.fact.phase === 'completed';
+          if (selected && !inFlight) {
+            inFlight = { record, ...(body ? { body } : {}) };
+            reached();
+            await held;
+            accepted.push({ ...inFlight, afterSettlement });
+            acceptedEntered();
+          } else accepted.push({ record, ...(body ? { body } : {}), afterSettlement });
+        },
+      },
+    });
+    const nextInvoked = () =>
+      emissions.mock.calls.some(([, fact]) =>
+        effect === 'body'
+          ? fact.kind === 'origin' && fact.phase === 'completed'
+          : fact.kind === 'coverage' && fact.coverage === 'ended'
+      );
+    try {
+      await entered;
+      await turn.interrupt(new LifecycleDeadline(120, 80));
+      expect((await turn.settled).status).toBe('failed');
+      afterSettlement = true;
+      expect(
+        accepted.some(({ record, body }) => record === inFlight?.record && body === inFlight.body)
+      ).toBe(false);
+      expect(nextInvoked()).toBe(false);
+      expect(
+        accepted.some(
+          ({ record }) =>
+            record.fact.kind === 'coverage' &&
+            record.fact.coverage === 'unavailable' &&
+            record.fact.reason === 'collector-failed'
+        )
+      ).toBe(true);
+      release();
+      await acceptedHold;
+      await vi.waitFor(() => expect(nextInvoked()).toBe(true), { timeout: 500, interval: 10 });
+      expect(accepted.filter((entry) => entry.afterSettlement)).toEqual([
+        { ...inFlight, afterSettlement: true },
+      ]);
+      if (effect === 'body') expect(Buffer.from(inFlight!.body!).toString()).toBe('answer');
+      else expect(inFlight?.record.fact).toMatchObject({ kind: 'origin', phase: 'completed' });
+      const nextAccepted = accepted.some(({ record }) =>
+        effect === 'body'
+          ? record.fact.kind === 'origin' && record.fact.phase === 'completed'
+          : record.fact.kind === 'coverage' && record.fact.coverage === 'ended'
+      );
+      expect(nextAccepted).toBe(false);
+    } finally {
+      release();
+      emissions.mockRestore();
+      await turn.settled.catch(() => undefined);
+    }
+  });
+
+  it('round-three: bounds the structural sink before prompt admission', async () => {
+    const f = timelineFixture('new');
+    const prompt = vi.spyOn(f.client.session, 'prompt');
+    Object.assign(f.child, {
+      stdin: Object.assign(new EventEmitter(), {
+        end: () => {
+          f.child.stdout?.emit('end');
+          f.child.stderr?.emit('end');
+          Object.assign(f.child, { exitCode: 0 });
+          f.child.emit('exit', 0, null);
+          f.child.emit('close', 0, null);
+        },
+      }),
+    });
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const preparing = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const input = turnInput(f.layout, f.creds, 'held-preparation', 'prompt-model');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    let finished = false;
+    const pending = session
+      .startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          emit: async () => {
+            reached();
+            await held;
+          },
+        },
+      })
+      .then(
+        () => {
+          finished = true;
+          return null;
+        },
+        (error: unknown) => {
+          finished = true;
+          return error;
+        }
+      );
+    try {
+      await preparing;
+      await vi.advanceTimersByTimeAsync(56_001);
+      expect(finished).toBe(true);
+      expect(await pending).toBeInstanceOf(Error);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    'stop',
+    'interrupt',
+  ] as const)('round-three: bounds a short-deadline join of a running %s', async (owner) => {
+    const f = timelineFixture('new');
+    const signals: string[] = [];
+    let signaled!: () => void;
+    const stopping = new Promise<void>((resolve) => {
+      signaled = resolve;
+    });
+    f.child.kill = (signal) => {
+      signals.push(String(signal));
+      signaled();
+      if (signal === 'SIGKILL') {
+        Object.assign(f.child, { exitCode: 0 });
+        f.child.emit('exit', 0, null);
+        f.child.emit('close', 0, null);
+      }
+      return true;
+    };
+    f.client.session.get = async () => ({
+      id: 'sess-1',
+      time: { idle: 0 },
+      model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+    });
+    f.client.session.interrupt = async () => ({ interrupted: true }) as never;
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => ({ OpenCode: { make: () => f.client } }),
+      resolveBinary: () => '/unused',
+      spawnServer: () => f.child,
+      stopTimeoutMs: 150,
+    });
+    const session = await adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'joining', 'prompt-model'));
+    turn.settled.catch(() => undefined);
+    const running = (
+      owner === 'stop' ? session.close() : turn.interrupt(new LifecycleDeadline(500, 460))
+    ).catch(() => undefined);
+    try {
+      await stopping;
+      const started = performance.now();
+      await expect(turn.interrupt(new LifecycleDeadline(30, 10))).rejects.toThrow(
+        /timed out|stop|proof/i
+      );
+      expect(performance.now() - started).toBeLessThan(120);
+      expect(signals).toEqual(['SIGTERM']);
+      await running;
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      await running;
+      await turn.settled.catch(() => undefined);
+    }
+  });
+
+  it.each([
+    'missing EOF',
+    'stream error',
+  ] as const)('round-three: refuses retaining close with %s', async (failure) => {
+    const f = timelineFixture('new');
+    Object.assign(f.child, {
+      stdin: Object.assign(new EventEmitter(), {
+        end: () => {
+          if (failure === 'stream error') {
+            f.child.stdout?.emit('error', new Error('lost native output'));
+            f.child.stdout?.emit('end');
+            f.child.stderr?.emit('end');
+          }
+          Object.assign(f.child, { exitCode: 0 });
+          f.child.emit('exit', 0, null);
+          f.child.emit('close', 0, null);
+        },
+      }),
+    });
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    await expect(session.close()).rejects.toThrow(/drain|flush/);
+    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+  });
+
+  it.each(['off', 'on'] as const)('collects structural metadata with content %s', async (value) => {
+    const f = timelineFixture('new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body } : {}) });
+        },
+      },
+    });
+    expect((await turn.settled).status).toBe('completed');
+    expect(received.map(({ record }) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'origin', phase: 'started' }),
+        expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+        expect.objectContaining({ kind: 'origin', phase: 'completed' }),
+      ])
+    );
+    if (value === 'off') {
+      expect(received.some(({ body }) => body)).toBe(false);
+      expect(
+        received.find(({ record }) => record.fact.kind === 'assistant')?.record.content.state
+      ).toBe('off');
+    } else {
+      expect(
+        received.filter(({ body }) => body).map(({ body }) => Buffer.from(body!).toString())
+      ).toContain('answer');
+    }
+    const later: RuntimeObservation[] = [];
+    const next = await session.startTurn({
+      ...input,
+      turnId: 'later',
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        emit: async (record) => {
+          later.push(record);
+        },
+      },
+    });
+    await next.settled;
+    expect(later.filter((record) => record.fact.kind === 'assistant')).toHaveLength(1);
+    expect(later.find((record) => record.fact.kind === 'assistant')?.fact.messageRef).not.toBe(
+      received.find(({ record }) => record.fact.kind === 'assistant')?.record.fact.messageRef
+    );
+  });
+
+  it.each([
+    'off',
+    'on',
+  ] as const)('captures native tool structure and admits only safe bodies with content %s', async (value) => {
+    const f = timelineFixture('new', [
+      { type: 'reasoning', text: 'private-reasoning' },
+      {
+        type: 'tool',
+        id: 'call-1',
+        name: 'shell',
+        state: {
+          status: 'completed',
+          input: { command: 'echo safe' },
+          content: [{ type: 'text', text: 'safe-result' }],
+        },
+      },
+      {
+        type: 'tool',
+        id: 'call-2',
+        name: 'secret-tool',
+        state: {
+          status: 'error',
+          input: { value: 'known-secret' },
+          content: [{ type: 'text', text: 'known-secret' }],
+        },
+      },
+      { type: 'tool', id: 'call-3', state: { status: 'unknown' } },
+    ]);
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        credentialValues: ['known-secret'],
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body } : {}) });
+        },
+      },
+    });
+    expect((await turn.settled).status).toBe('completed');
+    expect(received.map(({ record }) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'shell' }),
+        expect.objectContaining({ kind: 'tool', phase: 'failed', toolName: 'secret-tool' }),
+        expect.objectContaining({
+          kind: 'coverage',
+          coverage: 'unavailable',
+          reason: 'malformed-frame',
+        }),
+      ])
+    );
+    const bodies = received
+      .filter(({ body }) => body)
+      .map(({ body }) => Buffer.from(body!).toString())
+      .join(' ');
+    expect(bodies).not.toContain('known-secret');
+    expect(bodies).not.toContain('private-reasoning');
+    if (value === 'off') expect(bodies).toBe('');
+    else {
+      expect(bodies).toContain('safe-result');
+      expect(bodies).toContain('echo safe');
+    }
+  });
+
+  it.each([
+    'off',
+    'on',
+  ] as const)('publishes running tool structure before native terminal with content %s', async (value) => {
+    const f = timelineFixture('new', [
+      {
+        type: 'tool',
+        id: 'live-call',
+        name: 'shell',
+        state: { status: 'running', input: { command: 'echo live' } },
+      },
+    ]);
+    let terminal = false;
+    const get = f.client.session.get;
+    f.client.session.get = async (input) => {
+      const info = await get(input);
+      return terminal ? info : { ...info, time: { idle: 0 } };
+    };
+    const list = f.client.message.list;
+    f.client.message.list = async (input) => {
+      const response = await list(input);
+      return terminal
+        ? response
+        : {
+            ...response,
+            data: response.data.map((row) =>
+              row.type === 'assistant' ? { ...row, finish: undefined } : row
+            ),
+          };
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: RuntimeObservation[] = [];
+    let observed!: () => void;
+    const running = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const input = turnInput(f.layout, f.creds, 'live', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record) => {
+          received.push(record);
+          if (record.fact.kind === 'tool' && record.fact.phase === 'running') observed();
+        },
+      },
+    });
+    try {
+      await nativeTestBound(
+        running,
+        500,
+        'Running tool metadata did not reach the sink before terminal.'
+      );
+      expect(session.nativeEvidence?.().nativeTerminal).toBe(false);
+      expect(received.map((record) => record.fact)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'assistant', phase: 'running' }),
+          expect.objectContaining({ kind: 'tool', phase: 'running' }),
+        ])
+      );
+    } finally {
+      terminal = true;
+      await turn.settled;
+    }
+  });
+
+  it('excludes adapter-known credentials from restricted capture even when the shared input omits them', async () => {
+    const parts: object[] = [];
+    const f = timelineFixture('new', parts);
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const password = f.environment().OPENCODE_PASSWORD!;
+    expect(password).toBeTruthy();
+    parts.push({
+      type: 'tool',
+      id: 'credential-call',
+      name: 'shell',
+      state: {
+        status: 'completed',
+        input: { token: f.creds.inferenceCredential },
+        content: [{ type: 'text', text: password }],
+      },
+    });
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    const received: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value: 'on' },
+        credentialValues: [],
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body } : {}) });
+        },
+      },
+    });
+    expect((await turn.settled).status).toBe('completed');
+    const bodies = received
+      .filter(({ body }) => body)
+      .map(({ body }) => Buffer.from(body!).toString())
+      .join(' ');
+    expect(bodies).not.toContain(password);
+    expect(bodies).not.toContain(f.creds.inferenceCredential);
+    expect(
+      received.filter(
+        ({ record }) =>
+          record.content.state === 'unavailable' && record.content.reason === 'credential-excluded'
+      )
+    ).toHaveLength(4);
+  });
+
+  it('gives orderly EOF stop the shared work budget before signal escalation', async () => {
+    const f = timelineFixture('new');
+    const signals: string[] = [];
+    const kill = f.child.kill;
+    f.child.kill = (signal) => {
+      signals.push(String(signal));
+      return kill.call(f.child, signal);
+    };
+    let timer: NodeJS.Timeout | undefined;
+    Object.assign(f.child, {
+      stdin: {
+        on: () => undefined,
+        end: () => {
+          timer = setTimeout(() => {
+            f.child.stdout?.emit('end');
+            f.child.stderr?.emit('end');
+            Object.assign(f.child, { exitCode: 0 });
+            f.child.emit('exit', 0, null);
+            f.child.emit('close', 0, null);
+          }, 40);
+        },
+      },
+    });
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => failingModule('prompt'),
+      resolveBinary: () => '/unused',
+      spawnServer: () => f.child,
+      stopTimeoutMs: 10,
+    });
+    const session = await adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    try {
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(signals).toEqual([]);
+      expect(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        pipesDrained: true,
+        persistencePreservingClose: true,
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  });
+
+  it('records structural uncertainty when prompt admission is unknown', async () => {
+    const f = timelineFixture('new');
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => failingModule('prompt'),
+      resolveBinary: () => '/unused',
+      spawnServer: () => f.child,
+    });
+    const session = await adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: RuntimeObservation[] = [];
+    const input = turnInput(f.layout, f.creds, 'first', 'prompt-model');
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        emit: async (record) => {
+          received.push(record);
+        },
+      },
+    });
+    const result = await turn.settled;
+    expect(result.nativeEvidence).toMatchObject({ processExited: true });
+    expect(result.nativeEvidence).not.toHaveProperty('nativeTerminal');
+    expect(received.map((record) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'origin', phase: 'unknown' }),
+        expect.objectContaining({
+          kind: 'coverage',
+          coverage: 'unavailable',
+          reason: 'collector-failed',
+        }),
+      ])
+    );
+  });
+
+  it('spends supplied interrupt work time before its reserved escalation tail', async () => {
+    const f = timelineFixture('new');
+    const signals: string[] = [];
+    f.child.kill = (signal) => {
+      signals.push(String(signal));
+      return true;
+    };
+    const originalModule = failingModule('prompt');
+    const client = originalModule.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+    client.session.prompt = async () => ({ id: 'user-1' });
+    client.session.get = async () => ({
+      id: 'sess-1',
+      time: { idle: 0 },
+      model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+    });
+    client.session.interrupt = async () => ({ interrupted: true });
+    originalModule.OpenCode.make = () => client;
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => originalModule,
+      resolveBinary: () => '/unused',
+      spawnServer: () => f.child,
+    });
+    const session = await adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(f.layout, f.creds, 'hang', 'prompt-model'));
+    const deadline = new LifecycleDeadline(120, 100);
+    const started = performance.now();
+    try {
+      await expect(turn.interrupt(deadline)).rejects.toThrow(/interruption proof/);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(signals).toEqual(['SIGTERM', 'SIGKILL']);
+      await expect(turn.settled).rejects.toThrow(/interruption proof/);
+    } finally {
+      Object.assign(f.child, { exitCode: 1 });
+      f.child.emit('exit', 1, null);
+      f.child.emit('close', 1, null);
+    }
+  }, 15_000);
 
   it.each([
     'new',
@@ -322,6 +990,94 @@ describe('OpenCode resident adapter', () => {
     await expect(surfaced.interrupt()).resolves.toBeUndefined();
   });
 
+  it('caps listen by a caller-held open deadline including earlier preparation', async () => {
+    const child = stubbornChild([]);
+    child.stdout?.removeAllListeners('newListener');
+    child.kill = () => {
+      Object.assign(child, { exitCode: 0 });
+      child.stdout?.emit('end');
+      child.stderr?.emit('end');
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      return true;
+    };
+    const deadline = new LifecycleDeadline(250, 40);
+    const started = performance.now();
+    await delay(50);
+    const adapter = createOpenCodeAdapter({
+      openDeadline: deadline,
+      loadClient: async () => {
+        await delay(40);
+        return failingModule('prompt');
+      },
+      resolveBinary: () => '/unused',
+      spawnServer: () => child,
+    });
+    await expect(
+      adapter.openSession(openInput(makeRoots(), loopback('held-open', 'http://127.0.0.1:9')))
+    ).rejects.toThrow(/did not listen/);
+    expect(performance.now() - started).toBeLessThan(750);
+    expect(child.exitCode).toBe(0);
+  }, 15_000);
+
+  it('admits listen slower than eight seconds inside the shared open budget', async () => {
+    const child = stubbornChild([]);
+    child.stdout?.removeAllListeners('newListener');
+    child.kill = () => {
+      Object.assign(child, { exitCode: 0 });
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      return true;
+    };
+    let timer: NodeJS.Timeout | undefined;
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => failingModule('prompt'),
+      resolveBinary: () => '/unused',
+      spawnServer: () => {
+        timer = setTimeout(
+          () => child.stdout?.emit('data', Buffer.from('server listening on http://127.0.0.1:9\n')),
+          8_250
+        );
+        return child;
+      },
+    });
+    try {
+      const session = await adapter.openSession(
+        openInput(makeRoots(), loopback('slow-open', 'http://127.0.0.1:9'))
+      );
+      sessions.push(session);
+      expect(session.childState()).toBe('running');
+      expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }, 15_000);
+
+  it('keeps an idle binding usable after its completed open deadline expires', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const f = timelineFixture('new');
+      const deadline = new LifecycleDeadline(200, 40);
+      const adapter = createOpenCodeAdapter({
+        openDeadline: deadline,
+        loadClient: async () => ({ OpenCode: { make: () => f.client } }),
+        resolveBinary: () => '/unused',
+        spawnServer: () => f.child,
+      });
+      const session = await adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      now = 250;
+      expect(deadline.remainingMs()).toBe(0);
+      const turn = await session.startTurn(
+        turnInput(f.layout, f.creds, 'after-idle', 'prompt-model')
+      );
+      expect((await turn.settled).status).toBe('completed');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('rejects a spawn that never created a process', async () => {
     const layout = makeRoots();
     const adapter = createOpenCodeAdapter({
@@ -468,6 +1224,7 @@ describe('OpenCode resident adapter', () => {
     const result = await turn.settled;
     expect(result.status).toBe('failed');
     expect(processAlive(Number(readFileSync(launched.pidFile, 'utf8')))).toBe(false);
+    expect(result.nativeEvidence).toMatchObject({ nativeTerminal: false, processExited: true });
   }, 120_000);
 
   it('bounds post-close stream drain and shares its rejected close promise', async () => {
@@ -1559,6 +2316,12 @@ describe('W4 round-five proof regressions', () => {
     const handle = await session.nativeHandle();
     if (handle.state !== 'ready') throw new Error('missing durable reference');
     await expect(session.close()).resolves.toBeUndefined();
+    expect(session.nativeEvidence?.()).toMatchObject({
+      nativeTerminal: true,
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
     const nextLayout = makeRootsFor(layout.stateRoot);
     const next = await opencodeAdapter.openSession(openInput(nextLayout, creds, handle.reference));
     sessions.push(next);
@@ -3066,6 +3829,17 @@ describe('W4 round-eight refused setup cleanup', () => {
         // Forced cleanup needs native signal delivery time; only unproved cleanup uses a short window.
         stopTimeoutMs: stop === 'unproved' ? 30 : 2000,
         loadClient: async () => {
+          if (stop === 'unproved') {
+            const module = failingModule('prompt');
+            const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+            client.model.list = async () => ({ data: [] });
+            client.session.prompt = async () => {
+              prompts += 1;
+              throw new Error('unexpected prompt');
+            };
+            module.OpenCode.make = () => client;
+            return module;
+          }
           const real = await import('@opencode/client');
           return {
             OpenCode: {
@@ -3083,10 +3857,38 @@ describe('W4 round-eight refused setup cleanup', () => {
           };
         },
         spawnServer: (binary, args, options) => {
+          if (stop === 'unproved') {
+            // This fence predicate uses the existing peer; real persistence stays in the proved case.
+            native = stubbornChild([]);
+            Object.assign(native, {
+              stdin: Object.assign(new EventEmitter(), { end: () => native.stdin }),
+            });
+            native.kill = () => {
+              Object.assign(native, { exitCode: 1 });
+              native.stdout?.emit('end');
+              native.stderr?.emit('end');
+              native.emit('exit', 1, null);
+              native.emit('close', 1, null);
+              return true;
+            };
+            kill = native.kill.bind(native);
+            native.kill = () => false;
+            // Seed only the existing read-only handle-admission predicate, not native durability proof.
+            const data = join(String(options.env.XDG_DATA_HOME), 'opencode');
+            mkdirSync(data, { recursive: true });
+            const db = new DatabaseSync(join(data, 'opencode.db'));
+            try {
+              db.exec(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY); INSERT INTO session_v2 VALUES ('sess-1');"
+              );
+            } finally {
+              db.close();
+            }
+            return native;
+          }
           native = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
           kill = native.kill.bind(native);
           if (stop !== 'proved') native.stdin!.end = (() => native.stdin) as never;
-          if (stop === 'unproved') native.kill = () => false;
           return native;
         },
       });

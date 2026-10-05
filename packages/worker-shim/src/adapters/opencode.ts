@@ -13,6 +13,7 @@ import { REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protoco
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
+  WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
   WorkerResidentOpenInput,
@@ -20,7 +21,15 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import {
+  type RuntimeFact,
+  RuntimeSemanticCapture,
+  runtimeOriginRef,
+  runtimeRef,
+  runtimeToolName,
+} from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import { OPENCODE_PLUGIN_SOURCE } from './opencode-plugin.js';
 
@@ -45,12 +54,6 @@ const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;
 const HANDLE_PREFIX = 'v1:';
 const SUCCESS_FINISH = new Set(['stop', 'length']);
 const SERVER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const LISTEN_TIMEOUT_MS = 8_000;
-const MCP_CONNECT_TIMEOUT_MS = 8_000;
-const STOP_TIMEOUT_MS = 2_000;
-const RPC_TIMEOUT_MS = 8_000;
-// Leaves four seconds for SIGTERM/SIGKILL inside the Harness ten-second stop budget.
-const INTERRUPT_TIMEOUT_MS = 5_000;
 
 /** Disables autonomous update and model-catalog traffic while preserving native discovery. */
 const ISOLATION_ENV: Readonly<Record<string, string>> = {
@@ -79,15 +82,14 @@ export interface OpenCodeAdapterDependencies {
     args: readonly string[],
     options: { cwd: string; env: NodeJS.ProcessEnv }
   ) => ChildProcess;
-  /**
-   * How long one stop signal may go without an exit event before the next signal, or before the
-   * stop is unproved. Production uses {@link STOP_TIMEOUT_MS}.
-   */
+  /** How long one stop signal may wait for exit before escalation or unproved stop. Production uses half the shared native-stop cleanup tail. */
   readonly stopTimeoutMs?: number;
   /** Test-only shorter interruption proof deadline, excluding signal escalation. */
   readonly interruptTimeoutMs?: number;
   /** Test-only shorter native RPC deadline. */
   readonly rpcTimeoutMs?: number;
+  /** Optional caller-held open budget; production starts one shared deadline at openSession. */
+  readonly openDeadline?: LifecycleDeadline;
 }
 
 /**
@@ -119,10 +121,17 @@ export function createOpenCodeAdapter(
   const loadClient = dependencies.loadClient ?? loadOpenCodeClient;
   const resolveBinary = dependencies.resolveBinary ?? resolveOpenCodeBinary;
   const spawnServer = dependencies.spawnServer ?? defaultSpawnServer;
-  const stopTimeoutMs = dependencies.stopTimeoutMs ?? STOP_TIMEOUT_MS;
-  const rpcTimeoutMs = dependencies.rpcTimeoutMs ?? RPC_TIMEOUT_MS;
+  const stopTimeoutMs =
+    dependencies.stopTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2;
+  const rpcTimeoutMs = dependencies.rpcTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs;
   return {
     async openSession(input) {
+      const deadline =
+        dependencies.openDeadline ??
+        new LifecycleDeadline(
+          LIFECYCLE_DEFAULTS.nativeOpenMs,
+          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+        );
       const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
       let binary: string;
       try {
@@ -132,9 +141,20 @@ export function createOpenCodeAdapter(
       }
       let clientModule: OpenCodeClientModule;
       try {
-        clientModule = await loadClient();
+        if (deadline.workRemainingMs() <= 0)
+          throw new NativeDeadlineError('OpenCode open preparation timed out.');
+        clientModule = await nativeDeadline(
+          'client loading',
+          loadClient(),
+          deadline.workRemainingMs()
+        );
       } catch (error) {
-        throw new Error(boundOpenCodeDiagnostic(missingClientMessage(error), secrets));
+        throw new Error(
+          boundOpenCodeDiagnostic(
+            error instanceof NativeDeadlineError ? errorText(error) : missingClientMessage(error),
+            secrets
+          )
+        );
       }
       return supervise(
         input,
@@ -143,7 +163,8 @@ export function createOpenCodeAdapter(
         spawnServer,
         stopTimeoutMs,
         rpcTimeoutMs,
-        dependencies.interruptTimeoutMs ?? INTERRUPT_TIMEOUT_MS
+        dependencies.interruptTimeoutMs ?? Number.POSITIVE_INFINITY,
+        deadline
       );
     },
   };
@@ -192,9 +213,12 @@ async function supervise(
   spawnServer: NonNullable<OpenCodeAdapterDependencies['spawnServer']>,
   stopTimeoutMs: number,
   rpcTimeoutMs: number,
-  interruptTimeoutMs: number
+  interruptTimeoutMs: number,
+  openDeadline: LifecycleDeadline
 ): Promise<WorkerResidentSession> {
-  const rpc = <T>(name: string, work: Promise<T>) => nativeDeadline(name, work, rpcTimeoutMs);
+  let preparationDeadline: LifecycleDeadline | undefined = openDeadline;
+  const rpc = <T>(name: string, work: Promise<T>) =>
+    nativeDeadline(name, work, preparationDeadline?.workRemainingMs(rpcTimeoutMs) ?? rpcTimeoutMs);
   const secrets = [input.loopback.inferenceCredential, input.loopback.capabilityCredential];
   if (secrets.some((value) => value.length === 0) || secrets[0] === secrets[1]) {
     throw new Error('OpenCode requires two distinct loopback credentials.');
@@ -202,6 +226,9 @@ async function supervise(
   const password = randomBytes(24).toString('base64url');
   const secretValues = [...secrets, password];
   const directories = await prepareDirectories(input);
+  // Filesystem preparation must finish before refusal; its pending writes cannot be cancelled safely.
+  if (openDeadline.workRemainingMs() <= 0)
+    throw new NativeDeadlineError('OpenCode open preparation timed out.');
   writeFileSync(join(directories.pluginDir, 'package.json'), '{"type":"module"}\n', {
     mode: 0o600,
   });
@@ -229,6 +256,19 @@ async function supervise(
   let spawnError: Error | null = null;
   let childState: 'absent' | 'running' | 'stopping' | 'unknown' = 'absent';
   let closeObserved = false;
+  let stdoutEnded = false;
+  let stderrEnded = false;
+  let nativeTerminal: boolean | undefined;
+  let processExited: boolean | undefined;
+  let drainAttempted = false;
+  let streamFailed = false;
+  let persistencePreservingClose: boolean | undefined;
+  const nativeEvidence = (): WorkerNativeEvidence => ({
+    ...(nativeTerminal === undefined ? {} : { nativeTerminal }),
+    ...(processExited === undefined ? {} : { processExited }),
+    ...(drainAttempted ? { pipesDrained: stdoutEnded && stderrEnded && !streamFailed } : {}),
+    ...(persistencePreservingClose === undefined ? {} : { persistencePreservingClose }),
+  });
   let gracefulExit = false;
   let forcedStop = false;
   let stopRequested = false;
@@ -264,16 +304,24 @@ async function supervise(
     stderr = appendBounded(stderr, stderrDecoder.write(chunk));
   });
   child.stdout?.once('end', () => {
+    drainAttempted = true;
+    stdoutEnded = true;
     stdout = appendBounded(stdout, stdoutDecoder.end());
   });
   child.stderr?.once('end', () => {
+    drainAttempted = true;
+    stderrEnded = true;
     stderr = appendBounded(stderr, stderrDecoder.end());
   });
   // Stream errors lose evidence but must never escape as an unhandled EventEmitter error.
   child.stdout?.on('error', (error) => {
+    drainAttempted = true;
+    streamFailed = true;
     spawnError = error;
   });
   child.stderr?.on('error', (error) => {
+    drainAttempted = true;
+    streamFailed = true;
     spawnError = error;
   });
   const markExited = () => {
@@ -292,10 +340,12 @@ async function supervise(
     if (!exitObserved) childState = 'unknown';
   });
   child.on('close', () => {
+    drainAttempted = true;
     closeObserved = true;
     resolveClosed();
   });
   child.on('exit', (code, signal) => {
+    processExited = true;
     recordLifecycleFact?.({ label: 'host_exit', code, signal });
     gracefulExit =
       gracefulRequested && !stopRequested && !forcedStop && code === 0 && signal === null;
@@ -305,10 +355,16 @@ async function supervise(
 
   let stopPromise: Promise<boolean> | null = null;
   let closePromise: Promise<void> | null = null;
-  const confirmStopped = (): Promise<boolean> => {
+  const confirmStopped = (
+    deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs)
+  ): Promise<boolean> => {
     closing = true;
     if (exitObserved) return Promise.resolve(true);
-    if (stopPromise) return stopPromise;
+    processExited ??= false;
+    if (stopPromise)
+      return nativeDeadline('joined native stop', stopPromise, deadline.remainingMs()).catch(
+        () => false
+      );
     const pending = stopChild(
       child,
       () => {
@@ -318,6 +374,7 @@ async function supervise(
       () => exitObserved,
       markExited,
       stopTimeoutMs,
+      deadline,
       (signal) => {
         stopRequested = true;
         if (signal === 'SIGKILL') forcedStop = true;
@@ -332,26 +389,44 @@ async function supervise(
     });
     return pending;
   };
-  const closeHost = (): Promise<void> => {
+  const closeHost = (
+    deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeStopMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    )
+  ): Promise<void> => {
     if (!closePromise) {
       closing = true;
       const activeAtClose = turnActive;
+      persistencePreservingClose = false;
       closePromise = (async () => {
         // On 2.0.22 --stdio EOF returns normally from serve and runs scoped finalizers,
         // including SQLite.close. Signals interrupt that scope and do not prove this path.
         if (!activeAtClose && !exitObserved && child.stdin) {
           gracefulRequested = true;
           child.stdin.end();
-          await nativeDeadline('graceful EOF drain', exited, stopTimeoutMs).catch(() => undefined);
+          // An exhausted preparation still needs native finalizers; leave half its cleanup for signals.
+          const workMs = deadline.workRemainingMs();
+          const gracefulMs =
+            workMs > 0
+              ? workMs
+              : deadline.remainingMs(Math.min(stopTimeoutMs, deadline.remainingMs() / 2));
+          await nativeDeadline('graceful EOF drain', exited, gracefulMs).catch(() => undefined);
         }
-        const stopped = await confirmStopped();
+        const stopped = await confirmStopped(deadline);
         if (stopped || exitObserved) {
           childState = 'absent';
+          drainAttempted = true;
           if (!closeObserved)
-            await nativeDeadline('post-close stream drain', closed, stopTimeoutMs);
-          if (activeAtClose || !gracefulExit) {
+            await nativeDeadline(
+              'post-close stream drain',
+              closed,
+              deadline.remainingMs(stopTimeoutMs)
+            );
+          if (activeAtClose || !gracefulExit || !stdoutEnded || !stderrEnded || streamFailed) {
             throw new Error('OpenCode native drain or persistence flush was not proved.');
           }
+          persistencePreservingClose = true;
           return;
         }
         childState = 'unknown';
@@ -366,24 +441,29 @@ async function supervise(
       child,
       () => stdout,
       () => spawnError,
-      () => exitObserved
+      () => exitObserved,
+      openDeadline
     );
     const client = clientModule.OpenCode.make({
       baseUrl,
       headers: { authorization: `Basic ${basicAuth(password)}` },
     });
     const proved = await proveConversation(client, input.resumeReference, rpc);
-    return bindSession(proved, client);
+    const session = bindSession(proved, client);
+    preparationDeadline = undefined;
+    return session;
   } catch (error) {
     // A thrown open is a clean refusal. The Harness does not close or fence it, so the process
     // must already be gone. An exit that cannot be proved stays on the returned binding.
-    const stopped = await confirmStopped();
+    const stopped = await confirmStopped(openDeadline);
     if (stopped || exitObserved) {
       childState = 'absent';
       if (!closeObserved)
-        await nativeDeadline('open failure stream drain', closed, stopTimeoutMs).catch(
-          () => undefined
-        );
+        await nativeDeadline(
+          'open failure stream drain',
+          closed,
+          openDeadline.remainingMs(stopTimeoutMs)
+        ).catch(() => undefined);
       throw new Error(
         boundOpenCodeDiagnostic(`${errorText(error)}\n${stderr}\n${stdout}`, secretValues)
       );
@@ -399,6 +479,7 @@ async function supervise(
     return {
       exited,
       childState: () => childState,
+      nativeEvidence,
       close: closeHost,
       async nativeHandle(): Promise<WorkerNativeHandle> {
         return { state: 'unknown' };
@@ -426,6 +507,7 @@ async function supervise(
     const session: WorkerResidentSession = {
       exited,
       childState: () => childState,
+      nativeEvidence,
       close: closeHost,
       async nativeHandle(): Promise<WorkerNativeHandle> {
         if (
@@ -505,6 +587,13 @@ async function supervise(
           );
         }
         turnActive = true;
+        // MCP supply arrives only here; idle time after session.open is not preparation time.
+        const setupDeadline = new LifecycleDeadline(
+          LIFECYCLE_DEFAULTS.nativeOpenMs,
+          LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+        );
+        const rpc: NativeRpc = (name, work) =>
+          nativeDeadline(name, work, setupDeadline.workRemainingMs(rpcTimeoutMs));
 
         let nativeWarnings = '';
         let nativeModels: string[] = [];
@@ -512,6 +601,32 @@ async function supervise(
         let promptStartedAt = 0;
         let promptId = '';
         let promptAttempted = false;
+        let captureAbandoned = false;
+        // Native HTTP authentication is adapter-private, so the shared input cannot enumerate it.
+        const capture = new RuntimeSemanticCapture({
+          ...turn.runtimeCapture,
+          // A timed-out sink may finish later; permit only the incomplete-collection report after stop.
+          emit: async (record, body) => {
+            if (
+              !captureAbandoned ||
+              (record.fact.kind === 'coverage' &&
+                record.fact.coverage === 'unavailable' &&
+                record.fact.reason === 'collector-failed')
+            )
+              await turn.runtimeCapture.emit(record, body);
+          },
+          credentialValues: [
+            ...turn.runtimeCapture.credentialValues,
+            ...secretValues,
+            basicAuth(password),
+          ],
+        });
+        const sourceRef = runtimeRef(
+          'rts',
+          turn.runtimeCapture.packageSnapshotId,
+          `${sessionId}:${turn.turnId}`
+        );
+        const originRef = runtimeOriginRef(turn.runtimeCapture.packageSnapshotId, sessionId);
         try {
           if (boundSupply === null) {
             const native = await inspectNativeBindings(
@@ -562,7 +677,7 @@ async function supervise(
               turn.workingDirectory,
               directories.loopbackDir,
               rpc,
-              rpcTimeoutMs
+              setupDeadline
             );
             boundSupply = supplyKey;
           }
@@ -643,8 +758,27 @@ async function supervise(
           const previous = await listMessages(client, sessionId, rpc);
           if (publishedBoundary) assertPublishedBoundary(publishedBoundary, previous);
           before = new Set(previous.map((message) => message.id));
+          await nativeDeadline(
+            'structural preparation',
+            (async () => {
+              await capture.emit(sourceRef, {
+                kind: 'coverage',
+                runtimeOriginRef: originRef,
+                family: 'primary-content',
+                coverage: turn.runtimeCapture.captureCoverage.value === 'on' ? 'collecting' : 'off',
+              });
+              if (captureAbandoned) return;
+              await capture.emit(sourceRef, {
+                kind: 'origin',
+                runtimeOriginRef: originRef,
+                phase: 'started',
+              });
+            })(),
+            setupDeadline.workRemainingMs()
+          );
           promptStartedAt = Date.now();
           promptAttempted = true;
+          nativeTerminal = undefined;
           const admitted = await rpc(
             'session.prompt',
             client.session.prompt({ sessionID: sessionId, text: turn.turnInput })
@@ -653,14 +787,17 @@ async function supervise(
             throw new Error('OpenCode prompt admission did not return an identity.');
           }
           promptId = admitted.id;
+          // The admitted prompt now starts an actual correlated-terminal proof attempt.
+          nativeTerminal = false;
         } catch (error) {
           turnActive = false;
           const failure = new Error(boundOpenCodeDiagnostic(errorText(error), secretValues));
           if (!promptAttempted) {
+            captureAbandoned = true;
             // No prompt was submitted. Reuse the qualified EOF drain and its retained close
             // promise, so a clean setup refusal remains closable without mistaking exit for flush.
             try {
-              await closeHost();
+              await closeHost(setupDeadline);
             } catch (cleanupError) {
               return surfaceUnprovedOpenCodeTurn(
                 new Error(
@@ -676,16 +813,60 @@ async function supervise(
           }
           // A submitted prompt may already be accepted. Confirmed stop can normalize its
           // failed settlement, but cannot erase that attempt through a clean refusal.
-          const stopped = await confirmStopped();
+          const stopped = await confirmStopped(setupDeadline);
+          try {
+            await capture.emit(sourceRef, {
+              kind: 'origin',
+              runtimeOriginRef: originRef,
+              phase: 'unknown',
+            });
+            await capture.emit(sourceRef, {
+              kind: 'coverage',
+              runtimeOriginRef: originRef,
+              family: 'primary-content',
+              coverage: 'unavailable',
+              reason: 'collector-failed',
+            });
+            await capture.emit(sourceRef, {
+              kind: 'coverage',
+              runtimeOriginRef: originRef,
+              family: 'primary-content',
+              coverage: 'ended',
+            });
+          } catch (captureError) {
+            return surfaceUnprovedOpenCodeTurn(captureError, confirmAgain);
+          }
           if (stopped || exitObserved) {
             return {
-              settled: Promise.resolve(failedResult(failure.message, secretValues)),
+              settled: Promise.resolve({
+                ...failedResult(failure.message, secretValues),
+                nativeEvidence: nativeEvidence(),
+              }),
               interrupt: async () => undefined,
             };
           }
           childState = 'unknown';
           return surfaceUnprovedOpenCodeTurn(failure, confirmAgain);
         }
+        let interruptDeadline: LifecycleDeadline | undefined;
+        let nativePhase: RuntimeFact['phase'] = 'unknown';
+        const capturedSnapshots = new Map<string, string>();
+        const observeMessages = async (messages: NativeMessage[]): Promise<void> => {
+          if (captureAbandoned) return;
+          for (const message of messages) {
+            if (before.has(message.id)) continue;
+            const snapshot = JSON.stringify(message);
+            if (capturedSnapshots.get(message.id) === snapshot) continue;
+            await captureOpenCodeMessage(
+              capture,
+              sourceRef,
+              originRef,
+              turn.runtimeCapture.packageSnapshotId,
+              message
+            );
+            capturedSnapshots.set(message.id, snapshot);
+          }
+        };
         let collected = false;
         let interruptPromise: Promise<void> | null = null;
         let interruptFailure: Error | null = null;
@@ -693,6 +874,10 @@ async function supervise(
         let rejectUnprovedStop!: (error: Error) => void;
         const unprovedStop = new Promise<never>((_, reject) => {
           rejectUnprovedStop = reject;
+        });
+        let resolveStoppedCollection!: (result: WorkerAdapterResult) => void;
+        const stoppedCollection = new Promise<WorkerAdapterResult>((resolve) => {
+          resolveStoppedCollection = resolve;
         });
         const collection = settleTurn({
           before,
@@ -704,21 +889,59 @@ async function supervise(
           secrets: secretValues,
           sessionId,
           startedAt: promptStartedAt,
-          stop: confirmStopped,
+          stop: () => confirmStopped(interruptDeadline),
           rpc: (name, work) =>
             Promise.race([
-              rpc(name, work),
+              nativeDeadline(
+                name,
+                work,
+                interruptDeadline?.workRemainingMs(rpcTimeoutMs) ?? rpcTimeoutMs
+              ),
               exited.then(() => {
                 throw new Error('OpenCode server exited during the Turn.');
               }),
             ]),
-          published: (messages) => {
+          observed: observeMessages,
+          published: async (messages) => {
+            if (captureAbandoned) return;
+            nativeTerminal = true;
+            const outcome = messages.at(-1)?.outcome;
+            nativePhase =
+              outcome === 'succeeded'
+                ? 'completed'
+                : outcome === 'interrupted'
+                  ? 'interrupted'
+                  : 'failed';
             publishedBoundary = messages;
             for (const message of messages) {
-              if (!before.has(message.id)) recordLifecycleFact?.({ label: 'native_event' });
+              if (!before.has(message.id)) {
+                recordLifecycleFact?.({ label: 'native_event' });
+              }
             }
+            await observeMessages(messages);
           },
-        }).then((result) => {
+        }).then(async (result) => {
+          await capture.emit(sourceRef, {
+            kind: 'origin',
+            runtimeOriginRef: originRef,
+            phase: nativePhase,
+          });
+          await capture.flushCompleted();
+          if (!nativeTerminal || nativePhase === 'interrupted') await capture.interrupt();
+          if (!nativeTerminal)
+            await capture.emit(sourceRef, {
+              kind: 'coverage',
+              runtimeOriginRef: originRef,
+              family: 'primary-content',
+              coverage: 'unavailable',
+              reason: 'collector-failed',
+            });
+          await capture.emit(sourceRef, {
+            kind: 'coverage',
+            runtimeOriginRef: originRef,
+            family: 'primary-content',
+            coverage: 'ended',
+          });
           collected = true;
           result = {
             ...result,
@@ -743,12 +966,16 @@ async function supervise(
               }
             : result;
         });
-        const settled = Promise.race([collection, unprovedStop])
+        const settled = Promise.race([collection, unprovedStop, stoppedCollection])
           .then(async (result) => {
             // A session-scoped cancellation must be drained before a new native prompt can run.
             if (interruptPromise) await interruptPromise;
-            if (interruptFailure) return failedResult(interruptFailure.message, secretValues);
-            return result;
+            if (interruptFailure)
+              return {
+                ...failedResult(interruptFailure.message, secretValues),
+                nativeEvidence: nativeEvidence(),
+              };
+            return { ...result, nativeEvidence: nativeEvidence() };
           })
           .finally(() => {
             turnActive = false;
@@ -756,15 +983,35 @@ async function supervise(
         settled.catch(() => undefined);
         return {
           settled,
-          interrupt(): Promise<void> {
-            if (interruptPromise) return interruptPromise;
+          interrupt(
+            deadline = new LifecycleDeadline(
+              LIFECYCLE_DEFAULTS.nativeStopMs,
+              LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+            )
+          ): Promise<void> {
+            if (interruptPromise)
+              return nativeDeadline(
+                'joined interruption',
+                interruptPromise,
+                deadline.remainingMs()
+              ).catch((error: unknown) => {
+                if (error instanceof NativeDeadlineError)
+                  throw new NativeDeadlineError(
+                    'OpenCode joined interruption timed out; native cleanup was not proved.'
+                  );
+                throw error;
+              });
             if (collected || !turnActive) return Promise.resolve();
+            interruptDeadline = deadline;
             interruptPromise = nativeDeadline(
               'interruption proof',
               (async () => {
-                const response = await rpc(
+                if (deadline.workRemainingMs() <= 0)
+                  throw new NativeDeadlineError('OpenCode interruption proof timed out.');
+                const response = await nativeDeadline(
                   'session.interrupt',
-                  client.session.interrupt({ sessionID: sessionId })
+                  client.session.interrupt({ sessionID: sessionId }),
+                  deadline.workRemainingMs(rpcTimeoutMs)
                 );
                 if (!response || typeof response.interrupted !== 'boolean') {
                   throw new Error('OpenCode interrupt response has an unknown boolean core.');
@@ -772,13 +1019,31 @@ async function supervise(
                 // The ACK is not a terminal. The correlated native outcome decides the status.
                 await collection;
               })(),
-              interruptTimeoutMs
+              deadline.workRemainingMs(interruptTimeoutMs)
             ).catch(async (error) => {
               interruptFailure = new Error(boundOpenCodeDiagnostic(errorText(error), secretValues));
-              if (!(await confirmStopped())) {
+              if (!(await confirmStopped(deadline))) {
+                captureAbandoned = true;
                 rejectUnprovedStop(interruptFailure);
                 throw interruptFailure;
               }
+              // Proved absence must release settlement even if the structural sink never returns.
+              captureAbandoned = true;
+              interruptFailure = new Error(
+                `${interruptFailure.message}; OpenCode structural collection incomplete after stop.`
+              );
+              await nativeDeadline(
+                'incomplete collection report',
+                capture.emit(sourceRef, {
+                  kind: 'coverage',
+                  runtimeOriginRef: originRef,
+                  family: 'primary-content',
+                  coverage: 'unavailable',
+                  reason: 'collector-failed',
+                }),
+                deadline.remainingMs()
+              ).catch(() => undefined);
+              resolveStoppedCollection(failedResult(interruptFailure.message, secretValues));
             });
             interruptPromise.catch(() => undefined);
             return interruptPromise;
@@ -789,8 +1054,8 @@ async function supervise(
     return session;
   }
 
-  async function confirmAgain(): Promise<boolean> {
-    const stopped = await confirmStopped();
+  async function confirmAgain(deadline?: LifecycleDeadline): Promise<boolean> {
+    const stopped = await confirmStopped(deadline);
     if (!stopped && !exitObserved) childState = 'unknown';
     return stopped || exitObserved;
   }
@@ -1002,10 +1267,11 @@ async function waitForListening(
   child: ChildProcess,
   stdout: () => string,
   spawnFailure: () => Error | null,
-  hasExited: () => boolean
+  hasExited: () => boolean,
+  deadline: LifecycleDeadline
 ): Promise<string> {
-  const deadline = Date.now() + LISTEN_TIMEOUT_MS;
   for (;;) {
+    if (deadline.workRemainingMs() <= 0) throw new Error('OpenCode server did not listen.');
     const match = stdout().match(/https?:\/\/127\.0\.0\.1:\d+/);
     if (match) return match[0];
     const failure = spawnFailure();
@@ -1013,8 +1279,7 @@ async function waitForListening(
     if (hasExited() || child.exitCode !== null || child.signalCode !== null) {
       throw new Error('OpenCode server exited before it listened.');
     }
-    if (Date.now() > deadline) throw new Error('OpenCode server did not listen.');
-    await delay(20);
+    await delay(deadline.workRemainingMs(20));
   }
 }
 
@@ -1221,7 +1486,7 @@ async function syncMcpServers(
   workingDirectory: string,
   loopbackDir: string,
   rpc: NativeRpc,
-  timeoutMs: number
+  deadline: LifecycleDeadline
 ): Promise<void> {
   const location = { directory: workingDirectory };
   writeSecret(
@@ -1240,13 +1505,13 @@ async function syncMcpServers(
     (server) =>
       !ids.includes(server.name) && ['connected', 'pending'].includes(server.status.status)
   );
-  if (ids.length > 0 || nativeServers.length > 0) await waitForToolGeneration(marker, 0, timeoutMs);
+  if (ids.length > 0 || nativeServers.length > 0) await waitForToolGeneration(marker, 0, deadline);
   for (const server of nativeServers) {
     const before = toolGeneration(marker);
     // Native connect drains its startup and publishes ToolsChanged even when already connected.
     // Reuse the existing location-specific reload proof for native as well as managed supply.
     await rpc('mcp.connect native', client.mcp.connect({ location, server: server.name }));
-    await waitForToolGeneration(marker, before, timeoutMs);
+    await waitForToolGeneration(marker, before, deadline);
   }
   for (const id of ids) {
     const before = toolGeneration(marker);
@@ -1265,11 +1530,11 @@ async function syncMcpServers(
     );
     // MCP.add lists once; the native MCP.ToolsChanged event reloads Tool asynchronously.
     // Await the plugin's Tool transform generation rather than guessing a debounce delay.
-    await waitForToolGeneration(marker, before, timeoutMs);
+    await waitForToolGeneration(marker, before, deadline);
   }
   if (ids.length === 0) return;
-  const deadline = Date.now() + MCP_CONNECT_TIMEOUT_MS;
   for (;;) {
+    if (deadline.workRemainingMs() <= 0) throw new Error('OpenCode MCP server did not connect.');
     const listed = await rpc('mcp.list', client.mcp.list({ location }));
     assertMcpList(listed);
     const pending: string[] = [];
@@ -1280,10 +1545,7 @@ async function syncMcpServers(
       pending.push(id);
     }
     if (pending.length === 0) return;
-    if (Date.now() > deadline) {
-      throw new Error('OpenCode MCP server did not connect.');
-    }
-    await delay(100);
+    await delay(deadline.workRemainingMs(100));
   }
 }
 
@@ -1297,16 +1559,17 @@ function toolGeneration(path: string): number {
   }
 }
 
-/** Proves one location's registry initialized or reloaded within the native request budget. */
+/** Proves one location's registry generation within the enclosing preparation work budget. */
 async function waitForToolGeneration(
   path: string,
   previous: number,
-  timeoutMs: number
+  deadline: LifecycleDeadline
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (toolGeneration(path) <= previous) {
-    if (Date.now() >= deadline) throw new Error('OpenCode native tool registry did not reload.');
-    await delay(20);
+  for (;;) {
+    if (deadline.workRemainingMs() <= 0)
+      throw new Error('OpenCode native tool registry did not reload.');
+    if (toolGeneration(path) > previous) return;
+    await delay(deadline.workRemainingMs(20));
   }
 }
 
@@ -1322,7 +1585,8 @@ async function settleTurn(options: {
   startedAt: number;
   stop: () => Promise<boolean>;
   rpc: NativeRpc;
-  published: (messages: NativeMessage[]) => void;
+  observed: (messages: NativeMessage[]) => Promise<void>;
+  published: (messages: NativeMessage[]) => Promise<void>;
 }): Promise<WorkerAdapterResult> {
   const finish = (result: WorkerAdapterResult) =>
     attachStreams(result, options.output(), options.secrets);
@@ -1360,12 +1624,14 @@ async function settleTurn(options: {
         outcome = info.outcome;
         break;
       }
+      // Reuse the native poll owner so structural facts survive a later terminal or host loss.
+      await options.observed(await listMessages(options.client, options.sessionId, options.rpc));
       await delay(200);
     }
     const all = await listMessages(options.client, options.sessionId, options.rpc);
     const messages = all.filter((message) => !options.before.has(message.id));
     const result = interpretMessages(messages, options.promptId, options.secrets, outcome);
-    options.published(all);
+    await options.published(all);
     return finish(result);
   } catch (error) {
     return lostEvidence(errorText(error));
@@ -1419,6 +1685,8 @@ interface NativeMessage {
   text: string;
   error?: boolean;
   type: string;
+  /** Native tool snapshots consumed only by the existing structural/content collector. */
+  tools?: Record<string, unknown>[];
 }
 
 /** Collects bounded native pages, validating cursor cores and identities before any Turn projection. */
@@ -1574,7 +1842,107 @@ function readAssistant(row: Record<string, unknown>): NativeMessage {
     error: row.error !== undefined,
     text,
     type: 'assistant',
+    tools: row.content.filter(
+      (part) => (part as Record<string, unknown>).type === 'tool'
+    ) as Record<string, unknown>[],
   };
+}
+
+/** Maps observed native message snapshots into the existing semantic collector; reasoning is excluded. */
+async function captureOpenCodeMessage(
+  capture: RuntimeSemanticCapture,
+  sourceRef: string,
+  originRef: string,
+  namespace: string,
+  message: NativeMessage
+): Promise<void> {
+  if (message.type !== 'assistant') return;
+  await capture.emit(
+    sourceRef,
+    {
+      kind: 'assistant',
+      runtimeOriginRef: originRef,
+      messageRef: runtimeRef('rtm', namespace, `${originRef}:${message.id}`),
+      phase:
+        message.error || message.finish === 'error'
+          ? 'failed'
+          : message.finish === undefined
+            ? 'running'
+            : 'completed',
+      representation: 'snapshot',
+    },
+    {
+      bytes: Buffer.from(message.text),
+      mediaType: 'text/plain',
+      boundary: 'runtime.assistant.text',
+    }
+  );
+  for (const tool of message.tools ?? []) {
+    const state = tool.state;
+    if (
+      typeof tool.id !== 'string' ||
+      !state ||
+      typeof state !== 'object' ||
+      Array.isArray(state)
+    ) {
+      await capture.emit(sourceRef, {
+        kind: 'coverage',
+        runtimeOriginRef: originRef,
+        family: 'primary-content',
+        coverage: 'unavailable',
+        reason: 'malformed-frame',
+      });
+      continue;
+    }
+    const record = state as Record<string, unknown>;
+    const phase =
+      record.status === 'completed'
+        ? 'completed'
+        : record.status === 'error'
+          ? 'failed'
+          : record.status === 'running'
+            ? 'running'
+            : record.status === 'streaming'
+              ? 'started'
+              : undefined;
+    if (!phase) {
+      await capture.emit(sourceRef, {
+        kind: 'coverage',
+        runtimeOriginRef: originRef,
+        family: 'primary-content',
+        coverage: 'unavailable',
+        reason: 'malformed-frame',
+      });
+      continue;
+    }
+    const fact: RuntimeFact = {
+      kind: 'tool' as const,
+      runtimeOriginRef: originRef,
+      callRef: runtimeRef('rtc', namespace, `${originRef}:${tool.id}`),
+      phase,
+      ...(runtimeToolName(tool.name) ? { toolName: runtimeToolName(tool.name) } : {}),
+    };
+    await capture.emit(
+      sourceRef,
+      fact,
+      record.input === undefined
+        ? undefined
+        : {
+            bytes: Buffer.from(
+              typeof record.input === 'string' ? record.input : JSON.stringify(record.input)
+            ),
+            mediaType: typeof record.input === 'string' ? 'text/plain' : 'application/json',
+            boundary: 'runtime.tool.arguments',
+          }
+    );
+    if (Array.isArray(record.content))
+      await capture.emit(sourceRef, fact, {
+        bytes: Buffer.from(JSON.stringify(record.content)),
+        mediaType: 'application/json',
+        boundary: 'runtime.tool.result',
+      });
+  }
+  await capture.flushCompleted();
 }
 
 function interpretMessages(
@@ -1682,13 +2050,13 @@ function defaultSpawnServer(
  */
 export function surfaceUnprovedOpenCodeTurn(
   error: unknown,
-  confirmStopped: () => Promise<boolean>
+  confirmStopped: (deadline?: LifecycleDeadline) => Promise<boolean>
 ): WorkerResidentTurn {
   const settled = Promise.reject(error);
   settled.catch(() => undefined);
   return {
-    async interrupt() {
-      if (await confirmStopped()) return;
+    async interrupt(deadline) {
+      if (await confirmStopped(deadline)) return;
       throw new Error('OpenCode native stop was not proved.');
     },
     settled,
@@ -1708,25 +2076,31 @@ async function stopChild(
   hasExited: () => boolean,
   markExited: () => void,
   timeoutMs: number,
+  deadline: LifecycleDeadline,
   requested: (signal: NodeJS.Signals) => void
 ): Promise<boolean> {
   if (hasExited()) return true;
   if (child.pid === undefined) {
-    await nativeDeadline('process exit', exited, timeoutMs).catch(() => undefined);
+    await nativeDeadline('process exit', exited, deadline.remainingMs(timeoutMs)).catch(
+      () => undefined
+    );
     if (!hasExited()) markExited();
     return true;
   }
   markStopping();
+  const termWindowMs = deadline.remainingMs(Math.min(timeoutMs, deadline.remainingMs() / 2));
   requested('SIGTERM');
   deliverSignal(child, 'SIGTERM', hasExited, markExited);
   if (hasExited()) return true;
-  await nativeDeadline('process exit', exited, timeoutMs).catch(() => undefined);
+  await nativeDeadline('process exit', exited, termWindowMs).catch(() => undefined);
   if (hasExited()) return true;
   requested('SIGKILL');
   const killed = deliverSignal(child, 'SIGKILL', hasExited, markExited);
   if (hasExited()) return true;
   if (!killed) return false;
-  await nativeDeadline('process exit', exited, timeoutMs).catch(() => undefined);
+  await nativeDeadline('process exit', exited, deadline.remainingMs(timeoutMs)).catch(
+    () => undefined
+  );
   return hasExited();
 }
 
@@ -1812,7 +2186,7 @@ type NativeRpc = <T>(name: string, work: Promise<T>) => Promise<T>;
 
 class NativeDeadlineError extends Error {}
 
-/** One native RPC deadline stays below the Harness ten-second native stop budget. */
+/** Clears each exchange timer; enclosing lifecycle deadlines supply remaining time. */
 function nativeDeadline<T>(name: string, work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, reject) => {
