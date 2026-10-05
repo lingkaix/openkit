@@ -52,42 +52,66 @@ describe('workspace collection closed wire', () => {
     ).toBe('baseline');
     expect(() => WorkspaceCollectCommandSchema.parse({ ...command, mode: 'baseline' })).toThrow();
   });
+  // Short labels keep generated credential payloads out of CI test names.
   it.each([
-    { storageRef: '' },
-    { storageRef: ' store' },
-    { storageRef: 'store\n' },
-    { storageRef: 'é'.repeat(257) },
-    { scopeDigest: 'sha256:ABCD' },
-    { sandboxId: '' },
-    { sandboxId: 'a\0' },
-    { sandboxId: 'é'.repeat(257) },
-    { attachmentGeneration: 0 },
-    { attachmentGeneration: 1.5 },
-    { attachmentGeneration: Number.MAX_SAFE_INTEGER + 1 },
-    { workSlot: 'a/b' },
-    { workSlot: 'a'.repeat(129) },
-    { collectionId: '../slot' },
-    { requestId: 'A'.repeat(64) },
-    { acceptedBase: { tree: 'a'.repeat(64), manifest: pair.manifest } },
-    { previousHead: null },
-    { previousHead: { tree: other.tree, manifest: 'g'.repeat(40) } },
-    { checkValues: { runtimeEnv: [''], loopbackDigests: command.checkValues.loopbackDigests } },
-    { checkValues: { runtimeEnv: ['a\0b'], loopbackDigests: command.checkValues.loopbackDigests } },
-    {
-      checkValues: {
-        runtimeEnv: ['é'.repeat(32769)],
-        loopbackDigests: command.checkValues.loopbackDigests,
+    ['empty storage reference', { storageRef: '' }],
+    ['leading storage reference whitespace', { storageRef: ' store' }],
+    ['storage reference control character', { storageRef: 'store\n' }],
+    ['oversized storage reference', { storageRef: 'é'.repeat(257) }],
+    ['invalid scope digest', { scopeDigest: 'sha256:ABCD' }],
+    ['empty sandbox id', { sandboxId: '' }],
+    ['sandbox id control character', { sandboxId: 'a\0' }],
+    ['oversized sandbox id', { sandboxId: 'é'.repeat(257) }],
+    ['zero attachment generation', { attachmentGeneration: 0 }],
+    ['fractional attachment generation', { attachmentGeneration: 1.5 }],
+    ['unsafe attachment generation', { attachmentGeneration: Number.MAX_SAFE_INTEGER + 1 }],
+    ['work slot path separator', { workSlot: 'a/b' }],
+    ['oversized work slot', { workSlot: 'a'.repeat(129) }],
+    ['collection id traversal', { collectionId: '../slot' }],
+    ['uppercase request id', { requestId: 'A'.repeat(64) }],
+    [
+      'non-SHA-1 accepted tree',
+      { acceptedBase: { tree: 'a'.repeat(64), manifest: pair.manifest } },
+    ],
+    ['missing previous head', { previousHead: null }],
+    ['nonhex previous manifest', { previousHead: { tree: other.tree, manifest: 'g'.repeat(40) } }],
+    [
+      'empty runtime credential',
+      { checkValues: { runtimeEnv: [''], loopbackDigests: command.checkValues.loopbackDigests } },
+    ],
+    [
+      'runtime credential NUL',
+      {
+        checkValues: { runtimeEnv: ['a\0b'], loopbackDigests: command.checkValues.loopbackDigests },
       },
-    },
-    {
-      checkValues: {
-        runtimeEnv: Array(129).fill('value'),
-        loopbackDigests: command.checkValues.loopbackDigests,
+    ],
+    [
+      'oversized runtime credential',
+      {
+        checkValues: {
+          runtimeEnv: ['é'.repeat(32769)],
+          loopbackDigests: command.checkValues.loopbackDigests,
+        },
       },
-    },
-    { checkValues: { runtimeEnv: [], loopbackDigests: ['x'.repeat(64), 'd'.repeat(64)] } },
-    { checkValues: { runtimeEnv: [], loopbackDigests: ['c'.repeat(64)] } },
-  ])('refuses inadmissible command content %j', (patch) => {
+    ],
+    [
+      'too many runtime credentials',
+      {
+        checkValues: {
+          runtimeEnv: Array(129).fill('value'),
+          loopbackDigests: command.checkValues.loopbackDigests,
+        },
+      },
+    ],
+    [
+      'nonhex loopback digest',
+      { checkValues: { runtimeEnv: [], loopbackDigests: ['x'.repeat(64), 'd'.repeat(64)] } },
+    ],
+    [
+      'missing loopback digest',
+      { checkValues: { runtimeEnv: [], loopbackDigests: ['c'.repeat(64)] } },
+    ],
+  ])('refuses inadmissible command content: %s', (_label, patch) => {
     expect(() => WorkspaceCollectCommandSchema.parse({ ...command, ...patch })).toThrow();
   });
   it('admits exact association and credential byte boundaries', () => {
