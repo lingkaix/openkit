@@ -12,7 +12,11 @@ import {
 } from '@modelcontextprotocol/server';
 import type { AgentEnvironmentPackage, OpenKitConfig } from '@openkit/config-schema';
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
-import { ItemSchema, responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  CapabilityCallStatusSchema,
+  ItemSchema,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
 import type { AuthVariables } from './auth/middleware.js';
@@ -25,7 +29,11 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  DISPLAY_PROJECTION_REFRESH_FIELDS,
+  type FsStore,
+} from './lib/store.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -861,6 +869,117 @@ function isAddressableSnapshotLineage(agentSessionId: string, snapshotId: string
   return addressable(agentSessionId) && addressable(snapshotId);
 }
 
+/** Ledger fields that own the product-safe terminal MCP Item publication. */
+interface DecidedMcpPublicationRow {
+  agent_id: string | null;
+  agent_session_id: string | null;
+  call_id: string;
+  completed_at: string;
+  error_code: string | null;
+  item_id: string;
+  package_snapshot_id: string | null;
+  provider_ref: string;
+  service_ref: string;
+  started_at: string | null;
+  status: string;
+  thread_id: string;
+  turn_id: string;
+  workspace_id: string;
+}
+
+/**
+ * Reconstructs the ledger-owned publication used by boot and terminal recovery.
+ *
+ * @param workspaceId Owning Workspace.
+ * @param row Terminal MCP call with complete publication fields.
+ * @param parentItemId Parent established by the call's immutable AEP snapshot.
+ * @returns Validated product-safe MCP Item.
+ */
+function decidedMcpPublicationItem(
+  workspaceId: string,
+  row: DecidedMcpPublicationRow,
+  parentItemId: string | null
+): ReturnType<FsStore['listAllItems']>[number] {
+  return ItemSchema.parse({
+    arguments: null,
+    causationId: row.call_id,
+    completedAt: row.completed_at,
+    createdAt: row.completed_at,
+    durationMs: row.started_at
+      ? Math.max(0, Date.parse(row.completed_at) - Date.parse(row.started_at))
+      : 0,
+    error: row.status === 'succeeded' ? null : row.error_code,
+    id: row.item_id,
+    ...(parentItemId ? { parentItemId } : {}),
+    result: null,
+    server: row.provider_ref,
+    status:
+      row.status === 'succeeded' ? 'completed' : row.status === 'denied' ? 'declined' : 'failed',
+    threadId: row.thread_id,
+    tool: row.service_ref.slice('mcp-tool:'.length),
+    turnId: row.turn_id,
+    type: 'tool-call',
+    workspaceId,
+  });
+}
+
+/**
+ * Proves an additional terminal-Turn Item completes its pre-terminal MCP decision.
+ *
+ * This is read-only: the admission marker alone is not evidence of a decided call.
+ * Missing canonical lineage or a decision after terminalization cannot authorize repair.
+ *
+ * @param workspaceDb Existing Workspace capability ledger.
+ * @param environmentPackage Exact package already validated by the recovery owner.
+ * @param item Additional current Item absent from the older terminal event.
+ * @param completedAt Immutable Turn completion time.
+ * @returns True only for the exact decided publication, apart from admitted display fields.
+ */
+export function isAlreadyDecidedWorkerMcpItem(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  item: ReturnType<FsStore['listAllItems']>[number],
+  completedAt: string | null
+): boolean {
+  if (item.type !== 'tool-call' || !item.causationId || !completedAt) return false;
+  const row = workspaceDb.sqlite
+    .prepare(
+      `SELECT * FROM capability_calls WHERE call_id = ?
+       AND family = 'mcp' AND capability_id = 'mcp.call_tool' AND operation = 'mcp.call_tool'
+       AND status NOT IN ('queued', 'running')
+       AND item_id IS NOT NULL AND provider_ref IS NOT NULL
+       AND service_ref LIKE 'mcp-tool:%' AND completed_at IS NOT NULL`
+    )
+    .get(item.causationId) as DecidedMcpPublicationRow | undefined;
+  const scope = environmentPackage.scope;
+  if (
+    !row ||
+    !CapabilityCallStatusSchema.safeParse(row.status).success ||
+    row.workspace_id !== scope.workspaceId ||
+    row.thread_id !== scope.threadId ||
+    row.turn_id !== scope.turnId ||
+    row.agent_id !== environmentPackage.agent.agentId ||
+    row.agent_session_id !== scope.agentSessionId ||
+    row.package_snapshot_id !== environmentPackage.snapshotId ||
+    row.item_id !== item.id ||
+    !row.started_at ||
+    !(Date.parse(row.started_at) <= Date.parse(row.completed_at)) ||
+    !(Date.parse(row.completed_at) <= Date.parse(completedAt))
+  )
+    return false;
+  const parent = decidedMcpParentItemId(workspaceDb, scope.workspaceId, row);
+  if (parent.kind !== 'decided') return false;
+  const candidate = decidedMcpPublicationItem(scope.workspaceId, row, parent.parentItemId);
+  // Keep repair equality separate from the Store's display refresh admission.
+  const decidedFields = (value: ReturnType<FsStore['listAllItems']>[number]) =>
+    Object.fromEntries(
+      Object.entries(value).filter(
+        ([field]) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)
+      )
+    );
+  return isDeepStrictEqual(decidedFields(item), decidedFields(candidate));
+}
+
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
 export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): number {
   let recovered = 0;
@@ -870,6 +989,7 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
       const rows = workspaceDb.sqlite
         .prepare(
           `SELECT
+             agent_id,
              agent_session_id,
              call_id,
              completed_at,
@@ -881,7 +1001,8 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
              started_at,
              status,
              thread_id,
-             turn_id
+             turn_id,
+             workspace_id
            FROM capability_calls
            WHERE family = 'mcp'
              AND capability_id = 'mcp.call_tool'
@@ -895,50 +1016,12 @@ export function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): numbe
              AND completed_at IS NOT NULL
            ORDER BY completed_at, call_id`
         )
-        .all() as Array<{
-        agent_session_id: string | null;
-        call_id: string;
-        completed_at: string;
-        error_code: string | null;
-        item_id: string;
-        package_snapshot_id: string | null;
-        provider_ref: string;
-        service_ref: string;
-        started_at: string | null;
-        status: string;
-        thread_id: string;
-        turn_id: string;
-      }>;
+        .all() as DecidedMcpPublicationRow[];
       const storedItems = new Map(store.listAllItems().map((item) => [item.id, item]));
       for (const row of rows) {
         const decidedParent = decidedMcpParentItemId(workspaceDb, workspaceId, row);
         const parentItemId = decidedParent.kind === 'decided' ? decidedParent.parentItemId : null;
-        const candidate = {
-          arguments: null,
-          causationId: row.call_id,
-          completedAt: row.completed_at,
-          createdAt: row.completed_at,
-          durationMs: row.started_at
-            ? Math.max(0, Date.parse(row.completed_at) - Date.parse(row.started_at))
-            : 0,
-          error: row.status === 'succeeded' ? null : row.error_code,
-          id: row.item_id,
-          ...(parentItemId ? { parentItemId } : {}),
-          result: null,
-          server: row.provider_ref,
-          status:
-            row.status === 'succeeded'
-              ? 'completed'
-              : row.status === 'denied'
-                ? 'declined'
-                : 'failed',
-          threadId: row.thread_id,
-          tool: row.service_ref.slice('mcp-tool:'.length),
-          turnId: row.turn_id,
-          type: 'tool-call' as const,
-          workspaceId,
-        };
-        const parsed = ItemSchema.parse(candidate);
+        const parsed = decidedMcpPublicationItem(workspaceId, row, parentItemId);
         const existing = storedItems.get(row.item_id);
         if (existing) {
           if (!mcpBootDecidedPublicationEqual(existing, parsed, decidedParent.kind === 'decided')) {

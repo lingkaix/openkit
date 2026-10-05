@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -8,12 +8,17 @@ import type { ActorRef } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from '../lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  DISPLAY_PROJECTION_REFRESH_ADMISSION,
+  FsStore,
+} from '../lib/store.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -29,7 +34,11 @@ import {
   upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  openCoreDb,
+  openWorkspaceDb,
+  verifyAndMigrateExistingScopedDatabases,
+} from '../storage/db.js';
 import { LOCAL_USER_ID } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -40,6 +49,7 @@ import {
 import { createDemoStore } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
@@ -264,6 +274,201 @@ function createFailedStartFixture(suffix: string, outcome = false, anchored = tr
 }
 
 describe('terminal failed-start product recovery', () => {
+  it.each([
+    'decided',
+    'missing-call',
+    'wrong-session',
+    'wrong-package',
+    'wrong-agent',
+    'post-terminal',
+    'changed-call',
+    'running-call',
+    'unknown-status',
+    'changed-extra-item',
+    'changed-prior-item',
+  ] as const)('checks %s publication after boot MCP backfill before failed-start settlement', async (proof) => {
+    const suffix = `mcp_backfill_${proof}`;
+    const f = createFailedStartFixture(suffix);
+    const completedAt = new Date(Date.parse(f.turn.startedAt!) + 1_000).toISOString();
+    f.input.now = () => new Date(Date.parse(completedAt) + 60_000).toISOString();
+    const callId = `cap_${suffix}`;
+    const itemId = `it_${suffix}`;
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        f.store.createItem({
+          id: `it_prior_${suffix}_${index}`,
+          workspaceId: 'ws_demo',
+          threadId: f.threadId,
+          turnId: f.turnId,
+          type: 'status',
+          status: 'completed',
+          level: 'warning',
+          title: 'Worker accepted',
+          summary: 'The worker attempt was admitted.',
+          createdAt: f.turn.startedAt!,
+          completedAt: f.turn.startedAt!,
+        });
+      }
+      const db = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      try {
+        const pkg = requireAgentEnvironmentPackageSnapshot(
+          db,
+          'ws_demo',
+          `aepsnap_turn_${suffix}_as_${suffix}`
+        ).snapshot;
+        startCapabilityCall({
+          workspaceDb: db,
+          workspaceId: 'ws_demo',
+          threadId: f.threadId,
+          turnId: f.turnId,
+          agentId: f.turn.agentId,
+          agentSessionId: f.agentSessionId,
+          packageSnapshotId: pkg.snapshotId,
+          authorityActor: f.turn.triggerActor,
+          callId,
+          itemId,
+          capabilityId: 'mcp.call_tool',
+          family: 'mcp',
+          operation: 'mcp.call_tool',
+          providerRef: 'github',
+          serviceRef: 'mcp-tool:create_branch',
+          redactionClass: 'metadata-only',
+          now: new Date(Date.parse(completedAt) - 200),
+        });
+        finishCapabilityCall({
+          workspaceDb: db,
+          callId,
+          status: 'denied',
+          errorCode: 'mcp-denied',
+          now: new Date(Date.parse(completedAt) + (proof === 'post-terminal' ? 100 : -100)),
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      const decided = f.store.updateTurn(f.turnId, {
+        status: 'failed',
+        completedAt,
+        error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
+      });
+      f.store.emitTurnEvent(
+        f.turnId,
+        {
+          workspaceId: 'ws_demo',
+          threadId: f.threadId,
+          turnId: f.turnId,
+          requestId: `request_${suffix}`,
+          event: 'turn.completed',
+          data: { type: 'turn-completed', stopReason: 'error', turn: decided },
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      );
+      const eventsPath = join(
+        f.store.workspaceRootPath('ws_demo'),
+        'threads',
+        f.threadId,
+        'turns',
+        f.turnId,
+        'runtime',
+        'events.jsonl'
+      );
+      const eventsBefore = readFileSync(eventsPath, 'utf8');
+      verifyAndMigrateExistingScopedDatabases(f.dataRoot);
+      const store = new FsStore({ dataRoot: f.dataRoot });
+      expect(reconcileWorkerMcpItems(f.dataRoot, store)).toBe(1);
+      expect(reconcileWorkerMcpItems(f.dataRoot, store)).toBe(0);
+      expect(store.getTurnById(f.turnId).items).toHaveLength(5);
+      expect(store.getTurnById(f.turnId).items[4]).toMatchObject({
+        id: itemId,
+        causationId: callId,
+        tool: 'create_branch',
+        status: 'declined',
+        arguments: null,
+        result: null,
+        error: 'mcp-denied',
+      });
+      const changed = openWorkspaceDb(f.dataRoot, 'ws_demo');
+      try {
+        if (proof === 'missing-call')
+          changed.sqlite.prepare('DELETE FROM capability_calls WHERE call_id = ?').run(callId);
+        if (proof === 'wrong-session')
+          changed.sqlite
+            .prepare('UPDATE capability_calls SET agent_session_id = ? WHERE call_id = ?')
+            .run('as_foreign', callId);
+        if (proof === 'wrong-package')
+          changed.sqlite
+            .prepare('UPDATE capability_calls SET package_snapshot_id = ? WHERE call_id = ?')
+            .run('aepsnap_foreign', callId);
+        if (proof === 'wrong-agent')
+          changed.sqlite
+            .prepare('UPDATE capability_calls SET agent_id = ? WHERE call_id = ?')
+            .run('agent_foreign', callId);
+        if (proof === 'changed-call')
+          changed.sqlite
+            .prepare('UPDATE capability_calls SET service_ref = ? WHERE call_id = ?')
+            .run('mcp-tool:delete_branch', callId);
+        if (proof === 'running-call' || proof === 'unknown-status')
+          changed.sqlite
+            .prepare('UPDATE capability_calls SET status = ? WHERE call_id = ?')
+            .run(proof === 'running-call' ? 'running' : 'unrecognized', callId);
+      } finally {
+        changed.sqlite.close();
+      }
+      if (proof === 'changed-prior-item' || proof === 'changed-extra-item') {
+        // Model contradictory retained bytes; live Store admission correctly forbids this rewrite.
+        const itemsPath = join(
+          f.store.workspaceRootPath('ws_demo'),
+          'threads',
+          f.threadId,
+          'turns',
+          f.turnId,
+          'items.jsonl'
+        );
+        const item = store.getTurnById(f.turnId).items[proof === 'changed-prior-item' ? 0 : 4]!;
+        appendFileSync(itemsPath, `${JSON.stringify({ ...item, status: 'failed' })}\n`);
+      }
+      const currentStore = new FsStore({ dataRoot: f.dataRoot });
+      const before = currentStore.getTurnById(f.turnId);
+      const input = { ...f.input, store: currentStore };
+      if (proof === 'decided') {
+        await runSchedulerRecoveryMaintenance(f.coreDb, 9, input);
+        const durable = new FsStore({ dataRoot: f.dataRoot });
+        expect(durable.getTurnById(f.turnId)).toEqual(before);
+        expect(durable.getAgentSession(f.agentSessionId)).toMatchObject({
+          status: 'failed',
+          message: decided.error!.message,
+          updatedAt: completedAt,
+        });
+        expect(
+          durable.getTurnEvents(f.turnId).filter((event) => event.event === 'agent.session.updated')
+        ).toHaveLength(1);
+        await runSchedulerRecoveryMaintenance(f.coreDb, 9, input);
+        expect(new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId)).toEqual(
+          durable.getAgentSession(f.agentSessionId)
+        );
+      } else {
+        await expect(runSchedulerRecoveryMaintenance(f.coreDb, 9, input)).rejects.toThrow(
+          'recovery_required: Failed-start terminal publication contradicts its decided Turn.'
+        );
+        expect(new FsStore({ dataRoot: f.dataRoot }).getAgentSession(f.agentSessionId).status).toBe(
+          'busy'
+        );
+      }
+      const terminalBefore = eventsBefore
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((event) => event.event === 'turn.completed');
+      expect(
+        currentStore.getTurnEvents(f.turnId).find((event) => event.event === 'turn.completed')
+      ).toEqual(terminalBefore);
+      expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(before);
+      expect(f.workerDelivery.startTurn).not.toHaveBeenCalled();
+      expect(f.input.projectRecoveredTurn).not.toHaveBeenCalled();
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     'maintenance',
     'ordinary-owner',

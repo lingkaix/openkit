@@ -11,6 +11,7 @@ import {
 } from '../scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markFrozenDeliveryUnknown, readPendingRequest } from './pending-requests.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
@@ -507,7 +508,8 @@ function settleTerminalFailedStart(
     const terminalEvents = store
       .getTurnEvents(turn.id)
       .filter((event) => event.event === 'turn.completed');
-    // Preserve all decided content while excluding only the store-admitted Item display fields.
+    // Append-only completion may enlarge the current Item list after the terminal event.
+    // Preserve every prior Item and require its canonical owner to prove each addition.
     if (
       terminalEvents.some(
         (event) =>
@@ -518,8 +520,16 @@ function settleTerminalFailedStart(
           event.data.stopReason !== 'error' ||
           !isDeepStrictEqual(
             withoutItemDisplayFields(event.data.turn),
-            withoutItemDisplayFields(turn)
-          )
+            withoutItemDisplayFields({
+              ...turn,
+              items: turn.items.slice(0, event.data.turn.items.length),
+            })
+          ) ||
+          !turn.items
+            .slice(event.data.turn.items.length)
+            .every((item) =>
+              isAlreadyDecidedWorkerMcpItem(workspace.db, pkg, item, turn.completedAt)
+            )
       )
     ) {
       throw new Error('Failed-start terminal publication contradicts its decided Turn.');
