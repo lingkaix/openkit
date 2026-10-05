@@ -19,6 +19,7 @@ import type {
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { type WorkerTerminalOutcomeInput, WorkerTranscriptWriter } from './transcript.js';
+import { TurnTimeline } from './turn-timeline.js';
 import {
   initializeEmptyWorkspaceSlot,
   materializeWorkspaceGitInputs,
@@ -148,7 +149,7 @@ export interface ResidentTurnResult {
 export async function runResidentTurn(options: ResidentTurnOptions): Promise<ResidentTurnResult> {
   const progress: { stage: WorkerStartupFailure['stage'] | null } = { stage: 'package_validation' };
   try {
-    return await runResidentTurnImplementation(options, progress);
+    return await runResidentTurnImplementation(options, progress, new TurnTimeline());
   } catch (error) {
     if (progress.stage) {
       options.onStartupFailure?.(describeWorkerStartupFailure(progress.stage, error));
@@ -160,7 +161,8 @@ export async function runResidentTurn(options: ResidentTurnOptions): Promise<Res
 /** Runs one Turn while identifying the last pre-start dependency entered. */
 async function runResidentTurnImplementation(
   options: ResidentTurnOptions,
-  progress: { stage: WorkerStartupFailure['stage'] | null }
+  progress: { stage: WorkerStartupFailure['stage'] | null },
+  timeline: TurnTimeline
 ): Promise<ResidentTurnResult> {
   const packageManifest = await readWorkerShimPackage(options.packagePath);
 
@@ -218,6 +220,7 @@ async function runResidentTurnImplementation(
   const controlAbortController = new AbortController();
   const heartbeatAbortController = new AbortController();
   const writer = new WorkerTranscriptWriter({
+    recordLifecycleFact: timeline.record,
     appendEvent: async (record) => {
       if (!controlSession) {
         throw new Error('Worker live event append requires initialized direct control.');
@@ -238,11 +241,15 @@ async function runResidentTurnImplementation(
   let workerControlReady = false;
   let residentTurn: WorkerResidentTurn | null = null;
   let interrupted = options.signal.aborted;
+  if (interrupted) timeline.record({ label: 'interrupt' });
   const interruptReason = new Error('Harness turn.interrupt');
   /** The one native stop of the started Turn; its result is shared by every stop request. */
   let nativeStop: Promise<boolean> | null = null;
   const stopStartedTurn = (turn: WorkerResidentTurn): Promise<boolean> => {
-    nativeStop ??= stopNativeTurn(turn);
+    nativeStop ??= stopNativeTurn(turn).then((proved) => {
+      timeline.record({ label: 'native_stop', reason: proved ? 'proved' : 'unknown' });
+      return proved;
+    });
     return nativeStop;
   };
   let failUnprovedStop!: (error: Error) => void;
@@ -253,6 +260,7 @@ async function runResidentTurnImplementation(
   unprovedStop.catch(() => undefined);
   /** Delivers private `turn.interrupt` to the started Turn, or stops readiness before start. */
   const onInterrupt = () => {
+    if (!interrupted) timeline.record({ label: 'interrupt' });
     interrupted = true;
     if (residentTurn) {
       void stopStartedTurn(residentTurn).then((stopped) => {
@@ -269,6 +277,7 @@ async function runResidentTurnImplementation(
     await options.integration.ready;
     options.integration.bindTurnRouteTokens(options.lineage.agentSessionId, options.tokens);
     const session = new WorkerControlClient({
+      recordLifecycleFact: timeline.record,
       baseUrl: '/worker-control',
       fetch: options.fetch ?? options.integration.workerControlFetch,
       lineage,
@@ -299,7 +308,8 @@ async function runResidentTurnImplementation(
         {
           status: 'interrupted',
           stopReason: 'aborted',
-        }
+        },
+        timeline
       );
       await terminalPublication;
       return { status: 'interrupted' };
@@ -309,6 +319,7 @@ async function runResidentTurnImplementation(
     // Rejection guarantees no live native Turn. Unproved attempts must be returned with
     // rejecting settlement so the existing bounded stop/fence path retains cleanup ownership.
     const startedTurn = await options.resident.startTurn({
+      recordLifecycleFact: timeline.record,
       llmRoute,
       allowedLlmRoutes,
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
@@ -333,9 +344,16 @@ async function runResidentTurnImplementation(
     });
     // Observe both outcomes before transcript I/O; the derived promise never rejects, so a
     // pending writer cannot expose exceptional settlement at the process rejection boundary.
+    timeline.record({ label: 'native_accepted' });
     const settlement = startedTurn.settled.then(
-      (result) => ({ kind: 'settled' as const, result }),
-      (error: unknown) => ({ error })
+      (result) => {
+        timeline.record({ label: 'terminal', reason: result.status });
+        return { kind: 'settled' as const, result };
+      },
+      (error: unknown) => {
+        timeline.record({ label: 'terminal', reason: 'rejected' });
+        return { error };
+      }
     );
     residentTurn = startedTurn;
     progress.stage = null;
@@ -370,7 +388,11 @@ async function runResidentTurnImplementation(
         data: { adapter: options.adapterId, status: 'turn.started' },
         type: 'worker.ready',
       });
-      const hostEnded = () => ({ error: hostEndedError });
+      const hostEnded = () => {
+        timeline.record({ label: 'host_exit' });
+        timeline.record({ label: 'native_stop', reason: 'proved' });
+        return { error: hostEndedError };
+      };
       const outcome = await Promise.race([
         settlement,
         heartbeatFailure.catch((error: unknown) => ({ error })),
@@ -399,7 +421,16 @@ async function runResidentTurnImplementation(
     ]);
     // Turn barrier: loopback requests still in flight are drained, then cut, before collection.
     await Promise.race([
-      options.integration.drainTurn(options.lineage.agentSessionId),
+      options.integration.drainTurn(options.lineage.agentSessionId).then(
+        (count) => {
+          timeline.record({ label: 'loopback_drain', reason: 'proved', count });
+          return count;
+        },
+        (error: unknown) => {
+          timeline.record({ label: 'loopback_drain', reason: 'unknown' });
+          throw error;
+        }
+      ),
       heartbeatFailure,
     ]);
     options.signal.removeEventListener('abort', onInterrupt);
@@ -440,6 +471,7 @@ async function runResidentTurnImplementation(
       writer,
       session,
       terminalInput,
+      timeline,
       controlAbortController.signal
     );
     await Promise.race([terminalPublication, heartbeatFailure]);
@@ -449,6 +481,7 @@ async function runResidentTurnImplementation(
       terminalOutcomeAttempted = true;
       // Keep the deciding native failure while the settlement wrapper retains cleanup ownership.
       const failure = error instanceof NativeSettlementUnknownError ? error.cause : error;
+      timeline.record({ label: 'terminal', reason: 'failed' });
       terminalPublication = writeAndReportTerminalOutcome(
         writer,
         workerControlReady && !controlAbortController.signal.aborted ? controlSession : null,
@@ -460,6 +493,7 @@ async function runResidentTurnImplementation(
           status: 'failed',
           stopReason: 'error',
         },
+        timeline,
         controlAbortController.signal
       );
       // Failure to publish cannot replace the deciding native, Integration, or control failure.
@@ -703,15 +737,29 @@ export function describeWorkerStartupFailure(
  * @param writer Durable worker transcript writer.
  * @param client Existing session coordinator, or null when live publication is unavailable.
  * @param input Worker-local terminal outcome.
+ * @param timeline Shared recorder frozen synchronously before terminal transcript sealing.
  * @param signal Existing control-delivery cancellation; no fresh publication authority or retry budget is created.
  */
 async function writeAndReportTerminalOutcome(
   writer: WorkerTranscriptWriter,
   client: WorkerControlClient | null,
   input: WorkerTerminalOutcomeInput,
+  timeline: TurnTimeline,
   signal?: AbortSignal
 ): Promise<void> {
-  const record = await writer.writeTerminalOutcome(input);
+  let snapshot: string | undefined;
+  try {
+    timeline.freeze();
+    // Only closed vocabulary, allowlisted signals and bounded numbers enter the timeline; free-text redaction would corrupt numeric JSON.
+    if (input.status === 'failed') snapshot = timeline.seal();
+  } catch {
+    // Diagnostics are optional: retain the original terminal evidence and publication outcome.
+  }
+  const record = await writer.writeTerminalOutcome(
+    snapshot !== undefined
+      ? { ...input, diagnostics: { ...input.diagnostics, timeline: snapshot } }
+      : input
+  );
   if (!client) return;
   // Sealing prevents new events from extending the barrier on normal and exceptional closeout.
   await writer.drainLiveEvents();

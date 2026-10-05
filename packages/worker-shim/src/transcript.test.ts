@@ -48,6 +48,36 @@ const lineage: WorkerLineage = {
 };
 
 describe('WorkerTranscriptWriter', () => {
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('contains recorder faults through live delivery and %s terminal writing', async (status) => {
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-recorder-fault-'));
+    const appendEvent = vi.fn(async () => undefined);
+    const recorder = vi.fn(() => {
+      throw new Error('recorder fault');
+    });
+    const writer = new WorkerTranscriptWriter({
+      lineage,
+      sessionDir,
+      appendEvent,
+      recordLifecycleFact: recorder,
+    });
+    await expect(writer.writeAndAppendEvent({ type: 'worker.ready' })).resolves.toMatchObject({
+      event: { type: 'worker.ready' },
+    });
+    await writer.drainLiveEvents();
+    await expect(
+      writer.writeTerminalOutcome({
+        status,
+        stopReason: status === 'failed' ? 'error' : 'completed',
+      })
+    ).resolves.toMatchObject({ event: { data: { status } } });
+    expect(appendEvent).toHaveBeenCalledTimes(1);
+    expect(recorder).toHaveBeenCalledTimes(2);
+    expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(2);
+  });
+
   it('writes durable event, item, artifact, and terminal records with lineage', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-'));
     const writer = new WorkerTranscriptWriter({ lineage, sessionDir });

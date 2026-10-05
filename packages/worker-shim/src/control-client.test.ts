@@ -57,6 +57,31 @@ const notice = {
 };
 
 describe('WorkerControlClient', () => {
+  it('contains throwing recorder callbacks without changing heartbeat transport outcomes', async () => {
+    const fixture = createFetchFixture([
+      { body: { accepted: true } },
+      { ok: false, status: 403, body: { code: 'worker_control_lease_not_live' } },
+    ]);
+    const recordLifecycleFact = vi.fn(() => {
+      throw new Error('recorder fault');
+    });
+    const client = new WorkerControlClient({
+      baseUrl: '/worker-control',
+      lineage,
+      token: 'control',
+      fetch: fixture.fetch,
+      recordLifecycleFact,
+    });
+    await expect(client.recordHeartbeat({ status: 'starting' })).resolves.toEqual({
+      accepted: true,
+    });
+    await expect(client.recordHeartbeat({ status: 'running' })).rejects.toMatchObject({
+      code: 'worker_control_lease_not_live',
+    });
+    expect(fixture.requests).toHaveLength(2);
+    expect(recordLifecycleFact).toHaveBeenCalledTimes(4);
+  });
+
   it('sends heartbeat and artifact notices with sandbox bearer lineage', async () => {
     const { fetch, requests } = createFetchFixture([
       { body: { heartbeat: { status: 'running' } } },

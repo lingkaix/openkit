@@ -2263,6 +2263,89 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it.each([
+    'failed',
+    'completed',
+    'over-16-kib',
+  ] as const)('preserves accepted diagnostics in one failure closeout log: %s', async (kind) => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-failure-log-')));
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Inspect failure diagnostics');
+    const diagnostics = {
+      ...(kind === 'over-16-kib'
+        ? Object.fromEntries(
+            Array.from({ length: 17 }, (_, index) => [`summary${index}`, 'x'.repeat(1000)])
+          )
+        : {}),
+      timeline: JSON.stringify({
+        startedAt: '2026-10-05T00:00:00.000Z',
+        entries: Array.from({ length: 8 }, (_, ms) => ({
+          label: 'heartbeat',
+          reason: 'accepted',
+          ms,
+          durationMs: 0,
+        })),
+        dropped: 0,
+      }),
+    };
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const executor = new WorkerGovernanceTurnExecutor({
+      awaitWorkerCompletion: async () => ({
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        status: kind === 'completed' ? 'completed' : 'failed',
+        stopReason: kind === 'completed' ? 'completed' : 'error',
+        diagnostics,
+      }),
+      backend: new FakeWorkerGovernanceBackend(),
+      coreDb,
+      createAgentSessionId: () => 'as_failure_log',
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      await startWithExecutorLease(
+        coreDb,
+        executor,
+        store,
+        turn,
+        'as_failure_log',
+        '2026-07-15T00:00:00.000Z',
+        'Inspect failure diagnostics',
+        {
+          agentSetup: createTestAgentSetup(),
+          requestId: '00000000-0000-4000-8000-000000000253',
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        }
+      );
+      if (kind === 'completed') {
+        expect(log).not.toHaveBeenCalled();
+      } else {
+        expect(log).toHaveBeenCalledTimes(1);
+        const line = log.mock.calls[0]![0] as string;
+        const record = JSON.parse(line);
+        expect(record).toMatchObject({
+          event: 'worker.turn.failed',
+          turnId: turn.id,
+          status: 'failed',
+          diagnostics: { timeline: diagnostics.timeline },
+        });
+        expect(record.diagnostics).toEqual(diagnostics);
+        expect(record).not.toHaveProperty('droppedDiagnostics');
+        if (kind === 'over-16-kib') {
+          const bytes = Buffer.byteLength(JSON.stringify(diagnostics));
+          expect(bytes).toBeGreaterThan(16 * 1024);
+          expect(bytes).toBeLessThan(64 * 1024);
+          expect(Object.keys(diagnostics).at(-1)).toBe('timeline');
+        }
+      }
+    } finally {
+      log.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
     'none',
     'native-cause',
     'native-summary',

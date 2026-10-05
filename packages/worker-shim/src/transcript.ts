@@ -18,6 +18,8 @@ import {
   runtimeDigest,
 } from './runtime-capture.js';
 
+import { containTurnLifecycleRecorder, type TurnLifecycleRecorder } from './turn-timeline.js';
+
 export type { WorkerLineage, WorkerTextPart } from '@openkit/worker-protocol';
 
 /**
@@ -74,6 +76,8 @@ export type WorkerTerminalOutcomeInput = WorkerCanonicalTerminalEventDataInput;
  * Worker transcript writer options.
  */
 export interface WorkerTranscriptWriterOptions {
+  /** Shared Turn recorder for queue counts and observed live-delivery waits. */
+  recordLifecycleFact?: TurnLifecycleRecorder;
   /** Durable session directory, usually `/openkit/session`. */
   sessionDir: string;
   /** Lineage fields attached to every record. */
@@ -93,6 +97,7 @@ export class WorkerTranscriptWriter {
   private readonly lineage: WorkerLineage;
   private readonly sessionDir: string;
   private sequence = 0;
+  private readonly recordLifecycleFact: TurnLifecycleRecorder | undefined;
 
   /**
    * Creates a writer for one worker session.
@@ -101,6 +106,7 @@ export class WorkerTranscriptWriter {
    */
   public constructor(options: WorkerTranscriptWriterOptions) {
     this.appendEvent = options.appendEvent ?? null;
+    this.recordLifecycleFact = containTurnLifecycleRecorder(options.recordLifecycleFact);
     this.lineage = options.lineage;
     this.sessionDir = options.sessionDir;
   }
@@ -195,7 +201,22 @@ export class WorkerTranscriptWriter {
 
   /** Serializes live acceptance as well as local append, including concurrent child sources and heartbeats. */
   private enqueueLive(operation: () => Promise<void>): Promise<void> {
+    const enqueuedAt = performance.now();
+    this.recordLifecycleFact?.({ label: 'transcript_enqueue' });
     this.liveQueue = this.liveQueue.then(operation);
+    // Observe rejection without recovering the delivery queue or changing its barrier.
+    void this.liveQueue.then(
+      () =>
+        this.recordLifecycleFact?.({
+          label: 'transcript_delivered',
+          durationMs: performance.now() - enqueuedAt,
+        }),
+      () =>
+        this.recordLifecycleFact?.({
+          label: 'transcript_failed',
+          durationMs: performance.now() - enqueuedAt,
+        })
+    );
     return this.liveQueue;
   }
 

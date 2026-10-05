@@ -5,6 +5,7 @@ import { deepseekResidentAdapter } from './adapters/deepseek.js';
 import { opencodeAdapter } from './adapters/opencode.js';
 import { piResidentAdapter } from './adapters/pi.js';
 import type { RuntimeCaptureInput } from './runtime-capture.js';
+import type { TurnLifecycleRecorder } from './turn-timeline.js';
 
 /** One Shim-selected worker LLM route passed unchanged to an adapter. */
 export interface WorkerAdapterLlmRoute {
@@ -118,6 +119,8 @@ export interface WorkerResidentOpenInput {
 
 /** Per-Turn input for one resident binding, resolved from the Turn's own AEP. */
 export interface WorkerResidentTurnInput {
+  /** Shared value-free recorder for native events and host exit evidence unavailable to the Harness. */
+  readonly recordLifecycleFact?: TurnLifecycleRecorder;
   /** The package's unique preferred LLM route selected by the Harness. */
   readonly llmRoute: WorkerAdapterLlmRoute;
   /** Exact admitted logical-model routes fixed for this binding; the adapter must use the preferred llmRoute for this Turn and may select only a route in this set for later Turns. */

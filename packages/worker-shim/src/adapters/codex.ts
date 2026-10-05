@@ -16,6 +16,7 @@ import type {
 } from '../adapter-registry.js';
 import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
   CODEX_APPROVAL_POLICY,
   CODEX_RPC_TIMEOUT_MS,
@@ -305,6 +306,8 @@ class CodexResidentSession implements WorkerResidentSession {
   private stopInFlight: Promise<boolean> | null = null;
   private unusable = false;
   private active = false;
+  /** Shared observer for native facts unavailable to the Harness. */
+  private recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   /** Working directory and MCP ids bound when the thread was loaded. Null until that load. */
   private boundSupply: string | null = null;
   /** Canonical admitted descriptors fixed by the first Turn, independent of preferred order. */
@@ -348,7 +351,8 @@ class CodexResidentSession implements WorkerResidentSession {
       },
       launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS
     );
-    child.on('exit', () => {
+    child.on('exit', (code, signal) => {
+      this.recordLifecycleFact?.({ label: 'host_exit', code, signal });
       this.phase = 'absent';
       this.child = null;
       if (!this.invalidation) this.failWaiters('process-exited');
@@ -485,6 +489,7 @@ class CodexResidentSession implements WorkerResidentSession {
    * exited. Otherwise the returned Turn is one the Harness cannot settle and therefore fences.
    */
   async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+    this.recordLifecycleFact = containTurnLifecycleRecorder(input.recordLifecycleFact);
     const effort = validateTurnReasoningEffort(input);
     if (this.closing) throw new Error('Codex binding is closing.');
     if (this.exitUnproved && this.processIsLive()) {
@@ -823,6 +828,7 @@ class CodexResidentSession implements WorkerResidentSession {
   }
 
   private onNotification(method: string, params: unknown): void {
+    if (this.active || this.acceptingTurn) this.recordLifecycleFact?.({ label: 'native_event' });
     if (this.unusable || this.closing) return;
     if (method !== 'item/completed' && method !== 'turn/completed') return;
     if (!params || typeof params !== 'object' || Array.isArray(params)) {

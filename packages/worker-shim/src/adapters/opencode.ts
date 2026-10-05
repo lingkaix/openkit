@@ -21,6 +21,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import { OPENCODE_PLUGIN_SOURCE } from './opencode-plugin.js';
 
 /** Slash-free native provider id for the trusted relay. It is not an AEP provider instance id. */
@@ -238,6 +239,8 @@ async function supervise(
   });
   let closing = false;
   let turnActive = false;
+  // Only the shared callback is retained; no adapter timeline or labels are owned here.
+  let recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   let exitObserved = false;
   let resolveExited!: () => void;
   const exited = new Promise<void>((resolve) => {
@@ -293,6 +296,7 @@ async function supervise(
     resolveClosed();
   });
   child.on('exit', (code, signal) => {
+    recordLifecycleFact?.({ label: 'host_exit', code, signal });
     gracefulExit =
       gracefulRequested && !stopRequested && !forcedStop && code === 0 && signal === null;
     markExited();
@@ -448,6 +452,7 @@ async function supervise(
         return { state: 'ready', reference: proved.reference };
       },
       async startTurn(turn) {
+        recordLifecycleFact = containTurnLifecycleRecorder(turn.recordLifecycleFact);
         const effort = validateTurnReasoningEffort(turn);
         const reasoning = turn.llmRoute.reasoningEffortLevels !== undefined;
         let reasoningEffortDiagnostic = 'unknown';
@@ -709,6 +714,9 @@ async function supervise(
             ]),
           published: (messages) => {
             publishedBoundary = messages;
+            for (const message of messages) {
+              if (!before.has(message.id)) recordLifecycleFact?.({ label: 'native_event' });
+            }
           },
         }).then((result) => {
           collected = true;

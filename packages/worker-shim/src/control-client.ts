@@ -10,6 +10,7 @@ import {
   WorkerControlResponseEnvelopeSchema,
   type WorkerLineage,
 } from '@openkit/worker-protocol';
+import { containTurnLifecycleRecorder, type TurnLifecycleRecorder } from './turn-timeline.js';
 
 const WORKER_CONTROL_REQUEST_TIMEOUT_MS = 10_000;
 const WORKER_CONTROL_OUTAGE_BUDGET_MS = 300_000;
@@ -52,6 +53,8 @@ export type WorkerControlFetch = (
  * Worker control client construction options.
  */
 export interface WorkerControlClientOptions {
+  /** Shared recorder for physical heartbeat attempts and reconnect evidence, without request values. */
+  recordLifecycleFact?: TurnLifecycleRecorder;
   /** NanoCore worker-control route base URL. */
   baseUrl: string;
   /** Sandbox bearer token injected by NanoCore. */
@@ -144,6 +147,7 @@ export class WorkerControlClient {
   private reconnecting: Promise<unknown> | null = null;
   private readonly token: string;
   private readonly baseUrl: string;
+  private readonly recordLifecycleFact: TurnLifecycleRecorder | undefined;
 
   /**
    * Creates a worker control client.
@@ -152,6 +156,7 @@ export class WorkerControlClient {
    */
   public constructor(options: WorkerControlClientOptions) {
     this.fetch = options.fetch ?? defaultFetch();
+    this.recordLifecycleFact = containTurnLifecycleRecorder(options.recordLifecycleFact);
     this.lineage = options.lineage;
     this.processKey = randomBytes(32).toString('base64url');
     this.token = options.token;
@@ -295,32 +300,50 @@ export class WorkerControlClient {
   }
 
   /** Sends one raw heartbeat envelope with an optional process-key reconnect proof. */
-  private postHeartbeat(
+  private async postHeartbeat(
     heartbeat: WorkerControlHeartbeatInput,
     reconnect: boolean,
     signal?: AbortSignal
   ): Promise<unknown> {
-    return this.postJson(
-      '/heartbeat',
-      {
-        body: {
-          message: heartbeat.message ?? null,
-          ...(heartbeat.sequence === 0
-            ? {
-                processKeyHash: createHash('sha256')
-                  .update(Buffer.from(this.processKey, 'base64url'))
-                  .digest('base64url'),
-              }
-            : {}),
-          status: heartbeat.status,
+    const startedAt = performance.now();
+    const label = reconnect ? 'reconnect' : 'heartbeat';
+    this.recordLifecycleFact?.({ label, reason: 'attempt' });
+    try {
+      const result = await this.postJson(
+        '/heartbeat',
+        {
+          body: {
+            message: heartbeat.message ?? null,
+            ...(heartbeat.sequence === 0
+              ? {
+                  processKeyHash: createHash('sha256')
+                    .update(Buffer.from(this.processKey, 'base64url'))
+                    .digest('base64url'),
+                }
+              : {}),
+            status: heartbeat.status,
+          },
+          operation: 'heartbeat',
+          ...(reconnect ? { reconnectKey: this.processKey } : {}),
+          schemaVersion: 2,
+          sequence: heartbeat.sequence,
         },
-        operation: 'heartbeat',
-        ...(reconnect ? { reconnectKey: this.processKey } : {}),
-        schemaVersion: 2,
-        sequence: heartbeat.sequence,
-      },
-      signal
-    );
+        signal
+      );
+      this.recordLifecycleFact?.({
+        label,
+        reason: 'accepted',
+        durationMs: performance.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      this.recordLifecycleFact?.({
+        label,
+        reason: 'rejected',
+        durationMs: performance.now() - startedAt,
+      });
+      throw error;
+    }
   }
 
   /** Runs one ordinary control request through the sole bounded retry owner. */

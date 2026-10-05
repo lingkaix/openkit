@@ -16,6 +16,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
   createPiLineReader,
   PI_CHANNEL_FRAME_MAX_BYTES,
@@ -288,6 +289,8 @@ export class PiResidentBinding implements WorkerResidentSession {
   #skillTargetPaths: readonly string[] | null = null;
   #model: PiModel | null = null;
   #nativeEventCount = 0;
+  /** Shared observer for native facts unavailable to the Harness. */
+  #recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   #nextId = 1;
   #pending = new Map<
     number,
@@ -512,6 +515,7 @@ export class PiResidentBinding implements WorkerResidentSession {
    * @returns The accepted Turn, or a Turn the Harness must fence when the stop is unproved.
    */
   public async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+    this.#recordLifecycleFact = containTurnLifecycleRecorder(input.recordLifecycleFact);
     const effort = validateTurnReasoningEffort(input);
     if (this.#closing) throw new PiAdapterError('Pi host is closing.');
     if (this.#exitUnproved || (this.#lost && !this.#exitSeen)) {
@@ -603,7 +607,8 @@ export class PiResidentBinding implements WorkerResidentSession {
       this.#spawned = true;
     });
     this.#child.on('error', () => this.#markLost());
-    this.#child.on('exit', (code) => {
+    this.#child.on('exit', (code, signal) => {
+      this.#recordLifecycleFact?.({ label: 'host_exit', code, signal });
       if (this.#exitSeen) return;
       this.#exitSeen = true;
       this.#exitCode = code;
@@ -899,7 +904,10 @@ export class PiResidentBinding implements WorkerResidentSession {
     }
     if (frame.kind === 'ignored') return;
     if (frame.kind === 'native') {
-      if (this.#turn?.turnId === frame.turnId) this.#nativeEventCount += 1;
+      if (this.#turn?.turnId === frame.turnId) {
+        this.#nativeEventCount += 1;
+        this.#recordLifecycleFact?.({ label: 'native_event' });
+      }
       return;
     }
     if (frame.kind === 'ui') {
@@ -918,6 +926,8 @@ export class PiResidentBinding implements WorkerResidentSession {
       pending.reply(frame.response);
       return;
     }
+    if (this.#turn?.turnId === frame.settled.turnId)
+      this.#recordLifecycleFact?.({ label: 'native_event' });
     this.#onSettled(frame.settled);
   }
 

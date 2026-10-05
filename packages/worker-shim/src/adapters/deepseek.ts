@@ -43,6 +43,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 
 /** Accumulated `session/update` payload ceiling for one Turn. */
 export const DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES = 16 * 1024 * 1024;
@@ -274,6 +275,8 @@ class DeepSeekSession implements WorkerResidentSession {
   private nativeConfigurationConflict = false;
   private suppressExit = false;
   private turn: ActiveTurn | null = null;
+  /** Shared observer for native facts unavailable to the Harness. */
+  private recordLifecycleFact: WorkerResidentTurnInput['recordLifecycleFact'];
   private unknownIdentity = false;
   /** Set when a stop did not observe process exit. `close` must fail so the Harness fences. */
   private exitUnproved = false;
@@ -453,6 +456,7 @@ class DeepSeekSession implements WorkerResidentSession {
    * the Harness cannot settle and therefore fences.
    */
   async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
+    this.recordLifecycleFact = containTurnLifecycleRecorder(input.recordLifecycleFact);
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     if (this.ended) throw new Error('DeepSeek binding has ended.');
     if (this.turn) throw new Error('DeepSeek turn is already active.');
@@ -907,6 +911,7 @@ class DeepSeekSession implements WorkerResidentSession {
 
   /** Classifies one `session/update` the admission filter already allowed through. */
   private onUpdate(params: SessionNotification): void {
+    if (this.turn) this.recordLifecycleFact?.({ label: 'native_event' });
     const turn = this.turn;
     if (!turn || turn.overLimit || turn.badContent) return;
     if (this.sessionId && params.sessionId !== this.sessionId) {
@@ -1041,7 +1046,11 @@ class DeepSeekSession implements WorkerResidentSession {
       };
       // `exit` is the only proof the process is gone. `error` with a pid can be a failed
       // signal or a broken pipe while the process is still running.
-      child.once('exit', finish);
+      child.once('exit', (code, signal) => {
+        if (generation === this.generation)
+          this.recordLifecycleFact?.({ label: 'host_exit', code, signal });
+        finish();
+      });
       child.once('error', () => {
         if (typeof child.pid !== 'number') finish();
       });

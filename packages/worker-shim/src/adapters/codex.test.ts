@@ -242,10 +242,22 @@ describe('Codex App Server adapter', () => {
           body: expect.objectContaining({
             status: 'failed',
             stopReason: 'error',
-            diagnostics: { native: 'Codex App Server provenance is not implemented for this pin.' },
+            diagnostics: {
+              native: 'Codex App Server provenance is not implemented for this pin.',
+              timeline: expect.any(String),
+            },
           }),
         }),
       ]);
+      const timeline = JSON.parse(finalStatuses[0]!.body.diagnostics.timeline);
+      expect(timeline.entries[0]).toMatchObject({ label: 'turn_start', ms: 0 });
+      expect(timeline.entries.at(-1)).toMatchObject({ label: 'sealed' });
+      expect(timeline.entries).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'terminal', reason: 'failed' })])
+      );
+      expect(
+        timeline.entries.some((entry: { label: string }) => entry.label === 'native_accepted')
+      ).toBe(false);
       expect(inference.bodies).toHaveLength(0);
       expect(mcp.requests).toHaveLength(0);
       expect(await session.nativeHandle()).toEqual({ state: 'pending' });

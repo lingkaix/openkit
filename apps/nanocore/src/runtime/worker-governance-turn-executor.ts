@@ -3021,6 +3021,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       });
       return;
     }
+    if (accepted.status === 'failed') {
+      // The admitted map already fits the 64 KiB control envelope; preserve it exactly for operator diagnosis.
+      console.error(
+        JSON.stringify({
+          event: 'worker.turn.failed',
+          turnId: turnScope.id,
+          status: accepted.status,
+          diagnostics: accepted.diagnostics ?? {},
+        })
+      );
+    }
     let inferenceDetail = '';
     let unsupportedInference = false;
     const workspaceDb = packageSnapshotId ? this.openWorkspaceDb(turnScope.workspaceId) : null;

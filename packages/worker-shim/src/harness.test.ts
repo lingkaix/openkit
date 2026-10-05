@@ -28,6 +28,7 @@ import { runWorkerHarness, WorkerHarness } from './harness.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { WorkerTranscriptWriter } from './transcript.js';
 import { initializeSessionWorkspace } from './turn.js';
+import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
 
 const loopFixture = vi.hoisted(() => ({
   client: null as SandboxIntegrationClient | null,
@@ -2316,6 +2317,194 @@ describe('Worker Harness resident AgentSessions', () => {
         expect.objectContaining({ body: { reasonCode: 'conflict' } })
       );
     }
+  });
+
+  it('contains throwing fact getters at the shared recorder boundary', () => {
+    const timeline = new TurnTimeline();
+    expect(() =>
+      timeline.record({
+        get label(): 'host_exit' {
+          throw new Error('fact getter fault');
+        },
+      })
+    ).not.toThrow();
+    timeline.record({ label: 'untrusted-native-value' as never });
+    timeline.record({
+      label: 'host_exit',
+      code: 17,
+      reason: 'untrusted-native-value' as never,
+      signal: 'untrusted-native-value' as never,
+    });
+    const snapshot = timeline.seal();
+    expect(snapshot).not.toContain('untrusted-native-value');
+    expect(JSON.parse(snapshot).entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'host_exit', code: 17 })])
+    );
+  });
+
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('publishes %s terminal evidence despite a throwing timeline snapshot', async (status) => {
+    const snapshot = vi.spyOn(TurnTimeline.prototype, 'seal').mockImplementation(() => {
+      throw new Error('snapshot fault');
+    });
+    const f = harnessFixture();
+    if (status === 'failed') f.fake.script.push({ kind: 'fail' });
+    try {
+      await f.open('as-a');
+      await f.start('as-a', 'turn-1');
+      await f.settle('as-a');
+      expect(f.integration.finalStatuses).toHaveLength(1);
+      expect(f.integration.finalStatuses[0]?.body.status).toBe(status);
+      expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
+      expect(snapshot).toHaveBeenCalledTimes(status === 'failed' ? 1 : 0);
+      const events = readFileSync(join(f.sandboxRoot, 'session', 'events.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(events.at(-1).event.data.status).toBe(status);
+    } finally {
+      snapshot.mockRestore();
+    }
+  });
+
+  it('admits only primitive vocabulary values from changing fact getters', () => {
+    const timeline = new TurnTimeline();
+    let reads = 0;
+    timeline.record({
+      label: 'native_stop',
+      get reason() {
+        return (++reads <= 2 ? 'proved' : 'untrusted-native-value') as 'proved';
+      },
+    });
+    timeline.record({
+      label: 'host_exit',
+      signal: {
+        credential: 'untrusted-native-value',
+        [Symbol.toPrimitive]: () => 'SIGKILL',
+      } as never,
+    });
+    const snapshot = timeline.seal();
+    expect(snapshot).not.toContain('untrusted-native-value');
+    expect(
+      JSON.parse(snapshot).entries.every(
+        (entry: { reason?: string; signal?: unknown }) =>
+          (entry.reason === undefined || entry.reason === 'proved') &&
+          (entry.signal === undefined || typeof entry.signal === 'string')
+      )
+    ).toBe(true);
+  });
+
+  it('preserves JSON and publication when a numeric credential collides with an exit code', async () => {
+    const f = harnessFixture();
+    await f.open('as-a', { runtimeEnvironment: { VENDOR_TOKEN: '17' } });
+    f.fake.script.push({ kind: 'hold' });
+    await f.start('as-a', 'turn-1', { runtimeEnvNames: ['VENDOR_TOKEN'] });
+    const resident = f.fake.residents[0]!;
+    resident.turns[0]!.recordLifecycleFact!({ label: 'host_exit', code: 17 });
+    resident.exit();
+    await vi.waitFor(() => expect(f.integration.finalStatuses).toHaveLength(1));
+    await f.settle('as-a');
+    expect(f.integration.finalStatuses).toHaveLength(1);
+    expect(f.integration.finalStatuses[0]?.body.status).toBe('failed');
+    const timeline = JSON.parse(f.integration.finalStatuses[0]!.body.diagnostics!.timeline!);
+    expect(timeline.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: 'host_exit', code: 17 })])
+    );
+  });
+
+  it('publishes a bounded failure timeline after heartbeats and host exit, but none on success', async () => {
+    const f = harnessFixture();
+    await f.open('as-a');
+    await f.start('as-a', 'turn-1');
+    await f.settle('as-a');
+    expect(f.integration.finalStatuses[0]?.body.diagnostics?.timeline).toBeUndefined();
+    const clock = controlSchedulingTime();
+    const started = observation();
+    const cleared = observation();
+    const fetch = f.integration.client.workerControlFetch;
+    const clear = f.integration.client.clearTurnRouteTokens.bind(f.integration.client);
+    let heartbeats = 0;
+    vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/heartbeat')) heartbeats += 1;
+      if (url.endsWith('/final-status')) {
+        // Publication is after sealing: even an observation here must stay outside the payload.
+        f.fake.residents[0]!.turns[1]!.recordLifecycleFact?.({ label: 'interrupt' });
+      }
+      const result = await fetch(url, init);
+      if (body.record?.event.data.status === 'turn.started') started.resolve();
+      return result;
+    });
+    vi.spyOn(f.integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+      clear(id);
+      cleared.resolve();
+    });
+    f.fake.script.push({ kind: 'hold' });
+    try {
+      await f.start('as-a', 'turn-2');
+      await started.promise;
+      const record = f.fake.residents[0]!.turns[1]!.recordLifecycleFact!;
+      record({ label: 'native_event' });
+      await clock.advance(180_000);
+      expect(heartbeats).toBeGreaterThan(30);
+      record({ label: 'native_event' });
+      // Even a malformed native contribution cannot copy arbitrary values into the snapshot.
+      record(
+        Object.assign(
+          {
+            label: 'host_exit' as const,
+            code: 17,
+            signal: 'SIGKILL' as const,
+            reason: credential('inference-as-a') as never,
+          },
+          { payload: credential('inference-as-a') }
+        )
+      );
+      f.fake.residents[0]?.exit();
+      await cleared.promise;
+    } finally {
+      clock.restore();
+      await f.settle('as-a');
+    }
+    const diagnostics = f.integration.finalStatuses[1]?.body.diagnostics;
+    expect(diagnostics?.timeline).toEqual(expect.any(String));
+    const timeline = JSON.parse(diagnostics!.timeline!);
+    expect(new Date(timeline.startedAt).toISOString()).toBe(timeline.startedAt);
+    expect(timeline.dropped).toBeGreaterThan(0);
+    expect(timeline.entries[0]).toMatchObject({ label: 'turn_start', ms: 0 });
+    expect(timeline.entries.at(-1)).toMatchObject({ label: 'sealed' });
+    expect(timeline.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'heartbeat', reason: 'accepted' }),
+        expect.objectContaining({ label: 'host_exit', code: 17, signal: 'SIGKILL' }),
+        expect.objectContaining({ label: 'native_last', count: 2 }),
+        expect.objectContaining({ label: 'terminal', reason: 'failed' }),
+        expect.objectContaining({ label: 'transcript', count: expect.any(Number) }),
+      ])
+    );
+    const offsets = timeline.entries.map((entry: { label: string; ms: number }) => {
+      expect(TURN_TIMELINE_LABELS).toContain(entry.label);
+      return entry.ms;
+    });
+    expect(offsets).toEqual([...offsets].sort((a, b) => a - b));
+    expect(timeline.entries.some((entry: { label: string }) => entry.label === 'interrupt')).toBe(
+      false
+    );
+    expect(
+      timeline.entries.filter((entry: { label: string }) => entry.label === 'heartbeat')
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reason: 'attempt' }),
+        expect.objectContaining({ reason: 'accepted', durationMs: expect.any(Number) }),
+      ])
+    );
+    expect(
+      Buffer.byteLength(JSON.stringify({ timeline: diagnostics!.timeline }))
+    ).toBeLessThanOrEqual(4096);
+    expect(Buffer.byteLength(JSON.stringify(diagnostics))).toBeLessThan(16 * 1024);
+    expect(JSON.stringify(diagnostics)).not.toContain(credential('inference-as-a'));
   });
 
   it('fails the binding when its resident host ends on its own', async () => {

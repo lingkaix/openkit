@@ -41,6 +41,7 @@ import {
   type SyntheticInference,
   startSyntheticInference,
 } from '../test-support/synthetic-inference.js';
+import { TurnTimeline } from '../turn-timeline.js';
 import {
   boundOpenCodeDiagnostic,
   createOpenCodeAdapter,
@@ -73,6 +74,125 @@ afterEach(async () => {
 });
 
 describe('OpenCode resident adapter', () => {
+  /** Uses the existing SDK-shaped double and child peer to observe retained conversation collection. */
+  function timelineFixture(second: 'new' | 'empty' | 'failed') {
+    const layout = makeRoots();
+    const creds = loopback('timeline-history', 'http://127.0.0.1:9');
+    const child = stubbornChild([]);
+    child.kill = () => {
+      Object.assign(child, { exitCode: 0 });
+      child.emit('exit', 0, null);
+      child.emit('close', 0, null);
+      return true;
+    };
+    const module = failingModule('prompt');
+    const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+    let turn = 0;
+    let history: object[] = [];
+    client.session.prompt = async () => {
+      turn += 1;
+      if (turn === 1 || second === 'new')
+        history = [
+          ...history,
+          { id: `user-${turn}`, type: 'user' },
+          {
+            id: `answer-${turn}`,
+            type: 'assistant',
+            finish: turn === 1 ? 'stop' : 'error',
+            content: [{ type: 'text', text: 'answer' }],
+          },
+          { id: `idle-${turn}`, type: 'idle', outcome: turn === 1 ? 'succeeded' : 'failed' },
+        ];
+      if (turn === 1 && second === 'failed')
+        history = [
+          { id: 'user-1', type: 'user' },
+          { id: 'idle-1', type: 'idle', outcome: 'failed' },
+        ];
+      return { id: `user-${turn}` };
+    };
+    client.session.get = async () => ({
+      id: 'sess-1',
+      model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+      time: { idle: Number.MAX_SAFE_INTEGER },
+      outcome: turn === 1 && second !== 'failed' ? 'succeeded' : 'failed',
+    });
+    client.message.list = async () => ({ cursor: {}, data: history }) as never;
+    module.OpenCode.make = () => client;
+    const adapter = createOpenCodeAdapter({
+      loadClient: async () => module,
+      resolveBinary: () => '/unused',
+      spawnServer: () => child,
+    });
+    return { adapter, child, layout, creds };
+  }
+
+  it.each([
+    'new',
+    'empty',
+  ] as const)('counts only this Turn native messages with retained history and %s collection', async (second) => {
+    const f = timelineFixture(second);
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const first = new TurnTimeline();
+    expect(
+      (
+        await (
+          await session.startTurn({
+            ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+            recordLifecycleFact: first.record,
+          })
+        ).settled
+      ).status
+    ).toBe('completed');
+    const later = new TurnTimeline();
+    expect(
+      (
+        await (
+          await session.startTurn({
+            ...turnInput(f.layout, f.creds, 'second', 'prompt-model'),
+            recordLifecycleFact: later.record,
+          })
+        ).settled
+      ).status
+    ).toBe('failed');
+    const snapshot = JSON.parse(later.seal());
+    const events = snapshot.entries.filter(
+      (entry: { label: string }) => entry.label === 'native_first' || entry.label === 'native_last'
+    );
+    if (second === 'new')
+      expect(events).toEqual([
+        expect.objectContaining({ label: 'native_first' }),
+        expect.objectContaining({ label: 'native_last', count: 3 }),
+      ]);
+    else expect(events).toEqual([]);
+  });
+
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('contains native exit recorder faults after a %s Turn', async (status) => {
+    const f = timelineFixture(status === 'failed' ? 'failed' : 'new');
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const recordLifecycleFact = vi.fn((fact: { label: string }) => {
+      if (fact.label === 'host_exit') throw new Error('exit recorder fault');
+    });
+    const turn = await session.startTurn({
+      ...turnInput(f.layout, f.creds, 'first', 'prompt-model'),
+      recordLifecycleFact,
+    });
+    expect((await turn.settled).status).toBe(status);
+    Object.assign(f.child, { exitCode: 17 });
+    expect(() => f.child.emit('exit', 17, null)).not.toThrow();
+    expect(session.childState()).toBe('absent');
+    await session.exited;
+    expect(recordLifecycleFact).toHaveBeenCalledWith({
+      label: 'host_exit',
+      code: 17,
+      signal: null,
+    });
+  });
+
   it('bounds diagnostics to 16 KiB and redacts both loopback credentials', () => {
     const secret = 'c'.repeat(43);
     const diagnostic = boundOpenCodeDiagnostic(`${secret}${'x'.repeat(20_000)}`, [secret]);
