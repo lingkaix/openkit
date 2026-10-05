@@ -99,7 +99,6 @@ export const GoalTaskLinkSchema = z.object({
   threadId: ThreadIdSchema,
   planVersionId: id,
   cardRevision: revision,
-  admittedAt: z.string(),
 });
 /** One read journey joins records without creating a second Task lifecycle. */
 export const GoalViewSchema = z.object({
@@ -108,6 +107,8 @@ export const GoalViewSchema = z.object({
   versions: z.array(GoalPlanVersionSchema),
   tasks: z.array(
     GoalTaskLinkSchema.extend({
+      /** First ordinary Task Turn admission time; a reservation alone supplies no time. */
+      admittedAt: z.string().nullable(),
       missing: z.boolean(),
       turns: z.array(
         z.object({ turnId: id, status: z.string(), completedAt: z.string().nullable() })

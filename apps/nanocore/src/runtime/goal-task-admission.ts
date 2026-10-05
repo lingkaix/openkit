@@ -88,7 +88,6 @@ export function reserveGoalTask(
     threadId,
     planVersionId: plan.planVersionId,
     cardRevision: card.revision,
-    admittedAt: new Date().toISOString(),
   });
   db.sqlite
     .prepare('INSERT INTO goal_card_tasks VALUES (?,?,?,?)')

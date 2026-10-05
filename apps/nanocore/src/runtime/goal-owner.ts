@@ -208,7 +208,7 @@ export function listGoalsForThread(db: WorkspaceDb, threadId: string): GoalRecor
     }[]
   ).map((row) => GoalRecordSchema.parse(JSON.parse(row.payload_json)));
 }
-/** Reads joined ordinary Task state; missing links remain explicit unresolved evidence. */
+/** Derives admission and state from ordinary Task Turns; retained citations alone prove neither. */
 export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema);
   if (!goal) return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
@@ -229,16 +229,17 @@ export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): G
       const missing = !store
         .listThreads(goal.workspaceId)
         .some((thread) => thread.id === link.threadId);
+      const turns = missing ? [] : store.listThreadTurns(goal.workspaceId, link.threadId);
       return {
         ...link,
+        // Historical reservation timestamps are not admission evidence; the Task Turn owns time.
+        admittedAt: turns[0]?.startedAt ?? null,
         missing,
-        turns: missing
-          ? []
-          : store.listThreadTurns(goal.workspaceId, link.threadId).map((turn) => ({
-              turnId: turn.id,
-              status: turn.status,
-              completedAt: turn.completedAt ?? null,
-            })),
+        turns: turns.map((turn) => ({
+          turnId: turn.id,
+          status: turn.status,
+          completedAt: turn.completedAt ?? null,
+        })),
       };
     }),
     requests: listThreadPendingRequests(db.sqlite, goal.workspaceId, goal.threadId)

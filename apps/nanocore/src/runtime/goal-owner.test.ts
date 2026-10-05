@@ -607,7 +607,7 @@ describe('Proposed Plan eligibility', () => {
         }
       );
       expect(cancelled.goal!.disposition).toMatchObject({ kind: 'cancelled', reason: 'Stop' });
-      expect(cancelled.tasks[0]).toMatchObject({ missing: true, turns: [] });
+      expect(cancelled.tasks[0]).toMatchObject({ admittedAt: null, missing: true, turns: [] });
       expect(interrupts).toBe(0);
     } finally {
       f.db.sqlite.close();

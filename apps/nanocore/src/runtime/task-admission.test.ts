@@ -12,12 +12,17 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
+import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
 
 it.each([
-  false,
-  true,
-])('uses current Knowledge admission before reserving Plan/card citations (read denied: %s)', async (readDenied) => {
+  'admitted',
+  'read-denied',
+  'refused',
+  'recovery-required-refusal',
+] as const)('projects Goal Task reservation from ordinary admission owners (%s)', async (outcome) => {
+  const readDenied = outcome === 'read-denied';
   const root = mkdtempSync(join(tmpdir(), 'goal-native-task-'));
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
@@ -34,13 +39,21 @@ it.each([
   const authorization = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
   const startWorker = vi.fn(
     async (input: Parameters<import('./task-admission.js').TaskWorkerStarter>[0]) => {
+      if (outcome === 'refused')
+        throw new TurnStartValidationError('scheduler_admission_denied', 'Capacity refused.', 409);
+      if (outcome === 'recovery-required-refusal')
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Capacity inspection refused before admission.',
+          409
+        );
       const turn = store.createTurn(
         input.workspaceId,
         input.threadId,
         input.prompt,
         input.triggerActor,
         undefined,
-        { turnId: input.reservedTurnId }
+        { turnId: input.reservedTurnId, startedAt: '2026-10-01T00:00:00.000Z' }
       );
       input.onTurnCreated(turn);
       return store.updateTurn(turn.id, {
@@ -131,10 +144,15 @@ it.each([
       db,
       services
     );
+    const connections: ReturnType<typeof openWorkspaceDb>[] = [];
     const taskTool = createCoordinatorTaskTool({
       store,
       coreDb,
-      openWorkspace: (id) => openWorkspaceDb(root, id),
+      openWorkspace: (id) => {
+        const connection = openWorkspaceDb(root, id);
+        connections.push(connection);
+        return connection;
+      },
       inflightCommands: new WeakMap(),
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
       goalId: goal.goalId,
@@ -187,12 +205,66 @@ it.each([
       expect(startWorker).not.toHaveBeenCalled();
       return;
     }
+    await vi.waitFor(() =>
+      expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)
+    );
+    if (outcome === 'refused' || outcome === 'recovery-required-refusal') {
+      expect(result.isError, JSON.stringify(result)).toBe(true);
+      expect(startWorker).toHaveBeenCalledOnce();
+      expect(linked.tasks).toMatchObject([
+        {
+          cardId: card.cardId,
+          planVersionId: plan.planVersionId,
+          admittedAt: null,
+          missing: false,
+          turns: [],
+        },
+      ]);
+      const task = linked.tasks[0]!;
+      const errorResult = JSON.parse((result.content[0] as { text: string }).text);
+      expect(errorResult).toMatchObject({
+        threadId: task.threadId,
+        code:
+          outcome === 'recovery-required-refusal'
+            ? 'recovery_required'
+            : 'scheduler_admission_denied',
+      });
+      // Retained pre-fix timestamps remain usable data but cannot prove a Turn was admitted.
+      const retainedBytes = JSON.stringify({ ...task, admittedAt: '2026-09-01T00:00:00.000Z' });
+      db.sqlite
+        .prepare('UPDATE goal_card_tasks SET payload_json=? WHERE thread_id=?')
+        .run(retainedBytes, task.threadId);
+      expect(readGoalView(store, db, goal.goalId).tasks).toEqual(linked.tasks);
+      const checkpoints = listThreadWorkerCheckpoints(db, ws.id, task.threadId);
+      expect(checkpoints).toEqual([]);
+      // Reopening the owners must preserve the attempted citation without inventing admission or retry.
+      const reopened = openWorkspaceDb(root, ws.id);
+      try {
+        expect(readGoalView(new FsStore({ dataRoot: root }), reopened, goal.goalId).tasks).toEqual(
+          linked.tasks
+        );
+      } finally {
+        reopened.sqlite.close();
+      }
+      expect(startWorker).toHaveBeenCalledOnce();
+      expect(linked.goal!.disposition).toBeNull();
+      return;
+    }
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
     expect(startWorker).toHaveBeenCalledOnce();
     expect(linked.tasks).toMatchObject([
       { cardId: card.cardId, cardRevision: 0, planVersionId: plan.planVersionId, missing: false },
     ]);
     expect(linked.tasks[0]!.turns).toMatchObject([{ status: 'completed' }]);
+    const admittedTurn = store.listThreadTurns(ws.id, linked.tasks[0]!.threadId)[0]!;
+    expect(linked.tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
+      threadId: admittedTurn.threadId,
+      turnId: admittedTurn.id,
+      admittedAt: admittedTurn.startedAt,
+    });
+    store.createTurn(ws.id, admittedTurn.threadId, 'Follow up', { kind: 'user', id: actor.userId });
+    expect(readGoalView(store, db, goal.goalId).tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
     expect(linked.goal!.disposition).toBeNull();
   } finally {
     authorization.mockRestore();

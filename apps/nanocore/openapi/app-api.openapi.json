@@ -49111,7 +49111,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -49850,7 +49853,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -50590,7 +50596,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -51341,7 +51350,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -52086,7 +52098,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -52909,7 +52924,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -53650,7 +53668,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -54389,7 +54410,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -55205,7 +55229,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -55931,7 +55958,10 @@
                   "maximum": 9007199254740991
                 },
                 "admittedAt": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "missing": {
                   "type": "boolean"
@@ -91295,5 +91325,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b80b682677efb6fc2f9cf43539620fd53fad18fb8a8decf345a4a63297cc8c12"
+  "x-openkit-source-digest": "sha256:446986c8b0fb3a9c974238d2df529567d329d2169e6af48eb16121ef6cb0d319"
 }

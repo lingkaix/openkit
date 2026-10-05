@@ -19,6 +19,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import { clearWorkerCheckpoint } from './worker-checkpoints.js';
 import { runWorkerTurnLoop } from './worker-turn-loop.js';
 
@@ -33,6 +34,7 @@ export type TaskWorkerStarter = (input: {
   requestId: string;
   requestedAgentId: string;
   reservedTurnId: string;
+  /** Called only after the ordinary scheduler has admitted and persisted this exact Task Turn. */
   onTurnCreated: (turn: ReturnType<FsStore['createTurn']>) => void;
 }) => Promise<ReturnType<FsStore['createTurn']>>;
 /** Task inputs contain current read citations, never a second per-Task proposal. */
@@ -67,12 +69,13 @@ export function createCoordinatorTaskTool(options: {
   return {
     name: 'task_start',
     description:
-      'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. Return after admission; do not wait for completion.',
+      'Admit an ordinary bounded Task on current intent and the active Plan. Supply your explicit permitted-adjustment judgment and the exact intent/card revisions read. Return after ordinary Task Turn admission; do not wait for completion. A retained Plan/card citation alone is an unadmitted reservation with null admittedAt. On recovery_required inspect the existing Thread, checkpoint and scheduler owners; never automatically retry uncertain work.',
     inputSchema,
     execute: async (value) => {
       const input = CoordinatorTaskInputSchema.parse(value);
       const coordinator = options.store.getTurnById(options.coordinatorTurnId);
       const db = options.openWorkspace(coordinator.workspaceId);
+      let receivingThreadId: string | undefined;
       try {
         const goal = readGoalView(options.store, db, options.goalId).goal;
         if (
@@ -94,6 +97,7 @@ export function createCoordinatorTaskTool(options: {
           throw new Error('Current Task write authority is unavailable.');
         const requestId = randomUUID();
         const threadId = `th_task_${requestId}`;
+        receivingThreadId = threadId;
         const prompt = serializeStructuredWorkerDelegationRequest(input.request);
         const turnId = `turn_${requestId}_${commandInputHash({ command: 'task.start', actorId: actor.userId, workspaceId: goal.workspaceId, threadId, requestId }).slice(-16)}`;
         const turn = await runIdempotentCommand({
@@ -215,6 +219,7 @@ export function createCoordinatorTaskTool(options: {
               text: JSON.stringify({
                 threadId,
                 turnId: turn.id,
+                admittedAt: turn.startedAt ?? null,
                 planVersionId: input.planVersionId,
                 cardRevision: input.cardRevision,
               }),
@@ -226,7 +231,11 @@ export function createCoordinatorTaskTool(options: {
           content: [
             {
               type: 'text',
-              text: error instanceof Error ? error.message : 'Task admission failed.',
+              text: JSON.stringify({
+                ...(receivingThreadId ? { threadId: receivingThreadId } : {}),
+                ...(error instanceof TurnStartValidationError ? { code: error.code } : {}),
+                message: error instanceof Error ? error.message : 'Task admission failed.',
+              }),
             },
           ],
           isError: true,
