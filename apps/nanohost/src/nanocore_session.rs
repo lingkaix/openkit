@@ -1778,6 +1778,10 @@ pub async fn poll_effect_command(
                 "sandboxId",
                 "slot",
                 "terminalBarrierProved",
+                "purpose",
+                "submissionRequestId",
+                "turnId",
+                "agentSessionId",
             ],
             RuntimeEffectKind::InspectImage => &["imageDigest", "requestId"],
             RuntimeEffectKind::InspectStorage | RuntimeEffectKind::PurgeStorage => {
@@ -2211,7 +2215,12 @@ pub async fn submit_file_export_result(
     if command.kind != RuntimeEffectKind::ExportFile
         || command.request_id != result.request_id()
         || !is_lowercase_hex(result.request_id(), 64)
-        || result.byte_length() > FILE_DATA_BODY_MAX_BYTES
+        || result.byte_length()
+            > command
+                .input
+                .get("maxByteLength")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
         || result.bytes().len() as u64 != result.byte_length()
         || format!("sha256:{:x}", Sha256::digest(result.bytes())) != result.sha256()
     {
@@ -3016,6 +3025,7 @@ mod tests {
                                     )
                                 };
                             crate::sandbox_bridge::FileEffectRequest {
+                                artifact_submission: false,
                                 request_id: command.request_id.clone(),
                                 sandbox_id,
                                 slot,

@@ -14,10 +14,7 @@ import {
   type SessionWorkspaceMaterializationPlan,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import {
-  WorkerTranscriptArtifactRecordSchema,
-  workerSessionInputPaths,
-} from '@openkit/worker-protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { skillSnapshotPath } from '../catalog/resource-catalog.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
@@ -1080,82 +1077,53 @@ export function openShellNetworkEndpointsFromPackagePolicy(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-/**
- * Parses and validates the complete worker Artifact declaration set before payload transfer.
- *
- * @param environmentPackage Package that owns exact lineage and output roots.
- * @param artifactsJsonl Serialized Artifact declarations.
- * @returns Strict declarations ordered by unique sequence.
- * @throws A redacted collection error for malformed or ambiguous declarations.
- */
-export function parseWorkerArtifactDeclarations(
+/** Validates intentional submission eligibility before the broader transcript/output mapper. @param environmentPackage Trusted AEP. @param artifactPath Canonical absolute file path. */
+export function validateWorkerArtifactPath(
   environmentPackage: AgentEnvironmentPackage,
-  artifactsJsonl: string
-): Array<ReturnType<typeof WorkerTranscriptArtifactRecordSchema.parse>> {
-  const declarations: Array<ReturnType<typeof WorkerTranscriptArtifactRecordSchema.parse>> = [];
-  const sequences = new Set<number>();
-  const paths = new Set<string>();
-  const outputRoots = environmentPackage.workspace.outputs.filter(
+  artifactPath: string
+): void {
+  if (
+    !posix.isAbsolute(artifactPath) ||
+    posix.normalize(artifactPath) !== artifactPath ||
+    artifactPath.includes('\\') ||
+    Array.from(artifactPath).some(
+      (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127
+    )
+  ) {
+    throw invalidWorkerArtifactCollection('Worker Artifact path is not canonical.');
+  }
+  const roots = environmentPackage.workspace.outputs.filter(
     (output) => output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
   );
-
-  for (const line of artifactsJsonl.split('\n')) {
-    if (!line.trim()) {
-      continue;
-    }
-    let value: unknown;
-    try {
-      value = JSON.parse(line);
-    } catch {
-      throw invalidWorkerArtifactCollection('Worker Artifact declaration JSON is invalid.');
-    }
-    const parsed = WorkerTranscriptArtifactRecordSchema.safeParse(value);
-    if (!parsed.success) {
-      throw invalidWorkerArtifactCollection('Worker Artifact declaration is invalid.');
-    }
-    const declaration = parsed.data;
-    const lineage = declaration.lineage;
-    if (
-      lineage.workspaceId !== environmentPackage.scope.workspaceId ||
-      lineage.threadId !== environmentPackage.scope.threadId ||
-      lineage.turnId !== environmentPackage.scope.turnId ||
-      lineage.agentSessionId !== environmentPackage.scope.agentSessionId ||
-      lineage.packageSnapshotId !== environmentPackage.snapshotId ||
-      (lineage.requestId ?? null) !== (environmentPackage.scope.requestId ?? null)
-    ) {
-      throw invalidWorkerArtifactCollection('Worker Artifact declaration lineage is invalid.');
-    }
-    const artifactPath = declaration.artifact.path;
-    if (!posix.isAbsolute(artifactPath) || posix.normalize(artifactPath) !== artifactPath) {
-      throw invalidWorkerArtifactCollection('Worker Artifact path is not canonical.');
-    }
-    const matchingRoots = outputRoots.filter((output) => {
-      if (!posix.isAbsolute(output.path) || posix.normalize(output.path) !== output.path) {
-        return false;
-      }
-      const childPath = posix.relative(output.path, artifactPath);
-      return (
-        childPath.length > 0 &&
-        childPath !== '..' &&
-        !childPath.startsWith('../') &&
-        !posix.isAbsolute(childPath)
-      );
-    });
-    if (matchingRoots.length !== 1) {
-      throw invalidWorkerArtifactCollection(
-        'Worker Artifact path does not belong to one eligible output root.'
-      );
-    }
-    if (sequences.has(declaration.sequence) || paths.has(artifactPath)) {
-      throw invalidWorkerArtifactCollection('Worker Artifact declaration is duplicated.');
-    }
-    sequences.add(declaration.sequence);
-    paths.add(artifactPath);
-    declarations.push(declaration);
+  if (roots.some((output) => output.path === artifactPath)) {
+    throw invalidWorkerArtifactCollection('Worker Artifact path equals an eligible output root.');
   }
-
-  return declarations.sort((left, right) => left.sequence - right.sequence);
+  const matching = roots.filter((output) => {
+    if (!posix.isAbsolute(output.path) || posix.normalize(output.path) !== output.path)
+      return false;
+    const child = posix.relative(output.path, artifactPath);
+    return (
+      child.length > 0 && child !== '..' && !child.startsWith('../') && !posix.isAbsolute(child)
+    );
+  });
+  if (matching.length !== 1)
+    throw invalidWorkerArtifactCollection(
+      'Worker Artifact path does not belong to one eligible output root.'
+    );
 }
+
+/** One bounded live capture through the already configured backend, never model-selected lineage. */
+export type WorkerArtifactCapture = (input: {
+  readonly packageSnapshotId: string;
+  readonly requestId: string;
+  readonly path: string;
+  readonly maxByteLength: number;
+  readonly signal?: AbortSignal;
+}) => Promise<{
+  readonly bytes: Buffer;
+  readonly credentialCheckValues: import('./worker-credential-guard.js').WorkerCredentialCheckValues;
+}>;
+
 /**
  * Creates one redacted fail-closed Artifact collection error.
  *

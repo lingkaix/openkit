@@ -30,3 +30,5 @@ The canonical Turn record preserves optional `reasoningEffort` at creation and r
 `FsStore.updateAgentSession` admits the materializer's private `retainedStorage` association and slot once and refuses any later replacement or erasure. It remains historical provenance after terminalization and does not enter the public AgentSession projection or grant attachment authority.
 
 The simulator Material fixtures invoke the canonical definition-derived JSON operations and retain their queue, projection and worker-delivery assertions.
+
+The simulator publishes its two deterministic Material candidates through the shared exact-byte Artifact validator and existing Artifact/Review owners, with the process-private no-injection evidence constructor. It emits no Artifact declaration payload and cannot provide that proof to Worker MCP capture. Ordinary Worker submission requires the original Worker evidence set.

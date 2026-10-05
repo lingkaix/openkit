@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +24,10 @@ import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createApp, createDefaultWorkerControlGateway } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
+import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from './auth/nanohost-transport-session.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -48,9 +54,10 @@ import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
-import type {
-  NanoHostSessionDispatch,
-  NanoHostSessionEffectRequest,
+import {
+  createNanoHostSessionDispatch,
+  type NanoHostSessionDispatch,
+  type NanoHostSessionEffectRequest,
 } from './runtime/nanohost-session-dispatch.js';
 import { approvalCardCopy, projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
@@ -139,6 +146,266 @@ function recordMcpWorkerLineage(
 }
 
 describe('worker MCP routes', () => {
+  it.each([
+    'abort',
+    'expiry',
+  ] as const)('releases the Tool handler and Workspace admission after accepted unresolved capture %s', async (ending) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-wait-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Submit one file', {
+      id: 'user_local',
+      kind: 'user',
+    });
+    store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-10-05T00:00:00.000Z',
+      id: 'as_capture_wait',
+      message: null,
+      status: 'busy',
+      threadId: turn.threadId,
+      updatedAt: '2026-10-05T00:00:00.000Z',
+      workspaceId: turn.workspaceId,
+    });
+    store.updateTurn(turn.id, {
+      agentSessionId: 'as_capture_wait',
+      agentId: 'agent_codex_host',
+      status: 'running',
+    });
+    const pkg = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId: 'as_capture_wait',
+      agentSetup: createTestAgentSetup(),
+      backend: { kind: 'openshell' },
+      createdAt: '2026-10-05T00:00:00.000Z',
+      requestId: 'req_capture_wait',
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
+    pkg.workspace.outputs = [
+      {
+        id: 'output',
+        path: '/workspace/output',
+        registerAsArtifacts: true,
+        retention: 'sync-on-turn-end',
+      },
+    ];
+    recordMcpWorkerLineage(coreDb, pkg);
+    const authority = createNanoHostTransportSessionAuthority();
+    const target = {
+      deploymentId: 'capture-wait',
+      identityId: 'capture-wait',
+      targetId: 'capture-wait',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-10-05T00:00:00.000Z',
+    });
+    let admit!: (physical: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      admit = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      admit(readNanoHostPhysicalConnectionContext(request)!);
+      response.writeHead(204).end();
+    });
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const admission = new WorkspaceMutationAdmission();
+    const gateway = createDefaultWorkerMcpGateway(coreDb);
+    const client = new Client({ name: 'capture-wait', version: '1.0.0' });
+    let nativeClient: ReturnType<typeof connectHttp2> | undefined;
+    let physical: object | undefined;
+    let entered!: () => void;
+    const captureEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let captureCount = 0;
+    const effectRequest = {
+      kind: 'file.export',
+      requestId: 'b'.repeat(64),
+      input: {
+        purpose: 'artifact-submission',
+        submissionRequestId: 'capture-wait',
+        turnId: turn.id,
+        agentSessionId: pkg.scope.agentSessionId,
+        packageSnapshotId: pkg.snapshotId,
+        leaseId: `lease_${turn.id}`,
+        backendSessionId: 'backend_capture_wait',
+        sandboxId: 'sandbox_capture_wait',
+        maxByteLength: 1024,
+        presence: 'optional',
+        relativePath: 'report.md',
+        slot: 'output',
+      },
+    };
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      store,
+      workspaceMutationAdmission: admission,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          agentManifests: [],
+          workspaceMcpServerCatalogs: [],
+        }),
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => pkg),
+      } as unknown as WorkerControlGateway,
+      workerMcpGateway: gateway,
+      captureArtifact: async (input) => {
+        captureCount += 1;
+        const result = dispatch.effect({ ...effectRequest, signal: input.signal });
+        entered();
+        await result;
+        throw new Error('An abandoned capture must never return bytes to publication.');
+      },
+    });
+    let closed = false;
+    let closing: Promise<void> | undefined;
+    let call: Promise<unknown> | undefined;
+    let accepted = false;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing capture address.');
+      nativeClient = connectHttp2(`http://127.0.0.1:${address.port}`);
+      nativeClient
+        .request({ ':method': 'POST', ':path': '/' })
+        .on('data', () => {})
+        .end();
+      physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection: physical,
+      });
+      await dispatch.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        { ...target, coreDb }
+      );
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+          {
+            fetch: (input, init) => app.fetch(new Request(input, init)),
+            requestInit: { headers: { authorization: 'Bearer capability-token' } },
+          }
+        )
+      );
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const abort = new AbortController();
+      call = client.callTool(
+        {
+          name: 'work_submit_artifact',
+          arguments: {
+            requestId: 'capture-wait',
+            path: '/workspace/output/report.md',
+            title: 'Report',
+            kind: 'file',
+            mediaType: 'text/markdown',
+          },
+        },
+        { signal: abort.signal, timeout: 400_000 }
+      );
+      void call.catch(() => undefined);
+      await Promise.race([
+        captureEntered,
+        call.then(() => {
+          throw new Error('Capture was not entered.');
+        }),
+      ]);
+      expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
+        requestId: effectRequest.requestId,
+      });
+      accepted = true;
+      closing = admission.close('ws_demo').then(() => {
+        closed = true;
+      });
+      expect(closed).toBe(false);
+      if (ending === 'abort') abort.abort();
+      else await vi.advanceTimersByTimeAsync(300_000);
+      vi.useRealTimers();
+      // Closing cannot finish until the actual route's finally closes its database and releases its permit.
+      await vi.waitFor(() => expect(closed).toBe(true), { timeout: 1000, interval: 10 });
+      if (ending === 'expiry')
+        await expect(call).rejects.toMatchObject({ data: { code: 'recovery_required' } });
+      else await expect(call).rejects.toThrow(/abort/i);
+      expect(captureCount).toBe(1);
+      await expect(
+        dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) })
+      ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
+      const bytes = Buffer.from('# Late result');
+      await dispatch.fileExportResult!(
+        physical,
+        new Request('http://nanocore.test/file', {
+          method: 'POST',
+          body: bytes,
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': String(bytes.length),
+            'x-openkit-request-id': effectRequest.requestId,
+            'x-openkit-relative-path': 'report.md',
+            'x-openkit-slot': 'output',
+            'x-openkit-byte-length': String(bytes.length),
+            'x-openkit-sha256': `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          },
+        })
+      );
+      accepted = false;
+      const next = dispatch.effect({ ...effectRequest, requestId: 'c'.repeat(64) });
+      expect(await dispatch.poll(physical, 'file.export')).toMatchObject({
+        requestId: 'c'.repeat(64),
+      });
+      await dispatch.result(physical, 'file.export', {
+        requestId: 'c'.repeat(64),
+        state: 'absent',
+      });
+      await expect(next).resolves.toMatchObject({ state: 'absent' });
+      expect(store.listArtifacts('ws_demo')).toEqual([]);
+      expect(
+        store
+          .listThreadItems('ws_demo', 'th_demo')
+          .filter((item) => item.type === 'artifact-reference')
+      ).toEqual([]);
+      const db = openWorkspaceDb(dataRoot, 'ws_demo');
+      try {
+        expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()).toEqual({
+          count: 0,
+        });
+        expect(store.listCommandRequests()).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
+      admission.reopen('ws_demo');
+      expect(
+        (await client.listTools()).tools.some((tool) => tool.name === 'work_submit_artifact')
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      if (accepted && physical)
+        await dispatch.result(physical, 'file.export', {
+          requestId: effectRequest.requestId,
+          state: 'absent',
+        });
+      await call?.catch(() => undefined);
+      await closing;
+      await client.close().catch(() => undefined);
+      await gateway.close();
+      nativeClient?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
+
   it('serves one stateless-era client and one session-era client on the worker MCP route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-era-'));
     const coreDb = openCoreDb(dataRoot);
@@ -240,6 +507,7 @@ describe('worker MCP routes', () => {
         'work_request_input',
         'work_list_peers',
         'work_read_peer',
+        'work_submit_artifact',
       ]);
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
@@ -703,6 +971,7 @@ describe('worker MCP routes', () => {
         'work_request_input',
         'work_list_peers',
         'work_read_peer',
+        'work_submit_artifact',
       ]);
       const readSchema = tools.find((tool) => tool.name === 'work_read_peer')!.inputSchema;
       expect(readSchema.required).toEqual(['handle']);
@@ -1697,6 +1966,9 @@ describe('worker MCP routes', () => {
       requiredCapabilities: ['trusted-worker-inference-relay'],
       mcpIds: ['echo'],
     });
+    agentSetup.manifest.workspace = {
+      inputs: [{ id: 'repo_remote', access: 'read-write', sourceRef: 'main-repo' }],
+    };
     admitTestNativeEnvironment(coreDb, agentSetup.manifest);
     let repositoryApprovalId: string | null = null;
     const catalog = parseWorkspaceMcpServerCatalog({
@@ -1735,6 +2007,35 @@ describe('worker MCP routes', () => {
             models: ['openai/gpt-5.2'],
           },
         ]),
+        workspaceDataSourceCatalogs: [
+          {
+            workspaceId: 'ws_demo',
+            path: join(dataRoot, 'workspaces/ws_demo/config/data-sources.jsonc'),
+            catalog: {
+              schemaVersion: 1,
+              requiredFeatures: [],
+              extensions: {},
+              sources: [
+                {
+                  id: 'main-repo',
+                  displayName: 'Remote repository',
+                  kind: 'git',
+                  status: 'active',
+                  access: 'read-write',
+                  allowedSlotKinds: ['worktree'],
+                  sensitivity: 'internal',
+                  locator: {
+                    url: 'https://git.example.test/openkit/repository.git',
+                    commit: 'a'.repeat(40),
+                  },
+                  syncHints: {},
+                  requiredFeatures: [],
+                  extensions: {},
+                },
+              ],
+            },
+          },
+        ],
         workspaceConfigs: [
           {
             config: {
@@ -1773,6 +2074,8 @@ describe('worker MCP routes', () => {
       ready: true,
     });
     const terminalEvents = new Map<string, Buffer>();
+    let liveCaptureCount = 0;
+    let liveFileBytes = Buffer.from('Captured by the existing configured runtime.\n');
     const nanoHostSessionDispatch: NanoHostSessionDispatch = {
       async effect(
         requestOrConnection: object,
@@ -1830,6 +2133,19 @@ describe('worker MCP routes', () => {
           return { accepted: true, integrationReady: true, state: 'open' };
         }
         if (request.kind === 'file.export') {
+          if (request.input.purpose === 'artifact-submission') {
+            expect(request.signal).toBeInstanceOf(AbortSignal);
+            liveCaptureCount += 1;
+            expect(request.input.maxByteLength).toBeLessThanOrEqual(16 * 1024 * 1024 + 1);
+            const directory = mkdtempSync(join(exportRoot, 'live-'));
+            const stagingPath = join(directory, 'body');
+            writeFileSync(stagingPath, liveFileBytes);
+            return {
+              stagingPath,
+              byteLength: liveFileBytes.length,
+              sha256: `sha256:${createHash('sha256').update(liveFileBytes).digest('hex')}`,
+            };
+          }
           if (request.input.presence === 'optional') return { state: 'absent' };
           const relativePath = String(request.input.relativePath);
           const packageSnapshotId = String(request.input.packageSnapshotId);
@@ -1956,6 +2272,10 @@ describe('worker MCP routes', () => {
           nativeHandleDigest: null,
           nativeHandleState: 'pending',
           state: 'open',
+          workspaceGitBaseline: {
+            commit: 'a'.repeat(40),
+            tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+          },
         });
       }
       const started = await dispatchNext('turn.start');
@@ -2005,6 +2325,78 @@ describe('worker MCP routes', () => {
       });
       expect(heartbeat.status, await heartbeat.clone().text()).toBe(200);
 
+      const work = new Client({ name: 'submission-composition-test', version: '1.0.0' });
+      await work.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/openkit-work'),
+          {
+            fetch: (request, init) => app.fetch(new Request(request, init)),
+            requestInit: { headers: { authorization: `Bearer ${capabilityToken}` } },
+          }
+        )
+      );
+      const discovery = await work.listTools();
+      expect(
+        discovery.tools.find((tool) => tool.name === 'work_submit_artifact')?.description
+      ).toContain(environmentPackage.workspace.outputs[0]!.path);
+      const submission = {
+        requestId: `capture-${environmentPackage.scope.turnId}`,
+        path: `${environmentPackage.workspace.outputs[0]!.path}/submitted.md`,
+        kind: 'report',
+        title: 'Captured report',
+        mediaType: 'text/markdown',
+      };
+      const beforeRefusal = liveCaptureCount;
+      await expect(
+        work.callTool({
+          name: 'work_submit_artifact',
+          arguments: {
+            ...submission,
+            requestId: `path-refusal-${environmentPackage.scope.turnId}`,
+            path: '/workspace/.openkit/cache/escape.md',
+          },
+        })
+      ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
+      expect(liveCaptureCount).toBe(beforeRefusal);
+      const originalBytes = liveFileBytes;
+      liveFileBytes = Buffer.from(capabilityToken);
+      await expect(
+        work.callTool({
+          name: 'work_submit_artifact',
+          arguments: {
+            ...submission,
+            requestId: `credential-refusal-${environmentPackage.scope.turnId}`,
+          },
+        })
+      ).rejects.toMatchObject({ data: { code: 'invalid_request' } });
+      expect(
+        store
+          .listArtifacts('ws_demo')
+          .filter((artifact) => artifact.turnId === environmentPackage.scope.turnId)
+      ).toHaveLength(0);
+      expect(store.getTurnById(environmentPackage.scope.turnId).status).toBe('running');
+      liveFileBytes = originalBytes;
+      const capturesBefore = liveCaptureCount;
+      const submitted = await work.callTool({
+        name: 'work_submit_artifact',
+        arguments: submission,
+      });
+      expect(submitted.isError).toBe(false);
+      const artifactId = String(submitted.structuredContent!.artifactId);
+      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
+        liveFileBytes.toString('utf8')
+      );
+      const publishedBytes = liveFileBytes;
+      liveFileBytes = Buffer.from('A later edit cannot mutate the committed output.');
+      expect(
+        (await work.callTool({ name: 'work_submit_artifact', arguments: submission }))
+          .structuredContent!.artifactId
+      ).toBe(artifactId);
+      expect(liveCaptureCount).toBe(capturesBefore + 1);
+      expect(store.getArtifact('ws_demo', artifactId).content.body).toBe(
+        publishedBytes.toString('utf8')
+      );
+      await work.close();
       const client = new Client({ name: 'public-task-lifecycle-test', version: '1.0.0' });
       await client.connect(
         new StreamableHTTPClientTransport(

@@ -21,6 +21,7 @@ import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-author
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import {
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
@@ -100,13 +101,13 @@ import {
   consumeNanoHostStagedExport,
   inspectNanoHostStagedExport,
   MAX_RUNTIME_PROVENANCE_MANIFEST_BYTES,
-  MAX_WORKER_ARTIFACT_BYTES,
   openShellFilesystemGrantsFromPackagePolicy,
   openShellNetworkEndpointsFromPackagePolicy,
-  parseWorkerArtifactDeclarations,
   prepareNanoHostContextPackageImports,
   removeNanoHostStagedExport,
   resolveNanoHostExportPath,
+  validateWorkerArtifactPath,
+  type WorkerArtifactCapture,
   WorkerGovernanceCapacityUnavailableError,
 } from './worker-governance-backend.js';
 import {
@@ -187,6 +188,8 @@ export interface CreateConfiguredTurnExecutorOptions {
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
 export interface ConfiguredWorkerLifecycleRuntime {
+  /** Captures a bounded file using this same configured backend and original evidence. */
+  readonly captureArtifact?: WorkerArtifactCapture;
   /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
   readonly acceptNanoHostHarnessCommand: (
     command: NanoHostHarnessCommand
@@ -362,6 +365,7 @@ function createNanoHostWorkerLifecycleRuntime(
   }
 
   return {
+    captureArtifact: (input) => backend.captureArtifact(input),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     isTurnExecutionActive: (turnId) =>
       turnExecutor instanceof WorkerGovernanceTurnExecutor &&
@@ -2881,7 +2885,91 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return [];
   }
 
-  /** Exports declared transcript and Artifact files only after the accepted terminal barrier. */
+  /** Captures one eligible live output using the existing exact session/effect owner. @param input Core-derived identity, path, bound and cancellation. @returns Verified bytes and original private evidence. */
+  public readonly captureArtifact: WorkerArtifactCapture = async (input) => {
+    const session = this.requireSession(input.packageSnapshotId);
+    validateWorkerArtifactPath(session.environmentPackage, input.path);
+    const scope = session.environmentPackage.scope;
+    const lineage = { ...scope, packageSnapshotId: input.packageSnapshotId };
+    const requireLive = () => {
+      input.signal?.throwIfAborted();
+      const resolution = resolveSchedulerLeaseTokenBinding(this.coreDb, {
+        lineage,
+        sandboxBindingRef:
+          listSchedulerSessionLeasesForTurn(this.coreDb, scope).find(
+            (lease) => lease.leaseId === session.leaseId
+          )?.sandboxBindingRef ?? '',
+      });
+      if (
+        resolution.status !== 'accepted' ||
+        resolution.lease.leaseId !== session.leaseId ||
+        getWorkerControlAcceptedFinalStatus(this.coreDb, lineage)
+      )
+        throw new OperationError(
+          'turn_not_active',
+          'The original capture lease no longer admits this Turn.',
+          409
+        );
+    };
+    input.signal?.throwIfAborted();
+    let credentialCheckValues: WorkerCredentialCheckValues;
+    try {
+      credentialCheckValues = this.transcriptCredentialCheckValues(session);
+    } catch (error) {
+      try {
+        await this.cleanupSession(session.identity, { failedCloseout: true });
+      } catch (cleanupError) {
+        const recovery = new ArtifactAuthorityError(
+          'recovery_required',
+          'Worker credential evidence and backend cleanup require recovery.'
+        );
+        recovery.cause = new AggregateError([error, cleanupError]);
+        throw recovery;
+      }
+      throw error;
+    }
+    requireLive();
+    const { slot, relativePath } = resolveNanoHostExportPath(
+      session.environmentPackage,
+      input.path
+    );
+    const result = await this.effect(
+      session.identity,
+      session.leaseId,
+      'file.export',
+      {
+        purpose: 'artifact-submission',
+        submissionRequestId: input.requestId,
+        turnId: scope.turnId,
+        agentSessionId: scope.agentSessionId,
+        maxByteLength: input.maxByteLength,
+        presence: 'optional',
+        relativePath,
+        slot,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+      },
+      undefined,
+      input.signal
+    );
+    // Always dispose a complete private copy even if cancellation/sealing won while the effect ran.
+    if (result.state === 'absent')
+      throw new OperationError(
+        'artifact_file_missing',
+        'The submitted file is missing. Finish writing it and use a new request.',
+        400
+      );
+    if (result.state === 'refused')
+      throw new OperationError(
+        'artifact_file_not_regular',
+        'Submit one regular file with no other hard links.',
+        400
+      );
+    const bytes = await consumeNanoHostStagedExport(result);
+    requireLive();
+    return { bytes, credentialCheckValues };
+  };
+
+  /** Exports transcript and evidence files only after the accepted terminal barrier. */
   public async collectTranscript(
     packageSnapshotId: string,
     terminalBarrierProved: true
@@ -2894,7 +2982,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (!transcript) {
       return {};
     }
-    /** Exports and consumes one exact declared transcript or Artifact file. */
+    /** Exports and consumes one exact declared transcript file. */
     const exportTranscriptFile = async (workerPath: string): Promise<Buffer> => {
       const { relativePath, slot } = resolveNanoHostExportPath(
         session.environmentPackage,
@@ -2915,21 +3003,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
     const eventsBytes = await exportTranscriptFile(transcript.eventsPath);
     const itemsBytes = await exportTranscriptFile(transcript.itemsPath);
-    const artifactsBytes = await exportTranscriptFile(transcript.artifactsPath);
-    const artifactsJsonl = artifactsBytes.toString('utf8');
-    const artifactFiles: Array<{ bytes: Buffer; sequence: number }> = [];
-    let remainingArtifactBytes = MAX_WORKER_ARTIFACT_BYTES;
-    for (const declaration of parseWorkerArtifactDeclarations(
-      session.environmentPackage,
-      artifactsJsonl
-    )) {
-      const bytes = await exportTranscriptFile(declaration.artifact.path);
-      remainingArtifactBytes -= bytes.byteLength;
-      if (bytes.byteLength === 0 || remainingArtifactBytes < 0) {
-        throw new Error('NanoHost Worker Artifact payload violates its canonical byte bound.');
-      }
-      artifactFiles.push({ bytes, sequence: declaration.sequence });
-    }
     let runtimeProvenance: WorkerRuntimeProvenanceCollection | null = null;
     if (transcript.runtimeProvenance) {
       const declaration = transcript.runtimeProvenance;
@@ -2986,14 +3059,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
     }
     return {
-      credentialCheckValues:
-        itemsBytes.toString('utf8').trim() || artifactsJsonl.trim() || artifactFiles.length
-          ? this.transcriptCredentialCheckValues(session)
-          : null,
-      artifactsJsonl,
+      credentialCheckValues: itemsBytes.toString('utf8').trim()
+        ? this.transcriptCredentialCheckValues(session)
+        : null,
       eventsJsonl: eventsBytes.toString('utf8'),
       itemsJsonl: itemsBytes.toString('utf8'),
-      ...(artifactFiles.length > 0 ? { artifactFiles } : {}),
       ...(runtimeProvenance ? { runtimeProvenance } : {}),
     };
   }
@@ -3352,7 +3422,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     leaseId: string,
     operation: NanoHostEffectOperation,
     input: Readonly<Record<string, unknown>>,
-    retiringSandboxOrigin?: string
+    retiringSandboxOrigin?: string,
+    signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
     if (!this.sessionDispatch) {
       throw new Error('NanoHost fixed-effect dispatcher is not configured.');
@@ -3365,9 +3436,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('NanoHost retiring Sandbox physical Epoch is no longer current.');
     }
     return requireNanoHostResultObject(
-      await this.sessionDispatch.effect(
-        createNanoHostEffectRequest(identity, leaseId, operation, input)
-      )
+      await this.sessionDispatch.effect({
+        ...createNanoHostEffectRequest(identity, leaseId, operation, input),
+        ...(signal ? { signal } : {}),
+      })
     );
   }
 

@@ -620,30 +620,6 @@ export const WorkerTranscriptItemRecordSchema = WorkerRecordBaseSchema.extend({
 }).strict();
 
 /**
- * Worker transcript artifact record collected from `/openkit/session/artifacts.jsonl`.
- */
-export const WorkerTranscriptArtifactRecordSchema = WorkerRecordBaseSchema.extend({
-  kind: z.literal('artifact'),
-  artifact: z
-    .object({
-      kind: z.enum(['report', 'diff', 'file', 'summary']),
-      title: z.string().min(1),
-      path: z.string().min(1),
-      mediaType: z.enum(['text/markdown', 'text/plain', 'application/json']),
-      /** Optional immutable Material target and base proposed by this Artifact. */
-      materialProposal: z
-        .object({
-          materialId: WorkerOpaqueIdSchema,
-          baseRevisionId: WorkerOpaqueIdSchema,
-          baseContentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-        })
-        .strict()
-        .optional(),
-    })
-    .strict(),
-}).strict();
-
-/**
  * Worker transcript event record collected from `/openkit/session/events.jsonl`.
  */
 export const WorkerTranscriptEventRecordSchema = WorkerCanonicalEventRecordSchema;
@@ -653,7 +629,6 @@ export const WorkerTranscriptEventRecordSchema = WorkerCanonicalEventRecordSchem
  */
 export const WorkerTranscriptRecordSchema = z.discriminatedUnion('kind', [
   WorkerTranscriptItemRecordSchema,
-  WorkerTranscriptArtifactRecordSchema,
   WorkerTranscriptEventRecordSchema,
 ]);
 

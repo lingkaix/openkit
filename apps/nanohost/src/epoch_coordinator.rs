@@ -2037,6 +2037,7 @@ impl EpochCoordinator {
             .clone()
             .ok_or("reference.import current sandbox unavailable")?;
         let request = FileEffectRequest {
+            artifact_submission: false,
             request_id: request_id.to_string(),
             sandbox_id: sandbox.name.clone(),
             slot: slot.to_string(),
@@ -2113,6 +2114,7 @@ impl EpochCoordinator {
                 &sandbox.id,
                 &command,
                 &bytes,
+                crate::sandbox_bridge::FILE_EFFECT_MAX_BYTES as usize,
             ))
         });
         let expected = format!("{} {}\n", request.sha256, request.byte_length);
@@ -2164,7 +2166,9 @@ impl EpochCoordinator {
             .current_sandbox
             .clone()
             .ok_or("file.export current sandbox unavailable")?;
-        if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved || !final_status {
+        if request.kind != FileEffectKind::ExportFile
+            || (!request.artifact_submission && (!terminal_barrier_proved || !final_status))
+        {
             let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
             return Err("file.export terminal barrier missing");
         }
@@ -2181,6 +2185,7 @@ impl EpochCoordinator {
                 &command,
                 // The export helper reads the sandbox path and receives no input bytes.
                 &[],
+                request.byte_length as usize,
             ))
         });
         let staging_root = self.run_root.join("file-export");
@@ -2208,6 +2213,13 @@ impl EpochCoordinator {
                     && request.presence == FileEffectPresence::Optional =>
             {
                 Ok(None)
+            }
+            Ok(result)
+                if request.artifact_submission
+                    && result.exit_status == 3
+                    && result.stdout.is_empty() =>
+            {
+                Err("artifact_file_not_regular")
             }
             Ok(_) | Err(_) => {
                 let _ = fs::remove_file(staging_root.join(&request.request_id));
@@ -4851,7 +4863,7 @@ mod tests {
 
         let compact_export = compact(export);
         assert!(compact_export.contains(
-            "if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved || !final_status {"
+            "if request.kind != FileEffectKind::ExportFile || (!request.artifact_submission && (!terminal_barrier_proved || !final_status)) {"
         ));
         assert!(compact_export.contains(
             "Ok(result) if result.exit_status == 2 && result.stdout.is_empty() && request.presence == FileEffectPresence::Optional =>"

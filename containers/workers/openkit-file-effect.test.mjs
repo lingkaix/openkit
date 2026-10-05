@@ -1,7 +1,8 @@
 // openkit-test-platform: posix
+// The fixed Worker helper additionally requires Linux /proc/self/fd; run this suite in its Linux subject domain.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import fs, { constants } from 'node:fs';
 import {
   access,
   link,
@@ -10,10 +11,12 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -635,5 +638,156 @@ test('the fixed file-effect helper imports and exports only canonical regular fi
   } finally {
     await rm(testRoot, { force: true, recursive: true });
     await rm(outsideRoot, { force: true, recursive: true });
+  }
+});
+
+test('live Artifact capture bounds the actual reader and proves absence only below an admitted root', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-live-file-'));
+  const roots = { ...CANONICAL_SLOT_ROOTS, 'main-worktree': root };
+  const invoke = (path) =>
+    invokeFileEffect(runFileEffect, roots, [
+      'file.export',
+      '--slot',
+      'main-worktree',
+      '--path',
+      path,
+      '--artifact-submission',
+      '--allow-missing',
+      '--max-length',
+      '17',
+    ]);
+  try {
+    await mkdir(join(root, 'slot-a'));
+    await writeFile(join(root, 'slot-a', 'report.md'), Buffer.alloc(100, 120));
+    const captured = await invoke('slot-a/report.md');
+    assert.equal(captured.exitCode, 0);
+    assert.equal(captured.stdout.length, 17);
+    assert.equal(captured.stderr.length, 0);
+    for (const path of ['slot-a/missing.md', 'slot-a/missing-parent/report.md']) {
+      const absent = await invoke(path);
+      assert.equal(absent.exitCode, 2);
+      assert.equal(absent.stdout.length + absent.stderr.length, 0);
+    }
+    const missingSlot = await invoke('missing-slot/report.md');
+    assert.equal(missingSlot.exitCode, 1);
+    await mkdir(join(root, 'slot-a', 'directory'));
+    const nonregular = await invoke('slot-a/directory');
+    assert.equal(nonregular.exitCode, 3);
+    assert.equal(nonregular.stdout.length + nonregular.stderr.length, 0);
+    await link(join(root, 'slot-a', 'report.md'), join(root, 'slot-a', 'linked.md'));
+    assert.equal((await invoke('slot-a/linked.md')).exitCode, 3);
+    await symlink(join(root, 'slot-a'), join(root, 'slot-a', 'linked-parent'));
+    assert.equal((await invoke('slot-a/linked-parent/report.md')).exitCode, 1);
+    await symlink(join(root, 'slot-a', 'report.md'), join(root, 'slot-a', 'symlink.md'));
+    assert.equal((await invoke('slot-a/symlink.md')).exitCode, 1);
+    assert.equal((await invoke('../outside/report.md')).exitCode, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('export stays bound to its directory when an ancestor is swapped before the leaf lookup', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const base = await mkdtemp(join(tmpdir(), 'openkit-export-ancestor-'));
+  const root = join(base, 'output');
+  const parent = join(root, 'parent');
+  const outside = join(base, 'outside');
+  const realLstat = fs.promises.lstat;
+  let swapped = false;
+  try {
+    await mkdir(parent, { recursive: true });
+    await mkdir(outside);
+    await writeFile(join(parent, 'entry.txt'), 'inside');
+    await writeFile(join(outside, 'entry.txt'), 'outside');
+    // Interpose one real namespace mutation at the previously vulnerable lookup boundary; no timing loop.
+    fs.promises.lstat = async (...args) => {
+      if (String(args[0]).endsWith('/entry.txt') && !swapped) {
+        swapped = true;
+        await rename(parent, join(root, 'retained-parent'));
+        await symlink(outside, parent);
+      }
+      return realLstat(...args);
+    };
+    syncBuiltinESMExports();
+    const result = await invokeFileEffect(runFileEffect, { 'turn-output': root }, [
+      'file.export',
+      '--slot',
+      'turn-output',
+      '--path',
+      'parent/entry.txt',
+      '--max-length',
+      '17',
+      '--artifact-submission',
+      '--allow-missing',
+    ]);
+    assert.equal(swapped, true);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr.length, 0);
+    assert.equal(result.stdout.toString(), 'inside');
+  } finally {
+    fs.promises.lstat = realLstat;
+    syncBuiltinESMExports();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('terminal export refuses growth, truncation and same-length mutation after reading', async () => {
+  const { runFileEffect } = await import(pathToFileURL(helperPath).href);
+  const root = await mkdtemp(join(tmpdir(), 'openkit-terminal-drift-'));
+  const path = join(root, 'entry.txt');
+  const initial = Buffer.from('before');
+  const mutations = [
+    () => fs.appendFileSync(path, '!'),
+    () => fs.truncateSync(path, 1),
+    () => {
+      const descriptor = fs.openSync(path, 'r+');
+      try {
+        fs.writeSync(descriptor, Buffer.from('after!'), 0, initial.length, 0);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    },
+  ];
+  try {
+    for (const mutate of mutations) {
+      await writeFile(path, initial);
+      fs.utimesSync(path, new Date('2020-01-01'), new Date('2020-01-01'));
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const captured = [];
+      const diagnostics = [];
+      let changed = false;
+      stdout.on('data', (bytes) => {
+        captured.push(Buffer.from(bytes));
+        if (!changed) {
+          changed = true;
+          // Mutate the real open file after its final read, before the helper can settle.
+          mutate();
+        }
+      });
+      stderr.on('data', (bytes) => diagnostics.push(Buffer.from(bytes)));
+      const exitCode = await runFileEffect({
+        argv: [
+          'file.export',
+          '--slot',
+          'session',
+          '--path',
+          'entry.txt',
+          '--max-length',
+          String(MAX_FILE_BYTES),
+        ],
+        stdin: Readable.from([]),
+        stdout,
+        stderr,
+        slotRoots: { session: root },
+      });
+      assert.equal(changed, true);
+      assert.deepEqual(Buffer.concat(captured), initial);
+      assert.equal(exitCode, 1, 'detected terminal file drift must fail the effect');
+      assert.equal(Buffer.concat(diagnostics).toString(), 'File effect rejected.\n');
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

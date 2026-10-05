@@ -3,7 +3,6 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
-import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -19,6 +18,7 @@ import {
   importLocalSimulatorTranscript,
   importWorkerTranscript,
   type LocalSimulatorTranscriptPayload,
+  prepareWorkerArtifact,
   type WorkerTranscriptPayload,
 } from './worker-transcript.js';
 
@@ -99,17 +99,8 @@ function artifactRecord(
   };
 }
 
-/** Builds import options with canonical owners. @param fixture Transcript fixture. @param trace Optional trace. @returns Options. */
-function importOptions(
-  fixture: ReturnType<typeof createTranscriptFixture>,
-  trace?: WorkerContextPackageTrace
-) {
-  return {
-    contextPackageTrace: trace,
-    recordedAt: '2026-07-16T00:00:00.000Z',
-    workspaceDb: fixture.workspaceDb,
-  };
-}
+/** Stable canonical closeout timestamp for Item import assertions. */
+const transcriptImportOptions = { recordedAt: '2026-07-16T00:00:00.000Z' };
 
 /** Counts durable imported owners. @param fixture Transcript fixture. @returns Owner counts. */
 function importedOwnerCounts(fixture: ReturnType<typeof createTranscriptFixture>) {
@@ -198,7 +189,7 @@ describe('worker transcript product-safe diagnostics', () => {
       fixture.store,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     expect(result.itemIds).toHaveLength(1);
     expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
@@ -241,7 +232,7 @@ describe('worker transcript product-safe diagnostics', () => {
       fixture.store,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     const before = transcriptItemHistory(fixture);
     // Event admission failures block publication; they must preserve the already guarded reply.
@@ -259,7 +250,7 @@ describe('worker transcript product-safe diagnostics', () => {
       fixture.store,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     expect(result.itemIds).toEqual([]);
     expect(result.artifactIds).toEqual([]);
@@ -293,12 +284,9 @@ describe('worker transcript Item exact-value admission', () => {
     const fixture = createTranscriptFixture();
     const before = transcriptItemHistory(fixture);
     const text = 'Local output sk-not-injected and aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-    const body = Buffer.from(text);
     const payload: LocalSimulatorTranscriptPayload = {
       ...credentialItemPayload(fixture, { text }, null),
       credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
-      artifactsJsonl: JSON.stringify(artifactRecord(fixture)),
-      artifactFiles: [{ bytes: body, sequence: 2 }],
     };
     // Deliberately cross the static boundary to prove Worker admission also rejects this at runtime.
     expect(() =>
@@ -306,7 +294,7 @@ describe('worker transcript Item exact-value admission', () => {
         fixture.store,
         fixture.environmentPackage,
         payload as unknown as WorkerTranscriptPayload,
-        importOptions(fixture)
+        transcriptImportOptions
       )
     ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     expect(transcriptItemHistory(fixture)).toBe(before);
@@ -318,16 +306,12 @@ describe('worker transcript Item exact-value admission', () => {
       fixture.store,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     expect(result.itemIds).toHaveLength(1);
-    expect(result.artifactIds).toHaveLength(1);
-    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0]!).content.body).toBe(text);
+    expect(result.artifactIds).toHaveLength(0);
     expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
       expect.objectContaining({ id: result.itemIds[0], text })
-    );
-    expect(getArtifactReview(fixture.workspaceDb, result.artifactIds[0]!, 1).contentDigest).toBe(
-      artifactDigest(body)
     );
   });
 
@@ -345,7 +329,7 @@ describe('worker transcript Item exact-value admission', () => {
           fixture.store,
           fixture.environmentPackage,
           payload,
-          importOptions(fixture)
+          transcriptImportOptions
         )
       ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
       expect(transcriptItemHistory(fixture)).toBe(before);
@@ -370,7 +354,7 @@ describe('worker transcript Item exact-value admission', () => {
       fixture.store,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.diagnostics).toEqual([]);
@@ -464,7 +448,7 @@ describe('worker transcript Item exact-value admission', () => {
       reopened,
       fixture.environmentPackage,
       payload,
-      importOptions(fixture)
+      transcriptImportOptions
     );
     expect(result.itemIds).toHaveLength(1);
     expect(result.diagnostics).toEqual([]);
@@ -484,94 +468,7 @@ describe('worker transcript Item exact-value admission', () => {
     );
   });
 
-  it('guards the worker-derived Artifact reference title while preserving its canonical mirror', () => {
-    const fixture = createTranscriptFixture();
-    const value = 'synthetic-title-credential';
-    const payload = {
-      credentialCheckValues: transcriptCredentialChecks([value]),
-      artifactsJsonl: JSON.stringify(
-        artifactRecord(fixture, { artifact: { title: `Report ${value}` } })
-      ),
-      artifactFiles: [{ bytes: Buffer.from('Safe report body.'), sequence: 2 }],
-    };
-    const result = importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      payload,
-      importOptions(fixture)
-    );
-    expect(result.artifactIds).toHaveLength(1);
-    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
-      expect.objectContaining({ type: 'artifact-reference', title: 'Report [redacted]' })
-    );
-    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0] as string).title).toBe(
-      'Report [redacted]'
-    );
-    expect(transcriptItemHistory(fixture)).not.toContain(value);
-  });
-
-  it('rejects an Artifact credential match before any Item, Artifact or Review write', () => {
-    const fixture = createTranscriptFixture();
-    const value = 'synthetic-artifact-credential';
-    const before = transcriptItemHistory(fixture);
-    const payload = credentialItemPayload(
-      fixture,
-      { text: 'Safe reply accompanying the candidate set.' },
-      transcriptCredentialChecks([value])
-    );
-    payload.artifactsJsonl = [
-      artifactRecord(fixture),
-      artifactRecord(fixture, { sequence: 3, artifact: { path: '/workspace/output/other.md' } }),
-    ]
-      .map((record) => JSON.stringify(record))
-      .join('\n');
-    payload.artifactFiles = [
-      { bytes: Buffer.from('Safe first candidate.'), sequence: 2 },
-      { bytes: Buffer.from(`Report ${value} end.`), sequence: 3 },
-    ];
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        payload,
-        importOptions(fixture)
-      )
-    ).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
-    expect(transcriptItemHistory(fixture)).toBe(before);
-    expect(importedOwnerCounts(fixture)).toEqual({
-      artifacts: 0,
-      references: 0,
-      reviews: { count: 0 },
-    });
-  });
-
-  it('accepts Artifact credential-looking non-injected bytes unchanged', () => {
-    const fixture = createTranscriptFixture();
-    const bytes = Buffer.from('Authorization: Bearer sk-synthetic-non-injected; password=example');
-    const result = importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      {
-        credentialCheckValues: transcriptCredentialChecks(['other-injected-value']),
-        artifactsJsonl: JSON.stringify(artifactRecord(fixture)),
-        artifactFiles: [{ bytes, sequence: 2 }],
-      },
-      importOptions(fixture)
-    );
-    expect(result.artifactIds).toHaveLength(1);
-    expect(result.diagnostics).toEqual([]);
-    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0] as string)).toMatchObject({
-      content: { body: bytes.toString('utf8') },
-      contentDigest: artifactDigest(bytes),
-    });
-    expect(importedOwnerCounts(fixture)).toEqual({
-      artifacts: 1,
-      references: 1,
-      reviews: { count: 1 },
-    });
-  });
-
-  describe.each(['Item-only', 'mixed Item and Artifact'])('%s missing-evidence import', (kind) => {
+  describe('missing-evidence import', () => {
     it.each([
       'missing-set',
       'missing-envelope',
@@ -602,16 +499,13 @@ describe('worker transcript Item exact-value admission', () => {
       if (missing === 'missing-capability-route-hash') {
         payload.credentialCheckValues!.routeTokenHashes.capability = '';
       }
-      if (kind === 'mixed Item and Artifact') {
-        payload.artifactsJsonl = JSON.stringify(artifactRecord(fixture));
-        payload.artifactFiles = [{ bytes: Buffer.from('Safe Artifact body.'), sequence: 2 }];
-      }
+
       expect(() =>
         importWorkerTranscript(
           reopened,
           fixture.environmentPackage,
           payload,
-          importOptions(fixture)
+          transcriptImportOptions
         )
       ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
       expect(transcriptItemHistory(fixture)).toBe(before);
@@ -625,480 +519,6 @@ describe('worker transcript Item exact-value admission', () => {
 });
 
 describe('worker transcript import', () => {
-  it('imports exact Artifact bytes with deterministic reference and Review ownership', () => {
-    const fixture = createTranscriptFixture();
-    const bytes = Buffer.from('\uFEFF# Exact worker output\n', 'utf8');
-    const result = importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      {
-        credentialCheckValues: transcriptCredentialChecks(),
-        itemsJsonl: `${JSON.stringify({
-          schemaVersion: 1,
-          kind: 'item',
-          lineage: transcriptLineage(fixture),
-          sequence: 2,
-          item: {
-            type: 'assistant-message',
-            status: 'completed',
-            parts: [{ type: 'text', text: 'Worker completed the task.' }],
-          },
-        })}\n`,
-        artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-        artifactFiles: [{ bytes, sequence: 2 }],
-      },
-      importOptions(fixture)
-    );
-
-    const artifactId = `worker-artifact-${fixture.environmentPackage.snapshotId}-2`;
-    const artifact = fixture.store.getArtifact('ws_demo', artifactId);
-    const importedItem = fixture.store
-      .listThreadItems('ws_demo', 'th_demo')
-      .find(
-        (item) => item.type === 'assistant-message' && item.text === 'Worker completed the task.'
-      );
-
-    expect(result).toMatchObject({
-      itemIds: [expect.stringMatching(/^it_worker_/)],
-      artifactIds: [artifactId],
-      diagnostics: [],
-    });
-    expect(artifact).toEqual({
-      id: artifactId,
-      workspaceId: 'ws_demo',
-      threadId: 'th_demo',
-      turnId: fixture.turn.id,
-      kind: 'file',
-      title: 'Settlement summary',
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'markdown', body: bytes.toString('utf8') },
-      contentDigest: artifactDigest(bytes),
-      lastMutationRequestId: 'req_transcript_1',
-      origin: {
-        kind: 'turn-output',
-        threadId: 'th_demo',
-        turnId: fixture.turn.id,
-        requestId: 'req_transcript_1',
-      },
-      createdAt: '2026-07-16T00:00:00.000Z',
-      updatedAt: '2026-07-16T00:00:00.000Z',
-    });
-    expect(importedItem).toMatchObject({
-      id: expect.stringMatching(/^it_worker_/),
-      type: 'assistant-message',
-      status: 'completed',
-      turnId: fixture.turn.id,
-    });
-    expect(getArtifactReview(fixture.workspaceDb, artifactId, 1)).toMatchObject({
-      artifactId,
-      artifactVersion: 1,
-      contentDigest: artifactDigest(bytes),
-      sourceThreadId: 'th_demo',
-      sourceTurnId: fixture.turn.id,
-      sourceAgentId: fixture.environmentPackage.agent.agentId,
-      materialProposal: null,
-      createdAt: '2026-07-16T00:00:00.000Z',
-    });
-  });
-
-  it('reuses only a complete exact Artifact, reference, and Review tuple', () => {
-    const fixture = createTranscriptFixture();
-    const bytes = Buffer.from('# Stable output\n', 'utf8');
-    const payload = {
-      credentialCheckValues: transcriptCredentialChecks(),
-      artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-      artifactFiles: [{ bytes, sequence: 2 }],
-      itemsJsonl: `${JSON.stringify({
-        item: {
-          parts: [{ text: 'Recovered worker result.', type: 'text' }],
-          status: 'completed',
-          type: 'assistant-message',
-        },
-        kind: 'item',
-        lineage: transcriptLineage(fixture),
-        schemaVersion: 1,
-        sequence: 1,
-      })}\n`,
-    };
-    const options = importOptions(fixture);
-
-    const first = importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      payload,
-      options
-    );
-    decideArtifactReview(fixture.workspaceDb, {
-      actorId: 'user_local',
-      artifactContent: bytes.toString('utf8'),
-      artifactId: first.artifactIds[0] as string,
-      artifactMediaType: 'text/markdown',
-      artifactVersion: 1,
-      decidedAt: '2026-07-16T00:00:01.000Z',
-      decision: 'rejected',
-      feedback: null,
-      requestId: 'req_review_decision',
-    });
-    const replay = importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      payload,
-      options
-    );
-
-    expect(replay).toEqual({ ...first, artifactIds: [] });
-    expect(first.artifactIds).toEqual([
-      `worker-artifact-${fixture.environmentPackage.snapshotId}-2`,
-    ]);
-    expect(
-      fixture.store
-        .listThreadItems('ws_demo', 'th_demo')
-        .filter((item) => item.id === first.itemIds[0])
-    ).toHaveLength(1);
-    expect(importedOwnerCounts(fixture)).toEqual({
-      artifacts: 1,
-      references: 1,
-      reviews: { count: 1 },
-    });
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: [artifactRecord(fixture), artifactRecord(fixture, { sequence: 3 })]
-            .map((record) => JSON.stringify(record))
-            .join('\n'),
-          artifactFiles: [
-            { bytes, sequence: 2 },
-            { bytes: Buffer.from('fresh remainder'), sequence: 3 },
-          ],
-        },
-        options
-      )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-    expect(importedOwnerCounts(fixture).artifacts).toBe(1);
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          ...payload,
-          artifactFiles: [{ bytes: Buffer.from('# Changed output\n'), sequence: 2 }],
-        },
-        options
-      )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-
-    fixture.workspaceDb.sqlite.prepare('DELETE FROM artifact_reviews').run();
-    expect(() =>
-      importWorkerTranscript(fixture.store, fixture.environmentPackage, payload, options)
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-  });
-
-  it.each([
-    {
-      name: 'missing bytes',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-        artifactFiles: [],
-      }),
-    },
-    {
-      name: 'extra bytes',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-        artifactFiles: [
-          { bytes: Buffer.from('output'), sequence: 2 },
-          { bytes: Buffer.from('extra'), sequence: 3 },
-        ],
-      }),
-    },
-    {
-      name: 'empty bytes',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-        artifactFiles: [{ bytes: Buffer.alloc(0), sequence: 2 }],
-      }),
-    },
-    {
-      name: 'invalid JSON bytes',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        artifactsJsonl: `${JSON.stringify(
-          artifactRecord(fixture, { artifact: { mediaType: 'application/json' } })
-        )}\n`,
-        artifactFiles: [{ bytes: Buffer.from('{'), sequence: 2 }],
-      }),
-    },
-    {
-      name: 'invalid UTF-8 bytes',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-        artifactFiles: [{ bytes: Buffer.from([0xc3, 0x28]), sequence: 2 }],
-      }),
-    },
-    {
-      name: 'artifact lineage mismatch',
-      payload: (fixture: ReturnType<typeof createTranscriptFixture>) => {
-        const record = artifactRecord(fixture);
-        return {
-          artifactsJsonl: `${JSON.stringify({
-            ...record,
-            lineage: { ...record.lineage, workspaceId: 'ws_other' },
-          })}\n`,
-          artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
-        };
-      },
-    },
-  ])('rejects $name before any canonical write', ({ payload }) => {
-    const fixture = createTranscriptFixture();
-
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        { ...payload(fixture), credentialCheckValues: transcriptCredentialChecks() },
-        importOptions(fixture)
-      )
-    ).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
-    expect(importedOwnerCounts(fixture)).toEqual({
-      artifacts: 0,
-      references: 0,
-      reviews: { count: 0 },
-    });
-  });
-
-  it.each([
-    {
-      code: 'recovery_required',
-      name: 'Workspace database',
-      options: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        recordedAt: importOptions(fixture).recordedAt,
-      }),
-    },
-    {
-      code: 'invalid_request',
-      name: 'valid recorded timestamp',
-      options: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        ...importOptions(fixture),
-        recordedAt: 'not-a-timestamp',
-      }),
-    },
-    {
-      code: 'recovery_required',
-      name: 'recorded timestamp',
-      options: (fixture: ReturnType<typeof createTranscriptFixture>) => ({
-        workspaceDb: fixture.workspaceDb,
-      }),
-    },
-  ])('requires an exact $name before Artifact import', ({ code, options }) => {
-    const fixture = createTranscriptFixture();
-
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-          artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
-        },
-        options(fixture)
-      )
-    ).toThrowError(expect.objectContaining({ code }));
-    expect(importedOwnerCounts(fixture).artifacts).toBe(0);
-  });
-
-  it('requires the canonical source Turn assignment before Artifact import', () => {
-    const fixture = createTranscriptFixture();
-    fixture.store.updateTurn(fixture.turn.id, { agentId: 'agent_other' });
-
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
-          artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
-        },
-        importOptions(fixture)
-      )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-    expect(importedOwnerCounts(fixture).artifacts).toBe(0);
-  });
-
-  it('requires a non-null package request identity before Artifact import', () => {
-    const fixture = createTranscriptFixture();
-    const environmentPackage = {
-      ...fixture.environmentPackage,
-      scope: { ...fixture.environmentPackage.scope, requestId: null },
-    };
-    const record = artifactRecord(fixture);
-
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: `${JSON.stringify({
-            ...record,
-            lineage: { ...record.lineage, requestId: null },
-          })}\n`,
-          artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
-        },
-        importOptions(fixture)
-      )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-    expect(importedOwnerCounts(fixture).artifacts).toBe(0);
-  });
-
-  it('accepts a Material proposal only from one exact same-turn trace selection', () => {
-    const fixture = createTranscriptFixture();
-    const baseContent = '# Base\n';
-    const material = createWorkspaceMaterial(fixture.workspaceDb, {
-      acceptedAt: '2026-07-15T00:00:00.000Z',
-      actorId: 'user_local',
-      kind: 'markdown',
-      requestId: 'req_create_material',
-      sensitivity: 'internal',
-      title: 'Target material',
-    });
-    const base = saveWorkspaceMaterialRevision(fixture.workspaceDb, {
-      acceptedAt: '2026-07-15T00:00:01.000Z',
-      actorId: 'user_local',
-      content: baseContent,
-      contentDigest: artifactDigest(Buffer.from(baseContent)),
-      expectedRevisionId: null,
-      materialId: material.materialId,
-      requestId: 'req_save_material',
-    });
-    const proposal = {
-      baseContentDigest: artifactDigest(Buffer.from(baseContent)),
-      baseRevisionId: base.revisionId,
-      materialId: material.materialId,
-    };
-    const selection = {
-      bindingMutationRequestId: 'req_bind_material',
-      contentDigest: proposal.baseContentDigest,
-      inclusionReason: 'thread_binding' as const,
-      materialId: material.materialId,
-      mediaType: 'text/markdown' as const,
-      packagePath: 'materials/target.md',
-      parentRevisionId: null,
-      revisionId: base.revisionId,
-      sensitivity: 'internal' as const,
-      sensitivityDecision: 'included' as const,
-    };
-    const trace = {
-      ...transcriptLineage(fixture),
-      materialSelections: [selection],
-    } as WorkerContextPackageTrace;
-    const record = artifactRecord(fixture, { artifact: { materialProposal: proposal } });
-    const artifactId = `worker-artifact-${fixture.environmentPackage.snapshotId}-2`;
-
-    importWorkerTranscript(
-      fixture.store,
-      fixture.environmentPackage,
-      {
-        credentialCheckValues: transcriptCredentialChecks(),
-        artifactsJsonl: `${JSON.stringify(record)}\n`,
-        artifactFiles: [{ bytes: Buffer.from('# Proposed replacement\n'), sequence: 2 }],
-      },
-      importOptions(fixture, trace)
-    );
-
-    expect(getArtifactReview(fixture.workspaceDb, artifactId, 1).materialProposal).toEqual(
-      proposal
-    );
-
-    fixture.workspaceDb.sqlite
-      .prepare("UPDATE workspace_materials SET kind = 'text' WHERE material_id = ?")
-      .run(material.materialId);
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: `${JSON.stringify(
-            artifactRecord(fixture, { artifact: { materialProposal: proposal }, sequence: 3 })
-          )}\n`,
-          artifactFiles: [{ bytes: Buffer.from('# Another proposal\n'), sequence: 3 }],
-        },
-        importOptions(fixture, trace)
-      )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-    expect(importedOwnerCounts(fixture).artifacts).toBe(1);
-  });
-
-  it.each([
-    { expected: 'recovery_required', name: 'missing accepted trace', trace: null },
-    { expected: 'recovery_required', name: 'wrong trace lineage', trace: 'wrong-lineage' },
-    { expected: 'invalid_request', name: 'missing selection', trace: 'missing' },
-    { expected: 'invalid_request', name: 'duplicate selection', trace: 'duplicate' },
-    { expected: 'invalid_request', name: 'incompatible media', trace: 'incompatible' },
-  ])('rejects a proposal with $name before writing', ({ expected, trace: traceCase }) => {
-    const fixture = createTranscriptFixture();
-    const proposal = {
-      baseContentDigest: `sha256:${'a'.repeat(64)}`,
-      baseRevisionId: 'mrev_base',
-      materialId: 'mat_target',
-    };
-    const selection = {
-      bindingMutationRequestId: null,
-      contentDigest: proposal.baseContentDigest,
-      inclusionReason: 'goal_steering' as const,
-      materialId: proposal.materialId,
-      mediaType: 'text/markdown' as const,
-      packagePath: 'materials/target.md',
-      parentRevisionId: null,
-      revisionId: proposal.baseRevisionId,
-      sensitivity: 'internal' as const,
-      sensitivityDecision: 'included' as const,
-    };
-    const selections =
-      traceCase === 'duplicate'
-        ? [selection, selection]
-        : traceCase === 'missing'
-          ? []
-          : [selection];
-    const trace =
-      traceCase === null
-        ? undefined
-        : ({
-            ...transcriptLineage(fixture),
-            materialSelections: selections,
-            ...(traceCase === 'wrong-lineage' ? { turnId: 'turn_other' } : {}),
-          } as WorkerContextPackageTrace);
-    const artifact =
-      traceCase === 'incompatible'
-        ? { materialProposal: proposal, mediaType: 'text/plain' }
-        : { materialProposal: proposal };
-
-    expect(() =>
-      importWorkerTranscript(
-        fixture.store,
-        fixture.environmentPackage,
-        {
-          credentialCheckValues: transcriptCredentialChecks(),
-          artifactsJsonl: `${JSON.stringify(artifactRecord(fixture, { artifact }))}\n`,
-          artifactFiles: [{ bytes: Buffer.from('proposal'), sequence: 2 }],
-        },
-        importOptions(fixture, trace)
-      )
-    ).toThrowError(expect.objectContaining({ code: expected }));
-    expect(importedOwnerCounts(fixture)).toEqual({
-      artifacts: 0,
-      references: 0,
-      reviews: { count: 0 },
-    });
-  });
-
   it('rejects transcript records whose lineage does not match the package scope', () => {
     const { environmentPackage, store, turn } = createTranscriptFixture();
     const result = importWorkerTranscript(store, environmentPackage, {
@@ -1346,5 +766,177 @@ describe('worker transcript import', () => {
         path: '$.events',
       }),
     ]);
+  });
+});
+
+describe('retired Artifact declaration admission', () => {
+  it('does not publish Artifacts from agent-authored transcript declarations', () => {
+    const fixture = createTranscriptFixture();
+    const before = importedOwnerCounts(fixture);
+    const payload = {
+      credentialCheckValues: transcriptCredentialChecks(),
+      artifactsJsonl: JSON.stringify(artifactRecord(fixture)),
+      artifactFiles: [{ sequence: 2, bytes: Buffer.from('Legacy declaration must not publish.') }],
+    };
+    // Removal may ignore or reject the retired channel, but never publish its bytes.
+    try {
+      importWorkerTranscript(
+        fixture.store,
+        fixture.environmentPackage,
+        payload,
+        transcriptImportOptions
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+    }
+    expect(importedOwnerCounts(fixture)).toEqual(before);
+  });
+});
+
+/** Builds an Artifact candidate through the same exact-byte validator used by live submission. */
+function prepareCandidate(
+  fixture: ReturnType<typeof createTranscriptFixture>,
+  overrides: Partial<Parameters<typeof prepareWorkerArtifact>[0]> = {}
+) {
+  return prepareWorkerArtifact({
+    store: fixture.store,
+    workspaceDb: fixture.workspaceDb,
+    environmentPackage: fixture.environmentPackage,
+    artifactId: 'worker-artifact-candidate',
+    requestId: 'request_file',
+    recordedAt: '2026-10-05T00:00:00.000Z',
+    metadata: { kind: 'file', mediaType: 'text/markdown', title: 'Candidate' },
+    bytes: Buffer.from('# Candidate\n'),
+    checkValues: transcriptCredentialChecks(),
+    ...overrides,
+  });
+}
+
+describe('live Artifact Material candidate validation', () => {
+  it('requires exact canonical source assignment before candidate publication', () => {
+    const fixture = createTranscriptFixture();
+    fixture.store.updateTurn(fixture.turn.id, { agentId: 'other-agent' });
+    expect(() => prepareCandidate(fixture)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+  });
+
+  it('binds the proposal to its actual base revision and detects contradictory Material authority', () => {
+    const fixture = createTranscriptFixture();
+    const material = createWorkspaceMaterial(fixture.workspaceDb, {
+      acceptedAt: '2026-10-05T00:00:00.000Z',
+      actorId: 'user_local',
+      kind: 'markdown',
+      requestId: 'create-material',
+      sensitivity: 'internal',
+      title: 'Target',
+    });
+    const content = '# Base\n';
+    const digest = artifactDigest(Buffer.from(content));
+    const base = saveWorkspaceMaterialRevision(fixture.workspaceDb, {
+      acceptedAt: '2026-10-05T00:00:01.000Z',
+      actorId: 'user_local',
+      content,
+      contentDigest: digest,
+      expectedRevisionId: null,
+      materialId: material.materialId,
+      requestId: 'save-material',
+    });
+    const proposal = {
+      materialId: material.materialId,
+      baseRevisionId: base.revisionId,
+      baseContentDigest: digest,
+    };
+    const trace = {
+      ...transcriptLineage(fixture),
+      materialSelections: [
+        {
+          materialId: material.materialId,
+          revisionId: base.revisionId,
+          contentDigest: digest,
+          mediaType: 'text/markdown',
+        },
+      ],
+    } as WorkerContextPackageTrace;
+    const metadata = {
+      kind: 'file' as const,
+      title: 'Proposal',
+      mediaType: 'text/markdown' as const,
+      materialProposal: proposal,
+    };
+    expect(
+      prepareCandidate(fixture, { metadata, contextPackageTrace: trace }).reviewInput
+        .materialProposal
+    ).toEqual(proposal);
+    fixture.workspaceDb.sqlite
+      .prepare("UPDATE workspace_materials SET kind = 'text' WHERE material_id = ?")
+      .run(material.materialId);
+    expect(() => prepareCandidate(fixture, { metadata, contextPackageTrace: trace })).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+  });
+
+  it.each([
+    { name: 'missing trace', code: 'recovery_required' },
+    { name: 'wrong lineage', code: 'recovery_required' },
+    { name: 'missing selection', code: 'invalid_request' },
+    { name: 'duplicate selection', code: 'invalid_request' },
+    { name: 'incompatible media', code: 'invalid_request' },
+    { name: 'JSON proposal', code: 'invalid_request' },
+  ])('rejects $name before any canonical write', ({ name, code }) => {
+    const fixture = createTranscriptFixture();
+    const proposal = {
+      materialId: 'mat_target',
+      baseRevisionId: 'mrev_base',
+      baseContentDigest: `sha256:${'a'.repeat(64)}`,
+    };
+    const selection = {
+      materialId: proposal.materialId,
+      revisionId: proposal.baseRevisionId,
+      contentDigest: proposal.baseContentDigest,
+      mediaType: 'text/markdown',
+    };
+    const trace = {
+      ...transcriptLineage(fixture),
+      materialSelections:
+        name === 'missing selection'
+          ? []
+          : name === 'duplicate selection'
+            ? [selection, selection]
+            : [selection],
+      ...(name === 'wrong lineage' ? { turnId: 'turn_other' } : {}),
+    } as WorkerContextPackageTrace;
+    expect(() =>
+      prepareCandidate(fixture, {
+        metadata: {
+          kind: 'file',
+          title: 'Proposal',
+          mediaType:
+            name === 'incompatible media'
+              ? 'text/plain'
+              : name === 'JSON proposal'
+                ? 'application/json'
+                : 'text/markdown',
+          materialProposal: proposal,
+        },
+        ...(name === 'JSON proposal' ? { bytes: Buffer.from('{}') } : {}),
+        ...(name === 'missing trace' ? {} : { contextPackageTrace: trace }),
+      })
+    ).toThrowError(expect.objectContaining({ code }));
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
   });
 });

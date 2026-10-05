@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -24,6 +25,7 @@ import {
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
+  snapshotDigest,
 } from './aep-snapshot-ledger.js';
 
 /**
@@ -166,6 +168,93 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
+  it('keeps current-writer stored and parsed snapshot digests identical', () => {
+    const workspaceDb = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const stored = JSON.parse(
+        readFileSync(snapshotPath(workspaceDb, environmentPackage), 'utf8')
+      );
+      const parsed = AgentEnvironmentPackageSchema.parse(stored.snapshot);
+      const storedDigest = createHash('sha256')
+        .update(JSON.stringify(stored.snapshot))
+        .digest('hex');
+      const parsedDigest = createHash('sha256').update(JSON.stringify(parsed)).digest('hex');
+
+      expect(storedDigest).toBe(record.contentDigest);
+      expect(parsedDigest).toBe(storedDigest);
+      expect(JSON.stringify(parsed)).toBe(JSON.stringify(stored.snapshot));
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('validates retained snapshot identity before stripping an ignored transcript field', () => {
+    const workspaceDb = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const path = snapshotPath(workspaceDb, environmentPackage);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      retained.snapshot.control.transcript.artifactsPath = '/openkit/session/artifacts.jsonl';
+      retained.contentDigest = createHash('sha256')
+        .update(JSON.stringify(retained.snapshot))
+        .digest('hex');
+      const originalBytes = `${JSON.stringify(retained, null, 2)}\n`;
+      writeFileSync(path, originalBytes);
+
+      const read = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        'ws_1',
+        environmentPackage.snapshotId
+      );
+
+      expect(read.contentDigest).toBe(retained.contentDigest);
+      expect(read.snapshot.control.transcript).not.toHaveProperty('artifactsPath');
+      expect(read.snapshot.control.transcript.itemsPath).toBe(
+        environmentPackage.control.transcript.itemsPath
+      );
+      expect(readFileSync(path, 'utf8')).toBe(originalBytes);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('rejects altered stored content even when the altered transcript field would be ignored', () => {
+    const workspaceDb = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const path = snapshotPath(workspaceDb, environmentPackage);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      retained.snapshot.control.transcript.artifactsPath = '/openkit/session/artifacts.jsonl';
+      retained.contentDigest = createHash('sha256')
+        .update(JSON.stringify(retained.snapshot))
+        .digest('hex');
+      writeFileSync(path, `${JSON.stringify(retained)}\n`);
+      // Establish the valid retained record before testing a mutation hidden from the live projection.
+      requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId);
+      retained.snapshot.control.transcript.artifactsPath = '/openkit/session/changed.jsonl';
+      writeFileSync(path, `${JSON.stringify(retained)}\n`);
+
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
+      ).toThrow('Agent environment package snapshot digest mismatch');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('rejects V1 snapshots through every normal ledger path', () => {
     const workspaceDb = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();
@@ -182,6 +271,7 @@ describe('AEP snapshot ledger', () => {
         ...record,
         snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
       };
+      legacyRecord.contentDigest = snapshotDigest(legacyRecord.snapshot);
       writeFileSync(
         snapshotPath(workspaceDb, environmentPackage),
         `${JSON.stringify(legacyRecord)}\n`
@@ -189,17 +279,19 @@ describe('AEP snapshot ledger', () => {
 
       expect(() =>
         requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
-      ).toThrow();
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow();
+      ).toThrow(/schemaVersion/);
+      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow(
+        /schemaVersion/
+      );
       expect(() =>
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-07-06T00:00:02.000Z',
           environmentPackage: legacyRecord.snapshot as never,
         })
-      ).toThrow();
+      ).toThrow(/schemaVersion/);
       expect(() =>
         importAgentEnvironmentPackageSnapshots(workspaceDb, [legacyRecord as never])
-      ).toThrow();
+      ).toThrow(/schemaVersion/);
     } finally {
       workspaceDb.sqlite.close();
     }

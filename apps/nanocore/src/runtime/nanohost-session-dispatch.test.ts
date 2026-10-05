@@ -125,6 +125,110 @@ describe('authoritative NanoHost session dispatch', () => {
               : { requestId: request.requestId, outcome: 'no_new_head', unstable: false }
           );
       }
+      // Exercise the live extension through the same physical-session and handwritten validator owners.
+      const live = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+      await live.readiness!(
+        physical,
+        Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+        {
+          ...target,
+          coreDb,
+        }
+      );
+      const liveInput = {
+        purpose: 'artifact-submission',
+        submissionRequestId: 'submission-1',
+        turnId: 'turn-1',
+        agentSessionId: 'session-1',
+        packageSnapshotId: 'package-1',
+        leaseId: 'lease-1',
+        backendSessionId: 'backend-1',
+        sandboxId: 'sandbox-1',
+        maxByteLength: 17,
+        presence: 'optional',
+        slot: 'turn-output',
+        relativePath: 'answer.txt',
+      };
+      for (const invalid of [
+        { maxByteLength: 0 },
+        { maxByteLength: 16 * 1024 * 1024 + 2 },
+        { presence: 'required' },
+        { agentSessionId: '' },
+        { terminalBarrierProved: true },
+        { finalStatusAccepted: true },
+        { purpose: 'future' },
+      ]) {
+        await expect(
+          live.effect({
+            kind: 'file.export',
+            requestId: 'b'.repeat(64),
+            input: { ...liveInput, ...invalid },
+          })
+        ).rejects.toThrow(/invalid/i);
+        expect(await live.poll(physical, 'file.export')).toBeNull();
+      }
+      const refusedId = 'b'.repeat(64);
+      const refused = live.effect({ kind: 'file.export', requestId: refusedId, input: liveInput });
+      expect(await live.poll(physical, 'file.export')).toEqual({
+        ...liveInput,
+        requestId: refusedId,
+      });
+      await expect(
+        live.effect({ kind: 'file.export', requestId: 'c'.repeat(64), input: liveInput })
+      ).rejects.toMatchObject({ code: 'artifact_capture_busy' });
+      for (const invalid of [
+        { requestId: refusedId, state: 'refused', reasonCode: 'future' },
+        {
+          requestId: refusedId,
+          state: 'refused',
+          reasonCode: 'artifact_file_not_regular',
+          future: true,
+        },
+      ])
+        await expect(live.result(physical, 'file.export', invalid)).rejects.toThrow(/invalid/i);
+      await live.result(physical, 'file.export', {
+        requestId: refusedId,
+        state: 'refused',
+        reasonCode: 'artifact_file_not_regular',
+      });
+      await expect(refused).resolves.toEqual({
+        state: 'refused',
+        reasonCode: 'artifact_file_not_regular',
+      });
+      const absentId = 'c'.repeat(64);
+      const absent = live.effect({ kind: 'file.export', requestId: absentId, input: liveInput });
+      await live.poll(physical, 'file.export');
+      await live.result(physical, 'file.export', { requestId: absentId, state: 'absent' });
+      await expect(absent).resolves.toEqual({ state: 'absent' });
+      const captureId = 'd'.repeat(64);
+      const capture = live.effect({ kind: 'file.export', requestId: captureId, input: liveInput });
+      await live.poll(physical, 'file.export');
+      const delivery = (bytes: Buffer) =>
+        new Request('http://nanohost/file.export/result', {
+          method: 'POST',
+          body: bytes,
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': String(bytes.length),
+            'x-openkit-byte-length': String(bytes.length),
+            'x-openkit-request-id': captureId,
+            'x-openkit-sha256': `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            'x-openkit-slot': liveInput.slot,
+            'x-openkit-relative-path': liveInput.relativePath,
+          },
+        });
+      await expect(
+        live.fileExportResult(physical, delivery(Buffer.alloc(18)))
+      ).rejects.toMatchObject({ status: 413 });
+      const bytes = Buffer.alloc(17, 10);
+      await live.fileExportResult(physical, delivery(bytes));
+      const captured = (await capture) as { stagingPath: string; byteLength: number };
+      try {
+        expect(captured.byteLength).toBe(17);
+        expect(readFileSync(captured.stagingPath)).toEqual(bytes);
+      } finally {
+        rmSync(join(captured.stagingPath, '..'), { recursive: true, force: true });
+      }
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -9,7 +9,6 @@ import {
 } from '@openkit/config-schema';
 import type { Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
-
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -17,6 +16,7 @@ import {
   type NanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   createNanoHostEffectRequest,
@@ -165,6 +165,8 @@ export interface NanoHostSessionRouteRequest {
 export interface NanoHostSessionEffectRequest {
   /** Private preparation lineage; never copied into a command body. */
   readonly imageSettlement?: WorkerImageSettlementIdentity;
+  /** Process-private live capture cancellation; never hashed or carried on the wire. */
+  readonly signal?: AbortSignal | undefined;
   readonly input: Readonly<Record<string, unknown>>;
   readonly kind: NanoHostEffectOperation | string;
   /** Deterministic opaque effect identity produced from durable attempt lineage. */
@@ -279,6 +281,9 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  /** Caller has left; accepted file results remain owned solely for verified disposal. */
+  fileExportAbandoned?: boolean;
+  fileExportWaitCleanup?: () => void;
   collectionTimeout?: ReturnType<typeof setTimeout>;
   collectionDeliveryStarted?: boolean;
   collectionAbort?: AbortController | undefined;
@@ -509,6 +514,12 @@ export function createNanoHostSessionDispatch(
           command = { ...request.input, requestId };
         }
         if (pendingEffects.has(operation)) {
+          if (operation === 'file.export' && request.input.purpose === 'artifact-submission')
+            throw new OperationError(
+              'artifact_capture_busy',
+              'Another file capture is still in progress. Use a new request after it settles.',
+              409
+            );
           throw new Error(`NanoHost effect ${operation} already has a pending command.`);
         }
         const readiness = currentReadiness;
@@ -530,6 +541,9 @@ export function createNanoHostSessionDispatch(
             requestId,
             resolve,
           });
+          if (operation === 'file.export' && request.input.purpose === 'artifact-submission') {
+            armLiveFileExportWait(pendingEffects, pendingEffects.get(operation)!, request.signal);
+          }
           if (operation === 'workspace.collect') {
             // NanoHost owns the scan clock; Core bounds the pre-delivery wait by both fixed phase allowances.
             armWorkspaceCollectionDeadline(pendingEffects, pendingEffects.get(operation)!, 240_000);
@@ -694,7 +708,7 @@ export function createNanoHostSessionDispatch(
         pending.originPhysicalEpoch !== undefined &&
         pending.originPhysicalEpoch !== pollingPhysicalEpoch
       ) {
-        pendingEffects.delete(operation);
+        removePendingEffectGroup(pendingEffects, operation, pending);
         pending.reject(
           new Error('NanoHost queued effect origin physical Epoch is no longer current.')
         );
@@ -823,7 +837,13 @@ export function createNanoHostSessionDispatch(
       ) {
         throw effectTransportError(409, 'NanoHost special effect has no JSON failure result.');
       }
-      if (operation === 'file.export' && !isExactFileAbsence) {
+      const isExactFileRefusal =
+        operation === 'file.export' &&
+        resultNames.length === 3 &&
+        /^[0-9a-f]{64}$/.test(requestId) &&
+        result.state === 'refused' &&
+        result.reasonCode === 'artifact_file_not_regular';
+      if (operation === 'file.export' && !isExactFileAbsence && !isExactFileRefusal) {
         throw effectTransportError(409, 'NanoHost file export JSON result is invalid.');
       }
       const resultBody = Object.fromEntries(
@@ -889,6 +909,12 @@ export function createNanoHostSessionDispatch(
         }
         throw new Error('NanoHost effect result requestId or operation does not match.');
       }
+      if (
+        isExactFileRefusal &&
+        (pending.command?.purpose !== 'artifact-submission' ||
+          pending.command?.presence !== 'optional')
+      )
+        throw effectTransportError(409, 'NanoHost refusal has no admitted live request.');
       if (isExactFileAbsence && pending.command?.presence !== 'optional') {
         throw effectTransportError(409, 'NanoHost required file export cannot be absent.');
       }
@@ -1090,13 +1116,18 @@ export function createNanoHostSessionDispatch(
         return;
       }
 
-      pendingEffects.delete('file.export');
+      if (pending.fileExportAbandoned) {
+        // A complete late copy is verified above and disposed before uncertain admission is freed.
+        await rm(staged.directory, { force: true, recursive: true });
+      }
+      removePendingEffectGroup(pendingEffects, 'file.export', pending);
       completedEffects.set('file.export', {
         fileResult: metadata,
         redeliveredConnection: physicalConnection,
         requestId: metadata.requestId,
         resultJson: JSON.stringify(metadata),
       });
+      if (pending.fileExportAbandoned) return;
       pending.resolve({
         byteLength: metadata.byteLength,
         relativePath: metadata.relativePath,
@@ -1171,6 +1202,33 @@ function armWorkspaceCollectionDeadline(
   pending.collectionTimeout.unref();
 }
 
+/** Bounds the live caller by NanoHost's existing 300-second file-effect deadline without abandoning accepted effect ownership. */
+function armLiveFileExportWait(
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  pending: PendingNanoHostEffect,
+  signal?: AbortSignal
+): void {
+  const abandon = () => {
+    if (pendingEffects.get('file.export') !== pending || pending.fileExportAbandoned) return;
+    pending.fileExportAbandoned = true;
+    pending.fileExportWaitCleanup?.();
+    // An undelivered command has no uncertain effect; an accepted command stays busy for late disposal.
+    if (!pending.accepted) removePendingEffectGroup(pendingEffects, 'file.export', pending);
+    pending.reject(
+      new OperationError('recovery_required', 'Worker file capture outcome is unknown.', 409)
+    );
+  };
+  // Matches ExecSandboxRequest.timeout_seconds in NanoHost openshell_client.rs.
+  const timeout = setTimeout(abandon, 300_000);
+  timeout.unref();
+  pending.fileExportWaitCleanup = () => {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abandon);
+  };
+  signal?.addEventListener('abort', abandon, { once: true });
+  if (signal?.aborted) abandon();
+}
+
 /** Removes one ordinary pending effect or every member of its result-only correlation set. */
 function removePendingEffectGroup(
   pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
@@ -1178,12 +1236,13 @@ function removePendingEffectGroup(
   pending: PendingNanoHostEffect
 ): void {
   clearTimeout(pending.collectionTimeout);
+  pending.fileExportWaitCleanup?.();
   if (operation === 'workspace.collect') {
     pending.command = null;
     pending.collectionAbort?.abort();
   }
   if (!pending.resultOnlyGroup) {
-    pendingEffects.delete(operation);
+    if (pendingEffects.get(operation) === pending) pendingEffects.delete(operation);
     return;
   }
   for (const expectation of pending.resultOnlyGroup.expectations) {
@@ -1572,6 +1631,10 @@ function requireFileExportCommand(
           'maxByteLength',
           'packageSnapshotId',
           'presence',
+          'purpose',
+          'submissionRequestId',
+          'turnId',
+          'agentSessionId',
           'relativePath',
           'requestId',
           'sandboxId',
@@ -1588,6 +1651,31 @@ function requireFileExportCommand(
   if (value.presence !== 'required' && value.presence !== 'optional') {
     throw effectTransportError(400, 'NanoHost file export presence is invalid.');
   }
+  const maximum = readCanonicalByteLength(value.maxByteLength);
+  const live = value.purpose === 'artifact-submission';
+  if (value.purpose !== undefined && value.purpose !== 'terminal' && !live)
+    throw effectTransportError(400, 'NanoHost export purpose is invalid.');
+  if (
+    live &&
+    (value.presence !== 'optional' ||
+      maximum < 1 ||
+      maximum > 16 * 1024 * 1024 + 1 ||
+      [
+        'submissionRequestId',
+        'turnId',
+        'agentSessionId',
+        'packageSnapshotId',
+        'leaseId',
+        'backendSessionId',
+        'sandboxId',
+      ].some((key) => typeof value[key] !== 'string' || !(value[key] as string).length) ||
+      value.terminalBarrierProved !== undefined ||
+      value.finalStatusAccepted !== undefined)
+  )
+    throw effectTransportError(400, 'NanoHost live export admission is invalid.');
+  // Terminal producers and Host admission retain their existing proof owners; live capture adds no terminal gate.
+  if (!live && maximum !== FILE_DATA_MAX_BYTES)
+    throw effectTransportError(400, 'NanoHost terminal export bound is invalid.');
   return { ...value, requestId };
 }
 
@@ -1949,7 +2037,8 @@ function requirePendingFileExport(
   if (
     pending.command.slot !== metadata.slot ||
     pending.command.relativePath !== metadata.relativePath ||
-    pending.command.terminalBarrierProved !== true
+    (pending.command.purpose !== 'artifact-submission' &&
+      pending.command.terminalBarrierProved !== true)
   ) {
     throw effectTransportError(409, 'NanoHost file export metadata disagrees with its command.');
   }

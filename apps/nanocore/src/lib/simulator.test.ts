@@ -9,7 +9,8 @@ import {
   SaveWorkspaceMaterialRevisionResponseSchema,
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
+import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -32,6 +33,7 @@ import {
   upsertSchedulerCapacityRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -44,6 +46,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
+import type { FsStore } from './store.js';
 
 /**
  * Opens a migrated Core database for simulator route tests.
@@ -651,7 +654,7 @@ describe('SimulatedTurnExecutor', () => {
     }
   });
 
-  it('strictly projects and consumes the bound Material for the configured self-check executor', async () => {
+  it('strictly projects and consumes bound Material and publishes per-file candidates without declarations', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -794,6 +797,14 @@ describe('SimulatedTurnExecutor', () => {
           }
         });
         expect(reviewedProposals).toHaveLength(2);
+        expect(new Set(reviewedProposals.map((artifact) => artifact.origin.requestId)).size).toBe(
+          2
+        );
+        expect(
+          reviewedProposals.every((artifact) =>
+            artifact.origin.requestId?.startsWith('simulator-material-')
+          )
+        ).toBe(true);
         const reviews = reviewedProposals.map((artifact) =>
           getArtifactReview(workspaceDb, artifact.id, artifact.version)
         );
@@ -861,6 +872,66 @@ describe('SimulatedTurnExecutor', () => {
         requestId,
         turnId: workerTurn.id,
       });
+      const replayDb = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        const snapshot = listExportableAgentEnvironmentPackageSnapshots(replayDb, 'ws_demo').find(
+          (record) => record.snapshot.scope.turnId === workerTurn.id
+        )!.snapshot;
+        const retained = proposals.filter((artifact) =>
+          artifact.origin.requestId?.startsWith('simulator-material-')
+        );
+        const historyPath = join(
+          coreDb.dataRoot,
+          'workspaces',
+          'ws_demo',
+          'threads',
+          'th_demo',
+          'turns',
+          workerTurn.id,
+          'items.jsonl'
+        );
+        const history = readFileSync(historyPath);
+        const references = store.listThreadItems('ws_demo', 'th_demo');
+        const reviews = retained.map((artifact) =>
+          getArtifactReview(replayDb, artifact.id, artifact.version)
+        );
+        const executor = new SimulatedTurnExecutor({ coreDb }) as unknown as {
+          publishMaterialProposals(
+            store: FsStore,
+            pkg: AgentEnvironmentPackage,
+            trace: WorkerContextPackageTrace,
+            db: WorkspaceDb,
+            recordedAt: string
+          ): void;
+        };
+        // Repeat the actual deterministic producer, then contradict its retained immutable tuple.
+        expect(() =>
+          executor.publishMaterialProposals(
+            store,
+            snapshot,
+            trace as unknown as WorkerContextPackageTrace,
+            replayDb,
+            retained[0]!.createdAt
+          )
+        ).not.toThrow();
+        expect(() =>
+          executor.publishMaterialProposals(
+            store,
+            snapshot,
+            trace as unknown as WorkerContextPackageTrace,
+            replayDb,
+            '2099-01-01T00:00:00.000Z'
+          )
+        ).toThrow();
+        expect(store.listArtifacts('ws_demo')).toEqual(proposals);
+        expect(store.listThreadItems('ws_demo', 'th_demo')).toEqual(references);
+        expect(readFileSync(historyPath)).toEqual(history);
+        expect(
+          retained.map((artifact) => getArtifactReview(replayDb, artifact.id, artifact.version))
+        ).toEqual(reviews);
+      } finally {
+        replayDb.sqlite.close();
+      }
       const answerResponse = await app.request(
         ...operationRequest(
           'question.answer',

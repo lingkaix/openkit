@@ -632,6 +632,8 @@ impl FileEffectKind {
 pub struct FileEffectRequest {
     /// Correlated outer-session request identity.
     pub request_id: String,
+    /// Explicit live Artifact purpose, derived only from the authenticated Core command.
+    pub artifact_submission: bool,
     /// Current ready sandbox identity.
     pub sandbox_id: String,
     /// Declared package slot, never a host path.
@@ -695,9 +697,19 @@ impl FileEffectRequest {
                     && self.byte_length <= FILE_EFFECT_MAX_BYTES
             }
             FileEffectKind::ExportFile => {
-                self.sha256.is_empty() && self.byte_length == FILE_EFFECT_MAX_BYTES
+                self.sha256.is_empty()
+                    && if self.artifact_submission {
+                        self.byte_length >= 1
+                            && self.byte_length <= 16 * 1024 * 1024 + 1
+                            && self.presence == FileEffectPresence::Optional
+                    } else {
+                        self.byte_length == FILE_EFFECT_MAX_BYTES
+                    }
             }
         };
+        if path_invalid {
+            return Err("artifact_path_refused");
+        }
         if request_id_invalid
             || sandbox_invalid
             || slot_invalid
@@ -727,14 +739,20 @@ impl FileEffectRequest {
                 "--sha256".to_string(),
                 self.sha256.clone(),
             ]),
-            FileEffectKind::ExportFile => command.extend([
-                "--max-length".to_string(),
-                FILE_EFFECT_MAX_BYTES.to_string(),
-            ]),
+            FileEffectKind::ExportFile => {
+                command.extend(["--max-length".to_string(), self.byte_length.to_string()])
+            }
+        }
+        if self.artifact_submission {
+            command.insert(command.len() - 2, "--artifact-submission".to_string());
         }
         if self.kind == FileEffectKind::ExportFile && self.presence == FileEffectPresence::Optional
         {
-            command.push("--allow-missing".to_string());
+            if self.artifact_submission {
+                command.insert(command.len() - 2, "--allow-missing".to_string());
+            } else {
+                command.push("--allow-missing".to_string());
+            }
         }
         Ok(command)
     }
@@ -826,11 +844,13 @@ pub fn stage_export(
     terminal_barrier_proved: bool,
 ) -> Result<RetainedExportResult, &'static str> {
     request.validate()?;
-    if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved {
+    if request.kind != FileEffectKind::ExportFile
+        || (!request.artifact_submission && !terminal_barrier_proved)
+    {
         return Err("file export terminal barrier missing");
     }
     let byte_length = bytes.len() as u64;
-    if byte_length > FILE_EFFECT_MAX_BYTES {
+    if byte_length > request.byte_length {
         return Err("single-file effect digest or length mismatch");
     }
     let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
@@ -1673,6 +1693,66 @@ mod tests {
         assert_eq!(BRIDGE_REESTABLISH_HARD_BOUND, Duration::from_secs(120));
     }
 
+    /// Exercises the current capture/staging boundary without a live Sandbox.
+    #[test]
+    fn synchronous_artifact_live_export_stages_one_bounded_output_without_terminal_proof() {
+        let root = std::env::temp_dir().join(format!("openkit-live-export-{}", std::process::id()));
+        let request = FileEffectRequest {
+            artifact_submission: true,
+            request_id: "e".repeat(64),
+            sandbox_id: "sandbox-live".into(),
+            slot: "main-worktree".into(),
+            relative_path: PathBuf::from("slot-a/report.md"),
+            sha256: String::new(),
+            byte_length: 17,
+            kind: FileEffectKind::ExportFile,
+            presence: FileEffectPresence::Optional,
+        };
+        let outcome = super::stage_export(&root, &request, b"finished report".to_vec(), false);
+        let succeeded = outcome.is_ok();
+        drop(outcome);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            succeeded,
+            "admitted live Artifact capture must stage without fabricated final status"
+        );
+    }
+
+    #[test]
+    fn synchronous_artifact_export_passes_core_selected_reader_bound() {
+        let request = FileEffectRequest {
+            artifact_submission: true,
+            request_id: "f".repeat(64),
+            sandbox_id: "sandbox-live".into(),
+            slot: "main-worktree".into(),
+            relative_path: PathBuf::from("slot-a/report.md"),
+            sha256: String::new(),
+            byte_length: 17,
+            kind: FileEffectKind::ExportFile,
+            presence: FileEffectPresence::Optional,
+        };
+        let command = request
+            .helper_command()
+            .expect("Core-selected remaining-capacity bound must be admitted");
+        assert_eq!(command.last().map(String::as_str), Some("17"));
+    }
+
+    #[test]
+    fn synchronous_artifact_outside_slot_path_has_typed_refusal() {
+        let request = FileEffectRequest {
+            artifact_submission: false,
+            request_id: "d".repeat(64),
+            sandbox_id: "sandbox-live".into(),
+            slot: "main-worktree".into(),
+            relative_path: PathBuf::from("../outside/report.md"),
+            sha256: String::new(),
+            byte_length: FILE_EFFECT_MAX_BYTES,
+            kind: FileEffectKind::ExportFile,
+            presence: FileEffectPresence::Required,
+        };
+        assert_eq!(request.validate(), Err("artifact_path_refused"));
+    }
+
     #[test]
     fn wp5_effect_carriage_returns_only_bounded_references_and_cancels_definitively() {
         let mut reference = EffectCarriage::reference(
@@ -1690,6 +1770,7 @@ mod tests {
         assert!(reference.complete().is_err());
 
         let optional_export = FileEffectRequest {
+            artifact_submission: false,
             request_id: "a".repeat(64),
             sandbox_id: "sandbox-a".into(),
             slot: "session".into(),

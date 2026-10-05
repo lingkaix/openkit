@@ -214,7 +214,6 @@ async function runResidentTurnImplementation(
   await mkdir(options.sessionDir, { recursive: true });
   await writeFile(join(options.sessionDir, 'events.jsonl'), '', 'utf8');
   await writeFile(join(options.sessionDir, 'items.jsonl'), '', 'utf8');
-  await writeFile(join(options.sessionDir, 'artifacts.jsonl'), '', 'utf8');
   progress.stage = 'runtime_supply';
   await materializeRuntimeSupply(packageManifest);
 

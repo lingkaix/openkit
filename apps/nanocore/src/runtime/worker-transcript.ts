@@ -5,11 +5,10 @@ import { ArtifactSchema, ItemSchema } from '@openkit/protocol';
 import {
   type WorkerCanonicalEventRecord,
   type WorkerLineage,
-  WorkerTranscriptArtifactRecordSchema,
   WorkerTranscriptEventRecordSchema,
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { createArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import {
@@ -37,10 +36,6 @@ export interface WorkerTranscriptPayload {
   eventsJsonl?: string;
   /** Serialized `/openkit/session/items.jsonl` content. */
   itemsJsonl?: string;
-  /** Serialized `/openkit/session/artifacts.jsonl` content. */
-  artifactsJsonl?: string;
-  /** Backend-validated exact bytes keyed by their Artifact declaration sequence. */
-  artifactFiles?: WorkerTranscriptArtifactFile[];
   /** Backend-local restricted runtime provenance files, when the AEP requested collection. */
   runtimeProvenance?: WorkerRuntimeProvenanceCollection;
 }
@@ -53,14 +48,6 @@ export type LocalSimulatorTranscriptPayload = Omit<
   /** Evidence from the local simulator constructor, excluded from Worker collection's type. */
   credentialCheckValues: LocalSimulatorCredentialCheckValues;
 };
-
-/** One backend-validated Artifact payload retained only through canonical import. */
-export interface WorkerTranscriptArtifactFile {
-  /** Exact source bytes with no text or newline normalization. */
-  bytes: Buffer;
-  /** Unique sequence of the matching transcript declaration. */
-  sequence: number;
-}
 
 /** Backend-local runtime provenance collection passed only to NanoCore's restricted importer. */
 export interface WorkerRuntimeProvenanceCollection {
@@ -80,12 +67,8 @@ export interface WorkerRuntimeProvenanceCollection {
 export interface WorkerTranscriptImportOptions {
   /** Live canonical event records already accepted through worker-control append. */
   acceptedLiveEvents?: WorkerCanonicalEventRecord[];
-  /** Already strictly verified same-Turn S39 delivery trace. */
-  contextPackageTrace?: WorkerContextPackageTrace;
   /** Stable server-written timestamp used by restart closeout exact replay. */
   recordedAt?: string;
-  /** Workspace Review and Material authority for canonical Artifact import. */
-  workspaceDb?: WorkspaceDb;
 }
 
 /** Diagnostic produced while parsing or importing worker transcript files. */
@@ -157,17 +140,7 @@ function importTranscript(
   if (result.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))) {
     return result;
   }
-  const checkValues =
-    payload.itemsJsonl?.trim() || payload.artifactsJsonl?.trim() || payload.artifactFiles?.length
-      ? requireEvidence()
-      : null;
-  const artifacts = prepareArtifactRecords(
-    store,
-    environmentPackage,
-    payload,
-    options,
-    checkValues
-  );
+  const checkValues = payload.itemsJsonl?.trim() ? requireEvidence() : null;
   importItemRecords(
     store,
     environmentPackage,
@@ -176,22 +149,8 @@ function importTranscript(
     result,
     checkValues
   );
-  for (const prepared of artifacts) {
-    if (!prepared.replay) {
-      store.createArtifact(prepared.artifact);
-      createArtifactReview(options.workspaceDb as WorkspaceDb, prepared.reviewInput);
-      result.artifactIds.push(prepared.artifact.id);
-    }
-  }
 
   return result;
-}
-
-/** Reports whether one transcript proposes changing a Material. @param payload Collected transcript files. @returns Whether any valid Artifact declaration includes a Material proposal. */
-export function workerTranscriptHasMaterialProposal(payload: WorkerTranscriptPayload): boolean {
-  return parseTranscriptDeclarations(payload).some(
-    (record) => record.artifact.materialProposal !== undefined
-  );
 }
 
 /** Reconciles events. @param environmentPackage Expected AEP. @param jsonl Event JSONL. @param acceptedLiveEvents Durable fingerprints. @param result Mutable result. */
@@ -318,31 +277,41 @@ function importItemRecords(
   }
 }
 
-/** Prepares Artifacts. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Collected files. @param options Accepted proof. @param checkValues Validated execution-specific evidence. @returns Classified candidates. */
-function prepareArtifactRecords(
-  store: FsStore,
-  environmentPackage: AgentEnvironmentPackage,
-  payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>,
-  options: WorkerTranscriptImportOptions,
-  checkValues: CredentialCheckValues | null
-) {
-  if (!(payload.artifactsJsonl?.trim() || payload.artifactFiles?.length)) {
-    return [];
-  }
-  const workspaceDb = options.workspaceDb;
-  if (!workspaceDb || workspaceDb.workspaceId !== environmentPackage.scope.workspaceId) {
+/** Prepares one verified synchronous file using the existing Artifact, Material and credential rules. @param input Trusted scope, accepted metadata and captured bytes. @returns Canonical Artifact and immutable Review input, without writes. */
+export function prepareWorkerArtifact(input: {
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly environmentPackage: AgentEnvironmentPackage;
+  readonly artifactId: string;
+  readonly requestId: string;
+  readonly recordedAt: string;
+  readonly metadata: {
+    kind: 'report' | 'diff' | 'file' | 'summary';
+    title: string;
+    mediaType: 'text/markdown' | 'text/plain' | 'application/json';
+    materialProposal?:
+      | { materialId: string; baseRevisionId: string; baseContentDigest: string }
+      | undefined;
+  };
+  readonly bytes: Buffer;
+  readonly checkValues: CredentialCheckValues;
+  readonly contextPackageTrace?: WorkerContextPackageTrace;
+}) {
+  const {
+    store,
+    workspaceDb,
+    environmentPackage,
+    artifactId,
+    requestId,
+    recordedAt,
+    metadata,
+    bytes,
+    checkValues,
+    contextPackageTrace,
+  } = input;
+  if (workspaceDb.workspaceId !== environmentPackage.scope.workspaceId)
     throw transcriptError('recovery_required', 'Artifact Workspace authority is mismatched.');
-  }
-  const requestId = environmentPackage.scope.requestId;
-  if (!requestId) {
-    throw transcriptError('recovery_required', 'Artifact import has no accepted request identity.');
-  }
-  if (!options.recordedAt) {
-    throw transcriptError('recovery_required', 'Artifact import has no recorded timestamp.');
-  }
-  if (!z.iso.datetime().safeParse(options.recordedAt).success) {
-    throw transcriptError('invalid_request', 'Artifact import timestamp is invalid.');
-  }
+  if (bytes.length === 0) throw transcriptError('invalid_request', 'Artifact bytes are empty.');
   const sourceTurn = store
     .listThreadTurns(environmentPackage.scope.workspaceId, environmentPackage.scope.threadId)
     .find((turn) => turn.id === environmentPackage.scope.turnId);
@@ -354,158 +323,111 @@ function prepareArtifactRecords(
   ) {
     throw transcriptError('recovery_required', 'The canonical source Turn assignment is invalid.');
   }
-  const records = parseTranscriptDeclarations(payload);
-  const files = new Map<number, Buffer>();
-  for (const file of payload.artifactFiles ?? []) {
-    if (!Buffer.isBuffer(file.bytes) || file.bytes.length === 0 || files.has(file.sequence)) {
-      throw transcriptError('invalid_request', 'Artifact payload bytes are invalid or duplicated.');
-    }
-    files.set(file.sequence, file.bytes);
+  // The model-selected key is persisted verbatim in origin and receipt; redaction would change replay identity.
+  if (
+    findWorkerCredentialMatches(bytes, checkValues).length > 0 ||
+    findWorkerCredentialMatches(Buffer.from(requestId, 'utf8'), checkValues).length > 0
+  ) {
+    throw transcriptError(
+      'invalid_request',
+      'Worker Artifact content or request identity contains injected credential material.'
+    );
   }
-  if (files.size !== records.length || records.some((record) => !files.has(record.sequence))) {
-    throw transcriptError('invalid_request', 'Artifact declarations and payload bytes disagree.');
+  let body: string;
+  try {
+    body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (metadata.mediaType === 'application/json') {
+      JSON.parse(body);
+    }
+  } catch {
+    throw transcriptError('invalid_request', 'Artifact bytes violate the declared format.');
   }
-
-  const prepared = records.map((record) => {
-    if (!matchesPackageLineage(record.lineage, environmentPackage)) {
-      throw transcriptError('invalid_request', 'Artifact lineage does not match the accepted AEP.');
+  const proposal = metadata.materialProposal ?? null;
+  if (proposal) {
+    const trace = contextPackageTrace;
+    if (!trace || !matchesPackageLineage(trace, environmentPackage)) {
+      throw transcriptError('recovery_required', 'Accepted Context Package trace is unavailable.');
     }
-    const bytes = files.get(record.sequence) as Buffer;
-    if (findWorkerCredentialMatches(bytes, checkValues!).length > 0) {
-      throw transcriptError(
-        'invalid_request',
-        'Worker Artifact content contains injected credential material.'
-      );
+    const selections = trace.materialSelections.filter(
+      (selection) =>
+        selection.materialId === proposal.materialId &&
+        selection.revisionId === proposal.baseRevisionId &&
+        selection.contentDigest === proposal.baseContentDigest
+    );
+    if (
+      selections.length !== 1 ||
+      metadata.mediaType === 'application/json' ||
+      selections[0]?.mediaType !== metadata.mediaType
+    ) {
+      throw transcriptError('invalid_request', 'Material proposal is not one trace selection.');
     }
-    let body: string;
     try {
-      body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-      if (record.artifact.mediaType === 'application/json') {
-        JSON.parse(body);
-      }
-    } catch {
-      throw transcriptError('invalid_request', 'Artifact bytes violate the declared format.');
-    }
-    const proposal = record.artifact.materialProposal ?? null;
-    if (proposal) {
-      const trace = options.contextPackageTrace;
-      if (!trace || !matchesPackageLineage(trace, environmentPackage)) {
-        throw transcriptError(
-          'recovery_required',
-          'Accepted Context Package trace is unavailable.'
-        );
-      }
-      const selections = trace.materialSelections.filter(
-        (selection) =>
-          selection.materialId === proposal.materialId &&
-          selection.revisionId === proposal.baseRevisionId &&
-          selection.contentDigest === proposal.baseContentDigest
+      const material = getWorkspaceMaterial(workspaceDb, proposal.materialId);
+      const base = getWorkspaceMaterialRevision(
+        workspaceDb,
+        proposal.materialId,
+        proposal.baseRevisionId
       );
       if (
-        selections.length !== 1 ||
-        record.artifact.mediaType === 'application/json' ||
-        selections[0]?.mediaType !== record.artifact.mediaType
+        !material.currentRevisionId ||
+        base.mediaType !== (material.kind === 'markdown' ? 'text/markdown' : 'text/plain') ||
+        base.contentDigest !== proposal.baseContentDigest ||
+        base.mediaType !== metadata.mediaType
       ) {
-        throw transcriptError('invalid_request', 'Material proposal is not one trace selection.');
+        throw new Error('contradictory proposal');
       }
-      try {
-        const material = getWorkspaceMaterial(workspaceDb, proposal.materialId);
-        const base = getWorkspaceMaterialRevision(
-          workspaceDb,
-          proposal.materialId,
-          proposal.baseRevisionId
-        );
-        if (
-          !material.currentRevisionId ||
-          base.mediaType !== (material.kind === 'markdown' ? 'text/markdown' : 'text/plain') ||
-          base.contentDigest !== proposal.baseContentDigest ||
-          base.mediaType !== record.artifact.mediaType
-        ) {
-          throw new Error('contradictory proposal');
-        }
-      } catch {
-        throw transcriptError('recovery_required', 'Material proposal authority is contradictory.');
-      }
+    } catch {
+      throw transcriptError('recovery_required', 'Material proposal authority is contradictory.');
     }
-    const artifact = ArtifactSchema.safeParse({
-      id: `worker-artifact-${environmentPackage.snapshotId}-${record.sequence}`,
-      workspaceId: environmentPackage.scope.workspaceId,
+  }
+  const artifact = ArtifactSchema.safeParse({
+    id: artifactId,
+    workspaceId: environmentPackage.scope.workspaceId,
+    threadId: environmentPackage.scope.threadId,
+    turnId: environmentPackage.scope.turnId,
+    kind: metadata.kind,
+    title: redactWorkerText(metadata.title, checkValues),
+    status: 'ready',
+    summary: null,
+    version: 1,
+    content: {
+      format:
+        metadata.mediaType === 'text/markdown'
+          ? 'markdown'
+          : metadata.mediaType === 'text/plain'
+            ? 'text'
+            : 'json',
+      body,
+    },
+    contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    lastMutationRequestId: requestId,
+    origin: {
+      kind: 'turn-output',
       threadId: environmentPackage.scope.threadId,
       turnId: environmentPackage.scope.turnId,
-      kind: record.artifact.kind,
-      title: redactWorkerText(record.artifact.title, checkValues),
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: {
-        format:
-          record.artifact.mediaType === 'text/markdown'
-            ? 'markdown'
-            : record.artifact.mediaType === 'text/plain'
-              ? 'text'
-              : 'json',
-        body,
-      },
-      contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      lastMutationRequestId: requestId,
-      origin: {
-        kind: 'turn-output',
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        requestId,
-      },
-      createdAt: options.recordedAt,
-      updatedAt: options.recordedAt,
-    });
-    if (!artifact.success) {
-      throw transcriptError('invalid_request', 'Canonical Artifact fields are invalid.');
-    }
-    const reviewInput = {
-      artifactId: artifact.data.id,
-      artifactVersion: 1,
-      contentDigest: artifact.data.contentDigest,
-      sourceThreadId: artifact.data.threadId,
-      sourceTurnId: artifact.data.turnId,
-      sourceAgentId,
-      materialProposal: proposal,
-      createdAt: artifact.data.createdAt,
-    };
-    return {
-      artifact: artifact.data,
-      replay: preflightArtifactTuple(store, workspaceDb, artifact.data, reviewInput),
-      reviewInput,
-    };
+      requestId,
+    },
+    createdAt: recordedAt,
+    updatedAt: recordedAt,
   });
-  const replayCount = prepared.filter((candidate) => candidate.replay).length;
-  if (replayCount > 0 && replayCount !== prepared.length) {
-    throw transcriptError('recovery_required', 'The Artifact declaration set is only partial.');
+  if (!artifact.success) {
+    throw transcriptError('invalid_request', 'Canonical Artifact fields are invalid.');
   }
-  return prepared;
-}
-
-/** Parses Artifact declarations. @param payload Collected files. @returns Artifacts after channel-local sequence validation. */
-function parseTranscriptDeclarations(
-  payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>
-): Array<z.infer<typeof WorkerTranscriptArtifactRecordSchema>> {
-  const diagnostics: WorkerTranscriptDiagnostic[] = [];
-  const seen = new Set<number>();
-  const artifacts: Array<z.infer<typeof WorkerTranscriptArtifactRecordSchema>> = [];
-  for (const record of parseJsonl(payload.artifactsJsonl ?? '', '$.artifacts', diagnostics)) {
-    const parsed = WorkerTranscriptArtifactRecordSchema.safeParse(record.value);
-    if (!parsed.success || seen.has(parsed.data.sequence)) {
-      throw transcriptError('invalid_request', 'Artifact declaration or sequence is invalid.');
-    }
-    seen.add(parsed.data.sequence);
-    artifacts.push(parsed.data);
-  }
-  if (diagnostics.length > 0) {
-    throw transcriptError('invalid_request', 'Transcript declarations contain invalid JSON.');
-  }
-  return artifacts;
+  const reviewInput = {
+    artifactId: artifact.data.id,
+    artifactVersion: 1,
+    contentDigest: artifact.data.contentDigest,
+    sourceThreadId: artifact.data.threadId,
+    sourceTurnId: artifact.data.turnId,
+    sourceAgentId,
+    materialProposal: proposal,
+    createdAt: artifact.data.createdAt,
+  };
+  return { artifact: artifact.data, reviewInput };
 }
 
 /** Classifies owners. @param store Canonical store. @param workspaceDb Review owner. @param artifact Expected Artifact. @param reviewInput Expected immutable Review. @returns Whether this is replay. */
-function preflightArtifactTuple(
+export function preflightArtifactTuple(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   artifact: z.infer<typeof ArtifactSchema>,

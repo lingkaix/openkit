@@ -2,7 +2,7 @@
 
 `@openkit/worker-protocol` defines the canonical `Core <-> Worker` schemas used by governed Worker Agent containers, NanoCore import/verification paths, worker sidecars, and runtime adapters.
 
-This package is intentionally protocol-only. Public worker-control request, response, and heartbeat envelopes use the dedicated version-2 literal; canonical transcript, event, Artifact, provenance, and inner capability-summary records retain their independent version-1 literal. Restart reconnection uses a sequence-zero process-key hash commitment and an optional request-only reconnect key; NanoCore owns lease validation and never persists the raw key. This package does not own NanoCore state, runtime-native parsing, OpenShell transport, worker process supervision, or product review decisions.
+This package is intentionally protocol-only. Public worker-control request, response, and heartbeat envelopes use the dedicated version-2 literal; canonical transcript, event, provenance, and inner capability-summary records retain their independent version-1 literal. Restart reconnection uses a sequence-zero process-key hash commitment and an optional request-only reconnect key; NanoCore owns lease validation and never persists the raw key. This package does not own NanoCore state, runtime-native parsing, OpenShell transport, worker process supervision, or product review decisions.
 
 The runtime provenance contract keeps `WorkerLineageSchema` unchanged and adds only the restricted raw-stream manifest, synthetic stream references, exact frame coordinates and digests, capture/parse states, and native-origin index entries required by `worker.runtime-provenance.v1`. Cross-stream completeness, graph closure, origin normalization, and evidence promotion remain NanoCore responsibilities.
 
@@ -40,3 +40,5 @@ Protected public names follow the actual adapter bindings: DeepSeek owns `DSH_HO
 Workspace snapshots are collected outside the Sandbox through NanoHost; this package defines no worker-written workspace manifest or publisher schema.
 
 The optional `session.open.workspaceGitBaseline` success field carries the Sandbox Git client’s exact commit and tree for a new checkout. It is absent for source-less or retained slots; NanoCore alone compares its commit to the source pin before accepting the outside scan baseline.
+
+Artifact declaration records are removed from the transcript schema. Workers use synchronous `work_submit_artifact` on the existing MCP supply; Core and NanoHost retain their existing private handwritten file-effect validator rather than adding a shared export schema here.

@@ -88,6 +88,7 @@ import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
   openShellFilesystemGrantsFromPackagePolicy,
+  type WorkerArtifactCapture,
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
@@ -1396,8 +1397,8 @@ describe('createConfiguredTurnExecutor', () => {
     expect(launchSource).not.toContain('workerControlToken');
     expect(launchSource).not.toContain('workerInferenceToken');
     expect(backendSource).toContain('acceptHarnessCommand');
-    expect(backendSource?.indexOf('final_status')).toBeLessThan(
-      backendSource?.indexOf("'file.export'") ?? -1
+    expect(transcriptSource?.indexOf('final_status')).toBeLessThan(
+      transcriptSource?.indexOf("'file.export'") ?? -1
     );
     for (const collectionSource of [transcriptSource]) {
       expect(collectionSource).toContain('await this.effect(');
@@ -2579,13 +2580,70 @@ describe('createConfiguredTurnExecutor', () => {
       );
       if (process.env.OPENKIT_UPDATE_EFFECT_FIXTURE === '1')
         writeFileSync(fixturePath, `${JSON.stringify(normalized, null, 2)}\n`);
-      expect(normalized).toEqual(JSON.parse(readFileSync(fixturePath, 'utf8')));
+      const originalFixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as typeof normalized;
+      expect(normalized).toEqual(originalFixture);
+      expect(normalized.filter((effect) => effect.kind === 'file.export')).toHaveLength(2);
     } finally {
       client?.destroy();
       if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
       pinCoreDb?.sqlite.close();
       for (const resident of residents) resident.coreDb.sqlite.close();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'missing-lease',
+    'contradictory-route',
+    'cleanup-failed',
+  ] as const)('keeps live capture %s on recovery_required with failed-closeout cleanup', async (mode) => {
+    const fixture = await admitIdleSupplyResident(`live_evidence_${mode}`, {
+      configurePackage: (pkg) => {
+        pkg.workspace.outputs = [
+          {
+            id: 'turn-output',
+            path: '/workspace/outputs',
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
+          },
+        ];
+      },
+    });
+    fixture.backend.sessions.set(fixture.environmentPackage.snapshotId, fixture.session);
+    const cleanup = vi.spyOn(fixture.backend, 'cleanupSession');
+    if (mode === 'cleanup-failed')
+      cleanup.mockRejectedValue(new Error('Private cleanup I/O failure.'));
+    else cleanup.mockResolvedValue(undefined);
+    try {
+      if (mode === 'missing-lease')
+        fixture.coreDb.sqlite.prepare('DELETE FROM scheduler_session_leases').run();
+      else
+        fixture.coreDb.sqlite
+          .prepare(
+            'UPDATE scheduler_session_leases SET worker_capability_token_hash = ? WHERE lease_id = ?'
+          )
+          .run('f'.repeat(64), `lease_live_evidence_${mode}`);
+      const before = fixture.effects.filter((effect) => effect.kind === 'file.export').length;
+      const capture = (fixture.backend as unknown as { captureArtifact: WorkerArtifactCapture })
+        .captureArtifact;
+      await expect(
+        capture({
+          packageSnapshotId: fixture.environmentPackage.snapshotId,
+          requestId: 'file-request',
+          path: '/workspace/outputs/file.md',
+          maxByteLength: 17,
+        })
+      ).rejects.toMatchObject({ code: 'recovery_required' });
+      expect(cleanup).toHaveBeenCalledWith(
+        fixture.backend.planSession(fixture.environmentPackage),
+        { failedCloseout: true }
+      );
+      expect(fixture.effects.filter((effect) => effect.kind === 'file.export')).toHaveLength(
+        before
+      );
+    } finally {
+      cleanup.mockRestore();
+      fixture.coreDb.sqlite.close();
     }
   });
 
@@ -2610,9 +2668,9 @@ describe('createConfiguredTurnExecutor', () => {
     try {
       await expect(
         f.backend.collectTranscript!(f.environmentPackage.snapshotId, true)
-      ).resolves.toMatchObject({ eventsJsonl: '\n', itemsJsonl: '\n', artifactsJsonl: '\n' });
+      ).resolves.toMatchObject({ eventsJsonl: '\n', itemsJsonl: '\n' });
       const exports = f.effects.filter((request) => request.kind === 'file.export');
-      expect(exports).toHaveLength(3);
+      expect(exports).toHaveLength(2);
       for (const request of exports) {
         expect(request.input).toMatchObject({
           finalStatusAccepted: true,
@@ -8782,7 +8840,6 @@ describe('createConfiguredTurnExecutor', () => {
       .backend;
     // This regression owns storage, native admission and cleanup; transcript export is a separate boundary.
     backend.collectTranscript = async () => ({
-      artifactsJsonl: '',
       eventsJsonl: '',
       itemsJsonl: '',
     });

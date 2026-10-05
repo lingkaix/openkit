@@ -1145,7 +1145,12 @@ describe('agent environment package resolver', () => {
         schemaPolicy: 'pinned',
       }),
       expect.objectContaining({
-        allowedTools: ['work_request_input', 'work_list_peers', 'work_read_peer'],
+        allowedTools: [
+          'work_request_input',
+          'work_list_peers',
+          'work_read_peer',
+          'work_submit_artifact',
+        ],
         catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         id: 'openkit-work',
         schemaPolicy: 'pinned',

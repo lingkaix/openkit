@@ -619,7 +619,6 @@ function resolveOpenShellAgentEnvironmentPackage(
         root: '/openkit/session',
         eventsPath: '/openkit/session/events.jsonl',
         itemsPath: '/openkit/session/items.jsonl',
-        artifactsPath: '/openkit/session/artifacts.jsonl',
         flush: 'line',
         import: 'turn-end',
         required: true,

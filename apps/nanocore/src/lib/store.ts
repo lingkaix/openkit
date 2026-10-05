@@ -102,6 +102,7 @@ import {
   TURN_STREAM_EVENT_WINDOW_SIZE,
   updateUserAuthoredKnowledgePage,
   type WorkspaceFileRecords,
+  writeFileAtomic,
   writeWorkspaceFileRecords,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -263,6 +264,7 @@ export type CommandRequestName =
   | 'worker_environment.activate'
   | 'artifact.import'
   | 'artifact.introduce'
+  | 'artifact.submit'
   | 'artifact.review.decide'
   | 'material.create'
   | 'material.save'
@@ -3405,6 +3407,60 @@ export class FsStore {
       this.createItem(reference);
     }
     return artifact;
+  }
+
+  /** Rolls back only a newly created request-owned Artifact after handled publication failure. @param artifactId Initial Artifact identity, preflighted absent by the command. */
+  public rollbackArtifactCreation(artifactId: string): void {
+    const artifact = this.artifacts.get(artifactId);
+    if (!artifact) return;
+    if (artifact.version !== 1)
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Artifact rollback cannot remove a later version.'
+      );
+    if (this.dataRoot && artifact.origin.kind === 'turn-output') {
+      const itemsPath = join(
+        this.workspaceRootPath(artifact.workspaceId),
+        'threads',
+        artifact.origin.threadId,
+        'turns',
+        artifact.origin.turnId,
+        'items.jsonl'
+      );
+      const referenceId = artifactReferenceItemId(artifactId, artifact.origin.turnId);
+      // Remove only this unacknowledged append; preserve all prior canonical row bytes and extensions.
+      const before = readCanonicalTextFile(itemsPath);
+      const retained = before
+        .split('\n')
+        .filter((line) => {
+          if (!line.trim()) return true;
+          const row = JSON.parse(line);
+          return !(
+            row.id === referenceId &&
+            row.type === 'artifact-reference' &&
+            row.artifactId === artifactId
+          );
+        })
+        .join('\n');
+      if (retained !== before) writeFileAtomic(itemsPath, retained);
+    }
+    this.artifacts.delete(artifactId);
+    this.itemRevisions = this.itemRevisions.filter(
+      (item) => item.type !== 'artifact-reference' || item.artifactId !== artifactId
+    );
+    for (const [id, item] of this.items) {
+      if (item.type === 'artifact-reference' && item.artifactId === artifactId) {
+        this.items.delete(id);
+        const turn = this.turns.get(item.turnId);
+        if (turn)
+          this.turns.set(turn.id, {
+            ...turn,
+            items: turn.items.filter((candidate) => candidate.id !== id),
+          });
+      }
+    }
+    this.refreshWorkspaceCounts(artifact.workspaceId);
+    this.persist(artifact.workspaceId);
   }
 
   /**

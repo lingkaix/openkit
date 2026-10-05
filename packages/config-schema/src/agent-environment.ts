@@ -540,19 +540,18 @@ export const AgentEnvironmentRuntimeProvenanceOutputSchema = z
   })
   .strict();
 
-/** Worker transcript sink configuration. */
+/** Worker transcript sinks with closed core values and stripped unknown additive fields. */
 export const AgentEnvironmentControlTranscriptSchema = z
   .object({
     root: z.string().min(1),
     eventsPath: z.string().min(1),
     itemsPath: z.string().min(1),
-    artifactsPath: z.string().min(1),
     flush: z.enum(['line', 'turn-end']).default('line'),
     import: z.enum(['turn-end', 'live']).default('turn-end'),
     required: z.boolean().default(true),
     runtimeProvenance: AgentEnvironmentRuntimeProvenanceOutputSchema.optional(),
   })
-  .strict();
+  .strip();
 
 /**
  * Canonical NanoCore worker-control endpoint.

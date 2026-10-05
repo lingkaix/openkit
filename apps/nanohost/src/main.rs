@@ -871,14 +871,51 @@ fn execute_effect_command(
                 .input
                 .get("maxByteLength")
                 .and_then(serde_json::Value::as_u64)
-                .filter(|value| *value == FILE_EFFECT_MAX_BYTES)
+                .filter(|value| *value >= 1 && *value <= FILE_EFFECT_MAX_BYTES)
                 .ok_or("file.export maximum invalid")?;
             let presence = match string("presence")? {
                 "required" => FileEffectPresence::Required,
                 "optional" => FileEffectPresence::Optional,
                 _ => return Err("file.export presence invalid"),
             };
+            let live = match command
+                .input
+                .get("purpose")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("artifact-submission") => true,
+                None | Some("terminal") => false,
+                _ => return Err("file.export purpose invalid"),
+            };
+            if live
+                && (presence != FileEffectPresence::Optional
+                    || max_byte_length > 16 * 1024 * 1024 + 1
+                    || [
+                        "submissionRequestId",
+                        "turnId",
+                        "agentSessionId",
+                        "packageSnapshotId",
+                        "leaseId",
+                        "backendSessionId",
+                    ]
+                    .iter()
+                    .any(|key| {
+                        command
+                            .input
+                            .get(*key)
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(str::is_empty)
+                    })
+                    || command.input.get("terminalBarrierProved").is_some()
+                    || command.input.get("finalStatusAccepted").is_some())
+            {
+                return Err("file.export live admission invalid");
+            }
+            if !live && max_byte_length != FILE_EFFECT_MAX_BYTES {
+                return Err("file.export terminal maximum invalid");
+            }
             let request = FileEffectRequest {
+                artifact_submission: live,
                 request_id: command.request_id.clone(),
                 sandbox_id: string("sandboxId")?.to_string(),
                 slot: string("slot")?.to_string(),
@@ -898,12 +935,16 @@ fn execute_effect_command(
                 .get("finalStatusAccepted")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true);
-            let retained_export_result =
-                coordinator.export_file(&request, terminal_barrier_proved, final_status)?;
-            Ok(match retained_export_result {
-                Some(result) => ExecutedEffectResult::FileExport(result),
-                None => ExecutedEffectResult::Json(serde_json::json!({"state": "absent"})),
-            })
+            Ok(
+                match coordinator.export_file(&request, terminal_barrier_proved, final_status) {
+                    Ok(Some(result)) => ExecutedEffectResult::FileExport(result),
+                    Ok(None) => ExecutedEffectResult::Json(serde_json::json!({"state": "absent"})),
+                    Err("artifact_file_not_regular") if live => ExecutedEffectResult::Json(
+                        serde_json::json!({"state":"refused","reasonCode":"artifact_file_not_regular"}),
+                    ),
+                    Err(error) => return Err(error),
+                },
+            )
         }
         RuntimeEffectKind::ImportReference => {
             // The session owner has already verified `content-length` and the

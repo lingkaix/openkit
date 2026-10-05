@@ -324,6 +324,10 @@ function validateSnapshotRecord(
   value: unknown
 ): AgentEnvironmentPackageSnapshotRecord {
   const parsed = AgentEnvironmentPackageSnapshotRecordSchema.parse(value);
+  // Retained identity covers the stored value; normalization may discard ignored extensions.
+  if (parsed.contentDigest !== snapshotDigest(parsed.snapshot)) {
+    throw new Error(`Agent environment package snapshot digest mismatch: ${parsed.snapshotId}`);
+  }
   const snapshot = AgentEnvironmentPackageSchema.parse(parsed.snapshot);
   const redactedSnapshot = AgentEnvironmentPackageSchema.parse(
     redactAgentEnvironmentPackageSnapshot(snapshot)
@@ -350,10 +354,6 @@ function validateSnapshotRecord(
     record.backendKind !== snapshot.backend.preferred
   ) {
     throw new Error(`Agent environment package snapshot lineage mismatch: ${record.snapshotId}`);
-  }
-
-  if (record.contentDigest !== snapshotDigest(snapshot)) {
-    throw new Error(`Agent environment package snapshot digest mismatch: ${record.snapshotId}`);
   }
 
   return record;
@@ -393,12 +393,12 @@ function agentSessionsRoot(workspaceDb: WorkspaceDb): string {
 }
 
 /**
- * Hashes one parsed redacted snapshot using the existing public digest format.
+ * Hashes one stored snapshot value using the existing public digest format.
  *
- * @param snapshot Parsed redacted Agent Environment Package.
+ * @param snapshot Stored snapshot value before package-reader normalization.
  * @returns Lowercase SHA-256 digest.
  */
-function snapshotDigest(snapshot: AgentEnvironmentPackage): string {
+export function snapshotDigest(snapshot: Readonly<Record<string, unknown>>): string {
   return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 

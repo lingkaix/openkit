@@ -100,6 +100,7 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
+import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
 import {
   answerPendingRequest,
   freezeReadyOutcomes,
@@ -1752,7 +1753,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   });
 
-  it('imports one backend-validated Artifact proposal through the accepted Context Package trace', async () => {
+  it('submits one live Artifact proposal through the accepted Context Package trace', async () => {
     const fixture = createWorkerContextExecutorFixture('artifact-review');
     const {
       agentSessionId,
@@ -1768,14 +1769,43 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } = fixture;
     const artifactBytes = Buffer.from('# Proposed material revision\n', 'utf8');
     const backend = new FakeWorkerGovernanceBackend();
-    backend.artifactOutput = {
-      bytes: artifactBytes,
-      materialProposal: {
-        baseContentDigest: materialContentDigest,
-        baseRevisionId: revision.revisionId,
-        materialId: material.materialId,
-      },
-    };
+    let artifactId: string | undefined;
+    const launch = backend.launch.bind(backend);
+    vi.spyOn(backend, 'launch').mockImplementation(async () => {
+      const environmentPackage = backend.lastPackage!;
+      const workspaceDb = openTestWorkspaceDb(coreDb);
+      try {
+        const result = await dispatchOpenkitWorkTool(
+          {
+            coreDb,
+            store,
+            workspaceDb,
+            environmentPackage,
+            captureArtifact: async () => ({
+              bytes: artifactBytes,
+              credentialCheckValues: (await backend.collectTranscript()).credentialCheckValues!,
+            }),
+          },
+          'work_submit_artifact',
+          {
+            requestId: 'request_material_submission',
+            path: `${environmentPackage.workspace.outputs[0]!.path}/report.md`,
+            kind: 'report',
+            mediaType: 'text/markdown',
+            title: 'Governed worker report',
+            materialProposal: {
+              baseContentDigest: materialContentDigest,
+              baseRevisionId: revision.revisionId,
+              materialId: material.materialId,
+            },
+          }
+        );
+        artifactId = result.structuredContent.artifactId as string;
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      return launch();
+    });
     const executor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb,
@@ -1793,18 +1823,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
         requestId,
         sandboxBindingRef,
         triggerActor: turn.triggerActor,
-        workspaceRoots: [],
+        workspaceRoots: [
+          {
+            id: 'output',
+            access: 'read-write',
+            sourceKind: 'host-dir',
+            sourcePath: coreDb.dataRoot,
+            workerPath: '/workspace/output',
+          },
+        ],
       });
 
       const packageSnapshotId = backend.lastPackage?.snapshotId;
       expect(packageSnapshotId).toBeTruthy();
-      const artifactId = `worker-artifact-${packageSnapshotId}-2`;
-      expect(store.getArtifact(turn.workspaceId, artifactId)).toMatchObject({
+      expect(artifactId).toEqual(expect.any(String));
+      expect(store.getArtifact(turn.workspaceId, artifactId!)).toMatchObject({
         content: { body: artifactBytes.toString('utf8'), format: 'markdown' },
         contentDigest: turnRuntimeSha256(artifactBytes),
         origin: {
           kind: 'turn-output',
-          requestId,
+          requestId: 'request_material_submission',
           threadId: turn.threadId,
           turnId: turn.id,
         },
@@ -1812,7 +1850,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         version: 1,
       });
       const workspaceDb = openTestWorkspaceDb(coreDb);
-      expect(getArtifactReview(workspaceDb, artifactId, 1)).toMatchObject({
+      expect(getArtifactReview(workspaceDb, artifactId!, 1)).toMatchObject({
         artifactId,
         artifactVersion: 1,
         decision: null,
@@ -1838,7 +1876,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore({ dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not publish stale output');
     const backend = new FakeWorkerGovernanceBackend();
-    backend.artifactOutput = { bytes: Buffer.from('# Stale output\n', 'utf8') };
     const collectTranscript = backend.collectTranscript.bind(backend);
     vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
       const transcript = { ...(await collectTranscript()) };
@@ -1976,7 +2013,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = createDemoStore({ dataRoot });
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Do not publish fenced output');
     const backend = new FakeWorkerGovernanceBackend();
-    backend.artifactOutput = { bytes: Buffer.from('# Fenced output\n', 'utf8') };
     const mutationAdmission = new WorkspaceMutationAdmission();
     const collectTranscript = backend.collectTranscript.bind(backend);
     vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
@@ -8080,14 +8116,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Candidate reply; private comparison evidence never includes echoed route plaintext. */
   public assistantText = 'Governed worker completed the task.';
   public artifactCollectionInvalid = false;
-  public artifactOutput: {
-    readonly bytes: Buffer;
-    readonly materialProposal?: {
-      readonly baseContentDigest: string;
-      readonly baseRevisionId: string;
-      readonly materialId: string;
-    };
-  } | null = null;
   public artifactRecoveryRequired = false;
   public failTeardown = false;
   public teardownFailuresRemaining = 0;
@@ -8250,7 +8278,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('Package was not materialized.');
     }
 
-    const artifactOutput = this.artifactOutput;
     return {
       credentialCheckValues: {
         sensitiveValues: [
@@ -8271,33 +8298,6 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       },
       ...(this.eventsJsonlFactory
         ? { eventsJsonl: this.eventsJsonlFactory(this.lastPackage) }
-        : {}),
-      ...(artifactOutput
-        ? {
-            artifactFiles: [{ bytes: artifactOutput.bytes, sequence: 2 }],
-            artifactsJsonl: `${JSON.stringify({
-              schemaVersion: 1,
-              kind: 'artifact',
-              lineage: {
-                workspaceId: this.lastPackage.scope.workspaceId,
-                threadId: this.lastPackage.scope.threadId,
-                turnId: this.lastPackage.scope.turnId,
-                agentSessionId: this.lastPackage.scope.agentSessionId,
-                packageSnapshotId: this.lastPackage.snapshotId,
-                requestId: this.lastPackage.scope.requestId,
-              },
-              sequence: 2,
-              artifact: {
-                kind: 'report',
-                mediaType: 'text/markdown',
-                path: '/openkit/artifacts/report.md',
-                title: 'Governed worker report',
-                ...(artifactOutput.materialProposal
-                  ? { materialProposal: artifactOutput.materialProposal }
-                  : {}),
-              },
-            })}\n`,
-          }
         : {}),
       itemsJsonl: `${JSON.stringify({
         schemaVersion: 1,

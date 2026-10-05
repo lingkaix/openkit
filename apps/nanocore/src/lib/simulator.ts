@@ -11,6 +11,7 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import { createArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -59,7 +60,7 @@ import {
   prepareWorkerTurnContextPackage,
   workerVisibleWorkspaceCwd,
 } from '../runtime/worker-governance-turn-executor.js';
-import { importLocalSimulatorTranscript } from '../runtime/worker-transcript.js';
+import { preflightArtifactTuple, prepareWorkerArtifact } from '../runtime/worker-transcript.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -769,7 +770,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
             store,
             workspaceDb,
           });
-          this.importMaterialProposals(
+          this.publishMaterialProposals(
             store,
             environmentPackage,
             acceptedTrace,
@@ -1172,7 +1173,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
   }
 
   /**
-   * Imports two deterministic same-base Material proposals through the canonical transcript owner.
+   * Publishes two deterministic same-base Material candidates without transcript declarations.
    *
    * @param store Product store receiving canonical Artifact projections.
    * @param environmentPackage Accepted Agent Environment Package lineage.
@@ -1180,7 +1181,7 @@ export class SimulatedTurnExecutor implements TurnExecutor {
    * @param workspaceDb Workspace authority containing Material and Review owners.
    * @param recordedAt Stable simulator timestamp.
    */
-  private importMaterialProposals(
+  private publishMaterialProposals(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     trace: WorkerContextPackageTrace,
@@ -1191,14 +1192,6 @@ export class SimulatedTurnExecutor implements TurnExecutor {
     if (!selection) {
       return;
     }
-    const lineage = {
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      requestId: trace.requestId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      workspaceId: environmentPackage.scope.workspaceId,
-    };
     const proposal = {
       baseContentDigest: selection.contentDigest,
       baseRevisionId: selection.revisionId,
@@ -1208,36 +1201,48 @@ export class SimulatedTurnExecutor implements TurnExecutor {
       Buffer.from('# Simulator proposal\n\nApply the concise deterministic revision.\n', 'utf8'),
       Buffer.from('# Simulator proposal\n\nApply the detailed deterministic revision.\n', 'utf8'),
     ];
-    const artifactsJsonl = candidates
-      .map((_, index) =>
-        JSON.stringify({
-          artifact: {
-            kind: 'file',
-            materialProposal: proposal,
-            mediaType: selection.mediaType,
-            path: `/workspace/output/material-proposal-${index + 1}.md`,
-            title: `Simulator Material proposal ${index + 1}`,
-          },
-          kind: 'artifact',
-          lineage,
-          schemaVersion: 1,
-          sequence: index + 1,
-        })
-      )
-      .join('\n');
-    const result = importLocalSimulatorTranscript(
-      store,
-      environmentPackage,
-      {
-        // This local generator injects no Vault material, route tokens, or loopback credentials.
-        credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
-        artifactsJsonl: `${artifactsJsonl}\n`,
-        artifactFiles: candidates.map((bytes, index) => ({ bytes, sequence: index + 1 })),
-      },
-      { contextPackageTrace: trace, recordedAt, workspaceDb }
-    );
-    if (result.artifactIds.length !== candidates.length || result.diagnostics.length > 0) {
-      throw new Error('Simulator Material proposal import failed.');
+    const checkValues = createLocalSimulatorCredentialCheckValues();
+    // Only this process-private, credential-free generator can supply the simulator proof.
+    // Worker MCP submission still requires complete original Worker comparison evidence.
+    for (const [index, bytes] of candidates.entries()) {
+      const requestId = `simulator-material-${environmentPackage.snapshotId}-${index + 1}`;
+      const artifactId = `worker-artifact-${createHash('sha256')
+        .update(
+          JSON.stringify([
+            environmentPackage.snapshotId,
+            environmentPackage.scope.turnId,
+            requestId,
+          ])
+        )
+        .digest('hex')}`;
+      const prepared = prepareWorkerArtifact({
+        store,
+        workspaceDb,
+        environmentPackage,
+        artifactId,
+        requestId,
+        recordedAt,
+        bytes,
+        checkValues,
+        contextPackageTrace: trace,
+        metadata: {
+          kind: 'file',
+          title: `Simulator Material proposal ${index + 1}`,
+          mediaType: selection.mediaType,
+          materialProposal: proposal,
+        },
+      });
+      // Rollback is valid only after all prior authority has been proved absent.
+      if (preflightArtifactTuple(store, workspaceDb, prepared.artifact, prepared.reviewInput)) {
+        continue;
+      }
+      try {
+        store.createArtifact(prepared.artifact);
+        createArtifactReview(workspaceDb, prepared.reviewInput);
+      } catch (error) {
+        store.rollbackArtifactCreation(artifactId);
+        throw error;
+      }
     }
   }
 

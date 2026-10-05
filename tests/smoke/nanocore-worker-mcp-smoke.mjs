@@ -445,7 +445,6 @@ async function main() {
     assert.deepEqual(exports, [
       { presence: 'required', relativePath: 'events.jsonl' },
       { presence: 'required', relativePath: 'items.jsonl' },
-      { presence: 'required', relativePath: 'artifacts.jsonl' },
     ]);
 
     const taskResponse = await taskPromise;
@@ -587,7 +586,6 @@ function expectedSmokeObservation() {
     exports: [
       { presence: 'required', relativePath: 'events.jsonl' },
       { presence: 'required', relativePath: 'items.jsonl' },
-      { presence: 'required', relativePath: 'artifacts.jsonl' },
     ],
     harnessOperations: ['session.open', 'turn.start', 'session.inspect', 'session.close'],
     imageReference: smokeImageDigest,

@@ -78,7 +78,7 @@ describe('WorkerTranscriptWriter', () => {
     expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(2);
   });
 
-  it('writes durable event, item, artifact, and terminal records with lineage', async () => {
+  it('writes durable event, item and terminal records with lineage', async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-worker-shim-'));
     const writer = new WorkerTranscriptWriter({ lineage, sessionDir });
 
@@ -90,17 +90,6 @@ describe('WorkerTranscriptWriter', () => {
       parts: [{ text: 'Worker completed the task.', type: 'text' }],
       status: 'completed',
     });
-    await writer.writeArtifact({
-      kind: 'file',
-      materialProposal: {
-        baseContentDigest: `sha256:${'a'.repeat(64)}`,
-        baseRevisionId: 'matrev_1',
-        materialId: 'mat_1',
-      },
-      mediaType: 'text/markdown',
-      path: '/workspace/output/summary.md',
-      title: 'Patch Summary',
-    });
     const terminalRecord = await writer.writeTerminalOutcome({
       status: 'completed',
       stopReason: 'completed',
@@ -108,7 +97,6 @@ describe('WorkerTranscriptWriter', () => {
 
     const events = readJsonl(join(sessionDir, 'events.jsonl'));
     const items = readJsonl(join(sessionDir, 'items.jsonl'));
-    const artifacts = readJsonl(join(sessionDir, 'artifacts.jsonl'));
 
     expect(events).toEqual([
       expect.objectContaining({
@@ -133,7 +121,7 @@ describe('WorkerTranscriptWriter', () => {
         },
         kind: 'event',
         schemaVersion: 1,
-        sequence: 3,
+        sequence: 2,
       }),
     ]);
     expect(items).toEqual([
@@ -149,26 +137,7 @@ describe('WorkerTranscriptWriter', () => {
         sequence: 1,
       }),
     ]);
-    expect(artifacts).toEqual([
-      expect.objectContaining({
-        lineage,
-        artifact: {
-          kind: 'file',
-          materialProposal: {
-            baseContentDigest: `sha256:${'a'.repeat(64)}`,
-            baseRevisionId: 'matrev_1',
-            materialId: 'mat_1',
-          },
-          mediaType: 'text/markdown',
-          path: '/workspace/output/summary.md',
-          title: 'Patch Summary',
-        },
-        kind: 'artifact',
-        schemaVersion: 1,
-        sequence: 2,
-      }),
-    ]);
-    for (const record of [...events, ...items, ...artifacts]) {
+    for (const record of [...events, ...items]) {
       expect(WorkerTranscriptRecordSchema.safeParse(record).success).toBe(true);
     }
     expect(readyRecord).toEqual(events[0]);

@@ -7,7 +7,6 @@ import {
   type WorkerCanonicalTerminalEventDataInput,
   type WorkerLineage,
   type WorkerTextPart,
-  WorkerTranscriptArtifactRecordSchema,
   WorkerTranscriptEventRecordSchema,
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
@@ -42,29 +41,6 @@ export interface WorkerAssistantMessageInput {
   text?: string;
   /** Optional structured text parts. */
   parts?: WorkerTextPart[];
-}
-
-/**
- * Artifact candidate written to `artifacts.jsonl`.
- */
-export interface WorkerArtifactInput {
-  /** Artifact kind consumed by NanoCore import. */
-  kind: 'report' | 'diff' | 'file' | 'summary';
-  /** User-facing artifact title. */
-  title: string;
-  /** Worker-visible artifact path. */
-  path: string;
-  /** Exact text-compatible media type consumed by NanoCore import. */
-  mediaType: 'text/markdown' | 'text/plain' | 'application/json';
-  /** Optional immutable Material target and base proposed by this Artifact. */
-  materialProposal?: {
-    /** Target Material id. */
-    materialId: string;
-    /** Immutable base Material revision id. */
-    baseRevisionId: string;
-    /** Lowercase SHA-256 digest of the exact base revision content. */
-    baseContentDigest: string;
-  };
 }
 
 /**
@@ -250,26 +226,6 @@ export class WorkerTranscriptWriter {
   }
 
   /**
-   * Writes one artifact candidate.
-   *
-   * @param input Artifact candidate.
-   * @returns Promise that resolves after the line is durable.
-   */
-  public async writeArtifact(input: WorkerArtifactInput): Promise<void> {
-    const record = WorkerTranscriptArtifactRecordSchema.parse({
-      ...this.nextBaseRecord('artifact'),
-      artifact: {
-        kind: input.kind,
-        materialProposal: input.materialProposal,
-        mediaType: input.mediaType,
-        path: input.path,
-        title: input.title,
-      },
-    });
-    await this.appendJsonl('artifacts.jsonl', record);
-  }
-
-  /**
    * Writes a terminal worker outcome event.
    *
    * @param input Terminal outcome.
@@ -311,7 +267,7 @@ export class WorkerTranscriptWriter {
    * @param kind Worker transcript record kind.
    * @returns Shared record fields.
    */
-  private nextBaseRecord(kind: 'event' | 'item' | 'artifact'): Record<string, unknown> {
+  private nextBaseRecord(kind: 'event' | 'item'): Record<string, unknown> {
     const record = {
       kind,
       lineage: this.lineage,

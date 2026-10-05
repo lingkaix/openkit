@@ -31,7 +31,6 @@ export {
 } from './integration-client.js';
 export { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 export {
-  type WorkerArtifactInput,
   type WorkerAssistantMessageInput,
   type WorkerEventInput,
   type WorkerLineage,

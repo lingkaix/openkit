@@ -155,7 +155,6 @@ function openshellPackageFixture(): unknown {
         root: '/openkit/session',
         eventsPath: '/openkit/session/events.jsonl',
         itemsPath: '/openkit/session/items.jsonl',
-        artifactsPath: '/openkit/session/artifacts.jsonl',
         flush: 'line',
         import: 'turn-end',
         required: true,
@@ -978,6 +977,27 @@ describe('agent environment package schema', () => {
     });
     expect(parsed.llm.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
     expect(parsed.policy.snapshotId).toBe('worker_turn_launch_policy');
+  });
+
+  it('ignores an additive transcript field no longer processed by this reader', () => {
+    const fixture = openshellPackageFixture() as {
+      control: { transcript: Record<string, unknown> };
+    };
+    fixture.control.transcript.artifactsPath = '/openkit/session/artifacts.jsonl';
+
+    const parsed = AgentEnvironmentPackageSchema.parse(fixture);
+
+    expect(parsed.control.transcript).not.toHaveProperty('artifactsPath');
+    expect(parsed.control.transcript.itemsPath).toBe('/openkit/session/items.jsonl');
+  });
+
+  it('rejects an unknown value in a known transcript core field', () => {
+    const fixture = openshellPackageFixture() as {
+      control: { transcript: Record<string, unknown> };
+    };
+    fixture.control.transcript.flush = 'incremental';
+
+    expect(AgentEnvironmentPackageSchema.safeParse(fixture).success).toBe(false);
   });
 
   it('requires a nonempty runtime-owned list of absolute binaries', () => {

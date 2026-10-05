@@ -960,10 +960,12 @@ impl NanoHostOpenShellClient {
         sandbox_id: &str,
         command: &[String],
         stdin: &[u8],
+        output_limit: usize,
     ) -> Result<ExecSandboxInteractiveResult, EpochFault> {
         if sandbox_id.is_empty()
             || command.is_empty()
             || stdin.len() > FILE_EFFECT_MAX_BYTES
+            || output_limit > FILE_EFFECT_MAX_BYTES
             || command
                 .iter()
                 .any(|value| value.is_empty() || value.contains(['\r', '\n', '\0']))
@@ -1019,7 +1021,7 @@ impl NanoHostOpenShellClient {
                 Some(exec_sandbox_event::Payload::Stdout(event))
                     if exit_status.is_none()
                         && event.data.len() <= FILE_EFFECT_CHUNK_BYTES
-                        && stdout.len() + event.data.len() <= FILE_EFFECT_MAX_BYTES =>
+                        && stdout.len() + event.data.len() <= output_limit =>
                 {
                     stdout.extend_from_slice(&event.data);
                 }
@@ -1040,7 +1042,7 @@ impl NanoHostOpenShellClient {
         }
         drop(input);
         match exit_status {
-            Some(exit_status @ (0 | 2)) => Ok(ExecSandboxInteractiveResult {
+            Some(exit_status @ (0 | 2 | 3)) => Ok(ExecSandboxInteractiveResult {
                 stdout,
                 exit_status,
             }),
@@ -2090,7 +2092,7 @@ mod tests {
             .expect("closed file effect exit classification")
             .1;
         let successful_exit = exit_match
-            .find("Some(exit_status @ (0 | 2))")
+            .find("Some(exit_status @ (0 | 2 | 3))")
             .expect("closed file helper success exits");
         let timeout_exit = exit_match
             .find("Some(124)")

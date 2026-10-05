@@ -44,19 +44,13 @@ const IMPORT_SLOTS = new Set([
 const PACKAGE_CONFIG_SLOTS = new Set(['package-config']);
 const WORKER_SUPPLY_SLOTS = new Set(['worker-supply']);
 const RUNTIME_CREDENTIAL_SLOTS = new Set(['runtime-credential']);
-const EXPORT_SLOTS = new Set([
-  'cache',
-  'main-worktree',
-  'scratch',
-  'session',
-  'turn-output',
-]);
+const EXPORT_SLOTS = new Set(['cache', 'main-worktree', 'scratch', 'session', 'turn-output']);
 
 /**
  * Runs one fixed file effect against process-like streams.
  *
  * @param {{argv: string[], stdin: AsyncIterable<Uint8Array | string>, stdout: NodeJS.WritableStream, stderr: NodeJS.WritableStream, slotRoots: Record<string, string>}} input Exact CLI arguments, streams, and the test-injected canonical root projection.
- * @returns {Promise<number>} Zero for a present result, two for proved optional absence, otherwise one.
+ * @returns {Promise<number>} Zero for a present result, two for proved optional absence, three for a proved live non-regular file, otherwise one.
  */
 export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) {
   try {
@@ -70,7 +64,8 @@ export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) 
       }
     }
     return 0;
-  } catch {
+  } catch (error) {
+    if (error?.code === 'artifact_file_not_regular') return 3;
     try {
       await writeStream(stderr, FAILURE_DIAGNOSTIC);
     } catch {
@@ -85,7 +80,7 @@ export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) 
  *
  * @param {string[]} argv CLI arguments after the executable name.
  * @param {Record<string, string>} slotRoots Canonical slot-to-root projection.
- * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string, replace: boolean} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean}}
+ * @returns {{operation: 'reference.import', root: string, relativePath: string, length: number, digest: string, replace: boolean} | {operation: 'file.export', root: string, relativePath: string, allowMissing: boolean, live: boolean, maximum: number, slot: string}}
  */
 function parseCommand(argv, slotRoots) {
   if (!Array.isArray(argv) || !slotRoots || typeof slotRoots !== 'object') {
@@ -121,21 +116,31 @@ function parseCommand(argv, slotRoots) {
     return { digest, length, operation: 'reference.import', relativePath, replace, root };
   }
 
+  const live = argv.includes('--artifact-submission');
+  const allowMissing = argv.includes('--allow-missing');
+  const exportArgs = argv.filter(
+    (value) => value !== '--artifact-submission' && value !== '--allow-missing'
+  );
   if (
-    (argv.length === 7 || (argv.length === 8 && argv[7] === '--allow-missing')) &&
-    argv[0] === 'file.export' &&
-    argv[1] === '--slot' &&
-    argv[3] === '--path' &&
-    argv[5] === '--max-length' &&
-    argv[6] === String(MAX_FILE_BYTES)
+    exportArgs.length === 7 &&
+    argv.length === 7 + Number(live) + Number(allowMissing) &&
+    exportArgs[0] === 'file.export' &&
+    exportArgs[1] === '--slot' &&
+    exportArgs[3] === '--path' &&
+    exportArgs[5] === '--max-length'
   ) {
-    const slot = argv[2];
+    const maximum = parseBoundedDecimal(exportArgs[6]);
+    if (
+      live
+        ? !allowMissing || maximum < 1 || maximum > 16 * 1024 * 1024 + 1
+        : maximum !== MAX_FILE_BYTES
+    )
+      throw new Error('invalid export bound');
+    const slot = exportArgs[2];
     const root = resolveSlotRoot(slotRoots, slot, EXPORT_SLOTS);
-    const relativePath = parseRelativePath(argv[4]);
-    if (slot === 'main-worktree') {
-      validateMainWorktreeExportPath(relativePath);
-    }
-    return { allowMissing: argv.length === 8, operation: 'file.export', relativePath, root };
+    const relativePath = parseRelativePath(exportArgs[4]);
+    if (slot === 'main-worktree') validateMainWorktreeExportPath(relativePath);
+    return { allowMissing, live, maximum, slot, operation: 'file.export', relativePath, root };
   }
 
   throw new Error('invalid arguments');
@@ -378,12 +383,7 @@ async function prepareImportTarget(root, relativePath, allowExisting) {
   const target = join(parent, segments.at(-1));
   try {
     const existing = await lstat(target);
-    if (
-      allowExisting &&
-      existing.isFile() &&
-      !existing.isSymbolicLink() &&
-      existing.nlink === 1
-    ) {
+    if (allowExisting && existing.isFile() && !existing.isSymbolicLink() && existing.nlink === 1) {
       return { parent, target };
     }
   } catch (error) {
@@ -398,71 +398,112 @@ async function prepareImportTarget(root, relativePath, allowExisting) {
 /**
  * Exports exactly one bounded no-follow regular file to stdout.
  *
- * @param {{root: string, relativePath: string, allowMissing: boolean}} command Parsed export command.
+ * @param {{root: string, relativePath: string, allowMissing: boolean, live: boolean, maximum: number, slot: string}} command Parsed export command.
  * @param {NodeJS.WritableStream} stdout Result stream.
  * @returns {Promise<boolean>} Whether the declared regular file was present.
  */
 async function exportFile(command, stdout) {
-  const target = await resolveExistingTarget(command.root, command.relativePath);
-  let before;
+  const target = await resolveExistingTarget(
+    command.root,
+    command.relativePath,
+    command.live,
+    command.slot
+  );
+  if (target === null) return false;
   try {
-    before = await lstat(target);
-  } catch (error) {
-    if (command.allowMissing && error?.code === 'ENOENT') {
-      return false;
+    let before;
+    try {
+      before = await lstat(target.path);
+    } catch (error) {
+      if (command.allowMissing && error?.code === 'ENOENT') return false;
+      throw error;
     }
-    throw error;
-  }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
-    throw new Error('invalid export target');
-  }
-
-  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await handle.stat();
-    if (
-      !stat.isFile() ||
-      stat.nlink !== 1 ||
-      stat.size > MAX_FILE_BYTES ||
-      stat.dev !== before.dev ||
-      stat.ino !== before.ino
-    ) {
-      throw new Error('invalid export file');
+    if (before.isSymbolicLink()) throw new Error('invalid export target');
+    if (!before.isFile() || before.nlink !== 1) {
+      if (command.live)
+        throw Object.assign(new Error('not regular'), { code: 'artifact_file_not_regular' });
+      throw new Error('invalid export target');
     }
 
-    const buffer = Buffer.allocUnsafe(IO_CHUNK_BYTES);
-    let offset = 0;
-    while (offset < stat.size) {
-      const requested = Math.min(buffer.length, stat.size - offset);
-      const { bytesRead } = await handle.read(buffer, 0, requested, offset);
-      if (bytesRead === 0) {
-        throw new Error('incomplete export file');
+    const handle = await open(target.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (
+        !stat.isFile() ||
+        stat.nlink !== 1 ||
+        (!command.live && stat.size > MAX_FILE_BYTES) ||
+        stat.dev !== before.dev ||
+        stat.ino !== before.ino
+      )
+        throw new Error('invalid export file');
+
+      const buffer = Buffer.allocUnsafe(IO_CHUNK_BYTES);
+      let offset = 0;
+      const capturedLength = command.live ? Math.min(stat.size, command.maximum) : stat.size;
+      while (offset < capturedLength) {
+        const requested = Math.min(buffer.length, capturedLength - offset);
+        const { bytesRead } = await handle.read(buffer, 0, requested, offset);
+        if (bytesRead === 0) throw new Error('incomplete export file');
+        await writeStream(stdout, buffer.subarray(0, bytesRead));
+        offset += bytesRead;
       }
-      await writeStream(stdout, buffer.subarray(0, bytesRead));
-      offset += bytesRead;
+      if (!command.live) {
+        // Terminal evidence must not settle after an observed mutation, even once its bytes were emitted.
+        const after = await handle.stat();
+        if (
+          !after.isFile() ||
+          after.nlink !== stat.nlink ||
+          after.dev !== stat.dev ||
+          after.ino !== stat.ino ||
+          after.size !== stat.size ||
+          after.mtimeMs !== stat.mtimeMs ||
+          after.ctimeMs !== stat.ctimeMs
+        )
+          throw new Error('export file drift');
+      }
+    } finally {
+      await handle.close();
     }
+    return true;
   } finally {
-    await handle.close();
+    await target.directory.close();
   }
-  return true;
 }
 
 /**
- * Resolves an existing target after rejecting every slot-relative symlink ancestor.
+ * Anchors each export lookup to an open directory in the Linux Worker filesystem.
  *
- * @param {string} root Canonical slot root.
+ * @param {string} root Canonical slot root beneath trusted bootstrap parents.
  * @param {string} relativePath Validated slot-relative path.
- * @returns {Promise<string>} Absolute target path.
+ * @param {boolean} live Whether proved missing interior paths may return absence.
+ * @param {string | null} slot Main-worktree also requires its selected work-slot root to exist.
+ * @returns {Promise<{path: string, directory: import('node:fs/promises').FileHandle} | null>} Descriptor-relative leaf and its owned parent, or proved live absence.
  */
-async function resolveExistingTarget(root, relativePath) {
-  await requireDirectory(root);
-  const segments = relativePath.split('/');
-  let current = root;
-  for (const segment of segments.slice(0, -1)) {
-    current = join(current, segment);
-    await requireDirectory(current);
+async function resolveExistingTarget(root, relativePath, live = false, slot = null) {
+  const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  let directory = await open(root, directoryFlags);
+  let transferred = false;
+  try {
+    const segments = relativePath.split('/');
+    for (const [index, segment] of segments.slice(0, -1).entries()) {
+      let next;
+      try {
+        // The fixed proc descriptor namespace follows our own open parent, never a mutable pathname ancestor.
+        next = await open(`/proc/self/fd/${directory.fd}/${segment}`, directoryFlags);
+      } catch (error) {
+        if (live && error?.code === 'ENOENT' && (slot !== 'main-worktree' || index > 0))
+          return null;
+        throw error;
+      }
+      const previous = directory;
+      directory = next;
+      await previous.close();
+    }
+    transferred = true;
+    return { path: `/proc/self/fd/${directory.fd}/${segments.at(-1)}`, directory };
+  } finally {
+    if (!transferred) await directory.close();
   }
-  return join(current, segments.at(-1));
 }
 
 /**

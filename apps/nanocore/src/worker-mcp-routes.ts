@@ -59,6 +59,7 @@ import {
   type WorkerControlGateway,
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
+import type { WorkerArtifactCapture } from './runtime/worker-governance-backend.js';
 import type {
   WorkerMcpGateway,
   WorkerMcpGatewayCredentials,
@@ -116,6 +117,8 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  /** Existing configured-runtime capture; no secondary backend or registry. */
+  readonly captureArtifact?: WorkerArtifactCapture;
   /** Startup-owned deployment push approval policy. */
   readonly approvalPolicy?: OpenKitConfig['policy'];
   /** Hono application receiving the private route. */
@@ -314,7 +317,18 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               )
               .map((tool) => ({
                 name: tool.name,
-                description: tool.description,
+                description:
+                  tool.name === 'work_submit_artifact'
+                    ? `${tool.description} Eligible roots: ${
+                        environmentPackage.workspace.outputs
+                          .filter(
+                            (output) =>
+                              output.registerAsArtifacts && output.retention === 'sync-on-turn-end'
+                          )
+                          .map((output) => output.path)
+                          .join(', ') || 'none'
+                      }.`
+                    : tool.description,
                 inputSchema: tool.inputSchema,
               })),
           } as ListToolsResult;
@@ -406,6 +420,17 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       environmentPackage,
                       store: input.store,
                       workspaceDb: activeWorkspaceDb,
+                      ...(input.captureArtifact ? { captureArtifact: input.captureArtifact } : {}),
+                      signal: toolCancellation.signal,
+                      requireAdmission: () => {
+                        requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
+                        requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+                        if (request.params.name === 'work_submit_artifact')
+                          requireCurrentArtifactWorkspaceAuthority(
+                            input.coreDb!,
+                            environmentPackage
+                          );
+                      },
                     },
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
@@ -1996,6 +2021,22 @@ function requireCurrentMcpWorkspaceAuthority(
   if (!hasCurrentMcpWorkspaceAuthority(coreDb, environmentPackage)) {
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   }
+}
+
+/** Rechecks Artifact publication authority before capture and each publication boundary. */
+function requireCurrentArtifactWorkspaceAuthority(
+  coreDb: CoreDb,
+  environmentPackage: AgentEnvironmentPackage
+): void {
+  if (
+    !currentWorkerLineageWorkspaceAuthority(
+      coreDb,
+      { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId },
+      'artifact.write',
+      true
+    )
+  )
+    throw mcpDeniedError();
 }
 
 /** Returns whether current Workspace authority still permits this AEP actor to use tools. */

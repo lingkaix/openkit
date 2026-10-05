@@ -1288,6 +1288,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-capabilities/*', browserCors);
   registerWorkerMcpRoutes({
+    ...(configuredWorkerRuntime?.captureArtifact
+      ? { captureArtifact: configuredWorkerRuntime.captureArtifact }
+      : {}),
     app,
     approvalPolicy: startupOpenKitConfig.policy,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
+  snapshotDigest,
 } from '../runtime/aep-snapshot-ledger.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -78,6 +79,7 @@ describe('worker Context Package authority reader', () => {
       historical.snapshotId = 'aepsnap_historical';
       historical.snapshot.snapshotId = 'aepsnap_historical';
       delete historical.snapshot.observability.captureCoverage;
+      historical.contentDigest = snapshotDigest(historical.snapshot);
       const historicalBytes = JSON.stringify(historical);
       writeFileSync(historicalPath, historicalBytes);
       const reader = createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb });
@@ -100,6 +102,7 @@ describe('worker Context Package authority reader', () => {
 
       const invalidSelected = JSON.parse(selectedBytes);
       delete invalidSelected.snapshot.observability.captureCoverage;
+      invalidSelected.contentDigest = snapshotDigest(invalidSelected.snapshot);
       writeFileSync(selectedPath, JSON.stringify(invalidSelected));
       expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toBeNull();
     } finally {

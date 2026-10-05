@@ -139,10 +139,7 @@ import {
   resolveWorkerStorageWorkSlotRef,
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
-import {
-  importWorkerTranscript,
-  workerTranscriptHasMaterialProposal,
-} from './worker-transcript.js';
+import { importWorkerTranscript } from './worker-transcript.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -1382,7 +1379,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendCleanupRequired = false;
     let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
-    let acceptedContextPackageTrace: WorkerContextPackageTrace | undefined;
     let preparedWorkerContext: PreparedWorkerTurnContext | null = null;
     let workerFinalStatus: AcceptedWorkerFinalStatus | null = null;
     let primaryFailed = false;
@@ -1790,7 +1786,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             409
           );
         }
-        acceptedContextPackageTrace = acceptPreparedWorkerTurnContextPackage({
+        acceptPreparedWorkerTurnContextPackage({
           coreDb: this.coreDb,
           environmentPackage,
           preparedContext: preparedWorkerContext,
@@ -1850,8 +1846,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         workspaceDb,
         inputSnapshots,
         materializationRecords,
-        closeoutAt,
-        acceptedContextPackageTrace
+        closeoutAt
       );
       backendCleanupRequired = false;
     } catch (error) {
@@ -2065,8 +2060,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             workspaceDb,
             listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId),
             listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId),
-            accepted.acceptedAt,
-            undefined
+            accepted.acceptedAt
           );
         } catch (error) {
           try {
@@ -2209,8 +2203,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     workspaceDb: WorkspaceDb | null,
     inputSnapshots: readonly WorkspaceInputSnapshot[],
     materializationRecords: readonly WorkspaceMaterializationRecord[],
-    recordedAt: string,
-    contextPackageTrace?: WorkerContextPackageTrace
+    recordedAt: string
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
     const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId, true);
@@ -2234,32 +2227,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     try {
-      let acceptedContextPackageTrace = contextPackageTrace;
-      if (
-        !acceptedContextPackageTrace &&
-        this.coreDb &&
-        workspaceDb &&
-        workerTranscriptHasMaterialProposal(transcript) &&
-        environmentPackage.workspace.inputs.some(
-          (input) =>
-            input.id === `context_${environmentPackage.scope.turnId}` &&
-            input.kind === 'generated' &&
-            input.target ===
-              workerSessionInputPaths(environmentPackage.scope.agentSessionId).contextRoot
-        )
-      ) {
-        acceptedContextPackageTrace = readWorkerContextPackageTrace({
-          authorities: createWorkerContextPackageAuthorityReader({
-            coreDb: this.coreDb,
-            store,
-            workspaceDb,
-          }),
-          threadId: environmentPackage.scope.threadId,
-          turnId: environmentPackage.scope.turnId,
-          workspaceId: environmentPackage.scope.workspaceId,
-          workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
-        });
-      }
       if (environmentPackage.control.transcript?.runtimeProvenance) {
         if (
           this.coreDb &&
@@ -2315,11 +2282,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         true
       );
       const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
-      const publishesArtifacts = Boolean(
-        transcript.artifactsJsonl?.trim() ||
-          transcript.artifactFiles?.length ||
-          workspaceChanges.length
-      );
+      const publishesArtifacts = Boolean(workspaceChanges.length);
       if (
         this.coreDb &&
         ((publishesWorkspaceContent &&
@@ -2345,11 +2308,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
         acceptedLiveEvents,
-        ...(acceptedContextPackageTrace
-          ? { contextPackageTrace: acceptedContextPackageTrace }
-          : {}),
         recordedAt,
-        ...(workspaceDb ? { workspaceDb } : {}),
       });
       if (
         importResult.rejectedEventSequences.length > 0 ||
@@ -2954,7 +2913,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         this.emitItemCreatedAndCompleted(store, environmentPackage, requestId, item);
       }
     }
-
     for (const artifactId of importResult.artifactIds) {
       const artifact = store.getArtifact(environmentPackage.scope.workspaceId, artifactId);
       store.emitTurnEvent(
