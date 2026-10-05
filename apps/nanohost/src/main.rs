@@ -1512,7 +1512,7 @@ fn main() {
         eprintln!("nanohost arguments invalid");
         std::process::exit(1);
     }
-    if let Err(message) = workspace_collect::verify_pinned_git() {
+    if let Err(message) = workspace_collect::verify_host_git() {
         eprintln!("{message}");
         std::process::exit(1);
     }

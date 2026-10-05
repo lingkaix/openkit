@@ -53,8 +53,8 @@ set -e
 
 WORK_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$WORK_ROOT"' EXIT HUP INT TERM
+PYTHON_STDLIB="$(python3 -I -B -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')"
 LIB_ARCH_DIR="$(readlink -f "$(ldd /bin/sh | awk '/libc\.so/{print $3; exit}')" | xargs dirname)"
-LOADER_NAME="$(basename "$(readlink -f "$(ldd /bin/sh | awk '/ld-linux/{print $1; exit}')")")"
 
 write_elf() {
   local path=$1
@@ -77,34 +77,21 @@ write_elf() {
 }
 
 write_bundle_manifest() {
-  local docker_version=$1 slirp_version=$2 slirp_sha=$3
-  cat >"$BUNDLE/MANIFEST.json" <<EOF
-{
-  "schemaVersion": 1,
-  "tag": "v0.1.0-rc.1",
-  "target": "linux/arm64",
-  "destinations": {
-    "nanohost": "/usr/lib/openkit/nanohost",
-    "openshell-gateway": "/usr/lib/openkit/openshell-gateway",
-    "openkit-nanohost.service": "/etc/systemd/system/openkit-nanohost.service"
-  },
-  "prerequisites": {
-    "architecture": "aarch64",
-    "files": ["/usr/bin/containerd", "/usr/bin/dockerd", "/usr/bin/docker", "/usr/bin/git", "/usr/bin/slirp4netns"],
-    "systemd": true,
-    "identities": {
-      "docker": {"path": "/usr/bin/docker", "version": "$docker_version"},
-      "git": {"path": "/usr/bin/git", "version": "git version 2.43.0"},
-      "slirp4netns": {"path": "/usr/bin/slirp4netns", "version": "$slirp_version", "sha256": "$slirp_sha"}
-    }
-  }
-}
-EOF
+  python3 -I -B - "$BUNDLE" <<'PY_MANIFEST'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1])
+profile_bytes=(root/'host-manifest.json').read_bytes()
+profile=json.loads(profile_bytes)
+files=['MANIFEST.json','SHA256SUMS','host-manifest.json','install.sh','licenses/openkit-LICENSE','licenses/openshell-LICENSE','licenses/openshell-THIRD-PARTY-NOTICES','nanohost','openkit-nanohost.service','openshell-gateway']
+manifest={'schemaVersion':2,'tag':'v0.1.0-rc.1','productCommit':'a'*40,'target':'linux/arm64','architecture':'arm64','profileId':profile['profileId'],'profileDigest':hashlib.sha256(profile_bytes).hexdigest(),'files':files,'libcRequirements':{name:{'interpreter':None,'symbols':[],'maximumGlibc':None} for name in ('nanohost','openshell-gateway')}}
+(root/'MANIFEST.json').write_text(json.dumps(manifest))
+PY_MANIFEST
 }
 
 refresh_bundle_checksums() {
   local members=(
     MANIFEST.json
+    host-manifest.json
     install.sh
     licenses/openkit-LICENSE
     licenses/openshell-LICENSE
@@ -117,6 +104,7 @@ refresh_bundle_checksums() {
     cd "$BUNDLE"
     for member in "${members[@]}"; do sha256sum "$member"; done >SHA256SUMS
   )
+  tar -czf "$CASE_ROOT/openkit-nanohost-v0.1.0-rc.1-linux-arm64.tar.gz" --transform='s|^bundle/|openkit-nanohost-v0.1.0-rc.1-linux-arm64/|' -C "$CASE_ROOT" "${members[@]/#/bundle/}" bundle/SHA256SUMS
 }
 
 new_case() {
@@ -125,12 +113,16 @@ new_case() {
   BUNDLE="${CASE_ROOT}/bundle"
   STUBS="${CASE_ROOT}/stubs"
   CONTROL="${CASE_ROOT}/control"
-  mkdir -p "$LIVE/usr/lib/openkit" "$LIVE/etc/systemd/system" "$LIVE/run/systemd/system" "$BUNDLE/licenses" "$STUBS" "$CONTROL"
+  mkdir -p "$LIVE/var/lib" "$LIVE/etc" "$LIVE/usr/bin" "$LIVE/proc" "$LIVE/dev" "$LIVE/sys/fs/cgroup" "$LIVE/tmp" "$LIVE/usr/lib/openkit" "$LIVE/etc/systemd/system" "$LIVE/run/systemd/system" "$BUNDLE/licenses" "$STUBS" "$CONTROL"
   cp "$INSTALLER" "$BUNDLE/install.sh"
   chmod 0755 "$BUNDLE/install.sh"
   write_elf "$BUNDLE/nanohost"
   write_elf "$BUNDLE/openshell-gateway"
-  printf '[Service]\nExecStart=/usr/lib/openkit/nanohost\n' >"$BUNDLE/openkit-nanohost.service"
+  cp "$REPO_ROOT/apps/nanohost/deploy/host-manifest.json" "$BUNDLE/host-manifest.json"
+  cp "$REPO_ROOT/apps/nanohost/deploy/openkit-nanohost.service" "$BUNDLE/openkit-nanohost.service"
+  printf '0123456789abcdef0123456789abcdef\n' >"$LIVE/etc/machine-id"
+  mkdir -p "$LIVE/run/systemd/resolve"
+  printf 'nameserver 1.1.1.1\n' >"$LIVE/run/systemd/resolve/resolv.conf"
   printf 'OpenKit fixture license\n' >"$BUNDLE/licenses/openkit-LICENSE"
   printf 'OpenShell fixture license\n' >"$BUNDLE/licenses/openshell-LICENSE"
   printf 'OpenShell fixture notices\n' >"$BUNDLE/licenses/openshell-THIRD-PARTY-NOTICES"
@@ -138,14 +130,15 @@ new_case() {
     printf '#!/bin/sh\nexit 0\n' >"$STUBS/$command"
     chmod 0755 "$STUBS/$command"
   done
-  printf '#!/bin/sh\nprintf "Docker fixture version\\n"\n' >"$STUBS/docker"
-  printf '#!/bin/sh\nprintf "git version 2.43.0\\n"\n' >"$STUBS/git"
+  printf '#!/bin/sh\nprintf "Docker version 28.0.4, build abc1234\\n"\n' >"$STUBS/docker"
+  printf '#!/bin/sh\nprintf "git version 2.55.0\\n"\n' >"$STUBS/git"
   printf '#!/bin/sh\nprintf "slirp4netns fixture version\\ncommit: fixture\\nlibslirp: fixture\\n"\n' >"$STUBS/slirp4netns"
-  printf '#!/bin/sh\nprintf "aarch64\\n"\n' >"$STUBS/uname"
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo aarch64;; -r) echo 6.8.33-fixture;; esac\n' >"$STUBS/uname"
+  printf '#!/bin/sh\nexit 0\n' >"$STUBS/systemd-analyze"
+  printf 'systemd\n' >"$STUBS/pid1"
+  chmod 0755 "$STUBS/systemd-analyze"
   chmod 0755 "$STUBS/docker" "$STUBS/git" "$STUBS/slirp4netns" "$STUBS/uname"
-  local slirp_sha
-  slirp_sha="$(sha256sum "$STUBS/slirp4netns" | cut -d' ' -f1)"
-  write_bundle_manifest 'Docker fixture version' 'slirp4netns fixture version' "$slirp_sha"
+  write_bundle_manifest
   refresh_bundle_checksums
 }
 
@@ -153,25 +146,27 @@ namespace_command() {
   local extra_stub=${1:-}
   shift || true
   local args=(
-    --unshare-all --die-with-parent --new-session
-    --ro-bind / /
-    --proc /proc --dev /dev
-    --tmpfs /usr/lib
-    --dir "$LIB_ARCH_DIR"
+    --unshare-all --die-with-parent --new-session --uid 0 --gid 0
+    --bind "$LIVE" /
+    --ro-bind /usr/bin /usr/bin
+    --ro-bind /bin /bin
+    --ro-bind /lib /lib
     --ro-bind "$LIB_ARCH_DIR" "$LIB_ARCH_DIR"
-    --symlink "$(basename "$LIB_ARCH_DIR")/$LOADER_NAME" "/usr/lib/$LOADER_NAME"
-    --bind "$LIVE/usr/lib/openkit" /usr/lib/openkit
-    --bind "$LIVE/etc/systemd" /etc/systemd
-    --tmpfs /run
-    --bind "$LIVE/run/systemd" /run/systemd
-    --bind "$CONTROL" "$CONTROL"
+    --ro-bind "$PYTHON_STDLIB" "$PYTHON_STDLIB"
+    --proc /proc --dev /dev
+    --ro-bind /sys/fs/cgroup /sys/fs/cgroup
+    --ro-bind "$STUBS/pid1" /proc/1/comm
+    --bind "$CASE_ROOT" "$CASE_ROOT"
     --ro-bind "$STUBS/containerd" /usr/bin/containerd
     --ro-bind "$STUBS/dockerd" /usr/bin/dockerd
     --ro-bind "$STUBS/docker" /usr/bin/docker
     --ro-bind "$STUBS/git" /usr/bin/git
     --ro-bind "$STUBS/slirp4netns" /usr/bin/slirp4netns
+    --ro-bind "$STUBS/uname" /usr/bin/uname
+    --ro-bind "$STUBS/systemd-analyze" /usr/bin/systemd-analyze
     --chdir "$BUNDLE"
   )
+  if [[ -d /lib64 ]]; then args+=(--ro-bind /lib64 /lib64); fi
   if [[ -z "$extra_stub" ]]; then extra_stub=$STUBS; fi
   args+=(--setenv PATH "$extra_stub:/usr/bin:/bin" --setenv OPENKIT_INSTALLER_CONTROL "$CONTROL" -- /bin/sh "$BUNDLE/install.sh" "$@")
   "$BWRAP" "${args[@]}"
@@ -229,44 +224,70 @@ test_four_dispositions() {
   expect_output '^destination=destination-conflict$' destination-conflict
 }
 
-test_exact_host_identities() {
+test_capability_host_requirements() {
   new_case
-  printf '#!/bin/sh\nprintf "wrong Docker version\\n"\n' >"$STUBS/docker"
+  local before after
+  before=$(find "$LIVE" -type f -exec sha256sum {} + | sort)
+  run_case host-check '' --check-host
+  expect_status 0 host-check
+  python3 -I -B - "$CASE_ROOT/host-check.out" <<'PY_RESULT' || fail 'host-check framing or identities invalid'
+import hashlib,json,pathlib,sys
+raw=pathlib.Path(sys.argv[1]).read_bytes()
+result=json.loads(raw)
+assert raw == (json.dumps(result,separators=(',',':'))+'\n').encode()
+assert result['hardVerdict']=='requirements-met'
+assert result['machineObservationDigest']==hashlib.sha256(json.dumps(result['requirements'],separators=(',',':')).encode()).hexdigest()
+assert result['machineIdentityDigest']==hashlib.sha256(b'0123456789abcdef0123456789abcdef\n').hexdigest()
+assert all(item['outcome']=='met' for item in result['requirements'])
+PY_RESULT
+  after=$(find "$LIVE" -type f -exec sha256sum {} + | sort)
+  [[ "$before" == "$after" ]] || fail 'host check changed live fixture bytes'
+
+  new_case
+  printf '#!/bin/sh\nprintf "Docker version 27.9.0, build abc1234\\n"\n' >"$STUBS/docker"
   chmod 0755 "$STUBS/docker"
-  run_case wrong-docker '' --check
-  [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong fixed Docker identity'
-  ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong Docker identity reported host prerequisites pass'
+  run_case old-docker '' --check-host
+  expect_status 1 old-docker
+  expect_output '"hardVerdict":"requirements-unmet"' old-docker
 
   new_case
-  printf '#!/bin/sh\nprintf "git version 0.0.0\\n"\n' >"$STUBS/git"
+  printf '#!/bin/sh\nprintf "malformed Git version\\n"\n' >"$STUBS/git"
   chmod 0755 "$STUBS/git"
-  run_case wrong-git '' --check
-  expect_status 1 wrong-git
-  [[ "$ERROR" == 'host-prerequisite=git-identity' ]] || fail "wrong Git identity reached the wrong refusal: stderr=$ERROR"
-  ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong Git identity reported host prerequisites pass'
+  run_case malformed-git '' --check-host
+  expect_status 1 malformed-git
+  expect_output '"hardVerdict":"cannot-check"' malformed-git
 
   new_case
-  printf '#!/bin/sh\nprintf "wrong slirp version\\n"\n' >"$STUBS/slirp4netns"
+  printf '#!/bin/sh\nprintf "another slirp version\\n"\n' >"$STUBS/slirp4netns"
   chmod 0755 "$STUBS/slirp4netns"
-  local slirp_sha
-  slirp_sha="$(sha256sum "$STUBS/slirp4netns" | cut -d' ' -f1)"
-  write_bundle_manifest 'Docker fixture version' 'slirp4netns fixture version' "$slirp_sha"
-  refresh_bundle_checksums
-  run_case wrong-slirp-version '' --check
-  [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong fixed slirp4netns identity'
-  ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong slirp4netns identity reported host prerequisites pass'
+  run_case alternate-slirp '' --check
+  expect_status 0 alternate-slirp
+  expect_output '^host-prerequisites=pass$' alternate-slirp
 
   new_case
-  write_bundle_manifest 'Docker fixture version' 'slirp4netns fixture version' "$(printf '0%.0s' {1..64})"
+  printf ' ' >>"$BUNDLE/host-manifest.json"
   refresh_bundle_checksums
-  run_case wrong-slirp-sha '' --check
-  [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong fixed slirp4netns SHA-256'
-  ! grep -q '^host-prerequisites=pass$' <<<"$OUTPUT" || fail 'wrong slirp4netns SHA-256 reported host prerequisites pass'
+  run_case profile-digest '' --check-host
+  expect_status 1 profile-digest
+  expect_output '"hardVerdict":"cannot-check"' profile-digest
+
+  new_case
+  rm "$LIVE/etc/machine-id"
+  run_case missing-identity '' --check-host
+  expect_status 1 missing-identity
+  expect_output '"hardVerdict":"cannot-check"' missing-identity
+
+  new_case
+  printf '#!/bin/sh\nprintf "malformed Git version\\n"\n' >"$STUBS/git"
+  chmod 0644 "$STUBS/containerd"
+  run_case mixed '' --check-host
+  expect_status 1 mixed
+  expect_output '"hardVerdict":"requirements-unmet"' mixed
 }
 
 test_other_host_prerequisites_and_ancestors() {
   new_case
-  printf '#!/bin/sh\nprintf "x86_64\\n"\n' >"$STUBS/uname"
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n' >"$STUBS/uname"
   chmod 0755 "$STUBS/uname"
   run_case wrong-architecture '' --check
   [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong host architecture'
@@ -454,7 +475,7 @@ EOF
 
 set -e
 test_four_dispositions
-test_exact_host_identities
+test_capability_host_requirements
 test_other_host_prerequisites_and_ancestors
 test_live_completion_output
 test_partial_cleanup

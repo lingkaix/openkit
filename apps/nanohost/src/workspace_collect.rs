@@ -27,8 +27,7 @@ const RUNTIME_ENV_MAX_BYTES: usize = 64 * 1024;
 const RUNTIME_ENV_MAX_COUNT: usize = 128;
 const LOOPBACK_WINDOW_BYTES: usize = 43;
 const IDENTIFIER_MAX_BYTES: usize = 128;
-const PINNED_GIT: &str = "/usr/bin/git";
-const PINNED_GIT_VERSION: &str = "git version 2.43.0";
+const HOST_GIT: &str = "/usr/bin/git";
 const COLLECT_DEADLINE: Duration = Duration::from_secs(120);
 const MAX_WALK_ENTRIES: usize = 100_000;
 const MAX_WALK_DEPTH: usize = 64;
@@ -496,7 +495,7 @@ pub fn execute_collect(
 ///
 /// Returns an error when `/usr/bin/git` is not a regular non-symlink file.
 pub fn pinned_git() -> Result<PathBuf, ()> {
-    let path = PathBuf::from(PINNED_GIT);
+    let path = PathBuf::from(HOST_GIT);
     if is_regular_nonlink(&path) {
         Ok(path)
     } else {
@@ -504,41 +503,86 @@ pub fn pinned_git() -> Result<PathBuf, ()> {
     }
 }
 
-/// Checks the manifest pin against `git --version` before the service accepts work.
+/// Admits the profile-owned Git capability before the service accepts work.
 ///
 /// # Errors
 ///
-/// Returns a value-free error when the binary is missing or its version line differs.
-pub fn verify_pinned_git() -> Result<(), &'static str> {
-    verify_git_identity(Path::new(PINNED_GIT), PINNED_GIT_VERSION)
+/// Returns a value-free failure for missing profile semantics, unsafe executable, or an unobservable version.
+pub fn verify_host_git() -> Result<(), &'static str> {
+    verify_git_capability(Path::new(HOST_GIT))
 }
 
-/// Compares one Git binary's version line with the pinned text.
+/// Observes one regular executable under the bundled profile's Git probe deadline.
 ///
 /// # Errors
 ///
-/// Returns a value-free error when the binary cannot be executed or the line differs.
-pub fn verify_git_identity(path: &Path, expected: &str) -> Result<(), &'static str> {
-    if !is_regular_nonlink(path) {
-        return Err("nanohost git identity rejected");
+/// Rejects absent, non-executable, symlink, malformed, failed, oversized, or timed-out observations.
+fn verify_git_capability(path: &Path) -> Result<(), &'static str> {
+    const REJECTED: &str = "nanohost git prerequisite rejected";
+    let profile: serde_json::Value =
+        serde_json::from_str(include_str!("../deploy/host-manifest.json")).map_err(|_| REJECTED)?;
+    let requirement = profile["requirements"]
+        .as_array()
+        .ok_or(REJECTED)?
+        .iter()
+        .find(|entry| entry["id"] == "git-version")
+        .ok_or(REJECTED)?;
+    if profile["schemaVersion"] != 2
+        || requirement["probe"] != "git-version"
+        || requirement["predicate"]["path"] != HOST_GIT
+        || requirement["predicate"]["format"] != "git-version"
+    {
+        return Err(REJECTED);
     }
-    let output = Command::new(path)
-        .arg("--version")
-        .env_clear()
-        .output()
-        .map_err(|_| "nanohost git identity rejected")?;
-    if !output.status.success() {
-        return Err("nanohost git identity rejected");
+    let timeout = requirement["timeoutSeconds"]
+        .as_u64()
+        .filter(|value| *value > 0)
+        .ok_or(REJECTED)?;
+    let meta = fs::symlink_metadata(path).map_err(|_| REJECTED)?;
+    if !meta.file_type().is_file() || meta.mode() & 0o111 == 0 {
+        return Err(REJECTED);
     }
-    let line = output
-        .stdout
-        .split(|byte| *byte == b'\n')
-        .next()
-        .unwrap_or(&[]);
-    if line != expected.as_bytes() {
-        return Err("nanohost git identity rejected");
+    let mut command = Command::new(path);
+    command.arg("--version").env_clear();
+    let observed = capture(
+        &mut command,
+        StdinSource::None,
+        false,
+        4096,
+        0,
+        Instant::now() + Duration::from_secs(timeout),
+        None,
+    )
+    .map_err(|_| REJECTED)?;
+    let text = std::str::from_utf8(&observed.stdout)
+        .map_err(|_| REJECTED)?
+        .trim();
+    if !well_formed_git_version(text) {
+        return Err(REJECTED);
     }
     Ok(())
+}
+
+/// Recognizes the Git version grammar, including ordinary vendor suffixes, without a package pin.
+fn well_formed_git_version(text: &str) -> bool {
+    let Some(version) = text.strip_prefix("git version ") else {
+        return false;
+    };
+    let (numbers, suffix) = version.split_once(' ').unwrap_or((version, ""));
+    let components = numbers.split('.').collect::<Vec<_>>();
+    components.len() >= 3
+        && components[..3]
+            .iter()
+            .all(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        && components[3..].iter().all(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"()_-".contains(&byte))
+        })
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" ()._-".contains(&byte))
 }
 
 fn is_regular_nonlink(path: &Path) -> bool {
@@ -3916,6 +3960,43 @@ mod tests {
     }
 
     #[test]
+    fn git_version_capability_grammar_rejects_untrustworthy_output() {
+        for text in [
+            "git version 2.55.0",
+            "git version 3.1.12.vendor1",
+            "git version 2.50.1 (Apple Git-155)",
+        ] {
+            assert!(well_formed_git_version(text), "{text}");
+        }
+        for text in [
+            "git version",
+            "git version 2.55",
+            "git version two.55.0",
+            "git version 2.55.0\nextra",
+            "git version 2.55.0; command",
+        ] {
+            assert!(!well_formed_git_version(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn startup_admits_a_well_formed_git_version_other_than_the_promoted_pin() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("nanohost-git-capability-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let git = root.join("git");
+        fs::write(&git, "#!/bin/sh\nprintf 'git version 2.55.0\\n'\n").unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = verify_git_capability(&git);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            result.is_ok(),
+            "capable Git must not require the promoted package identity"
+        );
+    }
+
+    #[test]
     fn h1_clean_tree_returns_stable_no_new_head() {
         let fixture = Fixture::new();
         write_file(&fixture.worktree().join("a"), b"same", 0o644);
@@ -5201,15 +5282,12 @@ mod tests {
             .unwrap();
         let line = String::from_utf8(observed.stdout).unwrap();
         let line = line.lines().next().unwrap();
-        assert!(verify_git_identity(Path::new("/usr/bin/git"), line).is_ok());
-        if cfg!(target_os = "macos") {
-            assert!(verify_git_identity(Path::new("/usr/bin/git"), PINNED_GIT_VERSION).is_err());
-        }
-        assert_eq!(PINNED_GIT, "/usr/bin/git");
-        assert_eq!(PINNED_GIT_VERSION, "git version 2.43.0");
+        assert!(well_formed_git_version(line));
+        assert!(verify_git_capability(Path::new("/usr/bin/git")).is_ok());
+        assert_eq!(HOST_GIT, "/usr/bin/git");
         let link = fixture.root.join("git-link");
         symlink("/usr/bin/git", &link).unwrap();
-        assert!(verify_git_identity(&link, line).is_err());
+        assert!(verify_git_capability(&link).is_err());
         let source = include_str!("workspace_collect.rs");
         let prefix = source.split("#[cfg(test)]").next().unwrap();
         assert!(!prefix.contains("GIT_WORK_TREE"));
@@ -5222,14 +5300,14 @@ mod tests {
         let main = include_str!("main.rs");
         let version = main.find("--version").unwrap();
         let image = main.find("image_store_cli::dispatch").unwrap();
-        let pinned = main.find("verify_pinned_git()").unwrap();
+        let pinned = main.find("verify_host_git()").unwrap();
         assert!(version < image && image < pinned);
         let install = include_str!("../deploy/install.sh");
-        assert!(install.contains("git_path=$(manifest_identity_value git path)"));
-        assert!(install.contains("[ \"$observed_git\" = \"$git_version\" ]"));
+        assert!(install.contains("def compare_requirement("));
+        assert!(install.contains("git-version"));
         let manifest = include_str!("../deploy/host-manifest.json");
         assert!(manifest.contains("\"path\": \"/usr/bin/git\""));
-        assert!(manifest.contains("\"version\": \"git version 2.43.0\""));
+        assert!(manifest.contains("\"format\": \"git-version\""));
         let unit = include_str!("../deploy/openkit-nanohost.service");
         assert!(unit.contains("ExecStart=/usr/lib/openkit/nanohost"));
         assert!(!unit.contains("ExecStart=/bin/sh"));

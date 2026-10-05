@@ -20,36 +20,15 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   expectedNodeSource,
+  hostCheckEvidence,
   requireSuccess,
   runHostScript,
+  writeHostProfileFixture,
 } from './support/host/fixture-runner.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hostSupportRoot = join(repoRoot, 'tests/support/host');
 const manifestPath = join(repoRoot, 'apps/nanohost/deploy/host-manifest.json');
-const expectedManifestKeys = [
-  'architecture',
-  'cgroupMode',
-  'commands',
-  'containerRuntime',
-  'initSystem',
-  'kernelRelease',
-  'schemaVersion',
-];
-const expectedCommandKeys = [
-  'bash',
-  'curl',
-  'docker',
-  'git',
-  'node',
-  'sha256sum',
-  'slirp4netns',
-  'sudo',
-  'systemctl',
-  'tar',
-  'timeout',
-];
-
 /** Returns one deterministic path-and-content digest for a fixture tree. */
 function treeDigest(root) {
   const paths = [];
@@ -91,85 +70,70 @@ function writeObservationStub(fixtureRoot, observations) {
   return observerPath;
 }
 
-/** Returns a value observably unequal to one admitted scalar. */
-function mismatchedScalar(value) {
-  if (typeof value === 'number') return value + 1;
-  if (typeof value === 'boolean') return !value;
-  return `${value}-mismatch`;
-}
-
-test('the promoted host manifest has the exact finite vocabulary', () => {
-  assert.ok(
-    existsSync(manifestPath),
-    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
+test('the host profile has the finite schema-2 capability set without machine pins', () => {
+  const profile = JSON.parse(readFileSync(manifestPath));
+  assert.equal(profile.schemaVersion, 2);
+  assert.deepEqual(profile.architectures, ['amd64', 'arm64']);
+  assert.deepEqual(
+    profile.requirements.map((entry) => entry.id),
+    [
+      'platform',
+      'systemd',
+      'service-principal',
+      'cgroup-v2',
+      'namespaces',
+      'seccomp',
+      'containerd',
+      'dockerd',
+      'docker',
+      'git',
+      'slirp4netns',
+      'docker-version',
+      'git-version',
+      'resolver',
+      'libc',
+      'ancestors',
+    ]
   );
-  const manifestBytes = readFileSync(manifestPath);
-  const manifest = JSON.parse(manifestBytes.toString('utf8'));
-
-  assert.deepEqual(Object.keys(manifest).sort(), expectedManifestKeys);
-  assert.deepEqual(Object.keys(manifest.commands).sort(), expectedCommandKeys);
+  assert.equal(profile.commands, undefined);
+  assert.equal(profile.kernelRelease, undefined);
+  assert.equal(profile.recommendation.scope, 'combined-small-deployment');
 });
 
-test('fixture provisions twice and the shared assertion rejects every observation mismatch', async (t) => {
-  assert.ok(
-    existsSync(manifestPath),
-    'missing promoted product artifact apps/nanohost/deploy/host-manifest.json'
-  );
-  const manifestBytes = readFileSync(manifestPath);
-  const manifest = JSON.parse(manifestBytes.toString('utf8'));
-  assert.deepEqual(Object.keys(manifest).sort(), expectedManifestKeys);
-  assert.deepEqual(Object.keys(manifest.commands).sort(), expectedCommandKeys);
-
-  const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-host-manifest-'));
+test('fixture provisioning stays idempotent and assertion shares the bundled capability comparator', () => {
+  const bytes = readFileSync(manifestPath);
+  const root = mkdtempSync(join(tmpdir(), 'openkit-host-profile-'));
   try {
-    writeFileSync(join(fixtureRoot, 'manifest.json'), manifestBytes);
-    const nodeSourcePath = writeNodeSource(fixtureRoot);
-    requireSuccess(runHostScript('provision.sh', fixtureRoot), 'first provision failed');
-    const nodeTargetPath = join(fixtureRoot, 'usr/bin/node');
-    assert.equal(lstatSync(nodeTargetPath).isSymbolicLink(), true);
-    assert.equal(resolve(dirname(nodeTargetPath), readlinkSync(nodeTargetPath)), nodeSourcePath);
-    const firstState = treeDigest(fixtureRoot);
-    requireSuccess(runHostScript('provision.sh', fixtureRoot), 'second provision failed');
-    assert.equal(treeDigest(fixtureRoot), firstState, 'second provision changed fake-remote state');
-    const observerPath = writeObservationStub(fixtureRoot, manifest);
-    const matchingAssertion = runHostScript('assert.sh', fixtureRoot, {
-      OPENKIT_HOST_FIXTURE_OBSERVER: observerPath,
+    writeFileSync(join(root, 'manifest.json'), bytes);
+    writeNodeSource(root);
+    requireSuccess(runHostScript('provision.sh', root), 'first provision');
+    const provisioned = treeDigest(root);
+    requireSuccess(runHostScript('provision.sh', root), 'second provision');
+    assert.equal(treeDigest(root), provisioned);
+    const observations = writeHostProfileFixture(root, bytes);
+    const observer = writeObservationStub(root, observations);
+    const before = treeDigest(root);
+    const result = runHostScript('assert.sh', root, { OPENKIT_HOST_FIXTURE_OBSERVER: observer });
+    requireSuccess(result, 'matching capability fixture');
+    const evidence = JSON.parse(result.stdout);
+    assert.equal(evidence.hardVerdict, 'requirements-met');
+    assert.equal(evidence.profileDigest, createHash('sha256').update(bytes).digest('hex'));
+    assert.equal(result.stdout, `${JSON.stringify(evidence)}\n`);
+    assert.equal(treeDigest(root), before, 'assertion wrote into fixture root');
+    observations.requirements['docker-version'].version = 'Docker version 27.9.0, build abc1234';
+    writeObservationStub(root, observations);
+    const mismatch = runHostScript('assert.sh', root, { OPENKIT_HOST_FIXTURE_OBSERVER: observer });
+    assert.notEqual(mismatch.status, 0);
+    assert.equal(JSON.parse(mismatch.stdout).hardVerdict, 'requirements-unmet');
+    observations.requirements['docker-version'].version = 'malformed version';
+    writeObservationStub(root, observations);
+    const unavailable = runHostScript('assert.sh', root, {
+      OPENKIT_HOST_FIXTURE_OBSERVER: observer,
     });
-    assert.equal(
-      matchingAssertion.status,
-      0,
-      `matching host assertion failed\nstdout:\n${matchingAssertion.stdout}\nstderr:\n${matchingAssertion.stderr}`
-    );
-
-    const scalarCases = expectedManifestKeys
-      .filter((key) => key !== 'commands')
-      .map((key) => ({ label: key, path: [key], value: mismatchedScalar(manifest[key]) }));
-    const commandCases = expectedCommandKeys.flatMap((command) =>
-      Object.keys(manifest.commands[command]).map((field) => ({
-        label: `${command}.${field}`,
-        path: ['commands', command, field],
-        value: `${manifest.commands[command][field]}-mismatch`,
-      }))
-    );
-    assert.equal(scalarCases.length, 6);
-    assert.equal(commandCases.length, 23);
-    for (const mismatch of [...scalarCases, ...commandCases]) {
-      await t.test(mismatch.label, () => {
-        const observations = structuredClone(manifest);
-        if (mismatch.path.length === 1) observations[mismatch.path[0]] = mismatch.value;
-        else observations[mismatch.path[0]][mismatch.path[1]][mismatch.path[2]] = mismatch.value;
-        writeObservationStub(fixtureRoot, observations);
-        const result = runHostScript('assert.sh', fixtureRoot, {
-          OPENKIT_HOST_FIXTURE_OBSERVER: observerPath,
-        });
-        assert.notEqual(result.status, 0, `host assertion accepted ${mismatch.label} mismatch`);
-      });
-    }
-    assert.deepEqual(readFileSync(join(fixtureRoot, 'manifest.json')), manifestBytes);
-    const expectedDigest = createHash('sha256').update(manifestBytes).digest('hex');
-    assert.equal(matchingAssertion.stdout, `manifestDigest=${expectedDigest}\n`);
+    assert.notEqual(unavailable.status, 0);
+    assert.equal(JSON.parse(unavailable.stdout).hardVerdict, 'cannot-check');
   } finally {
-    rmSync(fixtureRoot, { force: true, recursive: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -188,7 +152,7 @@ test('provision and assertion accept only the frozen SSH alias table', async (t)
   const stubRoot = mkdtempSync(join(tmpdir(), 'openkit-host-ssh-'));
   const contactPath = join(stubRoot, 'contact');
   const sshPath = join(stubRoot, 'ssh');
-  const manifestDigest = createHash('sha256').update(readFileSync(manifestPath)).digest('hex');
+  const evidence = hostCheckEvidence(readFileSync(manifestPath));
   writeFileSync(
     sshPath,
     `#!/usr/bin/env bash
@@ -212,8 +176,9 @@ printf '%s\\n' "\${OPENKIT_SSH_STDOUT-}"
               encoding: 'utf8',
               env: {
                 ...process.env,
+                OPENKIT_HOST_BUNDLE: '/opt/openkit/candidate',
                 OPENKIT_SSH_CONTACT_LOG: contactPath,
-                OPENKIT_SSH_STDOUT: `manifestDigest=${manifestDigest}`,
+                OPENKIT_SSH_STDOUT: evidence,
                 PATH: `${stubRoot}:${process.env.PATH}`,
               },
             });
@@ -234,8 +199,9 @@ printf '%s\\n' "\${OPENKIT_SSH_STDOUT-}"
             encoding: 'utf8',
             env: {
               ...process.env,
+              OPENKIT_HOST_BUNDLE: '/opt/openkit/candidate',
               OPENKIT_SSH_CONTACT_LOG: contactPath,
-              OPENKIT_SSH_STDOUT: `manifestDigest=${manifestDigest}`,
+              OPENKIT_SSH_STDOUT: evidence,
               PATH: `${stubRoot}:${process.env.PATH}`,
             },
           });
@@ -322,26 +288,22 @@ test('streamed remote provisioning reaches the Node source fail-closed boundary'
   }
 });
 
-test('streamed remote assertion reaches the host fact-collection command', () => {
-  const runRoot = mkdtempSync(join(tmpdir(), 'openkit-host-assert-stream-'));
-  const isolatedCwd = join(runRoot, 'cwd');
-  const emptyHome = join(runRoot, 'home');
-  mkdirSync(isolatedCwd);
-  mkdirSync(emptyHome);
+test('streamed remote assertion invokes only the selected bundled checker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-host-assert-stream-'));
   try {
-    const result = spawnSync('bash', ['-x', '-s', '--', 'remote', 'e30='], {
-      cwd: isolatedCwd,
+    writeFileSync(
+      join(root, 'install.sh'),
+      `#!/bin/sh\n[ "$1" = --check-host ] || exit 93\nprintf 'selected-bundle-checker\\n'\n`
+    );
+    const result = spawnSync('bash', ['-s', '--', 'remote', root], {
+      cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, HOME: emptyHome },
       input: readFileSync(join(hostSupportRoot, 'assert.sh')),
     });
-    assert.match(
-      result.stderr,
-      /^\+\+ \/usr\/bin\/node -e /mu,
-      `streamed assertion did not attempt host fact collection\nstderr:\n${result.stderr}`
-    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'selected-bundle-checker\n');
     assert.doesNotMatch(result.stderr, /ssh-alias\.sh|BASH_SOURCE/u);
   } finally {
-    rmSync(runRoot, { force: true, recursive: true });
+    rmSync(root, { force: true, recursive: true });
   }
 });

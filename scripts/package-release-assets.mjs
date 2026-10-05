@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertAarch64Elf } from './lib/nanohost-elf.mjs';
+import { assertAarch64Elf, elfLibcRequirements } from './lib/nanohost-elf.mjs';
 import {
   assertOpenShellSdkRevision,
   parseNanoHostHostManifest,
@@ -28,6 +28,7 @@ const NANOHOST_TARGET = 'linux/arm64';
 const NANOHOST_FILES = [
   'MANIFEST.json',
   'SHA256SUMS',
+  'host-manifest.json',
   'install.sh',
   'licenses/openkit-LICENSE',
   'licenses/openshell-LICENSE',
@@ -214,9 +215,17 @@ function packageNanoHost(input) {
   const gatewayRelease = release.gateway.executable;
   const licenseRelease = release.redistribution.license;
   const noticesRelease = release.redistribution.notices;
-  const hostManifest = parseNanoHostHostManifest(
-    gitFile(input.repoRoot, input.ref, 'apps/nanohost/deploy/host-manifest.json').toString('utf8')
+  const profileBytes = gitFile(
+    input.repoRoot,
+    input.ref,
+    'apps/nanohost/deploy/host-manifest.json'
   );
+  const hostManifest = parseNanoHostHostManifest(profileBytes.toString('utf8'));
+  const productCommit = run('git', ['rev-parse', `${input.ref}^{commit}`], {
+    cwd: input.repoRoot,
+    encoding: 'utf8',
+    message: 'Unable to resolve NanoHost product commit',
+  }).stdout.trim();
   assertChecksum(input.gatewayArchivePath, archiveRelease.sha256, 'OpenShell Gateway archive');
   assertChecksum(input.openshellLicensePath, licenseRelease.sha256, 'OpenShell license');
   assertChecksum(input.openshellNoticesPath, noticesRelease.sha256, 'OpenShell notices');
@@ -276,31 +285,24 @@ function packageNanoHost(input) {
       0o644
     );
 
-    // Derive identity-bearing paths from their projected identities to keep both lists aligned.
-    const prerequisiteIdentities = {
-      docker: hostManifest.commands.docker,
-      git: hostManifest.commands.git,
-      slirp4netns: hostManifest.commands.slirp4netns,
-    };
+    writeMode(join(root, 'host-manifest.json'), profileBytes, 0o644);
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       tag: input.tag,
+      productCommit,
       target: NANOHOST_TARGET,
+      architecture: 'arm64',
+      profileId: hostManifest.profileId,
+      profileDigest: createHash('sha256').update(profileBytes).digest('hex'),
+      libcRequirements: {
+        nanohost: elfLibcRequirements(readFileSync(input.binaryPath)),
+        'openshell-gateway': elfLibcRequirements(gatewayBytes),
+      },
       files: NANOHOST_FILES,
       destinations: {
         nanohost: '/usr/lib/openkit/nanohost',
         'openshell-gateway': '/usr/lib/openkit/openshell-gateway',
         'openkit-nanohost.service': '/etc/systemd/system/openkit-nanohost.service',
-      },
-      prerequisites: {
-        architecture: 'aarch64',
-        files: [
-          '/usr/bin/containerd',
-          '/usr/bin/dockerd',
-          ...Object.values(prerequisiteIdentities).map(({ path }) => path),
-        ],
-        systemd: true,
-        identities: prerequisiteIdentities,
       },
       openshellRelease: {
         version: release.version,

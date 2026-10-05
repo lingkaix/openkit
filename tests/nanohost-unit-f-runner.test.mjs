@@ -7,6 +7,7 @@ import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { hostCheckEvidence } from './support/host/fixture-runner.mjs';
 
 import {
   adjudicateNanoHostF1Continuation,
@@ -2283,13 +2284,18 @@ test('default driver requires a Dockerfile-resolvable NanoCore image reference',
 test('default driver proves the running image ID and candidate image reference independently', async () => {
   const calls = [];
   const imageId = `sha256:${'e'.repeat(64)}`;
-  const manifestDigest = defaultDriverOptions().hostManifestDigest;
   let sshCalls = 0;
   const driver = createDefaultDriver(
     defaultDriverOptions({
       runCommand: async (command, args) => {
         calls.push({ args, command });
-        if (command === '/usr/bin/env') return { stdout: `manifestDigest=${manifestDigest}\n` };
+        if (command === '/usr/bin/env')
+          return {
+            stdout: hostCheckEvidence(
+              readFileSync('apps/nanohost/deploy/host-manifest.json'),
+              publicIdentity.productCommit
+            ),
+          };
         if (command !== '/usr/bin/ssh') throw new Error('unexpected command owner boundary');
         sshCalls += 1;
         if (sshCalls === 1) return { stdout: JSON.stringify({ imageId }) };
@@ -2311,12 +2317,17 @@ test('default driver proves the running image ID and candidate image reference i
 
 test('default driver rejects a candidate image reference for different bytes', async () => {
   const imageId = `sha256:${'e'.repeat(64)}`;
-  const manifestDigest = defaultDriverOptions().hostManifestDigest;
   let sshCalls = 0;
   const driver = createDefaultDriver(
     defaultDriverOptions({
       runCommand: async (command) => {
-        if (command === '/usr/bin/env') return { stdout: `manifestDigest=${manifestDigest}\n` };
+        if (command === '/usr/bin/env')
+          return {
+            stdout: hostCheckEvidence(
+              readFileSync('apps/nanohost/deploy/host-manifest.json'),
+              publicIdentity.productCommit
+            ),
+          };
         sshCalls += 1;
         return sshCalls === 1
           ? { stdout: JSON.stringify({ imageId }) }
@@ -2437,13 +2448,18 @@ test('failure evidence reads one fresh Workspace and filters the exact Turn when
 test('top-level Unit F uses the same default-driver baseline boundary before scenario coordination', async () => {
   const directCalls = [];
   const topLevelCalls = [];
-  const manifestDigest = digest(
-    readFileSync(join('apps', 'nanohost', 'deploy', 'host-manifest.json'))
-  );
   const stopAfterManifest = (calls, message) => async (command, args) => {
     calls.push({ args, command });
     if (calls.length === 1) {
-      return { signal: null, status: 0, stderr: '', stdout: `manifestDigest=${manifestDigest}\n` };
+      return {
+        signal: null,
+        status: 0,
+        stderr: '',
+        stdout: hostCheckEvidence(
+          readFileSync('apps/nanohost/deploy/host-manifest.json'),
+          publicIdentity.productCommit
+        ),
+      };
     }
     throw new Error(message);
   };

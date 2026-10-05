@@ -297,7 +297,7 @@ for (const [field, mutate] of [
   });
 }
 
-test('release preflight requires one coherent promoted host manifest', () => {
+test('release preflight requires one coherent capability host profile', () => {
   const missing = makeReleaseFixture({ omitHostManifest: true });
   const wrongDockerPath = makeReleaseFixture({ hostDockerPath: '/usr/local/bin/docker' });
 
@@ -307,7 +307,7 @@ test('release preflight requires one coherent promoted host manifest', () => {
   );
   assert.throws(
     () => validateReleasePreflight({ repoRoot: wrongDockerPath, tag: 'v0.1.0-rc.1' }),
-    /host manifest|\/usr\/bin\/docker/i
+    /host profile|\/usr\/bin\/docker/i
   );
 });
 
@@ -451,29 +451,13 @@ function makeReleaseFixture(options = {}) {
     chmodSync(installer, 0o755);
   }
   if (!options.omitHostManifest) {
-    writeJson(join(root, 'apps', 'nanohost', 'deploy', 'host-manifest.json'), {
-      architecture: 'aarch64',
-      cgroupMode: 'unified-v2',
-      commands: {
-        docker: {
-          path: options.hostDockerPath ?? '/usr/bin/docker',
-          version: 'Docker fixture version',
-        },
-        git: {
-          path: '/usr/bin/git',
-          version: 'git version 2.43.0',
-        },
-        slirp4netns: {
-          path: '/usr/bin/slirp4netns',
-          sha256: '1'.repeat(64),
-          version: 'slirp4netns fixture version',
-        },
-      },
-      containerRuntime: 'docker',
-      initSystem: 'systemd',
-      kernelRelease: 'fixture-kernel',
-      schemaVersion: 1,
-    });
+    const profile = JSON.parse(
+      readFileSync(join(process.cwd(), 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
+    );
+    if (options.hostDockerPath)
+      profile.requirements.find((entry) => entry.id === 'docker-version').predicate.path =
+        options.hostDockerPath;
+    writeJson(join(root, 'apps/nanohost/deploy/host-manifest.json'), profile);
   }
   const release = makeOpenShellRelease(options);
   writeJson(join(root, 'apps', 'nanohost', 'openshell', 'release.json'), release);

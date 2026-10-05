@@ -362,6 +362,7 @@ test('release packager and shared verifier prove the reproducible NanoHost arm64
     `${prefix}/`,
     `${prefix}/MANIFEST.json`,
     `${prefix}/SHA256SUMS`,
+    `${prefix}/host-manifest.json`,
     `${prefix}/install.sh`,
     `${prefix}/licenses/`,
     `${prefix}/licenses/openkit-LICENSE`,
@@ -539,102 +540,95 @@ test('NanoHost ELF checks accept a load segment ending exactly at the signed add
   assert.match(verified.stdout, /package=pass[\s\S]*staged-only/u);
 });
 
-test('NanoHost release inputs reject missing or malformed Git identities', () => {
-  const manifest = JSON.parse(
-    readFileSync(join(process.cwd(), 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
-  );
+test('NanoHost release inputs reject missing or malformed Git capability predicates', () => {
+  const manifest = JSON.parse(readFileSync('apps/nanohost/deploy/host-manifest.json', 'utf8'));
   assert.deepEqual(parseNanoHostHostManifest(JSON.stringify(manifest)), manifest);
-  for (const git of [
+  for (const predicate of [
     undefined,
-    { path: '/other/git', version: 'git version 2.43.0' },
-    { path: '/usr/bin/git', version: '' },
-    { path: '/usr/bin/git', version: 243 },
+    { path: '/other/git', format: 'git-version' },
+    { path: '/usr/bin/git', format: '' },
   ]) {
     const invalid = structuredClone(manifest);
-    invalid.commands.git = git;
+    invalid.requirements.find((entry) => entry.id === 'git-version').predicate = predicate;
     assert.throws(
       () => parseNanoHostHostManifest(JSON.stringify(invalid)),
-      /NanoHost promoted host manifest is invalid/u
+      /NanoHost host profile is invalid/u
     );
   }
 });
 
-test('NanoHost packager projects every promoted prerequisite identity including Git', () => {
+test('NanoHost packager binds the exact capability profile and derived executable requirements', () => {
   const packaged = packageNanoHostFixture();
-  const extractedRoot = extractArchive(packaged.archive, packaged.prefix);
-  const generatedManifest = readFileSync(join(extractedRoot, 'MANIFEST.json'), 'utf8');
-  const hostManifest = JSON.parse(
-    readFileSync(join(packaged.fixture.repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
+  const root = extractArchive(packaged.archive, packaged.prefix);
+  const generated = JSON.parse(readFileSync(join(root, 'MANIFEST.json'), 'utf8'));
+  const profile = readFileSync(
+    join(packaged.fixture.repoRoot, 'apps/nanohost/deploy/host-manifest.json')
   );
-  const prerequisites = JSON.parse(generatedManifest).prerequisites;
-  assert.deepEqual(prerequisites.files, [
-    '/usr/bin/containerd',
-    '/usr/bin/dockerd',
-    '/usr/bin/docker',
-    '/usr/bin/git',
-    '/usr/bin/slirp4netns',
-  ]);
-  assert.deepEqual(prerequisites.identities, {
-    docker: hostManifest.commands.docker,
-    git: hostManifest.commands.git,
-    slirp4netns: hostManifest.commands.slirp4netns,
+  assert.deepEqual(readFileSync(join(root, 'host-manifest.json')), profile);
+  assert.equal(generated.schemaVersion, 2);
+  assert.equal(generated.architecture, 'arm64');
+  assert.equal(generated.profileId, JSON.parse(profile).profileId);
+  assert.equal(generated.profileDigest, createHash('sha256').update(profile).digest('hex'));
+  assert.match(generated.productCommit, /^[0-9a-f]{40}$/u);
+  assert.equal(generated.prerequisites, undefined);
+  assert.deepEqual(generated.libcRequirements.nanohost, {
+    interpreter: null,
+    symbols: [],
+    maximumGlibc: null,
   });
-  for (const expected of [
-    hostManifest.commands.docker.version,
-    hostManifest.commands.slirp4netns.version,
-    hostManifest.commands.slirp4netns.sha256,
-  ]) {
-    assert.match(generatedManifest, new RegExp(escapeRegExp(expected), 'u'));
-  }
   for (const [label, mutate] of [
     [
-      'docker-version',
+      'profile-digest',
       (manifest) => {
-        manifest.prerequisites.identities.docker.version += '-mismatch';
+        manifest.profileDigest = '0'.repeat(64);
       },
     ],
     [
-      'git-version',
+      'profile-id',
       (manifest) => {
-        manifest.prerequisites.identities.git.version += '-mismatch';
+        manifest.profileId = 'unknown-profile';
       },
     ],
     [
-      'git-identity',
+      'architecture',
       (manifest) => {
-        delete manifest.prerequisites.identities.git;
+        manifest.architecture = 'amd64';
       },
     ],
     [
-      'git-file',
+      'product-commit',
       (manifest) => {
-        manifest.prerequisites.files = manifest.prerequisites.files.filter(
-          (path) => path !== '/usr/bin/git'
-        );
+        manifest.productCommit = 'b'.repeat(40);
+      },
+    ],
+    [
+      'libc',
+      (manifest) => {
+        manifest.libcRequirements.nanohost.maximumGlibc = '99.0';
       },
     ],
   ]) {
-    const mutationDir = join(packaged.fixture.repoRoot, 'dist', `host-identity-${label}`);
+    const mutationDir = join(packaged.fixture.repoRoot, 'dist', `host-profile-${label}`);
     mkdirSync(mutationDir);
-    const mutatedArchive = join(mutationDir, packaged.archiveName);
-    rewriteArchive(packaged.archive, mutatedArchive, packaged.prefix, {
-      mutateRoot(root) {
-        const manifestPath = join(root, 'MANIFEST.json');
-        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const archive = join(mutationDir, packaged.archiveName);
+    rewriteArchive(packaged.archive, archive, packaged.prefix, {
+      mutateRoot(bundle) {
+        const path = join(bundle, 'MANIFEST.json');
+        const manifest = JSON.parse(readFileSync(path, 'utf8'));
         mutate(manifest);
-        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-        refreshInnerChecksums(root);
+        writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+        refreshInnerChecksums(bundle);
       },
     });
     const result = runVerifierWithFreshChecksum(
-      join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs'),
-      mutatedArchive,
+      join(process.cwd(), 'scripts/verify-nanohost-release.mjs'),
+      archive,
       packaged.archiveName,
       packaged.fixture.repoRoot,
-      join(packaged.fixture.repoRoot, `stage-host-identity-${label}`)
+      join(packaged.fixture.repoRoot, `stage-host-profile-${label}`)
     );
-    assert.notEqual(result.status, 0, `verifier accepted ${label} prerequisite drift`);
-    assert.match(result.stderr, /host manifest|prerequisite|identity/i);
+    assert.notEqual(result.status, 0, `verifier accepted ${label} drift`);
+    assert.match(result.stderr, /host profile|product commit/i);
   }
 });
 
@@ -862,29 +856,9 @@ function makeNanoHostReleaseFixture() {
     writeFileSync(fixtureInstaller, '#!/bin/sh\nexit 99\n');
   }
   chmodSync(fixtureInstaller, 0o755);
-  writeFileSync(
-    join(repoRoot, 'apps', 'nanohost', 'deploy', 'host-manifest.json'),
-    `${JSON.stringify(
-      {
-        architecture: 'aarch64',
-        cgroupMode: 'unified-v2',
-        commands: {
-          docker: { path: '/usr/bin/docker', version: 'Docker fixture version' },
-          git: { path: '/usr/bin/git', version: 'git version 2.43.0' },
-          slirp4netns: {
-            path: '/usr/bin/slirp4netns',
-            version: 'slirp4netns fixture version',
-            sha256: '1'.repeat(64),
-          },
-        },
-        containerRuntime: 'docker',
-        initSystem: 'systemd',
-        kernelRelease: 'fixture-kernel',
-        schemaVersion: 1,
-      },
-      null,
-      2
-    )}\n`
+  copyFileSync(
+    join(process.cwd(), 'apps/nanohost/deploy/host-manifest.json'),
+    join(repoRoot, 'apps/nanohost/deploy/host-manifest.json')
   );
 
   const nanohostPath = join(repoRoot, 'nanohost-input');
@@ -1085,6 +1059,7 @@ function canonicalArchiveMembers(prefix) {
     `${prefix}/licenses`,
     'MANIFEST.json',
     'SHA256SUMS',
+    'host-manifest.json',
     'install.sh',
     'licenses/openkit-LICENSE',
     'licenses/openshell-LICENSE',
@@ -1182,10 +1157,6 @@ function withBigUInt64(bytes, offset, value) {
   const copy = Buffer.from(bytes);
   copy.writeBigUInt64LE(value, offset);
   return copy;
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function substituteBundleReleaseIdentity(sourceArchive, targetArchive, prefix) {

@@ -16,123 +16,131 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { writeHostProfileFixture } from './support/host/fixture-runner.mjs';
 
 const installerSource = join(process.cwd(), 'apps', 'nanohost', 'deploy', 'install.sh');
 
-test('NanoHost installer contains staging writes and rejects corruption before its first write', () => {
-  assert.ok(existsSync(installerSource), 'NanoHost release installer must exist');
-  const fixture = makeBundle();
-  const systemctlMarker = join(fixture.root, 'systemctl-called');
-  const stage = join(fixture.root, 'stage');
-  const installed = runInstaller(fixture.bundle, stage, systemctlMarker);
+// NanoHost Distribution admits only Linux; staging waives runtime probes, not installer platform.
+if (process.platform === 'linux') {
+  test('NanoHost installer contains staging writes and rejects corruption before its first write', () => {
+    assert.ok(existsSync(installerSource), 'NanoHost release installer must exist');
+    const fixture = makeBundle();
+    const systemctlMarker = join(fixture.root, 'systemctl-called');
+    const stage = join(fixture.root, 'stage');
+    const installed = runInstaller(fixture.bundle, stage, systemctlMarker);
 
-  assert.equal(installed.status, 0, installed.stderr);
-  assert.match(installed.stdout, /staged-only/);
-  assert.equal(existsSync(systemctlMarker), false, 'staging must not invoke systemctl');
-  assert.deepEqual(
-    readFileSync(join(stage, 'usr', 'lib', 'openkit', 'nanohost')),
-    readFileSync(join(fixture.bundle, 'nanohost'))
-  );
-  assert.deepEqual(
-    readFileSync(join(stage, 'usr', 'lib', 'openkit', 'openshell-gateway')),
-    readFileSync(join(fixture.bundle, 'openshell-gateway'))
-  );
-  assert.deepEqual(
-    readFileSync(join(stage, 'etc', 'systemd', 'system', 'openkit-nanohost.service')),
-    readFileSync(join(fixture.bundle, 'openkit-nanohost.service'))
-  );
-  assert.equal(statSync(join(stage, 'usr', 'lib', 'openkit', 'nanohost')).mode & 0o777, 0o755);
-  assert.equal(
-    statSync(join(stage, 'etc', 'systemd', 'system', 'openkit-nanohost.service')).mode & 0o777,
-    0o644
-  );
-
-  const corrupt = makeBundle();
-  writeFileSync(join(corrupt.bundle, 'nanohost'), 'corrupt', { flag: 'a' });
-  const corruptStage = join(corrupt.root, 'stage');
-  const rejected = runInstaller(
-    corrupt.bundle,
-    corruptStage,
-    join(corrupt.root, 'systemctl-called')
-  );
-  assert.notEqual(rejected.status, 0);
-  assert.equal(
-    existsSync(corruptStage),
-    false,
-    'corruption must fail before staging-root creation'
-  );
-
-  const traversal = makeBundle();
-  const traversalStage = `${traversal.root}/candidate/../escaped`;
-  const traversalResult = runInstaller(
-    traversal.bundle,
-    traversalStage,
-    join(traversal.root, 'systemctl-called')
-  );
-  assert.notEqual(traversalResult.status, 0);
-  assert.equal(existsSync(join(traversal.root, 'escaped')), false);
-
-  const linked = makeBundle();
-  const outside = join(linked.root, 'outside');
-  const ancestor = join(linked.root, 'ancestor');
-  mkdirSync(outside);
-  mkdirSync(ancestor);
-  symlinkSync(outside, join(ancestor, 'link'));
-  const linkedResult = runInstaller(
-    linked.bundle,
-    join(ancestor, 'link', 'stage'),
-    join(linked.root, 'systemctl-called')
-  );
-  assert.notEqual(linkedResult.status, 0);
-  assert.equal(
-    existsSync(join(outside, 'stage')),
-    false,
-    'symlink ancestor must not escape staging'
-  );
-
-  for (const [label, options] of [
-    ['ET_REL', { type: 1 }],
-    ['truncated ELF64 header', { truncate: 63 }],
-    ['missing program headers', { programHeaders: 0 }],
-    ['missing PT_LOAD', { segmentType: 0 }],
-    ['oversized PT_LOAD memory', { memorySize: 0x1_0000_0000n }],
-    [
-      'PT_LOAD crossing the signed address ceiling',
-      {
-        entry: 0x7fff_ffff_ffff_fff8n,
-        virtualAddress: 0x7fff_ffff_ffff_fff0n,
-      },
-    ],
-  ]) {
-    const invalidElf = makeBundle(options);
-    const invalidStage = join(invalidElf.root, 'stage');
-    const result = runInstaller(
-      invalidElf.bundle,
-      invalidStage,
-      join(invalidElf.root, 'systemctl-called')
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.match(installed.stdout, /staged-only/);
+    assert.equal(existsSync(systemctlMarker), false, 'staging must not invoke systemctl');
+    assert.deepEqual(
+      readFileSync(join(stage, 'usr', 'lib', 'openkit', 'nanohost')),
+      readFileSync(join(fixture.bundle, 'nanohost'))
     );
-    assert.notEqual(result.status, 0, `installer accepted ${label}`);
-    assert.equal(existsSync(invalidStage), false, `${label} failed after staging writes`);
-  }
+    assert.deepEqual(
+      readFileSync(join(stage, 'usr', 'lib', 'openkit', 'openshell-gateway')),
+      readFileSync(join(fixture.bundle, 'openshell-gateway'))
+    );
+    assert.deepEqual(
+      readFileSync(join(stage, 'etc', 'systemd', 'system', 'openkit-nanohost.service')),
+      readFileSync(join(fixture.bundle, 'openkit-nanohost.service'))
+    );
+    assert.equal(statSync(join(stage, 'usr', 'lib', 'openkit', 'nanohost')).mode & 0o777, 0o755);
+    assert.equal(
+      statSync(join(stage, 'etc', 'systemd', 'system', 'openkit-nanohost.service')).mode & 0o777,
+      0o644
+    );
 
-  const interrupted = makeBundle();
-  const interruptedStage = join(interrupted.root, 'interrupted-stage');
-  const interruptingMkdir = join(interrupted.fakeBin, 'mkdir');
-  writeFileSync(interruptingMkdir, '#!/bin/sh\n/usr/bin/mkdir "$@" || exit\n/bin/sleep 1\n');
-  chmodSync(interruptingMkdir, 0o755);
-  const interruptedResult = runInterruptedInstaller(
-    interrupted.bundle,
-    interruptedStage,
-    join(interrupted.root, 'systemctl-called')
-  );
-  assert.notEqual(interruptedResult.status, 0, 'caught TERM was reported as success');
-  assert.equal(existsSync(interruptedStage), false, 'caught TERM left the claimed staging root');
-});
+    const corrupt = makeBundle();
+    writeFileSync(join(corrupt.bundle, 'nanohost'), 'corrupt', { flag: 'a' });
+    const corruptStage = join(corrupt.root, 'stage');
+    const rejected = runInstaller(
+      corrupt.bundle,
+      corruptStage,
+      join(corrupt.root, 'systemctl-called')
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.equal(
+      existsSync(corruptStage),
+      false,
+      'corruption must fail before staging-root creation'
+    );
+
+    const traversal = makeBundle();
+    const traversalStage = `${traversal.root}/candidate/../escaped`;
+    const traversalResult = runInstaller(
+      traversal.bundle,
+      traversalStage,
+      join(traversal.root, 'systemctl-called')
+    );
+    assert.notEqual(traversalResult.status, 0);
+    assert.equal(existsSync(join(traversal.root, 'escaped')), false);
+
+    const linked = makeBundle();
+    const outside = join(linked.root, 'outside');
+    const ancestor = join(linked.root, 'ancestor');
+    mkdirSync(outside);
+    mkdirSync(ancestor);
+    symlinkSync(outside, join(ancestor, 'link'));
+    const linkedResult = runInstaller(
+      linked.bundle,
+      join(ancestor, 'link', 'stage'),
+      join(linked.root, 'systemctl-called')
+    );
+    assert.notEqual(linkedResult.status, 0);
+    assert.equal(
+      existsSync(join(outside, 'stage')),
+      false,
+      'symlink ancestor must not escape staging'
+    );
+
+    for (const [label, options] of [
+      ['ET_REL', { type: 1 }],
+      ['truncated ELF64 header', { truncate: 63 }],
+      ['missing program headers', { programHeaders: 0 }],
+      ['missing PT_LOAD', { segmentType: 0 }],
+      ['oversized PT_LOAD memory', { memorySize: 0x1_0000_0000n }],
+      [
+        'PT_LOAD crossing the signed address ceiling',
+        {
+          entry: 0x7fff_ffff_ffff_fff8n,
+          virtualAddress: 0x7fff_ffff_ffff_fff0n,
+        },
+      ],
+    ]) {
+      const invalidElf = makeBundle(options);
+      const invalidStage = join(invalidElf.root, 'stage');
+      const result = runInstaller(
+        invalidElf.bundle,
+        invalidStage,
+        join(invalidElf.root, 'systemctl-called')
+      );
+      assert.notEqual(result.status, 0, `installer accepted ${label}`);
+      assert.equal(existsSync(invalidStage), false, `${label} failed after staging writes`);
+    }
+
+    const interrupted = makeBundle();
+    const interruptedStage = join(interrupted.root, 'interrupted-stage');
+    const interruptingMkdir = join(interrupted.fakeBin, 'mkdir');
+    writeFileSync(interruptingMkdir, '#!/bin/sh\n/usr/bin/mkdir "$@" || exit\n/bin/sleep 1\n');
+    chmodSync(interruptingMkdir, 0o755);
+    const interruptedResult = runInterruptedInstaller(
+      interrupted.bundle,
+      interruptedStage,
+      join(interrupted.root, 'systemctl-called')
+    );
+    assert.notEqual(interruptedResult.status, 0, 'caught TERM was reported as success');
+    assert.equal(existsSync(interruptedStage), false, 'caught TERM left the claimed staging root');
+  });
+}
 
 function makeBundle(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-installer-'));
   const bundle = join(root, 'bundle');
   mkdirSync(join(bundle, 'licenses'), { recursive: true });
+  writeHostProfileFixture(
+    root,
+    readFileSync(join(process.cwd(), 'apps/nanohost/deploy/host-manifest.json'))
+  );
   copyFileSync(installerSource, join(bundle, 'install.sh'));
   chmodSync(join(bundle, 'install.sh'), 0o755);
   writeElf(join(bundle, 'nanohost'), options);
@@ -151,6 +159,31 @@ function makeBundle(options = {}) {
     join(bundle, 'MANIFEST.json'),
     `${JSON.stringify(
       {
+        schemaVersion: 2,
+        profileId: JSON.parse(readFileSync(join(bundle, 'host-manifest.json'))).profileId,
+        profileDigest: createHash('sha256')
+          .update(readFileSync(join(bundle, 'host-manifest.json')))
+          .digest('hex'),
+        productCommit: 'a'.repeat(40),
+        architecture: 'arm64',
+        files: [
+          'MANIFEST.json',
+          'SHA256SUMS',
+          'host-manifest.json',
+          'install.sh',
+          'licenses/openkit-LICENSE',
+          'licenses/openshell-LICENSE',
+          'licenses/openshell-THIRD-PARTY-NOTICES',
+          'nanohost',
+          'openkit-nanohost.service',
+          'openshell-gateway',
+        ],
+        libcRequirements: Object.fromEntries(
+          ['nanohost', 'openshell-gateway'].map((name) => [
+            name,
+            { interpreter: null, symbols: [], maximumGlibc: null },
+          ])
+        ),
         tag: 'v0.1.0-rc.1',
         target: 'linux/arm64',
         destinations: {
@@ -165,6 +198,7 @@ function makeBundle(options = {}) {
   );
   const members = [
     'MANIFEST.json',
+    'host-manifest.json',
     'install.sh',
     'licenses/openkit-LICENSE',
     'licenses/openshell-LICENSE',
@@ -210,7 +244,7 @@ function runInterruptedInstaller(bundle, destdir, systemctlMarker) {
     'sh',
     [
       '-c',
-      '(while [ ! -d "$1" ]; do :; done; kill -TERM $$) & exec sh "$2"',
+      '(while [ ! -d "$1" ]; do /bin/sleep 0.01; done; kill -TERM $$) & exec sh "$2"',
       'nanohost-interrupt',
       destdir,
       join(bundle, 'install.sh'),

@@ -68,3 +68,95 @@ function hasExecutableLoadSegment(bytes) {
   }
   return false;
 }
+
+/** Derives loader and GNU libc symbol needs from the exact executable's ELF dynamic table. */
+export function elfLibcRequirements(bytes) {
+  const checkedOffset = (value, size = 1) => {
+    const offset = Number(value);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset + size > bytes.length) {
+      throw new Error('NanoHost ELF dependency table is out of bounds.');
+    }
+    return offset;
+  };
+  const stringAt = (offset, limit) => {
+    const end = bytes.indexOf(0, offset);
+    if (end < offset || end >= limit) throw new Error('NanoHost ELF dependency string is invalid.');
+    return bytes.subarray(offset, end).toString('utf8');
+  };
+  const table = checkedOffset(bytes.readBigUInt64LE(32));
+  const segments = [];
+  let interpreter = null;
+  let dynamic;
+  for (let index = 0; index < bytes.readUInt16LE(56); index += 1) {
+    const row = checkedOffset(table + index * 56, 56);
+    const type = bytes.readUInt32LE(row);
+    const offset = checkedOffset(
+      bytes.readBigUInt64LE(row + 8),
+      Number(bytes.readBigUInt64LE(row + 32))
+    );
+    const size = Number(bytes.readBigUInt64LE(row + 32));
+    if (type === 1) segments.push({ offset, size, address: bytes.readBigUInt64LE(row + 16) });
+    if (type === 2) dynamic = { offset, size };
+    if (type === 3) interpreter = stringAt(offset, offset + size);
+  }
+  if (!dynamic) return { interpreter, symbols: [], maximumGlibc: null };
+  const tags = new Map();
+  for (let row = dynamic.offset; row + 16 <= dynamic.offset + dynamic.size; row += 16) {
+    const tag = bytes.readBigUInt64LE(row);
+    if (tag === 0n) break;
+    tags.set(tag, bytes.readBigUInt64LE(row + 8));
+  }
+  const fileOffset = (address, size) => {
+    const segment = segments.find(
+      (item) =>
+        address >= item.address && address + BigInt(size) <= item.address + BigInt(item.size)
+    );
+    if (!segment) throw new Error('NanoHost ELF dependency address is not file-backed.');
+    return checkedOffset(BigInt(segment.offset) + address - segment.address, size);
+  };
+  if (!tags.has(0x6ffffffen)) return { interpreter, symbols: [], maximumGlibc: null };
+  if (!tags.has(5n) || !tags.has(10n) || !tags.has(0x6fffffffn))
+    throw new Error('NanoHost ELF version needs are incomplete.');
+  const strings = fileOffset(tags.get(5n), Number(tags.get(10n)));
+  const stringEnd = strings + Number(tags.get(10n));
+  const count = Number(tags.get(0x6fffffffn));
+  if (count > 1024) throw new Error('NanoHost ELF version needs exceed the bound.');
+  let row = fileOffset(tags.get(0x6ffffffen), 16);
+  const symbols = new Set();
+  for (let index = 0; index < count; index += 1) {
+    checkedOffset(row, 16);
+    if (bytes.readUInt16LE(row) !== 1)
+      throw new Error('NanoHost ELF version needs schema is unknown.');
+    const auxCount = bytes.readUInt16LE(row + 2);
+    if (auxCount > 4096) throw new Error('NanoHost ELF symbol needs exceed the bound.');
+    let aux = row + bytes.readUInt32LE(row + 8);
+    for (let n = 0; n < auxCount; n += 1) {
+      checkedOffset(aux, 16);
+      const name = stringAt(checkedOffset(strings + bytes.readUInt32LE(aux + 8)), stringEnd);
+      if (name.startsWith('GLIBC_')) symbols.add(name);
+      const next = bytes.readUInt32LE(aux + 12);
+      if (n + 1 < auxCount && next < 16)
+        throw new Error('NanoHost ELF symbol needs chain is invalid.');
+      aux += next;
+    }
+    const next = bytes.readUInt32LE(row + 12);
+    if (index + 1 < count && next < 16)
+      throw new Error('NanoHost ELF version needs chain is invalid.');
+    row += next;
+  }
+  const versions = [...symbols].filter((name) => /^GLIBC_\d+(?:\.\d+)+$/.test(name));
+  versions.sort((a, b) => {
+    const left = a.slice(6).split('.').map(Number);
+    const right = b.slice(6).split('.').map(Number);
+    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+      const difference = (left[index] ?? 0) - (right[index] ?? 0);
+      if (difference) return difference;
+    }
+    return 0;
+  });
+  return {
+    interpreter,
+    symbols: [...symbols].sort(),
+    maximumGlibc: versions.at(-1)?.slice(6) ?? null,
+  };
+}

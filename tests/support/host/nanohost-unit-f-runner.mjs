@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { parseNanoHostHostCheckResult } from '../../../scripts/release-preflight.mjs';
 
 const scenarioIds = Object.freeze(['F1', 'F2', 'F3', 'F4']);
 const scenarioContracts = Object.freeze({
@@ -403,15 +404,19 @@ function appRequest(config, method, path, body, authority = 'product') {
 }
 
 /** Reads and verifies the repository-owned A1 host manifest through its existing owner. */
-async function assertHostManifest(sshAlias, expectedDigest, execute = runCommand) {
+async function assertHostManifest(sshAlias, expectedDigest, productCommit, execute = runCommand) {
   const manifestBytes = await readFile(hostManifestPath);
   if (digest(manifestBytes) !== expectedDigest) {
     throw new Error('Unit F host-manifest identity does not match repository bytes.');
   }
   const asserted = await execute('/usr/bin/env', ['bash', hostAssertPath, sshAlias]);
-  if (asserted.stdout !== `manifestDigest=${expectedDigest}\n`) {
-    throw new Error('Unit F host-manifest assertion did not return its exact identity.');
-  }
+  const result = parseNanoHostHostCheckResult(asserted.stdout, {
+    profile: JSON.parse(manifestBytes),
+    profileDigest: expectedDigest,
+    productCommit,
+  });
+  if (result.hardVerdict !== 'requirements-met')
+    throw new Error('Unit F host prerequisites are not met.');
 }
 
 /** Proves the running container and candidate reference resolve to one admitted image ID. */
@@ -499,7 +504,12 @@ function runSudo(execute, sshAlias, args, options = {}) {
 
 /** Captures the normalized system-Docker and host-network baseline on A1. */
 async function captureA1Baseline(config) {
-  await assertHostManifest(config.sshAlias, config.hostManifestDigest, config.execute);
+  await assertHostManifest(
+    config.sshAlias,
+    config.hostManifestDigest,
+    config.productCommit,
+    config.execute
+  );
   await assertNanoCoreImageIdentity(config);
   await assertNanoHostExecutableIdentity(config);
   const script = String.raw`

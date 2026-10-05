@@ -7,7 +7,7 @@ import { basename, isAbsolute, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-import { assertAarch64Elf } from './lib/nanohost-elf.mjs';
+import { assertAarch64Elf, elfLibcRequirements } from './lib/nanohost-elf.mjs';
 import {
   assertOpenShellSdkRevision,
   parseNanoHostHostManifest,
@@ -17,6 +17,7 @@ import {
 const FILES = [
   'MANIFEST.json',
   'SHA256SUMS',
+  'host-manifest.json',
   'install.sh',
   'licenses/openkit-LICENSE',
   'licenses/openshell-LICENSE',
@@ -133,33 +134,28 @@ export function verifyNanoHostRelease(input) {
     const hostManifest = parseNanoHostHostManifest(
       readFileSync(join(repoRoot, 'apps/nanohost/deploy/host-manifest.json'), 'utf8')
     );
-    const prerequisiteIdentities = {
-      docker: hostManifest.commands.docker,
-      git: hostManifest.commands.git,
-      slirp4netns: hostManifest.commands.slirp4netns,
-    };
-    const expectedPrerequisites = {
-      architecture: 'aarch64',
-      files: [
-        '/usr/bin/containerd',
-        '/usr/bin/dockerd',
-        ...Object.values(prerequisiteIdentities).map(({ path }) => path),
-      ],
-      systemd: true,
-      identities: prerequisiteIdentities,
-    };
+    const profileBytes = readFileSync(join(root, 'host-manifest.json'));
     if (
-      manifest.schemaVersion !== 1 ||
+      manifest.schemaVersion !== 2 ||
       manifest.tag !== match[1] ||
       manifest.target !== 'linux/arm64' ||
+      manifest.architecture !== 'arm64' ||
+      manifest.profileId !== hostManifest.profileId ||
+      manifest.profileDigest !== createHash('sha256').update(profileBytes).digest('hex') ||
+      !/^[0-9a-f]{40}$/.test(manifest.productCommit) ||
       JSON.stringify(manifest.files) !== JSON.stringify(FILES) ||
-      JSON.stringify(manifest.destinations) !== JSON.stringify(expectedDestinations) ||
-      JSON.stringify(manifest.prerequisites) !== JSON.stringify(expectedPrerequisites)
-    ) {
+      JSON.stringify(manifest.destinations) !== JSON.stringify(expectedDestinations)
+    )
       throw new Error(
-        'NanoHost generated manifest or prerequisite identity is inconsistent with the distribution.'
+        'NanoHost generated manifest or host profile identity is inconsistent with the distribution.'
       );
-    }
+    const checkoutCommit = run(
+      'git',
+      ['-C', repoRoot, 'rev-parse', 'HEAD'],
+      'Unable to resolve checkout product commit'
+    ).stdout.trim();
+    if (manifest.productCommit !== checkoutCommit)
+      throw new Error('NanoHost product commit differs from checkout provenance.');
     assertSha256(
       manifest.openshellRelease?.gateway?.sha256,
       join(root, 'openshell-gateway'),
@@ -187,6 +183,7 @@ export function verifyNanoHostRelease(input) {
       throw new Error('NanoHost generated manifest differs from the checkout OpenShell release.');
     }
     for (const [member, checkout] of [
+      ['host-manifest.json', 'apps/nanohost/deploy/host-manifest.json'],
       ['install.sh', 'apps/nanohost/deploy/install.sh'],
       ['openkit-nanohost.service', 'apps/nanohost/deploy/openkit-nanohost.service'],
       ['licenses/openkit-LICENSE', 'LICENSE'],
@@ -200,12 +197,24 @@ export function verifyNanoHostRelease(input) {
       readFileSync(join(root, 'openshell-gateway')),
       'NanoHost release member openshell-gateway'
     );
+    if (
+      JSON.stringify(manifest.libcRequirements) !==
+      JSON.stringify({
+        nanohost: elfLibcRequirements(readFileSync(join(root, 'nanohost'))),
+        'openshell-gateway': elfLibcRequirements(readFileSync(join(root, 'openshell-gateway'))),
+      })
+    ) {
+      throw new Error(
+        'NanoHost host profile executable requirements are inconsistent with verified bytes.'
+      );
+    }
     for (const [name, mode] of [
       ['nanohost', 0o755],
       ['openshell-gateway', 0o755],
       ['install.sh', 0o755],
       ['openkit-nanohost.service', 0o644],
       ['MANIFEST.json', 0o644],
+      ['host-manifest.json', 0o644],
       ['SHA256SUMS', 0o644],
       ['licenses/openkit-LICENSE', 0o644],
       ['licenses/openshell-LICENSE', 0o644],

@@ -14,7 +14,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { requireSuccess, runHostScript } from './support/host/fixture-runner.mjs';
+import {
+  hostCheckEvidence,
+  requireSuccess,
+  runHostScript,
+} from './support/host/fixture-runner.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const hostRoot = join(repoRoot, 'tests/support/host');
@@ -61,7 +65,7 @@ case "$*" in
     while IFS= read -r _; do :; done
     printf 'assert\n' >>"$OPENKIT_HOST_STUB_EVENT_LOG"
     [[ "$OPENKIT_HOST_STUB_ASSERT_EXIT" == 0 ]] || exit "$OPENKIT_HOST_STUB_ASSERT_EXIT"
-    printf 'manifestDigest=%s\n' "$OPENKIT_HOST_STUB_ASSERT_DIGEST"
+    printf '%s' "$OPENKIT_HOST_STUB_ASSERT_RESULT"
     ;;
   *"systemctl start openkit-nanohost.service"*)
     printf 'start\n' >>"$OPENKIT_HOST_STUB_EVENT_LOG"
@@ -130,7 +134,11 @@ fi
           OPENKIT_HOST_NANOHOST_IDENTITY_ID: 'identity-test',
           OPENKIT_HOST_SERVER_ADMIN_TOKEN: testAdminToken,
           OPENKIT_HOST_STUB_ACTIVE_EXIT: String(options.activeExit ?? 1),
-          OPENKIT_HOST_STUB_ASSERT_DIGEST: options.assertDigest ?? promotedManifestDigest(),
+          OPENKIT_HOST_BUNDLE: '/opt/openkit/candidate',
+          OPENKIT_HOST_STUB_ASSERT_RESULT: hostCheckEvidence(promotedManifestBytes()).replace(
+            promotedManifestDigest(),
+            options.assertDigest ?? promotedManifestDigest()
+          ),
           OPENKIT_HOST_STUB_ASSERT_EXIT: String(options.assertExit ?? 0),
           OPENKIT_HOST_STUB_BLOCK_MARKER: `${eventLogPath}.blocking`,
           OPENKIT_HOST_STUB_CURL_LOG: curlLogPath,

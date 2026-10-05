@@ -1,81 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compares one collected fact object with the exact manifest bytes and emits their identity.
-assert_facts() {
-  local node_path=$1 manifest_base64=$2 observed_json=$3
-  "$node_path" -e '
-    const { createHash } = require("node:crypto");
-    const manifestBytes = Buffer.from(process.argv[1], "base64");
-    const expected = JSON.parse(manifestBytes);
-    const observed = JSON.parse(process.argv[2]);
-    const equal = (actual, wanted) => { if (actual !== wanted) process.exit(1); };
-    equal(observed.architecture, expected.architecture);
-    equal(observed.cgroupMode, expected.cgroupMode);
-    equal(observed.containerRuntime, expected.containerRuntime);
-    equal(observed.initSystem, expected.initSystem);
-    equal(observed.kernelRelease, expected.kernelRelease);
-    equal(observed.schemaVersion, expected.schemaVersion);
-    for (const [name, wanted] of Object.entries(expected.commands)) {
-      const actual = observed.commands?.[name];
-      equal(actual?.path, wanted.path);
-      equal(actual?.version, wanted.version);
-      if (wanted.sha256 !== undefined) equal(actual?.sha256, wanted.sha256);
-    }
-    process.stdout.write(`manifestDigest=${createHash("sha256").update(manifestBytes).digest("hex")}\n`);
-  ' "$manifest_base64" "$observed_json"
-}
+# The live observer is the checksum-verified archive installer; no repository profile is sent remotely.
+if [[ $# -eq 2 && $1 == remote ]]; then
+  bundle=$2
+  [[ $bundle == /* && $bundle != *$'\n'* && $bundle != *$'\r'* ]] || exit 65
+  cd -- "$bundle"
+  exec /bin/sh ./install.sh --check-host
+fi
 
-# Collects the live host facts into the comparator's normalized object shape.
-collect_remote_facts() {
-  /usr/bin/node -e '
-    const { spawnSync } = require("node:child_process");
-    const { createHash } = require("node:crypto");
-    const { readFileSync } = require("node:fs");
-    const run = (path, args) => {
-      const result = spawnSync(path, args, { encoding: "utf8" });
-      if (result.status !== 0) process.exit(1);
-      return result.stdout.split(/\r?\n/u)[0].trim();
-    };
-    const versionArgs = { bash: ["--version"], curl: ["--version"], docker: ["--version"], git: ["--version"], node: ["--version"], sha256sum: ["--version"], slirp4netns: ["--version"], sudo: ["--version"], systemctl: ["--version"], tar: ["--version"], timeout: ["--version"] };
-    const commands = {};
-    for (const [name, args] of Object.entries(versionArgs)) {
-      const path = run("/usr/bin/bash", ["-c", "type -P -- \"$1\"", "bash", name]);
-      commands[name] = { path, version: run(path, args) };
-      if (name === "slirp4netns") commands[name].sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
-    }
-    const cgroup = run("/usr/bin/stat", ["-fc", "%T", "/sys/fs/cgroup"]);
-    process.stdout.write(JSON.stringify({
-      architecture: run("/usr/bin/uname", ["-m"]),
-      cgroupMode: cgroup === "cgroup2fs" ? "unified-v2" : cgroup,
-      commands,
-      containerRuntime: "docker",
-      initSystem: run("/usr/bin/ps", ["-p", "1", "-o", "comm="]),
-      kernelRelease: run("/usr/bin/uname", ["-r"]),
-      schemaVersion: 1,
-    }));
-  '
-}
-
+script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 if [[ $# -eq 1 && $1 == fixture && -n ${OPENKIT_HOST_FIXTURE_ROOT:-} ]]; then
-  fixture_root=${OPENKIT_HOST_FIXTURE_ROOT:?fixture root is required}
-  fixture_manifest=${OPENKIT_HOST_MANIFEST:?fixture manifest is required}
-  source_path="$fixture_root/home/.local/share/mise/installs/node/24.18.0/bin/node"
-  target_path="$fixture_root/usr/bin/node"
-  [[ -x "$source_path" && -L "$target_path" && "$(readlink "$target_path")" == "$source_path" ]]
-  manifest_base64=$(node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]).toString("base64"))' "$fixture_manifest")
-  observed_json=$("${OPENKIT_HOST_FIXTURE_OBSERVER:?fixture observer is required}")
-  assert_facts "$(command -v node)" "$manifest_base64" "$observed_json"
-elif [[ $# -eq 2 && $1 == remote ]]; then
-  manifest_base64=${2:?manifest bytes are required}
-  assert_facts /usr/bin/node "$manifest_base64" "$(collect_remote_facts)"
+  # The fixture replaces only observation collection, exercising the installer's real comparator and integrity path.
+  python3 -I -B - "$script_root/../../../apps/nanohost/deploy/install.sh" "${OPENKIT_HOST_FIXTURE_ROOT:?}" "${OPENKIT_HOST_FIXTURE_OBSERVER:?}" <<'PY'
+import json, pathlib, subprocess, sys
+source = pathlib.Path(sys.argv[1]).read_text().split("<<'HOST_CHECK_PY'\n")[1].split('\nHOST_CHECK_PY')[0].split('# HOST_CHECK_MAIN')[0]
+exec(compile(source, 'bundled-host-checker', 'exec'))
+root = Path(sys.argv[2]) / 'bundle'
+observations = json.loads(subprocess.check_output([sys.argv[3]], timeout=5))
+original_read = read_regular
+def fixture_read(path, limit=MAX_OUTPUT):
+    return original_read(root / 'machine-id' if str(path) == '/etc/machine-id' else path, limit)
+read_regular = fixture_read
+result = check(root, lambda entry, *_: observations['requirements'][entry['id']], lambda _: observations['recommendation'])
+print(compact(result))
+sys.exit(0 if result['hardVerdict'] == 'requirements-met' else 1)
+PY
 else
-  script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  manifest_path="$script_root/../../../apps/nanohost/deploy/host-manifest.json"
   source "$script_root/ssh-alias.sh"
   require_ssh_alias "$@" || exit $?
+  bundle=${OPENKIT_HOST_BUNDLE:?an exact extracted NanoHost bundle path is required}
+  [[ $bundle == /* && $bundle != *$'\n'* && $bundle != *$'\r'* ]] || exit 65
   {
-    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]).toString("base64") + "\n")' "$manifest_path"
+    printf '%s\n' "$bundle"
     sed -n '1,$p' "$0"
-  } | ssh "$ssh_alias" "/usr/bin/bash -c 'IFS= read -r manifest; /usr/bin/bash -s -- remote \"\$manifest\"'"
+  } | ssh "$ssh_alias" "/usr/bin/bash -c 'IFS= read -r bundle; /usr/bin/bash -s -- remote \"\$bundle\"'"
 fi

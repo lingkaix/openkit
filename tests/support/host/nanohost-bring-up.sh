@@ -46,12 +46,15 @@ deploymentId=${OPENKIT_HOST_NANOHOST_DEPLOYMENT_ID:?NanoHost deployment is requi
 
 cleanup_armed=1
 asserted_manifest=$(bash "$script_root/assert.sh" "$ssh_alias")
-expected_manifest=$(node -e '
-  const { createHash } = require("node:crypto");
-  const { readFileSync } = require("node:fs");
-  process.stdout.write(`manifestDigest=${createHash("sha256").update(readFileSync(process.argv[1])).digest("hex")}`);
-' "$script_root/../../../apps/nanohost/deploy/host-manifest.json")
-[[ "$asserted_manifest" == "$expected_manifest" ]] || exit 66
+printf '%s\n' "$asserted_manifest" | node --input-type=module -e '
+  import { createHash } from "node:crypto";
+  import { readFileSync } from "node:fs";
+  import { pathToFileURL } from "node:url";
+  const { parseNanoHostHostCheckResult } = await import(pathToFileURL(process.argv[2]));
+  const bytes = readFileSync(process.argv[3]);
+  const result = parseNanoHostHostCheckResult(readFileSync(0, "utf8"), { profile: JSON.parse(bytes), profileDigest: createHash("sha256").update(bytes).digest("hex"), productCommit: process.env.OPENKIT_HOST_PRODUCT_COMMIT });
+  if (result.hardVerdict !== "requirements-met") process.exit(66);
+' host-check-evidence "$script_root/../../../scripts/release-preflight.mjs" "$script_root/../../../apps/nanohost/deploy/host-manifest.json" || exit 66
 ssh "$ssh_alias" /usr/bin/sudo -n /usr/bin/systemctl start openkit-nanohost.service
 
 # Reads the authenticated configured RuntimeTarget projection.

@@ -22,7 +22,7 @@ One lowercase semantic-version tag identifies the complete product bundle:
 
 - every `release: true` image in `containers/images.json`,
 - `openkit-ops-skill-<tag>.tar.gz`, containing `LICENSE` and the complete operations Skill tree with its generated administrator executable,
-- `openkit-nanohost-<tag>-linux-arm64.tar.gz`, containing the verified NanoHost binary, pin-bound Gateway, service unit, installer, manifests, checksums, and licenses,
+- `openkit-nanohost-<tag>-linux-arm64.tar.gz`, containing the verified NanoHost binary, pin-bound Gateway, service unit, installer, bundled capability profile, generated profile/provenance metadata, checksums, and licenses,
 - `SHA256SUMS` for both portable archives,
 - one GitHub Release with image digests and gate evidence.
 
@@ -53,7 +53,7 @@ Do not mass-update package versions.
 pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
 
-Preflight validates lowercase tag syntax, portable Skill and NanoHost inputs, the promoted host manifest, the accepted OpenShell pin, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
+Preflight validates lowercase tag syntax, portable Skill and NanoHost inputs, the schema-version-2 NanoHost capability profile, the accepted OpenShell pin, the release image catalog, smoke paths, the unique public worker base, and digest-pinned bases for every release image.
 
 5. Build the portable assets from the commit that would be released and inspect them.
 
@@ -64,6 +64,8 @@ tar -tzf "dist/release/openkit-ops-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
 ```
 
 The Skill packager uses `git archive`, and NanoHost packaging reads its checkout-owned files from the selected Git revision, so uncommitted files are intentionally excluded. The tag workflow obtains the NanoHost binary from its native arm64 build job and downloads the Gateway and source-license bytes from the pin-derived coordinates before invoking the same packager and verifier.
+
+After outer checksum verification, extract the NanoHost archive beside its original `.tar.gz` and run the bundled `./install.sh --check-host` on the selected Linux host. Retain its exact JSON result, including profile/product/archive/machine/observation digests, hard verdict, and separate resource recommendation. Checking and installation, including staging verification, require Python 3.8 or later with its standard library at `/usr/bin/python3`; the NanoHost service does not depend on it. Missing or unusable inspection yields one bounded `cannot-check` result and blocks installation; a completed mismatch yields `requirements-unmet`. `requirements-met` permits installation preflight and establishes no runtime qualification. The shared staging verifier keeps its host-check exemption. Fresh exact-product qualification remains required after this profile migration; historical exact Docker or slirp identity passes do not qualify it.
 
 6. Run the automatic release gate locally.
 

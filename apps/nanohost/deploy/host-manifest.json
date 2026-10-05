@@ -1,55 +1,186 @@
 {
-  "architecture": "aarch64",
-  "cgroupMode": "unified-v2",
-  "commands": {
-    "bash": {
-      "path": "/usr/bin/bash",
-      "version": "GNU bash, version 5.2.21(1)-release (aarch64-unknown-linux-gnu)"
+  "schemaVersion": 2,
+  "profileId": "openkit-nanohost-linux-v2-python3",
+  "architectures": ["amd64", "arm64"],
+  "requirements": [
+    {
+      "id": "platform",
+      "class": "platform",
+      "probe": "platform",
+      "predicate": {
+        "os": "Linux"
+      },
+      "timeoutSeconds": 10
     },
-    "curl": {
-      "path": "/usr/bin/curl",
-      "version": "curl 8.5.0 (aarch64-unknown-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libidn2/2.3.7 libpsl/0.21.2 (+libidn2/2.3.7) libssh/0.10.6/openssl/zlib nghttp2/1.59.0 librtmp/2.3 OpenLDAP/2.6.10"
+    {
+      "id": "systemd",
+      "class": "service-manager",
+      "probe": "systemd",
+      "predicate": {
+        "active": true,
+        "unit": "openkit-nanohost.service"
+      },
+      "timeoutSeconds": 10
     },
-    "docker": {
-      "path": "/usr/bin/docker",
-      "version": "Docker version 29.7.2, build a7dcaa6"
+    {
+      "id": "service-principal",
+      "class": "service-manager",
+      "probe": "service-principal",
+      "predicate": {
+        "user": "root",
+        "requiredCapabilities": ["CAP_SYS_ADMIN", "CAP_NET_ADMIN"]
+      },
+      "timeoutSeconds": 10
     },
-    "git": {
-      "path": "/usr/bin/git",
-      "version": "git version 2.43.0"
+    {
+      "id": "cgroup-v2",
+      "class": "kernel",
+      "probe": "cgroup-v2",
+      "predicate": {
+        "filesystem": "cgroup2fs"
+      },
+      "timeoutSeconds": 10
     },
-    "node": {
-      "path": "/usr/bin/node",
-      "version": "v24.18.0"
+    {
+      "id": "namespaces",
+      "class": "kernel",
+      "probe": "namespaces",
+      "predicate": {
+        "names": ["mnt", "net"]
+      },
+      "timeoutSeconds": 10
     },
-    "sha256sum": {
-      "path": "/usr/bin/sha256sum",
-      "version": "sha256sum (GNU coreutils) 9.4"
+    {
+      "id": "seccomp",
+      "class": "kernel",
+      "probe": "seccomp",
+      "predicate": {
+        "supported": true
+      },
+      "timeoutSeconds": 10
     },
-    "slirp4netns": {
-      "path": "/usr/bin/slirp4netns",
-      "sha256": "4211dca7736aeb6fdd055350c8138d095d3dc5170f2ebf2a68fed5cdd4372f1c",
-      "version": "slirp4netns version 1.2.1"
+    {
+      "id": "containerd",
+      "class": "executable",
+      "probe": "executable",
+      "predicate": {
+        "path": "/usr/bin/containerd",
+        "regularNonSymlink": true,
+        "executable": true
+      },
+      "timeoutSeconds": 10
     },
-    "sudo": {
-      "path": "/usr/bin/sudo",
-      "version": "Sudo version 1.9.15p5"
+    {
+      "id": "dockerd",
+      "class": "executable",
+      "probe": "executable",
+      "predicate": {
+        "path": "/usr/bin/dockerd",
+        "regularNonSymlink": true,
+        "executable": true
+      },
+      "timeoutSeconds": 10
     },
-    "systemctl": {
-      "path": "/usr/bin/systemctl",
-      "version": "systemd 255 (255.4-1ubuntu8.17)"
+    {
+      "id": "docker",
+      "class": "executable",
+      "probe": "executable",
+      "predicate": {
+        "path": "/usr/bin/docker",
+        "regularNonSymlink": true,
+        "executable": true
+      },
+      "timeoutSeconds": 10
     },
-    "tar": {
-      "path": "/usr/bin/tar",
-      "version": "tar (GNU tar) 1.35"
+    {
+      "id": "git",
+      "class": "executable",
+      "probe": "executable",
+      "predicate": {
+        "path": "/usr/bin/git",
+        "regularNonSymlink": true,
+        "executable": true
+      },
+      "timeoutSeconds": 10
     },
-    "timeout": {
-      "path": "/usr/bin/timeout",
-      "version": "timeout (GNU coreutils) 9.4"
+    {
+      "id": "slirp4netns",
+      "class": "executable",
+      "probe": "executable",
+      "predicate": {
+        "path": "/usr/bin/slirp4netns",
+        "regularNonSymlink": true,
+        "executable": true
+      },
+      "timeoutSeconds": 10
+    },
+    {
+      "id": "docker-version",
+      "class": "version",
+      "probe": "docker-version",
+      "predicate": {
+        "path": "/usr/bin/docker",
+        "minimum": "28.0"
+      },
+      "timeoutSeconds": 10
+    },
+    {
+      "id": "git-version",
+      "class": "version",
+      "probe": "git-version",
+      "predicate": {
+        "path": "/usr/bin/git",
+        "format": "git-version"
+      },
+      "timeoutSeconds": 10
+    },
+    {
+      "id": "resolver",
+      "class": "filesystem",
+      "probe": "resolver",
+      "predicate": {
+        "path": "/run/systemd/resolve/resolv.conf",
+        "usableNameserver": true
+      },
+      "timeoutSeconds": 10
+    },
+    {
+      "id": "libc",
+      "class": "libc",
+      "probe": "libc",
+      "predicate": {
+        "executables": ["nanohost", "openshell-gateway"],
+        "derive": "elf-version-needs"
+      },
+      "timeoutSeconds": 10
+    },
+    {
+      "id": "ancestors",
+      "class": "filesystem",
+      "probe": "ancestors",
+      "predicate": {
+        "paths": [
+          "/usr/lib/openkit/nanohost",
+          "/usr/lib/openkit/openshell-gateway",
+          "/etc/systemd/system/openkit-nanohost.service",
+          "/etc/openkit/nanohost.env",
+          "/var/lib/openkit/nanohost",
+          "/run/openkit/nanohost",
+          "/var/lib/openkit/nanohost-images",
+          "/var/lib/openkit/nanohost-work",
+          "/var/lib/openkit/nanohost-workspace-scan"
+        ],
+        "uid": 0,
+        "forbidMode": 18
+      },
+      "timeoutSeconds": 10
     }
-  },
-  "containerRuntime": "docker",
-  "initSystem": "systemd",
-  "kernelRelease": "6.17.0-1020-oracle",
-  "schemaVersion": 1
+  ],
+  "recommendation": {
+    "scope": "combined-small-deployment",
+    "availableLogicalCpus": 2,
+    "availableMemoryBytes": 8589934592,
+    "availableStorageBytes": 32212254720,
+    "timeoutSeconds": 5
+  }
 }

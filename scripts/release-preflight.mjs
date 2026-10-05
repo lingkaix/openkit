@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -164,32 +165,145 @@ export function assertOpenShellSdkRevision(release, cargoToml, cargoLock) {
   }
 }
 
-/** Parses the promoted execution-host manifest fields consumed by the release bundle. */
+/** Parses the schema-2 capability profile without admitting executable shell text or unknown core semantics. */
 export function parseNanoHostHostManifest(source) {
   const manifest = JSON.parse(source);
-  const docker = manifest.commands?.docker;
-  const git = manifest.commands?.git;
-  const slirp4netns = manifest.commands?.slirp4netns;
+  const classes = [
+    'platform',
+    'service-manager',
+    'kernel',
+    'executable',
+    'version',
+    'libc',
+    'filesystem',
+  ];
+  const probes = [
+    'platform',
+    'systemd',
+    'service-principal',
+    'cgroup-v2',
+    'namespaces',
+    'seccomp',
+    'executable',
+    'docker-version',
+    'git-version',
+    'resolver',
+    'libc',
+    'ancestors',
+  ];
+  const ids = new Set();
+  const validTimeout = (value) => Number.isFinite(value) && value > 0;
+  const validId = (value) => typeof value === 'string' && /^[a-z][a-z0-9-]{0,127}$/.test(value);
   if (
-    manifest.schemaVersion !== 1 ||
-    manifest.architecture !== 'aarch64' ||
-    manifest.containerRuntime !== 'docker' ||
-    manifest.initSystem !== 'systemd' ||
-    docker?.path !== '/usr/bin/docker' ||
-    typeof docker.version !== 'string' ||
-    docker.version.length === 0 ||
-    git?.path !== '/usr/bin/git' ||
-    typeof git.version !== 'string' ||
-    git.version.length === 0 ||
-    slirp4netns?.path !== '/usr/bin/slirp4netns' ||
-    typeof slirp4netns.version !== 'string' ||
-    slirp4netns.version.length === 0 ||
-    typeof slirp4netns.sha256 !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(slirp4netns.sha256)
-  ) {
-    throw new Error('NanoHost promoted host manifest is invalid.');
-  }
+    manifest.schemaVersion !== 2 ||
+    !validId(manifest.profileId) ||
+    !Array.isArray(manifest.architectures) ||
+    manifest.architectures.length !== 2 ||
+    new Set(manifest.architectures).size !== 2 ||
+    manifest.architectures.some((value) => !['amd64', 'arm64'].includes(value)) ||
+    !Array.isArray(manifest.requirements) ||
+    manifest.requirements.length === 0 ||
+    manifest.requirements.some((entry) => {
+      if (
+        !validId(entry.id) ||
+        ids.has(entry.id) ||
+        !classes.includes(entry.class) ||
+        !probes.includes(entry.probe) ||
+        !validTimeout(entry.timeoutSeconds) ||
+        !entry.predicate ||
+        Array.isArray(entry.predicate) ||
+        typeof entry.predicate !== 'object'
+      )
+        return true;
+      ids.add(entry.id);
+      return !validNanoHostPredicate(entry);
+    }) ||
+    manifest.recommendation?.scope !== 'combined-small-deployment' ||
+    !['availableLogicalCpus', 'availableMemoryBytes', 'availableStorageBytes'].every(
+      (key) =>
+        Number.isSafeInteger(manifest.recommendation[key]) && manifest.recommendation[key] > 0
+    ) ||
+    !validTimeout(manifest.recommendation.timeoutSeconds)
+  )
+    throw new Error('NanoHost host profile is invalid.');
   return manifest;
+}
+
+/** Checks the implemented predicate core; additive profile metadata carries no authority. */
+function validNanoHostPredicate(entry) {
+  const p = entry.predicate;
+  const same = (value) =>
+    Object.keys(p).length === Object.keys(value).length &&
+    Object.entries(value).every(
+      ([key, wanted]) => JSON.stringify(p[key]) === JSON.stringify(wanted)
+    );
+  switch (entry.probe) {
+    case 'platform':
+      return entry.class === 'platform' && same({ os: 'Linux' });
+    case 'systemd':
+      return (
+        entry.class === 'service-manager' &&
+        same({ active: true, unit: 'openkit-nanohost.service' })
+      );
+    case 'service-principal':
+      return (
+        entry.class === 'service-manager' &&
+        same({ user: 'root', requiredCapabilities: ['CAP_SYS_ADMIN', 'CAP_NET_ADMIN'] })
+      );
+    case 'cgroup-v2':
+      return entry.class === 'kernel' && same({ filesystem: 'cgroup2fs' });
+    case 'namespaces':
+      return entry.class === 'kernel' && same({ names: ['mnt', 'net'] });
+    case 'seccomp':
+      return entry.class === 'kernel' && same({ supported: true });
+    case 'executable':
+      return (
+        entry.class === 'executable' &&
+        [
+          '/usr/bin/containerd',
+          '/usr/bin/dockerd',
+          '/usr/bin/docker',
+          '/usr/bin/git',
+          '/usr/bin/slirp4netns',
+        ].includes(p.path) &&
+        same({ path: p.path, regularNonSymlink: true, executable: true })
+      );
+    case 'docker-version':
+      return entry.class === 'version' && same({ path: '/usr/bin/docker', minimum: '28.0' });
+    case 'git-version':
+      return entry.class === 'version' && same({ path: '/usr/bin/git', format: 'git-version' });
+    case 'resolver':
+      return (
+        entry.class === 'filesystem' &&
+        same({ path: '/run/systemd/resolve/resolv.conf', usableNameserver: true })
+      );
+    case 'libc':
+      return (
+        entry.class === 'libc' &&
+        same({ executables: ['nanohost', 'openshell-gateway'], derive: 'elf-version-needs' })
+      );
+    case 'ancestors':
+      return (
+        entry.class === 'filesystem' &&
+        same({
+          paths: [
+            '/usr/lib/openkit/nanohost',
+            '/usr/lib/openkit/openshell-gateway',
+            '/etc/systemd/system/openkit-nanohost.service',
+            '/etc/openkit/nanohost.env',
+            '/var/lib/openkit/nanohost',
+            '/run/openkit/nanohost',
+            '/var/lib/openkit/nanohost-images',
+            '/var/lib/openkit/nanohost-work',
+            '/var/lib/openkit/nanohost-workspace-scan',
+          ],
+          uid: 0,
+          forbidMode: 18,
+        })
+      );
+    default:
+      return false;
+  }
 }
 
 /** Validates the fixed NanoHost installer, unit, and OpenShell release inputs. */
@@ -512,4 +626,58 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
+}
+
+/** Validates emitted checker evidence at its consumer boundary without recreating its comparator. */
+export function parseNanoHostHostCheckResult(source, expected) {
+  const result = JSON.parse(source);
+  const keys = [
+    'schemaVersion',
+    'profileId',
+    'profileDigest',
+    'productCommit',
+    'archiveSha256',
+    'machineIdentityDigest',
+    'machineObservationDigest',
+    'checkedAt',
+    'hardVerdict',
+    'recommendationObservation',
+    'requirements',
+  ];
+  const hex = (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  if (
+    source !== `${JSON.stringify(result)}\n` ||
+    JSON.stringify(Object.keys(result)) !== JSON.stringify(keys) ||
+    result.schemaVersion !== 2 ||
+    result.profileId !== expected.profile.profileId ||
+    result.profileDigest !== expected.profileDigest ||
+    !/^[0-9a-f]{40}$/.test(result.productCommit) ||
+    (expected.productCommit !== undefined && result.productCommit !== expected.productCommit) ||
+    !hex(result.archiveSha256) ||
+    !hex(result.machineIdentityDigest) ||
+    !hex(result.machineObservationDigest) ||
+    typeof result.checkedAt !== 'string' ||
+    Number.isNaN(Date.parse(result.checkedAt)) ||
+    !['requirements-met', 'requirements-unmet', 'cannot-check'].includes(result.hardVerdict) ||
+    !['met', 'unmet', 'cannot-check'].includes(result.recommendationObservation) ||
+    !Array.isArray(result.requirements) ||
+    result.requirements.length !== expected.profile.requirements.length ||
+    result.requirements.some(
+      (item, index) =>
+        JSON.stringify(Object.keys(item)) !== JSON.stringify(['id', 'outcome', 'observed']) ||
+        item.id !== expected.profile.requirements[index].id ||
+        !['met', 'unmet', 'cannot-check'].includes(item.outcome) ||
+        (item.outcome === 'cannot-check'
+          ? item.observed !== null
+          : !item.observed || typeof item.observed !== 'object' || Array.isArray(item.observed))
+    ) ||
+    result.machineObservationDigest !==
+      createHash('sha256').update(JSON.stringify(result.requirements)).digest('hex') ||
+    (result.hardVerdict === 'requirements-met' &&
+      result.requirements.some((item) => item.outcome !== 'met')) ||
+    (result.hardVerdict === 'requirements-unmet' &&
+      !result.requirements.some((item) => item.outcome === 'unmet'))
+  )
+    throw new Error('NanoHost host-check evidence is invalid or stale.');
+  return result;
 }
