@@ -83,6 +83,79 @@ test('bundled checker exercises capability verdicts, integrity, and bounded read
   assert.match(result.stdout, /fixture-checks=pass/);
 });
 
+test('systemd unit inspection ignores unrelated permission warnings and fails closed otherwise', () => {
+  const installer = readFileSync('apps/nanohost/deploy/install.sh', 'utf8');
+  const code = installer
+    .split("<<'HOST_CHECK_PY'\n")[1]
+    .split('\nHOST_CHECK_PY')[0]
+    .split('# HOST_CHECK_MAIN')[0];
+  const probe = `${code}
+from types import SimpleNamespace
+from unittest.mock import patch
+
+# Verbatim A2 r30 diagnostics; only the external inspector and active-host facts are doubled.
+a2 = '''Configuration file /usr/lib/systemd/system/unified-monitoring-agent_restarter.path is marked executable. Please remove executable permission bits. Proceeding anyway.
+Configuration file /usr/lib/systemd/system/unified-monitoring-agent_restarter.service is marked executable. Please remove executable permission bits. Proceeding anyway.
+Configuration file /usr/lib/systemd/system/unified-monitoring-agent_config_downloader.service is marked executable. Please remove executable permission bits. Proceeding anyway.
+Configuration file /usr/lib/systemd/system/unified-monitoring-agent_config_downloader.timer is marked executable. Please remove executable permission bits. Proceeding anyway.'''
+absence = 'openkit-nanohost.service: Command /usr/lib/openkit/nanohost is not executable: No such file or directory'
+executable = 'is marked executable. Please remove executable permission bits. Proceeding anyway.'
+writable = 'is marked world-writable. Please remove world writability permission bits. Proceeding anyway.'
+inaccessible = 'is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.'
+entry = json.loads(Path('apps/nanohost/deploy/host-manifest.json').read_bytes())['requirements']
+entry = next(item for item in entry if item['probe'] == 'systemd')
+unit = Path('apps/nanohost/deploy/openkit-nanohost.service').read_bytes()
+warning = lambda path, message=executable: 'Configuration file ' + path + ' ' + message
+
+with patch.object(Path, 'lstat', return_value=SimpleNamespace(st_mode=stat.S_IFDIR)), patch('__main__.read_regular', side_effect=lambda path: b'systemd' if str(path) == '/proc/1/comm' else unit):
+    for status, errors in [(0, ''), (0, a2), (1, absence), (1, a2 + '\\n' + absence), (1, absence + '\\n' + a2)] + [(0, warning('/etc/systemd/system/metrics.service', message)) for message in (executable, writable, inaccessible)]:
+        with patch('__main__.command_result', return_value=(status, '', errors)) as inspector:
+            observed = observe(entry, Path('/bundle'), {})
+            assert observed == {'active': True, 'unitParses': True, 'slice': 'openkit-nanohost.slice'}, (status, errors, observed)
+            inspector.assert_called_once_with(['/usr/bin/systemd-analyze', 'verify', '--man=no', '--generators=no', '/bundle/openkit-nanohost.service'])
+    failures = [
+        (0, '', warning('/bundle/openkit-nanohost.service')),
+        (0, '', warning('/etc/systemd/system/openkit-nanohost.service', writable)),
+        (0, '', warning('/etc/systemd/system/openkit-nanohost.slice')),
+        (0, '', warning('/etc/systemd/system/openkit-nanohost.service.d/override.conf')),
+        (0, '', warning('/etc/systemd/system/openkit-nanohost.slice.d/override.conf', writable)),
+        (0, '', "/bundle/openkit-nanohost.service:10: Unknown key name 'Misspelled' in section 'Service', ignoring."),
+        (1, '', "/bundle/openkit-nanohost.service:4: Invalid section header '[Service'"),
+        (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit openkit-nanohost.slice not found.'),
+        (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit openkit-nanohosts.slice not found.'),
+        (1, '', 'openkit-nanohost.service: Failed to create openkit-nanohost.service/start: Unit network-online.target is masked.'),
+        (0, '', warning('/etc/systemd/system/metrics.service', 'has an unknown problem. Proceeding anyway.')),
+        (0, '', warning('/etc/systemd/system/metrics.service') + ' Additional error.'),
+        (0, '', warning('metrics.service')),
+        (0, 'Unexpected inspector output', ''),
+        (1, '', ''),
+        (1, '', absence + '\\n' + absence),
+        (2, '', absence),
+    ]
+    for status, output, errors in failures:
+        for prefix in ('', a2 + '\\n'):
+            with patch('__main__.command_result', return_value=(status, output, prefix + errors)):
+                observed = observe(entry, Path('/bundle'), {})
+                assert observed['unitParses'] is False, (status, output, prefix + errors, observed)
+    for errors in ('Failed to read /bundle/openkit-nanohost.service: Permission denied', "Failed to open configuration file '/bundle/openkit-nanohost.service': Input/output error", "systemd-analyze: unrecognized option '--generators=no'"):
+        for prefix in ('', a2 + '\\n'):
+            with patch('__main__.command_result', return_value=(1, '', prefix + errors)):
+                try:
+                    observe(entry, Path('/bundle'), {})
+                except ValueError as error:
+                    assert str(error) == 'unit inspection unavailable', error
+                else:
+                    raise AssertionError('unavailable inspection was admitted: ' + errors)
+print('unit-inspection-checks=pass')
+`;
+  const result = spawnSync('python3', ['-I', '-B', '-c', probe], {
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(result.stdout, 'unit-inspection-checks=pass\n');
+});
+
 test('shell boundary frames failed and stalled interpreter startup as one bounded terminal result', () => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-interpreter-boundary-'));
   try {
