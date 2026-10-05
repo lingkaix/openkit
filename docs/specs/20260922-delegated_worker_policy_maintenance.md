@@ -54,7 +54,7 @@ No running AEP, process environment or historical failed Turn is rewritten. Veri
 
 ## Proposed Design
 
-Admit finite inspect, compare, validate and apply capabilities into the existing private administration entry, using shared Core implementations for App API, Skill CLI and internal Tool projections. The existing configuration target registry, optimistic revisions, reload semantics, Policy evaluation, command ledger and audit/evidence records remain unique owners. No maintenance runner or new durable lifecycle is proposed.
+Admit finite inspect, compare, validate and apply capabilities into the existing private administration entry, using shared Core implementations for App API, administrator CLI and internal Tool projections. The existing configuration target registry, optimistic revisions, reload semantics, Policy evaluation, command ledger and audit/evidence records remain unique owners. No maintenance runner or new durable lifecycle is proposed.
 
 ## Current Implementation Projection
 

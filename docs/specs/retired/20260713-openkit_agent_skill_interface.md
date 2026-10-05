@@ -1,14 +1,33 @@
 ---
-status: Accepted
-implementation: Partial
+status: Retired
+implementation: N/A
 kind: boundary
-updated: "2026-10-02"
+updated: "2026-10-05"
+status-changed: "2026-10-05"
+current-guidance: None
+decision-evidence: docs/audits/20261005-openkit_agent_skill_interface_terminal_archive.md
 ---
 # OpenKit Agent Skill Interface
 
+## Lifecycle Reason
+
+[The First Release Interface Scope, Revised](../../decisions/20261002-first_release_interface_scope_revised.md), item 4, ends the user-facing openkit Skill and its bundled public CLI once remote MCP serves guide and reaches the release operations. The accepted [streaming archive exception](../../decisions/20261003-streaming_archives_use_web_and_admin_cli.md) counts Web and administrator CLI transfers for the three streaming Workspace archive operations; one-time-secret results remain outside every MCP path. The retirement candidate removes the public package and its release asset, provides guide and definition-wide eligible operation discovery and dispatch, and retains the administrator executable in the operations package. The [terminal-archive audit](../../audits/20261005-openkit_agent_skill_interface_terminal_archive.md) records the inspected source and execution evidence, its limits, all criterion receivers and inbound-link dispositions.
+
+The public package, audience triggers, filesystem progressive loading, package metadata and public shipment contract end without a successor Skill contract. The administrator CLI criteria continue under their separately accepted owner, [Agent Operator Skill](../20260910-agent_operator_skill.md). Online operation semantics belong to [Operation Definition](../20261002-operation_definition.md), product guide and coverage to [Remote MCP Interface](../20261002-remote_mcp_interface.md), real-use proof to [Persistent Deployment Acceptance](../20260909-persistent_deployment_acceptance.md), and current distribution to [Release Management](../20260829-release_management.md). These are receivers of surviving concerns, not current guidance for the ended public Skill. NanoCore and the existing credential, data, workflow and worker-supply owners retain their authority.
+
+## Retention Reason
+
+This file preserves the removed Skill's exact package shape, trigger and disclosure rules, supported-host assumptions, former stdio and four-Skill removal, CLI process and coverage baseline, stable credential and audit identities, named-secret storage preflight and post-issuance failure distinctions, rollout sequence and layered acceptance predicates. Those details explain the transfer and distinguish the ended package from surviving administrator and remote MCP obligations. They support inspection of historical implementation and rejected alternatives without reviving the old channel or treating prior Skill evidence as current MCP acceptance.
+
+The sections below, including the Builder's Criterion Transfer For First-Release Retirement prelude and its pending-Auditor wording, are historical transition and contract evidence only. Their present-tense ownership, availability and implementation statements are not current guidance. The prelude is retained because the documentation model does not require its removal; the final lifecycle metadata and this explanation state the completed disposition. The terminal-archive commit freezes these bytes. Later observations belong in a new audit record, and renewed authority belongs in current guidance or a new active document.
+
+## Criterion Transfer For First-Release Retirement
+
+The administrator CLI criteria now live in [Agent Operator Skill](../20260910-agent_operator_skill.md): runtime and version alignment, bounded discovery and invocation, public coverage, envelopes and typed exits, request identity, audit metadata, local aborts, credential storage and secret handling. [Operation Definition](../20261002-operation_definition.md) owns online definitions and the exact MCP exclusion facts. [Remote MCP Interface](../20261002-remote_mcp_interface.md) owns product guide delivery and coverage reach; [Persistent Deployment Acceptance](../20260909-persistent_deployment_acceptance.md) owns public real-use proof. [Release Management](../20260829-release_management.md) owns operations-only Skill distribution. The former public package, trigger, metadata, progressive filesystem loading and co-package shipment criteria end under the accepted first-release interface decisions. This document retains its lifecycle state pending the Auditor's criterion and inbound-link disposition check; its former package descriptions below are transition evidence, not instructions to restore the public package.
+
 ## Owns
 
-This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill and its progressively disclosed reference material. The bundled CLI's accepted owner is [Agent Operator Skill](20260910-agent_operator_skill.md). The CLI clauses in this specification are the current behavior and transfer to that owner when the move is implemented. They are not a second semantic definition.
+This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill and its progressively disclosed reference material. The bundled CLI's accepted owner is [Agent Operator Skill](../20260910-agent_operator_skill.md). The CLI clauses in this specification are the current behavior and transfer to that owner when the move is implemented. They are not a second semantic definition.
 
 It owns the Skill audience and trigger boundary, Skill package shape, progressive disclosure model, agent-facing loop guidance, and removal of the former user-facing MCP and four-Skill model. It records the current CLI process contract, operation discovery and invocation contract, public capability coverage rule, and Skill/CLI version alignment until those criteria transfer to the operator skill. The user-facing Skill is retired once the remote MCP endpoint covers it. It is not retired by this amendment. At that retirement, this specification's surviving criteria move to their owners.
 
@@ -18,7 +37,7 @@ This spec does not own NanoCore workflow state, App API routes, Core protocol re
 
 It does not own the general worker Skill Catalog in `docs/specs/20260711-skill_catalog_versioning_pinning.md`, MCP catalog management in `docs/specs/20260907-mcp_catalog_management.md`, Agent Plugin packaging and worker supply in `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, Agent Environment Package Skill supply, public Skill marketplace design, generic shell access, arbitrary HTTP access, or a repository-developer workflow.
 
-It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`. It does not own the operator CLI. It does not own the remote MCP endpoint. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns that endpoint. It does not own credential eligibility for session-only operations; those amendments are pending in their credential owners.
+It does not own the separately owned operations Skill, installation or offline host recovery in `docs/specs/20260910-agent_operator_skill.md`. It does not own the operator CLI. It does not own the remote MCP endpoint. [Remote MCP Interface](../20261002-remote_mcp_interface.md) owns that endpoint. It does not own credential eligibility for session-only operations; those amendments are pending in their credential owners.
 
 It does not own product-wide release identity, authorization, channels, retry, or completion, which are owned by `docs/specs/20260829-release_management.md`.
 
@@ -43,7 +62,7 @@ Related specs:
 
 ## Summary
 
-OpenKit's user-facing Skill interface is a single Skill named `openkit` with a bundled CLI, and it remains until the remote MCP endpoint covers it. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns that endpoint. The accepted `20260910-agent_operator_skill.md` defines a separate `openkit-ops` package for installation, host operations and offline recovery; that package does not add another product client or a developer mode to this interface.
+OpenKit's user-facing Skill interface is a single Skill named `openkit` with a bundled CLI, and it remains until the remote MCP endpoint covers it. [Remote MCP Interface](../20261002-remote_mcp_interface.md) owns that endpoint. The accepted `20260910-agent_operator_skill.md` defines a separate `openkit-ops` package for installation, host operations and offline recovery; that package does not add another product client or a developer mode to this interface.
 
 The Skill teaches an agent how to connect to NanoCore, discover available capabilities, select Chat Mode, Task Mode, or Goal Mode, operate bounded loops, surface Action Center decisions, inspect artifacts and evidence, use knowledge, recover interrupted work, and perform explicitly authorized operator actions.
 
@@ -73,7 +92,7 @@ The accepted change removes the former user-facing `@openkit/mcp` package and th
 ### Non-goals
 
 - Do not support an OpenKit repository developer Skill, self-improvement Skill, or development-only setup path.
-- Do not retain the former stdio MCP channel for clients that cannot execute Skill scripts. Those clients use the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
+- Do not retain the former stdio MCP channel for clients that cannot execute Skill scripts. Those clients use the remote MCP endpoint owned by [Remote MCP Interface](../20261002-remote_mcp_interface.md).
 - Do not expose private NanoCore modules, internal routes, raw SQLite, `DATA_ROOT`, raw worker checkpoints, process handles, provider secrets, or runtime credentials.
 - Do not provide a generic HTTP client, arbitrary route caller, arbitrary shell, arbitrary filesystem access, or unrestricted admin escape hatch.
 - Do not move workflow decisions or durable state into Skill text or CLI code.
@@ -91,15 +110,15 @@ The transport remained thin, but every tool schema was advertised as one eager s
 
 The underlying architecture of that former channel did not require a stdio MCP server. The former `OpenKitNanoCoreClient` already called `@openkit/core-client`, and NanoCore already owned validation, authorization, state transitions, approvals, audit, evidence, recovery, and execution.
 
-The clean design therefore removes that eager transport and retains the valuable layers: a guided agent workflow, typed public operations, Core Client reuse, credential mediation, redaction, and NanoCore-owned product semantics. That removal does not forbid the remote MCP endpoint. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns it.
+The clean design therefore removes that eager transport and retains the valuable layers: a guided agent workflow, typed public operations, Core Client reuse, credential mediation, redaction, and NanoCore-owned product semantics. That removal does not forbid the remote MCP endpoint. [Remote MCP Interface](../20261002-remote_mcp_interface.md) owns it.
 
 ## Live Product Use And Acceptance
 
 The Skill remains an Agent-facing public product interface until the remote MCP endpoint covers it, and it is not limited to capabilities currently exposed by Web UI. Existing supported public reads and commands remain discoverable and composable through the checked catalog. Real-use acceptance and Agent task/benchmark workloads are admitted product use: the caller operates the deployed product through normal public contracts and reads its results. This does not introduce a repository-developer mode inside the Skill; source editing, building, installation, SSH and private host diagnosis remain the Agent host's separately authorized tools and repository/deployment guidance.
 
-For first-release retirement, remote MCP must serve guide and reach every release operation except the one-time-secret operations and the three streaming Workspace archive operations excluded by [Operation Definition](20261002-operation_definition.md#remote-mcp-projection). Archive coverage is demonstrated through Web and the administrator CLI; secret-returning operations remain covered by the authorized operator procedures. Only after this coverage is demonstrated does the user-facing Skill retire. The archive coverage exception is recorded in [a decision record](../decisions/20261003-streaming_archives_use_web_and_admin_cli.md).
+For first-release retirement, remote MCP must serve guide and reach every release operation except the one-time-secret operations and the three streaming Workspace archive operations excluded by [Operation Definition](../20261002-operation_definition.md#remote-mcp-projection). Archive coverage is demonstrated through Web and the administrator CLI; secret-returning operations remain covered by the authorized operator procedures. Only after this coverage is demonstrated does the user-facing Skill retire. The archive coverage exception is recorded in [a decision record](../../decisions/20261003-streaming_archives_use_web_and_admin_cli.md).
 
-The existing public NanoHost runtime-target observation must be exposed as `nanohost.runtime-target` through Core Client, with its deployment-admin authorization and exact response unchanged. App search and Workspace/Thread dashboard reads are mapped as `app.search`, `workspace.dashboard`, and `thread.dashboard` through the existing Core Client methods. Their handlers enforce the accepted private-thread visibility owner before dependent discovery; Workspace access alone does not grant another user's private audience, and an administrator credential is eligible for that audience under Administrator Eligibility in [Permissions Model](../core/permissions.md), with truthful attribution. A Web presentation origin is not grounds for excluding these public reads. Session-only account operations and secret-returning operations without a secure named destination remain explicitly excluded. The existing coverage test must continue proving every public operation has one mapping or justified exclusion; this change does not introduce another coverage registry.
+The existing public NanoHost runtime-target observation must be exposed as `nanohost.runtime-target` through Core Client, with its deployment-admin authorization and exact response unchanged. App search and Workspace/Thread dashboard reads are mapped as `app.search`, `workspace.dashboard`, and `thread.dashboard` through the existing Core Client methods. Their handlers enforce the accepted private-thread visibility owner before dependent discovery; Workspace access alone does not grant another user's private audience, and an administrator credential is eligible for that audience under Administrator Eligibility in [Permissions Model](../../core/permissions.md), with truthful attribution. A Web presentation origin is not grounds for excluding these public reads. Session-only account operations and secret-returning operations without a secure named destination remain explicitly excluded. The existing coverage test must continue proving every public operation has one mapping or justified exclusion; this change does not introduce another coverage registry.
 
 A direct `references/acceptance.md` explains persistent-instance reuse, selecting scenario state, locating public result and diagnostic records, recording incomplete evidence, and handing a repair back to authorized engineering work. It carries no story answers, fixed call trajectory, schema copies, hidden seeding or new test runner. Product calls continue to use search, describe and call. Audit, Usage and Evidence are read from their existing public owners; optional telemetry is diagnostic support rather than a success oracle.
 
@@ -117,7 +136,7 @@ The Skill must not contain a developer audience switch, repository self-improvem
 
 ### One bundled CLI
 
-The clauses under this heading are the current CLI contract. They stay in force until the move is implemented, and they transfer with the CLI. The accepted target is that the CLI moves under [Agent Operator Skill](20260910-agent_operator_skill.md), is used with an administrator token, derives its online commands from [Operation Definition](20261002-operation_definition.md), writes one-time secrets to local secret-safe sinks, and keeps bootstrap and offline host procedures separately authorized. Full bearer coverage is that target's credential-owner work and is pending. The user-facing Skill remains until the remote MCP endpoint covers it. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md).
+The clauses under this heading are the current CLI contract. They stay in force until the move is implemented, and they transfer with the CLI. The accepted target is that the CLI moves under [Agent Operator Skill](../20260910-agent_operator_skill.md), is used with an administrator token, derives its online commands from [Operation Definition](../20261002-operation_definition.md), writes one-time secrets to local secret-safe sinks, and keeps bootstrap and offline host procedures separately authorized. Full bearer coverage is that target's credential-owner work and is pending. The user-facing Skill remains until the remote MCP endpoint covers it. The ruling is recorded in [Operation Definition Rulings](../../decisions/20261002-operation_definition_rulings.md).
 
 The Skill distribution contains an executable `openkit` CLI entrypoint under its `scripts/` resources.
 
@@ -137,7 +156,7 @@ The CLI operation catalog is a curated agent-facing projection, not a second rou
 
 The former `@openkit/mcp` package, `openkit-mcp` binary, stdio JSON-RPC transport, MCP tools, MCP resources, MCP prompts, and MCP-specific configuration of that channel are deleted.
 
-No compatibility server, proxy, alias, redirect, or deprecated package is retained for that stdio channel. The remote MCP endpoint is not that channel and is not a compatibility alias for it. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns the endpoint.
+No compatibility server, proxy, alias, redirect, or deprecated package is retained for that stdio channel. The remote MCP endpoint is not that channel and is not a compatibility alias for it. [Remote MCP Interface](../20261002-remote_mcp_interface.md) owns the endpoint.
 
 The separately authenticated worker-side MCP capability plane remains governed by `docs/specs/20260704-worker_mcp_tool_supply.md` and is unaffected. Selected Codex Worker AEPs may expose its exact three private capability operations, but they do not recreate the former stdio MCP server, a CLI operation family, or a compatibility surface.
 
@@ -154,7 +173,7 @@ An AI application is supported by this interface only when it can:
 - provide stdin and read stdout, stderr, and process exit status
 - protect local credential storage and environment state according to the host's security model
 
-A client that cannot execute Skill scripts is outside this Skill contract. It uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
+A client that cannot execute Skill scripts is outside this Skill contract. It uses the remote MCP endpoint owned by [Remote MCP Interface](../20261002-remote_mcp_interface.md).
 
 ### Skill package contract
 
@@ -268,10 +287,10 @@ The initial operation groups cover:
 - access tokens and credential storage
 - NanoHost enrollment, redacted transport-token inventory and revocation, named-slot issue and rotation, rotation abort, and decommission
 - workspaces, resources, repositories, and Git operations
-- threads, Chat Mode, Task Mode, and the ten Goal operations named by [Goal](20261002-goal.md): create Goal, revise intent, create card, edit card, cancel card, propose Plan, approve Plan, cancel Goal, accept completion, and read. Their ids are derived under [Operation Definition](20261002-operation_definition.md) and are not chosen in this specification. Plan approval and completion acceptance are Pending Requests, as [Goal](20261002-goal.md) and [Pending Requests](20260930-pending_requests.md) define. Steering, pause, resume, and step are not Goal operations
+- threads, Chat Mode, Task Mode, and the ten Goal operations named by [Goal](../20261002-goal.md): create Goal, revise intent, create card, edit card, cancel card, propose Plan, approve Plan, cancel Goal, accept completion, and read. Their ids are derived under [Operation Definition](../20261002-operation_definition.md) and are not chosen in this specification. Plan approval and completion acceptance are Pending Requests, as [Goal](../20261002-goal.md) and [Pending Requests](../20260930-pending_requests.md) define. Steering, pause, resume, and step are not Goal operations
 - Action Center, approvals, questions, reviews, artifacts, evidence, audit, and usage
 - knowledge sources, observations, claims, conflicts, retrieval, context packages, proposals, repair, and health
-- interrupted-worker inspection and checkpoint retry, scheduler admissions, and the Pending Requests that approve one exact Plan version or accept one exact completion candidate, once [Operation Definition](20261002-operation_definition.md) admits the Goal operations those requests use
+- interrupted-worker inspection and checkpoint retry, scheduler admissions, and the Pending Requests that approve one exact Plan version or accept one exact completion candidate, once [Operation Definition](../20261002-operation_definition.md) admits the Goal operations those requests use
 - runtime configuration and product-safe runtime availability; AgentSession identity and replacement remain hidden internal behavior
 - vault status, unlock, lock, bootstrap, grants, injection records, use records, and rebind
 - provider-subscription inventory, account lifecycle and status, and quota
@@ -451,14 +470,14 @@ Rejected for the first implementation. Search, describe, and typed call provide 
 
 ### Keep the former stdio MCP channel for hosts without shell execution
 
-Rejected for that channel. This Skill interface requires a Skill-capable host that can execute bundled scripts. A client that cannot do so uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md). That endpoint is a separate accepted binding and is not a compatibility revival of the deleted stdio package.
+Rejected for that channel. This Skill interface requires a Skill-capable host that can execute bundled scripts. A client that cannot do so uses the remote MCP endpoint owned by [Remote MCP Interface](../20261002-remote_mcp_interface.md). That endpoint is a separate accepted binding and is not a compatibility revival of the deleted stdio package.
 
 ## Consequences
 
 - Initial agent context becomes small even as public capability count grows.
 - Setup, loop methodology, recovery guidance, and capability use ship in one end-user package.
 - Agent hosts of this Skill need Skill installation and bundled script execution.
-- A client that cannot execute Skill scripts uses the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md) instead of this Skill.
+- A client that cannot execute Skill scripts uses the remote MCP endpoint owned by [Remote MCP Interface](../20261002-remote_mcp_interface.md) instead of this Skill.
 - CLI and Skill releases must remain aligned with NanoCore public contracts.
 - All public end-user/operator capabilities gain an explicit coverage decision.
 - The repository deletes a package, four Skill folders, MCP protocol code, resources, prompts, tests, and release wiring.
@@ -539,7 +558,7 @@ Mitigation: reuse Core Client and shared schemas and enforce public-operation co
 
 ### Risk: Unsupported hosts lose access
 
-Mitigation: state the Skill-plus-command host requirement explicitly. Do not revive the former stdio MCP package. The remote MCP endpoint is owned by [Remote MCP Interface](20261002-remote_mcp_interface.md) and is not a compatibility revival of that package.
+Mitigation: state the Skill-plus-command host requirement explicitly. Do not revive the former stdio MCP package. The remote MCP endpoint is owned by [Remote MCP Interface](../20261002-remote_mcp_interface.md) and is not a compatibility revival of that package.
 
 ### Risk: Progressive references still duplicate operation schemas
 

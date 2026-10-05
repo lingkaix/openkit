@@ -83,5 +83,5 @@ Story documents are still validated mechanically. `pnpm -w check:repo` runs `scr
 
 Admitted L6 stories:
 
-- `openkit-agent-skill-progressive-discovery.story.md`: real Skill-capable Agent creating and confirming a Workspace on a persistent deployment through the packaged CLI, with unconstrained discovery and independent public readback.
+- `openkit-agent-skill-progressive-discovery.story.md`: real MCP-capable Agent creating and confirming a Thread on a persistent deployment through remote MCP, with unconstrained discovery and independent public readback.
 - `worker-mcp-governed-tool-use.story.md`: Worker MCP acceptance covering governed tool calls, approval-required tools, audit evidence, usage rows, and credential redaction.

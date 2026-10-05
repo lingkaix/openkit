@@ -199,7 +199,7 @@ Unlock state owns one mutable master-key `Buffer`, zeros it at explicit lifecycl
 
 ## Current Implementation Projection
 
-- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` exist as durable non-secret metadata in `core.sqlite`, and `VaultUse` exists in the scope-owning SQLite database. Workspace-scoped metadata has filtered App API, Core Client, and unified Skill CLI readback.
+- `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, and `VaultInjectionReceipt` exist as durable non-secret metadata in `core.sqlite`, and `VaultUse` exists in the scope-owning SQLite database. Workspace-scoped metadata has filtered App API, Core Client, and remote MCP and administrator CLI readback.
 - `apps/nanocore/src/vault/vault-backend.ts` defines the sole `encrypted-file` backend kind, the internal boundary, typed redacted errors, health projection, owner-scope metadata checks, locked implementation, and strict server-only `openai-codex | xai` provider-subscription projection with bounded slot validation.
 - `apps/nanocore/src/vault/vault-key-file.ts` enforces an absolute canonical path outside `DATA_ROOT`, including parent-symlink aliases, no-follow descriptor loading and identity verification, process-user ownership, exact `0600`, regular-file type, and exact 32-byte content with redacted failures.
 - `apps/nanocore/src/vault/vault-store-directory.ts` and `apps/nanocore/src/storage/fs-layout.ts` enforce the `0700` store directory, reject symlinked store children and unsafe existing paths, and keep path failures redacted.

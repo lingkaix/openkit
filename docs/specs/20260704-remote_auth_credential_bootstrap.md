@@ -63,7 +63,7 @@ The clean target for human remote access is a single credential family: server-i
 
 ## Background
 
-`docs/specs/20260628-nanocore_config_identity_contract.md` accepts Better Auth as the current server-mode browser auth implementation and explicitly defers remote NanoCore auth bootstrap, client credential storage, and audit labels for remote coordinator operations. The legacy MCP channel previously shipped with deployment-supplied raw cookie and authorization-header forwarding; the implemented token substrate replaced that stopgap, and the accepted Agent Skill Interface now carries it forward through the bundled CLI. `docs/core/identity.md` already names the conceptual records this spec needs: `Token` with status values `active`, `expired`, `revoked`, `rotated`, and the invariant that raw token secret material must not be exposed after issuance.
+`docs/specs/20260628-nanocore_config_identity_contract.md` accepts Better Auth as the current server-mode browser auth implementation and explicitly defers remote NanoCore auth bootstrap, client credential storage, and audit labels for remote coordinator operations. The legacy MCP channel previously shipped with deployment-supplied raw cookie and authorization-header forwarding; the implemented token substrate replaced that stopgap, and remote MCP and the administrator CLI now use that Token substrate. `docs/core/identity.md` already names the conceptual records this spec needs: `Token` with status values `active`, `expired`, `revoked`, `rotated`, and the invariant that raw token secret material must not be exposed after issuance.
 
 The historical gap was the absence of a safe way to stand up a remote NanoCore and authenticate without hand-crafting a Better Auth session and pasting header values into environment variables. NanoCore now implements the token and bootstrap substrate, and the bundled CLI implements endpoint-scoped credential resolution, storage, deletion, and secret-safe bootstrap consumption.
 
@@ -185,7 +185,7 @@ Token verification is a NanoCore auth-middleware concern beside the existing Bet
 
 Bootstrap is a pre-listen startup hook placed by the bootstrap-readiness spec after authoritative integrity verification and migrations succeed. On server-mode boot with zero users, NanoCore mints the bootstrap secret, stores its hash with a `bootstrap` marker distinct from the public scope set, and writes the secret once to the owner-readable file or explicitly secure operator destination defined above. A single public consumption endpoint accepts the bootstrap token and the owner profile payload and performs the atomic owner-creation transaction.
 
-The client side ships a small credential-store helper used by the unified Skill's bundled CLI: resolve order is explicit ephemeral environment override, then OS keychain entry keyed by NanoCore endpoint URL, then any platform fallback explicitly permitted by the Agent Skill Interface, with a warning on degraded storage. That helper is the bundled CLI's local credential store. It is not the only bearer client. The remote MCP static bearer is an ordinary Token verified by the same NanoCore verifier, and [Remote MCP Interface](20261002-remote_mcp_interface.md) owns endpoint admission.
+The client side ships a small credential-store helper used by the administrator CLI: resolve order is explicit ephemeral environment override, then OS keychain entry keyed by NanoCore endpoint URL, then any platform fallback explicitly permitted by [Agent Operator Skill](20260910-agent_operator_skill.md), with a warning on degraded storage. That helper is the bundled CLI's local credential store. It is not the only bearer client. The remote MCP static bearer is an ordinary Token verified by the same NanoCore verifier, and [Remote MCP Interface](20261002-remote_mcp_interface.md) owns endpoint admission.
 
 ## Current Implementation Projection
 
@@ -215,7 +215,7 @@ The NanoCore token, bootstrap, authorization, audit, `@openkit/core-client`, bun
 ## Consequences
 
 - A fresh remote deployment becomes self-service: boot, read the bootstrap token once, consume it, issue scoped tokens.
-- The end-user Agent Skill Interface and the remote MCP endpoint gain a revocable, scoped, auditable credential through the same Token verifier, and CLI-originated operations and admitted remote MCP calls gain a real actor identity in audit labels. Secret-returning Token operations stay unreachable from MCP. The operator CLI writes one-time secrets only to local secret-safe sinks under [Agent Operator Skill](20260910-agent_operator_skill.md).
+- The administrator CLI and remote MCP endpoint gain a revocable, scoped, auditable credential through the same Token verifier, and CLI-originated operations and admitted remote MCP calls gain a real actor identity in audit labels. Secret-returning Token operations stay unreachable from MCP. The operator CLI writes one-time secrets only to local secret-safe sinks under [Agent Operator Skill](20260910-agent_operator_skill.md).
 - The raw header passthrough remains absent; the bundled CLI reuses the implemented token substrate without a compatibility path for the removed MCP channel.
 - NanoCore takes on hash-verification on every token-authenticated request and a small token administration API surface.
 - Client tooling reuses secret-safe platform credential commands where available and otherwise uses the encrypted-file fallback; this contract adds no keychain dependency.
@@ -246,7 +246,7 @@ Mapped to the L0-L6 model in `docs/specs/20260529-test_strategy.md`:
 - L3: stopped-server recovery tests hold one real temporary data-root lock across the command, prove a concurrent NanoCore lock acquisition fails without service startup, reject missing or mismatched confirmation, reject current, past, and over-24-hour expiry while accepting the exact 24-hour boundary, cover generated request identity, same-output file-before-database and database-after-file crash boundaries, every contradictory or expired-inactive half-state, `0600` exclusive output, redacted discovery and summaries, strict `credential.store` union consumption, and one authenticated request with the recovered Token.
 - L4: not applicable until Web UI token administration screens exist.
 - L5: packaged-build smoke that a server-mode boot on a clean data root produces exactly one owner-readable bootstrap emission after authoritative integrity and migration success but before listener admission, writes no credential to stdout or stderr, and lets the bundled CLI store and use the minted token without exposing it.
-- L6: story acceptance covering an operator standing up a remote NanoCore, consuming the bootstrap token through the end-user Skill flow, connecting through the bundled CLI, issuing a workspace-scoped token, and revoking the token to confirm access ends.
+- L6: story acceptance covering an operator standing up a remote NanoCore, consuming the bootstrap token through the operations Skill's secret-safe procedure, connecting through the bundled CLI, issuing a workspace-scoped token, and revoking the token to confirm access ends.
 
 Acceptance criteria: all L1-L3 behaviors pass deterministically; no agent-visible CLI path prints one-time or persistent token material; no bootstrap or recovery credential reaches stdout, stderr, ordinary logs, diagnostics, Audit, or artifacts; recovery never runs without holding one data-root lock for its complete command; the cookie/authorization passthrough and the former user-facing stdio MCP package are absent; a revoked token fails on the request after revocation with no grace.
 
@@ -300,8 +300,7 @@ The following are not designed.
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/core/audit.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
-- `docs/specs/20261002-remote_mcp_interface.md`
+- `docs/specs/20260910-agent_operator_skill.md`
 - `docs/decisions/20261002-remote_mcp_static_bearer_first.md`
 - `docs/decisions/20261002-administrator_authority.md`
 - `docs/specs/20260629-openkit_policy_model.md`

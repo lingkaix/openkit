@@ -35,7 +35,7 @@ The engineer explicitly changes the model-admission decision on 2026-09-10: mode
 - [Architecture](../../core/architecture.md) owns observation versus execution authority.
 - [Persistent deployment acceptance](../../specs/20260909-persistent_deployment_acceptance.md) owns the two-mode composition and initial acceptance.
 - [L6](../../specs/20260529-l6_story_acceptance.md) owns open-ended Actor and independent verdict semantics.
-- [Skill interface](../../specs/20260713-openkit_agent_skill_interface.md) owns discovery and public operation projection.
+- [Skill interface](../../specs/retired/20260713-openkit_agent_skill_interface.md) owns discovery and public operation projection.
 - [Operational telemetry](../../specs/20260731-operational_telemetry_standardization.md) and [boot diagnostics](../../specs/20260704-nanocore_bootstrap_readiness.md) retain optional signals and process observations.
 - [Verification instruments](../../verification-instruments.md) retains strict fixture qualification while admitting ordinary persistent product use.
 
@@ -133,7 +133,7 @@ New App boot reached scheduler restart recovery and failed because the old test 
 
 Independent Claude `live-skill-direction` (`d7fc1d59-bf4d-4792-bce2-35d02a2b6a94`) traced the actual authorizer and returned Continue: server-admin denial matches the multi-user owner, while Thread creation is Workspace-bound. Independent Auditor adjudicated this as instrument repair and requires preservation of Actor A and the original story revision. Sealed evidence is under `temp/live-tester/actor-a-20260909/`, with admission details in `temp/live-tester/actor-a-seal.md`; a fresh Judge retains its own verdict. No product auth changes are made.
 
-Consultation also found that the `workspace.create` catalog annotation says generic authenticated user without exposing its canonical-user/session restriction. This is a separate Skill interface projection finding, received by `docs/specs/20260713-openkit_agent_skill_interface.md` for a later catalog access-annotation correction; it is not silently repaired by broadening authority or expanding this acceptance change.
+Consultation also found that the `workspace.create` catalog annotation says generic authenticated user without exposing its canonical-user/session restriction. This is a separate Skill interface projection finding, received by `docs/specs/retired/20260713-openkit_agent_skill_interface.md` for a later catalog access-annotation correction; it is not silently repaired by broadening authority or expanding this acceptance change.
 
 
 Fresh Claude `live-resume-direction` (`22900809-07ee-41ba-906b-f86b0a651d49`) checked the current primary context, source Intent, actual diff and authorization path and returned Continue. Its two corrections are applied: owner/editor membership is explicit, and product Provider/Codex flags are false for Thread CRUD. Auditor withdrew its earlier run-wide Provider interpretation after examining the governing Test Strategy and L6 examples; three fresh consecutive runs now govern admission. Independent reviewer found no actionable issue in the Thread reframe. Cursor documentation checks passed: model 248 documents, lifecycle, story schema 2 stories, current generated index and diff whitespace. Actor A's independent Judge returned `inconclusive`; it remains outside the revised count.

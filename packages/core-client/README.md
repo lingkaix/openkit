@@ -2,7 +2,7 @@
 
 Thread dashboard reads validate the authenticated viewer id and bounded participant display names alongside existing work state; no separate user-directory request is needed for conversation attribution.
 
-The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and Skill consumers; the client does not infer summaries from message JSON.
+The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and administrator CLI consumers; the client does not infer summaries from message JSON.
 
 `client.operations` exposes the ten Goal definitions with strict input and output codecs and automatic missing request-id insertion. `goal.read` returns current intent and cards, exact proposed and active Plan versions, shared request state and claim, linked ordinary Tasks and disposition. Human decision operations resolve exact Pending Requests; grant consumption belongs to the Goal owner and does not launch work. Retired Goal SDK methods and routes have no aliases.
 
@@ -72,7 +72,7 @@ The private native environment configuration client discards inert additive resp
 
 `operations['runtime.file-delete']` sends the strict Provider deletion command through the definition-derived JSON POST transport. It requires an exact Provider file ID and existing revision and maps the empty HTTP 204 response to logical `null`. NanoCore owns revocation and restart-required activation.
 
-`client.operations['usage.read']` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The Skill `usage.read` operation returns that same reader result without rebuilding private Provider lineage.
+`client.operations['usage.read']` preserves the Workspace-authorized redacted `routeLineage` projection from the shared App schema. The administrator CLI `usage.read` operation returns that same client reader result; remote MCP separately projects the native Usage owner. Neither projection rebuilds private Provider lineage.
 
 Knowledge reads, Sources, maintenance ledgers, retrieval, preparation, proposals and the four retained entry operations use `client.operations` derived from the two Knowledge definition tables. The `client.app` and `client.core` handwritten Knowledge methods are removed. Caller argument types preserve schema defaults, and command request identities travel in `x-openkit-request-id`; trace-only retrieval and preparation require no command identity. Deletion returns the definition’s JSON `null` success.
 

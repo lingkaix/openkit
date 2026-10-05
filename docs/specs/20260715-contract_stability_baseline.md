@@ -44,7 +44,7 @@ date: 2026-07-15
 
 OpenKit should freeze durable product truth before release, but it should not freeze every public or user-facing shape.
 
-The durable baseline covers promoted Core meaning, persisted and portable data, workspace ownership, identity and actor attribution, authorization and audit semantics, stable lineage, and the invariants needed to preserve history. NanoCore App API operations, `@openkit/core-client`, the bundled CLI, the unified `openkit` Skill, generated OpenAPI, and Web UI remain exact-release projections that may change together without deprecation windows or compatibility aliases.
+The durable baseline covers promoted Core meaning, persisted and portable data, workspace ownership, identity and actor attribution, authorization and audit semantics, stable lineage, and the invariants needed to preserve history. NanoCore App API operations, `@openkit/core-client`, the bundled CLI, remote MCP, generated OpenAPI, and Web UI remain exact-release projections that may change together without deprecation windows or compatibility aliases.
 
 Until the launch boundary in the Operation Semantic Promise section of `docs/core/contract-evolution.md`, that freedom includes operation definitions. The boundary is not yet defined. At the launch boundary, settled operation semantic contracts become `Durable`, with Operation Semantic Promise as their evolution rule; their transport, packaging and user-interface projections remain at their existing stability classes. After it, only a settled operation's semantic contract changes by addition, deprecation, or retirement, and an operation id is never reused. Retained data continuity is unchanged, and an operation change before launch does not discard retained records or captured bindings. Deprecation and retirement behavior is owned by [Operation Definition](20261002-operation_definition.md).
 
@@ -131,7 +131,7 @@ The following first-party surfaces are `Release-coupled` by default:
 - `@openkit/core-client`
 - the transport-neutral operation catalog
 - the bundled `openkit` CLI
-- the unified end-user `openkit` Skill and its reference files
+- remote MCP guide and the operations Skill with its administrator CLI
 - the Web UI, read models, actions, and component state
 - deployment administration, diagnostics, runtime-config editing, and setup projections
 - first-party installation, bootstrap, and smoke workflows
@@ -190,7 +190,7 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 | Permission and approval | The NGAC-aligned kernel, exact operation mapping, centralized resolver, child lineage, current-effect reauthorization, and named eligible-principal projections are active. | Ready for the current multi-user baseline without a second permission engine; unrelated operation families retain their own plans. |
 | Audit and accountability | Shared lifecycle, human Item, Turn, policy Approval, governed runtime, usage, and decision families preserve their specified actor, responsible-user, request, subject, and revision lineage. | Ready for the bounded current producer set; this does not claim every S59 producer outside that set is complete. |
 | Shared-write correctness | Append-only history, central request idempotency, direct revisions and atomic claims for the named Workspace lifecycle and policy Approval transitions, and existing owner-local Artifact Review, Material, and Workspace Sync controls are active. | Ready for the named current shared-write set; no generic concurrency framework or broader CAS promise is created. |
-| Release-coupled product surface | App API, generated OpenAPI, all fifteen Core Client operations, eleven bearer-reachable catalog/CLI/Skill operations, and exact contract artifacts align in one release; four session-only operations are explicit known-partials and the rebuilt Web remains deferred. | Ready for the accepted current projection boundary; S10 owns the rebuilt multi-user Web and its browser acceptance. |
+| Release-coupled product surface | App API, generated OpenAPI, all fifteen Core Client operations, eleven bearer-reachable catalog/administrator CLI/remote MCP operations, and exact contract artifacts align in one release; four session-only operations are explicit known-partials and the rebuilt Web remains deferred. | Ready for the accepted current projection boundary; S10 owns the rebuilt multi-user Web and its browser acceptance. |
 
 `Implementation: Partial` remains correct for this cross-program baseline because S10 and other independently owned contract families are not complete. The current multi-user and contract-stability subset satisfies its named gates; that bounded completion does not promote the whole repository to a frozen or globally complete state.
 
@@ -239,7 +239,7 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 
 OpenKit implements strict Zod contracts, protocol and App API schema packages, generated schema and OpenAPI drift checks, request idempotency, record envelopes, required-feature handling, versioned Workspace export, data-root layout markers, owner-independent top-level Workspace storage and migration, fixed owner/editor/viewer policy projection, centralized operation-metadata authorization, handler-owned child-lineage enforcement, scoped bearer tokens, the complete V1 Workspace sharing and user-disable lifecycle, named durable permission decisions and actor attribution, current-effect reauthorization, eligible-principal projections, Vault and portability authority boundaries, Workspace Synchronization Review, and conflict-checked apply.
 
-The implemented same-release projection exposes all fifteen operations through App API and Core Client and the eleven bearer-reachable operations through the catalog, bundled CLI, and unified Skill. Own-invitation list, accept, decline, and exact own-receipt leave remain explicit session-only CLI/Skill known-partials; the current baseline intentionally adds no Better Auth bearer support, persisted CLI session, or second user-token system. The rebuilt multi-user Web remains with S10. Other remaining baseline gaps belong to their named specifications rather than authorizing compatibility machinery or broader current scope. Artifact Review, Material, and Workspace Sync retain their existing owner-local contracts.
+The implemented same-release projection exposes all fifteen operations through App API and Core Client and the eleven bearer-reachable operations through the catalog, bundled CLI, and remote MCP. Own-invitation list, accept, decline, and exact own-receipt leave remain explicit session-only known-partials for ordinary CLI/MCP bearers; the current baseline intentionally adds no Better Auth bearer support, persisted CLI session, or second user-token system. The rebuilt multi-user Web remains with S10. Other remaining baseline gaps belong to their named specifications rather than authorizing compatibility machinery or broader current scope. Artifact Review, Material, and Workspace Sync retain their existing owner-local contracts.
 
 No current implementation evidence establishes a support promise for independently versioned third-party App API clients.
 
@@ -285,7 +285,7 @@ No code or data migration occurs merely because this classification is accepted.
 - L1 package tests verify strict schemas, version identities, required features, redaction, and private-boundary exclusions where those risks exist.
 - L2 contract tests verify durable fixtures and exact-release projection alignment that crosses package boundaries.
 - L3 NanoCore tests verify representative process-only risks such as restart, migration, fail-closed authority, and one same-release public path; they do not repeat every L1-L2 assertion.
-- L5 artifact tests verify generated schemas, OpenAPI, CLI/Skill artifacts, exports, backups, and release identity.
+- L5 artifact tests verify generated schemas, OpenAPI, administrator CLI/operations Skill artifacts, exports, backups, and release identity.
 - L6 stories verify only representative end-to-end product intent that lower layers cannot establish. Existing runners are reused; this baseline authorizes no dedicated acceptance platform.
 
 ## Risks And Mitigations
@@ -321,5 +321,5 @@ None. A future independently released API consumer or legal-isolation deployment
 - [Workspace Backup, Export, Import, And Data-Root Migration](./20260704-workspace_backup_export_import.md)
 - [App API OpenAPI Projection](./20260704-app_api_openapi_projection.md)
 - [Remote Auth Credential Bootstrap](./20260704-remote_auth_credential_bootstrap.md)
-- [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)
+- [Remote MCP Interface](./20261002-remote_mcp_interface.md)
 - [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)

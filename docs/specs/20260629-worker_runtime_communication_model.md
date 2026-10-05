@@ -107,12 +107,12 @@ The registry and image-catalog entries are static bookkeeping in existing owners
 ## Non-goals
 
 - Do not keep a host fallback for real Worker execution.
-- Do not expose host execution through product config, the end-user Agent Skill Interface, Web UI, deployment docs, capability flags, or status summaries.
+- Do not expose host execution through product config, the end-user remote MCP interface, Web UI, deployment docs, capability flags, or status summaries.
 - Do not make OpenShell policy YAML, sandbox ids, gateway internals, raw environment variables, process handles, or provider secrets public OpenKit protocol.
 - Do not let a Worker Agent add or replace NanoCore-managed supply or obtain external authority from arbitrary sources. Worker-owned tools and MCP configuration inside the admitted Sandbox are unrestricted by OpenKit; storage and network containment still apply. External traffic follows [Sandbox](../core/sandbox.md) and [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md): Gateway-required integrations remain mediated, while admitted public non-LLM grants and separately authorized non-LLM REST grants retain their respective network and credential contracts. Neither direct route creates NanoCore-managed MCP supply or an upward control route. Approval and audit apply to external systems reached through the Gateway.
 - Do not let a Worker Agent write long-term knowledge, notes, or Knowledge Store records directly.
 - Do not make Sandbox Integration a second NanoCore, a product state owner, a review decision engine, or a generic shell daemon.
-- Do not mix the end-user Agent Skill Interface with worker-side MCP capability supply.
+- Do not mix the end-user remote MCP interface with worker-side MCP capability supply.
 - Platform-managed external hosting calls use selected Gateway MCP and its current authorization, configured per-tool approval and audit. Local Git is worker-local work. Native Git push may be explicitly admitted user-space configuration; other external effects retain their own owners.
 - Do not keep historical host runtime configuration shapes as supported product behavior.
 
@@ -138,7 +138,7 @@ NanoCore exposes no worker-runtime, container-placement, backend, SSH lifecycle,
 
 An AgentManifest owns runtime supply but no `mode`, `deployment`, or `transport`; configured NanoHost identity and deployment remain server configuration. Gateway origin, SSH lifecycle target, direct NanoCore endpoint, and transport credentials are not target manifest or Worker fields.
 
-Host execution may exist only as deterministic test doubles, fixture executors, or in-process harnesses that cannot be selected through product configuration, the end-user Agent Skill Interface, Web UI, deployment docs, status summaries, or public capability flags.
+Host execution may exist only as deterministic test doubles, fixture executors, or in-process harnesses that cannot be selected through product configuration, the end-user remote MCP interface, Web UI, deployment docs, status summaries, or public capability flags.
 
 ## Worker-Facing Contract
 
@@ -267,7 +267,7 @@ The backend may collect backend-native logs and transport evidence.
 
 NanoCore verifies and stores product-safe summaries and evidence references.
 
-Public App API, end-user Agent Skill Interface, and Web UI surfaces expose OpenKit ids, summaries, digests, artifact ids, review ids, and next suggested actions rather than backend-private internals.
+Public App API, end-user remote MCP interface, and Web UI surfaces expose OpenKit ids, summaries, digests, artifact ids, review ids, and next suggested actions rather than backend-private internals.
 
 ## Sandbox Integration
 
@@ -406,7 +406,7 @@ The backend transfers the resolved supply into the container.
 
 Sandbox Integration may write runtime-neutral Skill files and inert MCP supply metadata from that resolved supply. Admitted public native environment values are AEP inputs under [Agent Manifest And AEP Resolution](20260703-agent_manifest_aep_resolution.md). The selected adapter may derive runtime-native argv, fixed loopback bindings, only protected environment bindings, and state-root paths but returns no files for the shared harness to materialize. Codex may generate its conditional secret-free patch descriptor under [Logical Model Patch Capability](20260716-codex_worker_adapter.md#logical-model-patch-capability); Pi's credential-free model descriptor is SDK input, not a generated file, under [Provider And Credentials](20260716-pi_worker_adapter.md#provider-and-credentials). Neither layer may materialize upstream MCP server commands, endpoints, credential references, or credentials for this NanoCore-managed supply or its external Gateway projection. Worker-owned in-Sandbox tools and MCP configuration are excluded from that prohibition under [Sandbox](../core/sandbox.md); the rationale is recorded in [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md). Every worker package permits only the fixed authenticated Integration route for its resolved MCP supply.
 
-Static MCP supply alone does not grant a callable tool route. Only exact selected supply plus the matching active package and capability token admits the implemented `/capabilities/mcp/*` Integration family and NanoCore-owned policy; the end-user Skill's bundled CLI is not part of this path.
+Static MCP supply alone does not grant a callable tool route. Only exact selected supply plus the matching active package and capability token admits the implemented `/capabilities/mcp/*` Integration family and NanoCore-owned policy; remote MCP and the administrator CLI are not part of this path.
 
 Dynamic supply changes create a new AEP snapshot and follow the safe-point refresh rules in the Static Supply Projection.
 
@@ -540,7 +540,7 @@ The reconnect contract adds no second protocol or recovery owner. Sandbox Integr
 
 ## Public Surfaces
 
-Public App API, the end-user Agent Skill Interface, Web UI, deployment docs, and status summaries should describe:
+Public App API, the end-user remote MCP interface, Web UI, deployment docs, and status summaries should describe:
 
 - Core mode: `local | server`
 - Worker runtime: `container`
@@ -549,7 +549,7 @@ Public App API, the end-user Agent Skill Interface, Web UI, deployment docs, and
 
 They should not advertise host execution as a supported Worker runtime.
 
-The end-user `openkit` Skill's bundled CLI is the implemented channel facade over NanoCore public APIs. It uses the transport-neutral operation catalog and does not expose a second workflow or route authority.
+Remote MCP and the administrator CLI are the implemented channel projections over NanoCore public APIs. They use definition-derived operation projections and do not expose a second workflow or route authority.
 
 The transport-neutral operation catalog may need operations to inspect worker runtime status, worker communication diagnostics, supply catalog summaries, capability call summaries, and staged review evidence.
 
@@ -565,8 +565,8 @@ Implementation should move through these release-neutral milestones:
 4. Complete live candidate event append, NanoCore validation, and transcript import deduplication through Sandbox Integration's `/worker-control/*` binding.
 5. Complete NanoCore-resolved Skill and MCP supply catalog materialization into container workers.
 6. Extend the implemented selected-MCP capability slice only through separately accepted capability owners; Knowledge Store operations and other families remain future work and must not add another control path.
-7. Keep the unified `openkit` Skill, bundled CLI, and operation catalog aligned as public runtime-communication operations land so coordinator agents can inspect and drive them through public NanoCore APIs.
-8. Verify the full loop through public NanoCore APIs and the Agent Skill Interface without relying on backend-private runtime state.
+7. Keep remote MCP, bundled CLI, and operation catalog aligned as public runtime-communication operations land so coordinator agents can inspect and drive them through public NanoCore APIs.
+8. Verify the full loop through public NanoCore APIs and the remote MCP interface without relying on backend-private runtime state.
 
 ## Verification Expectations
 
@@ -607,7 +607,7 @@ Required real-host verification:
 - run NanoCore in server mode
 - run the configured NanoHost with one fresh, verified-empty Runtime Epoch
 - provide each sandbox one stock RelayStream carrying one standard HTTP/2 session with the sandbox-local `/worker-control/*` and `/inference/*` bindings, while proving that `/capabilities/*` remains absent and disabled
-- connect from a Skill-capable agent app through the bundled `openkit` CLI
+- connect from an MCP-capable agent app through the remote guide and tools
 - create or resume a real thread
 - run two Turns on one non-Goal resident binding through that RuntimeTarget. Goal worker execution is not this acceptance path
 - collect Action Center rows, artifacts, workspace review evidence, worker diagnostics, and capability summaries
@@ -663,14 +663,14 @@ This overview records the worker runtime communication direction. Detailed imple
 - Worker capability route projection, canonical `knowledge.*` target families, sandbox bearer lineage, `WorkerCapabilityCallSummary`, metering, and audit hooks are owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/specs/20260702-knowledge_store_governance_rules.md`.
 - Worker-side Skill and MCP catalog resolution, approved catalog ids, version or digest resolution, runtime-adapter compatibility, and provider and Vault references are owned by `docs/specs/20260703-agent_manifest_aep_resolution.md`, `docs/specs/20260703-worker_agent_capability.md`, and `docs/specs/20260704-worker_mcp_tool_supply.md`; the AEP carries their resolved static supply projection and admitted public native environment inputs, while adapter-specific native argv, protected environment binding derivation, state-root use, and output parsing are owned by S64-S66 and their future peer specifications.
 - Filesystem workspace staging, resolved-path containment, symlink escape rejection, staged review, apply, and recovery behavior are owned by `docs/specs/20260703-workspace_synchronization.md`.
-- End-user coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete Skill guidance and CLI operations are owned by `docs/specs/20260713-openkit_agent_skill_interface.md`.
+- End-user coordinator diagnostics must use public NanoCore App API surfaces rather than runtime internals. Concrete product guidance is owned by `docs/specs/20261002-remote_mcp_interface.md`; administrator CLI behavior is owned by `docs/specs/20260910-agent_operator_skill.md`.
 - NanoHost lifecycle, Runtime Epoch fencing, Sandbox Integration carriage, stock RelayStream ownership, and route-family isolation are owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`; OpenShell network policy defaults, Codex binary allowlists, Git remote helper binary allowlists, and native data transfer remain with their narrower execution-environment and workspace owners.
 - Restart effects use ordinary worker-control adoption plus the existing workspace synchronization, evidence-import, and bounded-step owners; no separate recovery workflows or coordinators exist. Detailed rules are owned by `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-audit_usage_evidence_records.md`, and `docs/specs/20260703-runtime_scheduling_scale.md`.
 
 ## Related Documents
 
 - `docs/specs/20260616-agent_environment_package.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260703-workspace_synchronization.md`
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260531-worker_turn_reliability_envelope.md`

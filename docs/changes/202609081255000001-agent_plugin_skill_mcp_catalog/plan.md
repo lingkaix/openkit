@@ -25,7 +25,7 @@ Acceptance is the accepted contracts in `docs/specs/20260711-skill_catalog_versi
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260704-worker_mcp_tool_supply.md`
 - `docs/specs/20260628-web_product_surface_projection.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/retired/20260713-openkit_agent_skill_interface.md`
 
 ## Working Checkpoint
 

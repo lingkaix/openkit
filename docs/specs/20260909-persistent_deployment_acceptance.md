@@ -9,7 +9,7 @@ updated: "2026-09-10"
 
 ## Owns
 
-This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external Skill-driven use, attempt attribution and isolation, reusable execution support, evidence collection, benchmark reports as ordinary files or Artifacts, diagnosis-to-repair handoff, and the initial observable completion predicates.
+This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external remote-MCP use, attempt attribution and isolation, reusable execution support, evidence collection, benchmark reports as ordinary files or Artifacts, diagnosis-to-repair handoff, and the initial observable completion predicates.
 
 ## Does Not Own
 
@@ -27,7 +27,7 @@ It does not create a test service, evaluation database, Agent runtime, scheduler
 
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/20260529-test_strategy.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260731-operational_telemetry_standardization.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260829-release_management.md`
@@ -36,13 +36,13 @@ It does not create a test service, evaluation database, Agent runtime, scheduler
 
 ## Summary
 
-Reuse one authorized deployed product for real Task execution and external Skill-driven acceptance, with independent result evidence and separate operator diagnosis.
+Reuse one authorized deployed product for real Task execution and external remote-MCP acceptance, with independent result evidence and separate operator diagnosis.
 
 ## Decision
 
 Ordinary functional acceptance reuses an explicitly authorized persistent internal deployment. A new change plan does not require a new host, Data Root, login, Provider account or product installation. Upgrade the deployment through its existing deployment procedure when the target product changes; keep the product build fixed during an attempt. New scenario state is normally a dedicated Workspace or Thread, not a new deployment. Do not certify unexecuted work or close another plan merely because it shares the tested build.
 
-Two complementary paths are admitted. In-product execution submits actual tasks or benchmark workloads to normal Task or Goal Mode and observes the resulting Items, Artifacts, Usage and Evidence. External execution uses a Skill-capable desktop Agent through the same public NanoCore contracts, with separately authorized browser or SSH tools for the user's chosen surface and operator diagnosis. Both use the same installed product and record owners. Internal execution does not require a new evaluation role or a Worker with administrative access to NanoCore.
+Two complementary paths are admitted. In-product execution submits actual tasks or benchmark workloads to normal Task or Goal Mode and observes the resulting Items, Artifacts, Usage and Evidence. External execution uses a MCP-capable desktop Agent through the same public NanoCore contracts, with separately authorized browser or SSH tools for the user's chosen surface and operator diagnosis. Both use the same installed product and record owners. Internal execution does not require a new evaluation role or a Worker with administrative access to NanoCore.
 
 This specification's operating premise, serving the engineer's 2026-09-09 purpose of reducing repeated environment construction so that pending feature plans can obtain their own real acceptance, is that Agent implementation is fast while environment preparation, evidence acquisition and trustworthy adjudication dominate recent acceptance effort. The intended improvement is less repeated preparation and reconstructive scripting, not less reliable proof. A persistent deployment is neither a clean-install proof nor a safe place for every destructive test.
 
@@ -82,7 +82,7 @@ Reports distinguish functional outcome, output quality, elapsed time, attributab
 
 An Agent may inspect admitted records, classify product, environment, tool or evidence failures, and create an ordinary repair Task. Reuse existing tasks to associate repeated occurrences when known; no per-log repair dispatch, polling Agent daemon or autonomous PR merge is introduced. A Worker changes code only in its authorized repository environment. Confirmed deterministic defects receive the lowest sufficient regression; the appropriate user-intent attempt is rerun after deployment when its integration risk remains.
 
-The desktop Agent's SSH authority is separate from the OpenKit Skill. Host tools may inspect or change only the engineer-authorized deployment scope. During the Actor's product flow they cannot seed hidden success, edit product databases, bypass approvals or repair the system and retain the original pass claim. Installation and diagnosis procedures are packaged in the separately owned `openkit-ops` Skill and relevant developer cookbooks; the `openkit` Skill remains a public product client. Explicit administrator-directed App/Web updates follow `20260910-app_update_delivery.md`, including its process-independent host receipt; this is not the excluded autonomous repair loop.
+The desktop Agent's SSH authority is separate from the remote MCP product channel. Host tools may inspect or change only the engineer-authorized deployment scope. During the Actor's product flow they cannot seed hidden success, edit product databases, bypass approvals or repair the system and retain the original pass claim. Installation and diagnosis procedures are packaged in the separately owned `openkit-ops` Skill and relevant developer cookbooks; remote MCP and Web supply ordinary product use, and the operations package includes the administrator CLI. Explicit administrator-directed App/Web updates follow `20260910-app_update_delivery.md`, including its process-independent host receipt; this is not the excluded autonomous repair loop.
 
 PR publication, merge and deployment use their existing owners and explicit task authorization. Unknown external outcomes require inspection; retries cannot blindly repeat an external effect. Normal service supervision handles process liveness. No internal role is responsible for repairing a NanoCore process that cannot execute that role.
 
@@ -90,13 +90,15 @@ PR publication, merge and deployment use their existing owners and explicit task
 
 - One exact updated build runs on the authorized persistent host using its existing protected Provider subscription configuration.
 - One real Task or small benchmark workload executes inside OpenKit; its actual terminal product state and meaningful output are observed through public records. Merely receiving a submitted Turn is insufficient.
-- An independent external Agent loads the packaged Skill and completes an admitted user intent on that same deployment without a prescribed call sequence or private database mutation.
+- An independent external Agent connects through remote MCP guide and tools and completes an admitted user intent on that same deployment without a prescribed call sequence or private database mutation.
 - Another authorized reader can locate the named records and explain both results; a negative/absent outcome is not converted into success by optional telemetry or a producer report.
 - Both attempts retain attribution and survive as evidence without rebuilding or deleting the deployment between them. Attempt fixtures can be identified independently of pre-existing data.
 - Process/request diagnostics can be inspected without content or credential disclosure; optional telemetry failure does not change product outcomes.
-- A later engineer can repeat the procedure from the maintained cookbook and packaged Skill, supplying the deployment access and goal, without reconstructing authentication, transport or deployment scripts.
+- A later engineer can repeat the procedure from the maintained cookbook and remote MCP connection guidance, supplying the deployment access and goal, without reconstructing authentication, transport or deployment scripts.
 
 ## Implementation Status
+
+The historical external-Skill observations below retain their original build and channel attribution. The current acceptance channel is remote MCP; these retained observations do not prove the new channel's live-client acceptance.
 
 Existing public operations, Task/Goal execution and evidence producers remain the substrate. The implementation adds the NanoHost runtime-target Skill/Core Client read, refreshed packaged Skill guidance, process diagnostics and optional HTTP telemetry. The bounded two-path composition is implemented and verified on one persistent deployment. Independently judged external Skill use, unchanged-story repeated-run admission and Collector outage/recovery retain their original fixed-build attribution; subsequent App updates do not relabel those observations.
 

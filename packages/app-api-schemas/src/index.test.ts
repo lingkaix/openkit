@@ -2894,6 +2894,34 @@ describe('app api schemas', () => {
         }).success
       ).toBe(true);
     }
+    const operatorPath = 'skills/openkit-ops/scripts/openkit';
+    for (const text of [generatedPatch, generatedPatch.replaceAll(generatedPath, operatorPath)]) {
+      const retained = {
+        ...workspaceReviews.items[0]!,
+        patchPayload: {
+          ...workspaceReviews.items[0]!.patchPayload!,
+          text,
+        },
+      };
+      expect(ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [retained] }).success).toBe(
+        true
+      );
+    }
+    for (const [from, to] of [
+      [generatedPath, operatorPath],
+      [operatorPath, generatedPath],
+    ]) {
+      const text = generatedPatch
+        .replace(`a/${generatedPath} b/${generatedPath}`, `a/${from} b/${to}`)
+        .replace(`--- a/${generatedPath}`, `rename from ${from}\nrename to ${to}\n--- a/${from}`)
+        .replace(`+++ b/${generatedPath}`, `+++ b/${to}`);
+      expect(
+        appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
+          ...workspaceReviews.items[0]!.patchPayload!,
+          text,
+        }).success
+      ).toBe(false);
+    }
     const item = workspaceReviews.items[0]!;
     const patchPayload = { ...item.patchPayload!, text: generatedPatch };
     const generatedItem = { ...item, patchPayload };

@@ -199,7 +199,7 @@ This specification may return to `Implemented` only when both direct dependencie
 - Product-surface posture: [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
 - Client boundary: [`20260528-core_client_boundary.md`](./20260528-core_client_boundary.md)
 - Test model: [`20260529-test_strategy.md`](./20260529-test_strategy.md), [`20260529-l6_story_acceptance.md`](./20260529-l6_story_acceptance.md)
-- AI-native coordination surface: [`20260713-openkit_agent_skill_interface.md`](./20260713-openkit_agent_skill_interface.md)
+- AI-native coordination surface: [`20261002-remote_mcp_interface.md`](./20261002-remote_mcp_interface.md)
 - Design guide: [`../../DESIGN.md`](../../DESIGN.md)
 - Design→code workflow: [`../cookbooks/claude-design-web-ui-loop.md`](../cookbooks/claude-design-web-ui-loop.md)
 - Retired scaffold stub: [`../cookbooks/spa-solid-vite.md`](../cookbooks/spa-solid-vite.md)

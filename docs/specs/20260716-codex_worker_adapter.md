@@ -250,7 +250,7 @@ The following qualification cases apply to this runtime on its accepted interfac
 - Idle refusal, sibling refusal, and the Turn-barrier drain of loopback credentials are consumed from [Worker Agent Capability](20260703-worker_agent_capability.md). Upstream tokens never sit in the native environment.
 - Two conversations on one shared server, if that hosting is enabled, stay independent. A shared-server failure invalidates every binding that server hosted.
 - Late output or a permission request from a released binding cannot attach to its successor.
-- Web and the public Skill show the same running, reconnecting, closed, and resume-failed outcomes.
+- Web and the remote MCP show the same running, reconnecting, closed, and resume-failed outcomes.
 - Where a load operation exists, it does not restore a pending RPC. There is no transparent recovery of in-flight work.
 - Workspace collection does not claim stability while a relevant writer remains active. This adapter does not treat process exit as the collection gate. Collection is owned by [Workspace Synchronization](20260703-workspace_synchronization.md).
 

@@ -296,6 +296,11 @@ function validateRepositoryPaths(
 /**
  * Resolves repository paths named by one lifecycle metadata value.
  *
+ * Frozen terminal specifications retain their original metadata. A missing root
+ * specification may resolve to exactly one same-name terminal archive file; all
+ * consumers use that identity so existence, independent evidence, and cycle
+ * checks still apply to the resolved target. Other missing paths remain errors.
+ *
  * @param {string} repoRoot Repository root.
  * @param {string} relativePath Repository-relative spec path containing the value.
  * @param {string} value Lifecycle metadata value.
@@ -307,7 +312,25 @@ function resolveEvidencePaths(repoRoot, relativePath, value) {
       ? path
       : toRepositoryPath(repoRoot, resolve(repoRoot, dirname(relativePath), path));
 
-    return resolvedPath.replace(/\/$/u, '');
+    const normalizedPath = resolvedPath.replace(/\/$/u, '');
+    const parts = normalizedPath.split('/');
+    const frozenReferrer =
+      relativePath.startsWith('docs/specs/') &&
+      TERMINAL_DIRECTORY_STATUS.has(relativePath.split('/')[2]);
+    if (
+      !frozenReferrer ||
+      existsSync(join(repoRoot, normalizedPath)) ||
+      parts.length !== 3 ||
+      !normalizedPath.startsWith('docs/specs/') ||
+      !SPEC_FILE_PATTERN.test(parts[2])
+    ) {
+      return normalizedPath;
+    }
+
+    const archivedPaths = [...TERMINAL_DIRECTORY_STATUS.keys()]
+      .map((directory) => `docs/specs/${directory}/${parts[2]}`)
+      .filter((path) => lstatSync(join(repoRoot, path), { throwIfNoEntry: false })?.isFile());
+    return archivedPaths.length === 1 ? archivedPaths[0] : normalizedPath;
   });
 }
 

@@ -23,7 +23,9 @@ const SEMANTICS_FILE = 'source-semantics.json';
 const WORKSPACE_ID = 'ws_demo';
 const KNOWLEDGE_TITLE = 'CI workspace portability knowledge';
 const VAULT_REFERENCE_ID = 'vault_portability_ci';
-const cliPath = fileURLToPath(new URL('../../../skills/openkit/scripts/openkit', import.meta.url));
+const cliPath = fileURLToPath(
+  new URL('../../../skills/openkit-ops/scripts/openkit', import.meta.url)
+);
 
 type CliEnvelope = {
   ok: true;

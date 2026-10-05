@@ -66,7 +66,7 @@ The historical pre-unification upgrade baseline was `0.80.3`, the subscription-u
 
 ## Public Vocabulary Boundary
 
-- Pi-ai type names, event names, provider identifiers, API identifiers, option names, login callback shapes, credential shapes, and error strings must not appear in `packages/protocol`, public App API schemas, Gateway responses or errors, authored provider profiles, product UI, bundled CLI output, or the unified Skill contract.
+- Pi-ai type names, event names, provider identifiers, API identifiers, option names, login callback shapes, credential shapes, and error strings must not appear in `packages/protocol`, public App API schemas, Gateway responses or errors, authored provider profiles, product UI, bundled CLI output, or remote MCP contract.
 - OpenKit schemas use provider-neutral terms such as provider profile, subscription provider, account slot, login interaction, status, quota, endpoint capability, and cache scope.
 - Pi-ai-native detail may appear only in redacted restricted diagnostics or implementation tests. This permits debugging but does not transfer contract ownership.
 - Replacing pi-ai must not require a change to an OpenKit public endpoint, schema, product term, or authored configuration file.

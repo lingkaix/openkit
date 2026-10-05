@@ -106,7 +106,6 @@ Kernel, protocol, and product surfaces:
 - [`20260704-app_api_openapi_projection.md`](./20260704-app_api_openapi_projection.md)
 - [`20260628-web_product_surface_projection.md`](./20260628-web_product_surface_projection.md)
 - [`20260710-web_ui_rebuild_stack.md`](./20260710-web_ui_rebuild_stack.md)
-- [`20260713-openkit_agent_skill_interface.md`](./20260713-openkit_agent_skill_interface.md)
 
 Workflow, human attention, and verification:
 

@@ -464,8 +464,9 @@ export const operationExclusions = [
   {
     source: 'core-projection',
     name: 'subscribeTurnEvents',
-    reason: 'The V1 CLI has no streaming or subscription mode; durable reads remain available.',
-    owner: 'docs/specs/20260713-openkit_agent_skill_interface.md',
+    reason:
+      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
+    owner: 'docs/specs/20260910-agent_operator_skill.md',
   },
 ];
 

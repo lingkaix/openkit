@@ -82,7 +82,7 @@ A Skill imports exactly its self-contained directory under its owner. A package-
 
 ### Grouped management and publication
 
-Plugin list/read, inspect/import, compose/export, select/update, member override, uninstall, and explicit purge are projections through the existing transport-neutral operation catalog, App API, Core Client, OpenAPI, and unified `openkit` Skill/CLI. Redacted metadata, member versions, and readiness reads require current Workspace visibility; they expose no raw source tree. Installation, selection, or membership mutations require `workspace.configure`. Exact source-file reads, raw inspection, and original-package export are restricted configuration operations requiring deployment-admin authority because the original tree may include MCP configuration and arbitrary non-activated files. Skill-only content reads use the independent Skill owner's sensitivity and permission checks. Server installation requires deployment-admin authority. Component candidate submission and MCP activation retain their separate checks.
+Plugin list/read, inspect/import, compose/export, select/update, member override, uninstall, and explicit purge are projections through the existing transport-neutral operation catalog, App API, Core Client, OpenAPI, and remote MCP and the `openkit-ops` administrator CLI. Redacted metadata, member versions, and readiness reads require current Workspace visibility; they expose no raw source tree. Installation, selection, or membership mutations require `workspace.configure`. Exact source-file reads, raw inspection, and original-package export are restricted configuration operations requiring deployment-admin authority because the original tree may include MCP configuration and arbitrary non-activated files. Skill-only content reads use the independent Skill owner's sensitivity and permission checks. Server installation requires deployment-admin authority. Component candidate submission and MCP activation retain their separate checks.
 
 One owner-scope catalog document publishes the Skill, MCP, and Plugin metadata graph and selection references together. The three catalog modules own their respective records within that document; they are not independently writable duplicate stores. Verify and publish immutable payloads first, then compare-and-set the expected catalog revision with the complete selected member map. This local publication boundary prevents a half-visible grouped install; it is not an atomic transaction with remote acquisition, Vault, Gateway processes, or a worker.
 
@@ -174,6 +174,6 @@ Vendor extensions, marketplace discovery, automatic updates, dependency solving,
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260801-nanohost_workspace_data_boundary.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - [Agent Plugins specification](https://agent-plugins.org/specification).
 - [Agent Skills format](https://agentskills.io/specification).

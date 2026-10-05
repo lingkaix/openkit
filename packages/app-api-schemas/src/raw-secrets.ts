@@ -41,7 +41,11 @@ export function addRawSecretIssues(
 }
 
 /** Exact generated artifacts exempt from the shape heuristic inside diff hunk bodies. */
-const GeneratedPatchPaths = new Set(['skills/openkit/scripts/openkit']);
+const GeneratedPatchPaths = new Set([
+  // Retained Sync Review payloads are revalidated; the former path remains readable.
+  'skills/openkit/scripts/openkit',
+  'skills/openkit-ops/scripts/openkit',
+]);
 
 /**
  * Removes only complete hunk bodies for a recognized generated Git diff section.

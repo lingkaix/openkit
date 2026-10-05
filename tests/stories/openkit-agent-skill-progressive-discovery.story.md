@@ -1,32 +1,32 @@
 ---
 id: openkit-agent-skill-progressive-discovery
-title: Create and confirm a Thread through the packaged OpenKit Skill
+title: Create and confirm a Thread through remote MCP
 persona: A team member organizing a new project in an existing OpenKit deployment
-entrypoint: skill
+entrypoint: remote-mcp
 default_tool: cursor-cli
 timeout_seconds: 600
 requires_real_provider: false
 requires_real_codex: false
-contracts: docs/specs/20260713-openkit_agent_skill_interface.md, docs/specs/20260909-persistent_deployment_acceptance.md
+contracts: docs/specs/20261002-remote_mcp_interface.md, docs/specs/20260909-persistent_deployment_acceptance.md
 ---
 
-# OpenKit Skill Real Use
+# Remote MCP Progressive Discovery
 
 ## Purpose
 
-Prove that an independent Skill-capable Agent can create and confirm one named Thread in an authorized Workspace through the installed public interface on a persistent real deployment. The user asks for the resulting Thread, not a sequence of CLI calls.
+Prove that an independent MCP-capable Agent can create and confirm one named Thread in an authorized Workspace through the installed public interface on a persistent real deployment. The user asks for the resulting Thread, not a sequence of tool calls.
 
 ## Preconditions
 
-- A supported Agent host provides Node.js 24, real model access and the packaged OpenKit Skill.
-- The independent Actor uses a real model to discover and operate the Skill. Thread CRUD itself does not need a NanoCore Provider or Codex Worker, so both product dependency flags are false. Retain the actual Actor host, model identity and inference-session provenance.
-- An authorized persistent NanoCore deployment is reachable through the installed Skill connection. A normal user has owner or editor membership in the supplied Workspace, and the Actor has a Workspace-bound credential permitting mutation in that Workspace. A server-admin or workspace-readonly token does not satisfy this precondition.
+- A supported Agent host provides real model access and a Streamable HTTP MCP client with a protected per-user static bearer header.
+- The independent Actor uses a real model to discover and operate the remote guide and tools. Thread CRUD itself does not need a NanoCore Provider or Codex Worker, so both product dependency flags are false. Retain the actual Actor host, model identity and inference-session provenance.
+- An authorized persistent NanoCore deployment is reachable through the remote MCP connection. A normal user has owner or editor membership in the supplied Workspace, and the Actor has a Workspace-bound credential permitting mutation in that Workspace. A server-admin or workspace-readonly token does not satisfy this precondition.
 - The chosen project name is unique for this attempt and contains no private data.
 - The Actor receives no source checkout, prior development conversation, story assertions or hidden answers.
 
 ## Setup
 
-Install the packaged Skill in a fresh Agent host context. Retain its version/build identity and the deployment identity through the normal operator channel. Supply the usual connection securely; provision the normal user and Workspace through supported session APIs before admission if needed. Give the Actor only its persona and this user goal, substituting the selected name and Workspace identity: create a Thread for the named project in the supplied Workspace, verify it exists, and report its identity. Do not start or clear NanoCore for this attempt.
+Configure the remote MCP connection in a fresh Agent host context. Retain its client/version and served guide/build identity and the deployment identity through the normal operator channel. Supply the usual connection securely; provision the normal user and Workspace through supported session APIs before admission if needed. Give the Actor only its persona and this user goal, substituting the selected name and Workspace identity: create a Thread for the named project in the supplied Workspace, verify it exists, and report its identity. Do not start or clear NanoCore for this attempt.
 
 ## User-visible Steps
 
@@ -40,13 +40,13 @@ The requested Thread exists in the supplied Workspace and is readable through th
 
 - Required, outside-in: the Actor's reported Thread identity and name match a successful public Thread read retained in the evidence package, within the supplied Workspace.
 - Required, inside-out: the named Thread record is present through the current authorized public read surface and has the requested name and Workspace; the public Thread owner decides this fact.
-- Optional, outside-in: when doctor is invoked, its captured result reports the supported contract or a truthful incompatibility rather than a fabricated readiness claim.
+- Optional, outside-in: when connection or operation admission fails, its captured result preserves the truthful refusal rather than a fabricated readiness claim.
 
 ## Evidence To Collect
 
-The Actor entrypoint is the packaged Skill CLI; private database access, raw HTTP and source mutation are outside its allowed product tools. Retain host/tool provenance, prompt isolation and redacted credential scope, mutation posture and Workspace binding as run-admission evidence, not product-result assertions. Hidden answers, a prescribed call sequence or unverifiable material isolation invalidate the Actor claim under the L6 owner; they do not turn an otherwise correct Thread result into a product failure. Exclude credential values from all retained evidence.
+The Actor entrypoint is remote MCP guide, search, describe and call; private database access, raw HTTP and source mutation are outside its allowed product tools. Retain host/tool provenance, prompt isolation and redacted credential scope, mutation posture and Workspace binding as run-admission evidence, not product-result assertions. Hidden answers, a prescribed call sequence or unverifiable material isolation invalidate the Actor claim under the L6 owner; they do not turn an otherwise correct Thread result into a product failure. Exclude credential values from all retained evidence.
 
-Retain the verbatim Actor task prompt, Skill and deployment identity, permitted host/tool configuration, redacted Actor interaction observations, final response, and public Thread read establishing the result. The independent Judge recomputes the claimed identity/name/Workspace match. Discovery friction is a non-blocking observation, not an exact call-count assertion.
+Retain the verbatim Actor task prompt, MCP client/guide and deployment identity, permitted host/tool configuration, redacted Actor interaction observations, final response, and public Thread read establishing the result. The independent Judge recomputes the claimed identity/name/Workspace match. Discovery friction is a non-blocking observation, not an exact call-count assertion.
 
 ## Cleanup
 

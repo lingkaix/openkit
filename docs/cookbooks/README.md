@@ -4,7 +4,7 @@ Use this index to find the repository's reusable setup and operational guides be
 
 ## Available Cookbooks
 
-- [Persistent live acceptance](./persistent-live-acceptance.md): reuse an authorized deployment for in-product workloads and external Skill-driven L6, with public evidence and bounded operator diagnosis
+- [Persistent live acceptance](./persistent-live-acceptance.md): reuse an authorized deployment for in-product workloads and external remote-MCP L6, with public evidence and bounded operator diagnosis
 
 - [Claude Design + Claude Code Web UI loop](./claude-design-web-ui-loop.md): the agent-first reference-backed or frame-backed workflow for implemented Web UI. New or materially changed frames require human finalization before implementation; every implemented surface requires final human fidelity review. See [`docs/specs/20260710-web_ui_rebuild_stack.md`](../specs/20260710-web_ui_rebuild_stack.md) for the target stack (React, Tailwind + Adobe Spectrum tokens, React Aria, A2UI).
 - [Solid SPA setup](./spa-solid-vite.md): **Retired.** Stub that points at the React + Spectrum stack and design→code loop above; do not use it to scaffold `apps/web`.

@@ -18,7 +18,7 @@ updated: "2026-10-02"
 ## Does Not Own
 
 - Container image contents, image taxonomy, OCI labels, or GHCR naming, which are owned by `docs/specs/20260708-container_image_packaging.md`.
-- Skill package contents and host contracts, owned by `docs/specs/20260713-openkit_agent_skill_interface.md` and `docs/specs/20260910-agent_operator_skill.md`.
+- Skill package contents and host contracts, owned by `docs/specs/20260910-agent_operator_skill.md`.
 - NanoHost runtime or distribution readiness, which is owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 - Deployment host support profiles, installed dependencies, resource recommendations, and host-requirement verdicts, which are owned by `docs/specs/20260909-deployment_host_requirements.md`.
 - Test-layer semantics, which are owned by `docs/specs/20260529-test_strategy.md`.
@@ -34,7 +34,7 @@ updated: "2026-10-02"
 
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260708-container_image_packaging.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20260910-agent_operator_skill.md`
 - `docs/specs/20260721-worker_execution_environment_images.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260909-deployment_host_requirements.md`
@@ -43,7 +43,7 @@ updated: "2026-10-02"
 
 OpenKit releases are explicit, tag-triggered product bundles rather than package-manager releases.
 
-One lowercase semantic-version Git tag identifies the source commit, container images, end-user Skill archive, supported NanoHost distribution, checksum, GitHub Release, and verification record.
+One lowercase semantic-version Git tag identifies the source commit, container images, operations Skill archive, supported NanoHost distribution, checksum, GitHub Release, and verification record.
 
 An authorized agent prepares and verifies the release locally, receives explicit authorization for the named external publication, pushes the immutable tag, observes the workflow, resolves any first-publication visibility gate without changing artifact identity, and closes only after post-publication verification succeeds.
 
@@ -54,7 +54,7 @@ An authorized agent prepares and verifies the release locally, receives explicit
 - Give an agent one authoritative answer for what a release is and when it is complete.
 - Keep every released byte traceable to one tag and source commit.
 - Make a same-tag workflow rerun reuse completed artifacts rather than overwrite them.
-- Publish the complete end-user Skill beside the release images.
+- Publish the complete operations Skill beside the release images.
 - Publish the NanoHost owner's supported distribution beside the Skill and release images.
 - Keep release failure and partial publication visible and recoverable without moving or deleting tags.
 
@@ -91,13 +91,12 @@ The current release bundle contains exactly these controlled assets:
 | Asset | Distribution | Identity |
 | --- | --- | --- |
 | Catalog entries with `release: true` | GHCR | Exact version tag, version without `v`, source-revision tag, digest, and stable-only `latest` |
-| End-user `openkit` Skill | GitHub Release attachment | `openkit-skill-<tag>.tar.gz` containing the complete `skills/openkit/` tree and repository license |
 | Operations `openkit-ops` Skill | GitHub Release attachment | `openkit-ops-skill-<tag>.tar.gz` containing the complete `skills/openkit-ops/` tree and repository license |
 | NanoHost Distributions | GitHub Release attachments | `openkit-nanohost-<tag>-linux-amd64.tar.gz` and `openkit-nanohost-<tag>-linux-arm64.tar.gz`, each satisfying the exact target, tree, pin, installer, license, and reproducibility contract owned by the NanoHost specification |
-| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over both attached Skill archives and the NanoHost archives |
+| Portable-asset checksum | GitHub Release attachment | `SHA256SUMS` over the attached operations Skill archive and the NanoHost archives |
 | Release record | GitHub Release | Tag, source commit, workflow run, image tags and digests, automatic gate result, manual-gate disposition, and portable-asset checksum |
 
-The assets above and the post-publication checks below are the current release procedure. Once the [first-release retirement coverage condition](20260713-openkit_agent_skill_interface.md#live-product-use-and-acceptance) is demonstrated, the user-facing Skill is retired under OpenKit Agent Skill Interface. The end-user Skill archive then leaves this composition, and the public Skill CLI local-operation-discovery check is replaced by verification of the operator CLI derived from the operation definitions in [Operation Definition](20261002-operation_definition.md). This amendment does not change the current assets, checksum, or verification steps.
+The first-release Skill composition contains only the operations package with its definition-derived administrator executable. Remote MCP guide and every eligible release-operation dispatch are covered by the retirement regressions; one-time-secret procedures and Web/administrator archive transfers retain their accepted owners. New releases produce no end-user Skill archive or fallback package. Previously published immutable assets are unchanged. [Agent Operator Skill](20260910-agent_operator_skill.md) owns the installed package and [Operation Definition](20261002-operation_definition.md) owns the projection.
 
 GitHub-generated source archives are convenience snapshots and are not controlled release artifacts or checksum authorities.
 
@@ -181,17 +180,17 @@ For a newly promoted prerelease, the workflow MUST prove that it did not change 
 
 The workflow MUST log out of GHCR and inspect the exact `worker-common` digest without credentials.
 
-The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect both complete Skill archives. Run the public Skill CLI's local operation discovery under the supported Node runtime without a NanoCore connection, and verify the operations Skill entrypoint and resolvable packaged references from the extracted archive outside the checkout. It MUST run the same executable NanoHost release-asset verifier used before publication against both downloaded NanoHost archives, including exact tree, target and generated-manifest consistency, inner checksums, target-matched ELF identity, and a newly created contained `DESTDIR` installation. Cross-target staging makes no live NanoHost readiness claim; fresh target-matched real-host qualification is separate.
+The workflow MUST download every controlled GitHub Release attachment and verify `SHA256SUMS`. It MUST inspect the complete operations Skill archive, including its executable mode, entrypoint and resolvable packaged references. Run that extracted administrator CLI's local definition-derived operation discovery under Node.js 24 without a NanoCore connection outside the checkout. It MUST run the same executable NanoHost release-asset verifier used before publication against both downloaded NanoHost archives, including exact tree, target and generated-manifest consistency, inner checksums, target-matched ELF identity, and a newly created contained `DESTDIR` installation. Cross-target staging makes no live NanoHost readiness claim; fresh target-matched real-host qualification is separate.
 
 The GitHub Release prerelease state MUST agree with the tag, and its notes MUST name the source commit, workflow run, image digests, automatic gates, manual-gate disposition, visibility posture, NanoHost target and current R001 runtime status, and portable-asset checksum.
 
 ## Current Implementation Projection
 
-The first-release Skill retirement coverage condition and the consequent release-composition transition above are decided and not yet implemented.
+The operations-only Skill composition, executable preflight, packaging and local verification are implemented. This local change does not demonstrate release publication or live-client acceptance.
 
 The existing `.github/workflows/ci.yml` already runs tag preflight, L0-L3, L5, a catalog-derived image matrix, GHCR publication, anonymous `worker-common` inspection, and GitHub Release creation.
 
-The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete Skill, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
+The current implementation removes package-version coupling, makes tag parsing lowercase-only, pins every release image base, packages the complete operations Skill including the administrator executable, separates digest candidates from tag promotion, serializes releases, preserves same-tag image identity, applies GitHub prerelease semantics, and performs post-publication verification.
 
 The native arm64 NanoHost build job, arm64 archive packaging, combined portable checksum, arm64 verifier, isolated fixed-path installer job, and arm64 attachment checks are implemented and pass their focused local regressions. Exact artifact candidate commit `1a5468bce556c14bb3dfc16550a9dc2f1c7adad5` completed the no-lifecycle A1 real-artifact gate and received independent evidence acceptance for arm64. The required amd64 native build, target-aware packaging and verification, attachment, post-publication checks, and fresh real-host qualification are not implemented. R004 remains open until a separately authorized complete tag is published and verified, and stable preflight remains blocked while R001 is open.
 
@@ -200,7 +199,7 @@ The repository is currently private, no product release exists, and no visibilit
 ## Testing Strategy / Acceptance Criteria
 
 - The release tag parser accepts lowercase stable and prerelease identities and rejects uppercase identities, while the current release preflight CLI rejects stable tags by default and rejects a release image without a digest-pinned base.
-- Release preflight requires the complete Skill entrypoint inputs and does not inspect private workspace package versions.
+- Release preflight requires the operations Skill entrypoint and executable inputs and does not inspect private workspace package versions.
 - The app Dockerfile and image catalog declare the same digest-pinned Node base.
 - Every third-party GitHub Action reference in the workflow is pinned to an immutable commit.
 - The workflow pushes a digest candidate, smokes every declared platform before promotion, and reuses matching version and source-revision tags without mutation.

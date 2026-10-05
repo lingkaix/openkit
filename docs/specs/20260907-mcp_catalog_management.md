@@ -98,7 +98,7 @@ Portable Workspace export uses only redacted MCP version/source lineage under `d
 
 ## Proposed Design
 
-Extend the existing MCP catalog resolver and management surface, keeping the Gateway's effective entry and supervisor intact. App API, Core Client, OpenAPI, and the unified Skill/CLI expose the same scoped management operations and redacted readiness information. No independent MCP runtime, generic lifecycle engine, or publisher-version resolver is required.
+Extend the existing MCP catalog resolver and management surface, keeping the Gateway's effective entry and supervisor intact. App API, Core Client, OpenAPI, and the remote MCP and administrator CLI expose the same scoped management operations and redacted readiness information. No independent MCP runtime, generic lifecycle engine, or publisher-version resolver is required.
 
 ## Current Implementation Projection
 

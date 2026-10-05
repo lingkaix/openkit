@@ -23,7 +23,7 @@ updated: "2026-10-03"
 - Immutable MCP configuration history, current-version selection, catalog mutations, and binding ownership, which belong to `docs/specs/20260907-mcp_catalog_management.md`; public packaging and grouped installation belong to `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`.
 
 - The worker capability plane itself: routing, envelopes, lineage, and `CapabilityCall` semantics. `docs/specs/20260703-worker_agent_capability.md` owns those; this spec owns its selected `mcp.*` route family.
-- The end-user `openkit` Skill and bundled CLI. `docs/specs/20260713-openkit_agent_skill_interface.md` owns that surface. The direction matters: that spec is an external coordinator driving NanoCore through public operations, while this spec is NanoCore supplying MCP tools to worker agents. They share no transport contract, code path, record, or policy ownership.
+- The user-facing remote MCP endpoint and administrator CLI. `docs/specs/20261002-remote_mcp_interface.md` and `docs/specs/20260910-agent_operator_skill.md` own those surfaces. The direction matters: external coordinators drive NanoCore through public operations, while this specification owns NanoCore supplying MCP tools to worker agents. External product invocation stays outside the selected Worker MCP transport, package-session admission, supply records and supply-policy ownership; shared operation definitions and native implementations do not merge those boundaries.
 - Vault record semantics and injection plan shapes (`docs/specs/20260703-vault_secret_injection.md`).
 - Third-party non-MCP API proxying and unified network egress, which remain deferred on the roadmap.
 - MCP server sandboxing/isolation, which is deferred.
@@ -261,7 +261,7 @@ Previously open questions are resolved by accepted defaults: `stdio` MCP servers
 - `docs/specs/20260703-worker_agent_capability.md`
 - `docs/specs/20261002-operation_definition.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260704-vault_backend_implementation.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`

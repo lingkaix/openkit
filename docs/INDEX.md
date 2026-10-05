@@ -108,7 +108,6 @@ and are not listed here.
 - `docs/specs/20260711-scheduler_recurring_event_triggers.md` — Accepted, Not Started — Durable fixed-interval schedule definitions and occurrence history for requesting the existing worker Turn admission operation.
 - `docs/specs/20260711-skill_catalog_versioning_pinning.md` — Accepted, Partial — Independent worker Skill identity, immutable content versions, provenance, candidate submission, exact selection, promotion, pinning, rollback, and removal.
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md` — Accepted, Partial — The boundary between one NanoCore-owned worker execution and runtime-internal sub-agents created by Codex or another Worker Agent runtime.
-- `docs/specs/20260713-openkit_agent_skill_interface.md` — Accepted, Partial — This spec owns the user-facing AI-native OpenKit interface composed of one end-user `openkit` Skill and its progressively disclosed reference material.
 - `docs/specs/20260713-work_resource_interaction_model.md` — Accepted, Partial — This spec owns the implementation-facing interaction model that lets users express precise intent against work resources without requiring every interaction to…
 - `docs/specs/20260715-contract_stability_baseline.md` — Accepted, Partial — The current OpenKit stability classification for contract families that matter before a product release.
 - `docs/specs/20260715-multi_user_workspace_system.md` — Accepted, Partial — The target design for several authenticated users sharing one canonical Workspace inside one NanoCore deployment.
@@ -135,7 +134,7 @@ and are not listed here.
 - `docs/specs/20260909-deployment_host_requirements.md` — Accepted, Not Started — The supported host profiles for running NanoCore from source, running the NanoCore application image, running the packaged NanoHost, and co-locating the applic…
 - `docs/specs/20260909-internal_agent_resource_integration.md` — Accepted, Not Started — This specification owns trusted assembly of selected Skills, internal-capability MCP bindings and native Kernel/UI Tools for NanoCore's internal Assistant: sel…
 - `docs/specs/20260909-knowledge_notebook_editing.md` — Accepted, Not Started — The single fixed-base editing and publication contract for an owner-scoped OKF notebook: retained Git content revisions, bounded Knowledge Manager file editing…
-- `docs/specs/20260909-persistent_deployment_acceptance.md` — Accepted, Implemented — This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external Skill-drive…
+- `docs/specs/20260909-persistent_deployment_acceptance.md` — Accepted, Implemented — This specification owns ordinary functional acceptance on a persistent internal OpenKit deployment: the composition of in-product work and external remote-MCP…
 - `docs/specs/20260909-personal_memory_and_knowledge_learning.md` — Accepted, Not Started — This specification owns the User/Workspace/Server projections of the existing Knowledge Store, personal Memory retrieval, conversation-source intake, bounded a…
 - `docs/specs/20260909-thread_visibility_and_sharing.md` — Accepted, Partial — This specification owns private versus Workspace-shared Thread defaults, durable visibility metadata, discovery and publication enforcement, explicit sharing,…
 - `docs/specs/20260910-agent_operator_skill.md` — Accepted, Partial — This specification owns the independently distributable `openkit-ops` Skill: its installation, configuration, upgrade, diagnosis and recovery guidance; its hos…
@@ -156,6 +155,7 @@ and are not listed here.
 - `docs/specs/retired/20260627-remote_openshell_gateway.md` — Retired
 - `docs/specs/retired/20260628-spec_inventory_release_triage.md` — Retired
 - `docs/specs/retired/20260704-git_write_workflow.md` — Retired
+- `docs/specs/retired/20260713-openkit_agent_skill_interface.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_artifact_detail.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_inline_approvals.md` — Retired
 - `docs/specs/retired/web-ui-pre-rebuild/20260515-web_inline_questions.md` — Retired
@@ -231,6 +231,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20260930-delayed_user_input_terminal_archive.md` — Delayed User Input Terminal Archive
 - `docs/audits/20261003-git_write_workflow_terminal_archive.md` — Git Write Workflow Terminal Archive
 - `docs/audits/20261003-goal_mode_coordination_terminal_archive.md` — Goal Mode Coordination Terminal Archive
+- `docs/audits/20261005-openkit_agent_skill_interface_terminal_archive.md` — OpenKit Agent Skill Interface Terminal Archive
 
 ## Platform References
 

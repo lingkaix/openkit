@@ -179,13 +179,18 @@ test('release preflight rejects an unpinned app base image', () => {
   );
 });
 
-test('release preflight rejects a missing portable Skill input', () => {
-  const repoRoot = makeReleaseFixture({ omitSkillManifest: true });
-
+test('release preflight rejects a missing administrator executable', () => {
+  const repoRoot = makeReleaseFixture({ omitCli: true });
   assert.throws(
     () => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }),
-    /Portable release input does not exist: skills\/openkit\/SKILL\.md/
+    /Portable release input does not exist: skills\/openkit-ops\/scripts\/openkit/
   );
+});
+
+test('release preflight rejects a non-executable administrator CLI', () => {
+  const repoRoot = makeReleaseFixture();
+  chmodSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts', 'openkit'), 0o644);
+  assert.throws(() => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }), /must be executable/);
 });
 
 test('release preflight rejects a missing operations Skill input', () => {
@@ -424,19 +429,15 @@ function makeReleaseFixture(options = {}) {
   });
   writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n  - 'packages/*'\n");
   writeFileSync(join(root, 'LICENSE'), 'fixture license\n');
-  mkdirSync(join(root, 'skills', 'openkit', 'agents'), { recursive: true });
-  mkdirSync(join(root, 'skills', 'openkit', 'scripts'), { recursive: true });
-  if (!options.omitSkillManifest) {
-    writeFileSync(join(root, 'skills', 'openkit', 'SKILL.md'), '# Fixture Skill\n');
-  }
+  mkdirSync(join(root, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
   if (!options.omitOpsSkillManifest) {
-    mkdirSync(join(root, 'skills', 'openkit-ops'), { recursive: true });
     writeFileSync(join(root, 'skills', 'openkit-ops', 'SKILL.md'), '# Fixture operations Skill\n');
   }
-  writeFileSync(join(root, 'skills', 'openkit', 'agents', 'openai.yaml'), 'interface: fixture\n');
-  const cliPath = join(root, 'skills', 'openkit', 'scripts', 'openkit');
-  writeFileSync(cliPath, '#!/usr/bin/env node\n');
-  chmodSync(cliPath, 0o755);
+  if (!options.omitCli) {
+    const cliPath = join(root, 'skills', 'openkit-ops', 'scripts', 'openkit');
+    writeFileSync(cliPath, '#!/usr/bin/env node\n');
+    chmodSync(cliPath, 0o755);
+  }
 
   mkdirSync(join(root, 'apps', 'nanohost', 'deploy'), { recursive: true });
   mkdirSync(join(root, 'apps', 'nanohost', 'openshell'), { recursive: true });

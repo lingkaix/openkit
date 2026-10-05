@@ -4,7 +4,7 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 
 ## Boundaries
 
-- Browser and product requests use Better Auth session cookies; remote requests from the unified Skill's bundled CLI, other non-browser clients, and administration clients use explicit `okt_` bearer credentials.
+- Browser and product requests use Better Auth session cookies; remote requests from the `openkit-ops` administrator CLI, remote MCP, other non-browser clients, and administration clients use explicit `okt_` bearer credentials.
 - Authentication establishes the actor; workspace membership and token scope still require authorization before any workspace database, store, or mutation is opened.
 - `/mcp` reuses this middleware's bearer verifier and socket-derived transport admission in both modes. It accepts no implicit local actor or browser session, returns the same uniform authentication body plus `WWW-Authenticate: Bearer`, and installs only the presented Token's actor. Native operation invocation retains scope and permission admission; the endpoint adds no second authorizer. The App composition forces `remote-mcp` last-use attribution regardless of caller-supplied channel headers.
 - A current usable administrator Web session or presented administrator bearer receives owner admission on active Workspaces without a manufactured membership, including the derived Workspace list. Session eligibility is resolved from the active canonical User's currently usable `server-admin` Token. Workspace-scoped tokens keep their bindings, and read-only credentials stay read-only. The synthetic administrator fact's `membershipRevision: 1` is not a membership compare-and-set value.

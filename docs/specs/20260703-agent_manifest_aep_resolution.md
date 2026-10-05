@@ -66,7 +66,7 @@ Core Agent Supply owns the authored `AgentManifest` concept. This specification 
 - Do not preserve compact or historical manifest shapes.
 - Do not define Codex, OpenCode, or Pi Agent native config file formats.
 - Do not turn catalogs, grants, policy evaluation, runtime proof, or materialization into an authored setup source.
-- Do not make worker-side MCP supply the same thing as the end-user Agent Skill Interface.
+- Do not make worker-side MCP supply the same thing as the end-user remote MCP interface.
 - Do not implement scheduling in this spec; see the runtime scheduling spec.
 
 ## Background

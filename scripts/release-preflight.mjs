@@ -64,15 +64,15 @@ export function parseVersionTag(tag) {
 function validatePortableReleaseInputs(repoRoot) {
   for (const path of [
     'LICENSE',
-    'skills/openkit/SKILL.md',
-    'skills/openkit/agents/openai.yaml',
-    'skills/openkit/scripts/openkit',
+    'skills/openkit-ops/scripts/openkit',
     'skills/openkit-ops/SKILL.md',
   ]) {
     assertRelativeExistingPath(repoRoot, path, 'Portable release input');
   }
-  if ((statSync(join(repoRoot, 'skills/openkit/scripts/openkit')).mode & 0o111) === 0) {
-    throw new Error('Bundled Skill CLI must be executable: skills/openkit/scripts/openkit');
+  if ((statSync(join(repoRoot, 'skills/openkit-ops/scripts/openkit')).mode & 0o111) === 0) {
+    throw new Error(
+      'Bundled administrator CLI must be executable: skills/openkit-ops/scripts/openkit'
+    );
   }
 }
 

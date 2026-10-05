@@ -880,12 +880,95 @@ describe('remote MCP App endpoint', () => {
     }
   });
 
+  it('reaches every eligible definition through search, describe and native call with the exact Token actor', async () => {
+    const f = await fixture();
+    const token = f.token();
+    const native = vi.fn(async () => ({ reached: true }));
+    vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(native);
+    // This dispatch probe keeps real bearer verification and audit writes, but batches
+    // their fixture-local commits instead of fsyncing three requests per definition.
+    f.coreDb.sqlite.exec('BEGIN');
+    try {
+      const excluded = Object.entries(OPERATION_DEFINITIONS)
+        .filter(([, definition]) => !operationMcpEligible(definition))
+        .map(([id]) => id)
+        .sort();
+      expect(excluded).toEqual([
+        'bootstrap.consume',
+        'token.create',
+        'token.rotate',
+        'workspace.archive-download',
+        'workspace.archive-import',
+        'workspace.archive-import-dry-run',
+      ]);
+      for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+        const search = JSON.parse(
+          (await f.call('search', { query: operation }, token.secret)).content[0].text
+        );
+        const described = await f.call('describe', { operation }, token.secret);
+        const input = { requestId: randomUUID(), reachProbe: operation };
+        const before = native.mock.calls.length;
+        const called = await f.call('call', { operation, input }, token.secret);
+        if (operationMcpEligible(definition)) {
+          expect(search.items.map((item: { id: string }) => item.id)).toContain(operation);
+          expect(JSON.parse(described.content[0].text).id).toBe(operation);
+          expect(called.isError).not.toBe(true);
+          expect(native).toHaveBeenLastCalledWith(
+            operation,
+            input,
+            expect.objectContaining({
+              kind: 'public',
+              delivery: 'model',
+              actor: expect.objectContaining({
+                userId: 'user_remote_mcp',
+                tokenId: token.record.tokenId,
+              }),
+            })
+          );
+          expect(native.mock.calls.length).toBe(before + 1);
+        } else {
+          expect(search.items.map((item: { id: string }) => item.id)).not.toContain(operation);
+          for (const result of [described, called]) {
+            expect(result.isError).toBe(true);
+            expect(JSON.parse(result.content[0].text).code).toBe(
+              definition.returnsOneTimeSecret
+                ? 'mcp_secret_returning_operation'
+                : 'mcp_streaming_operation'
+            );
+          }
+          expect(native.mock.calls.length).toBe(before);
+        }
+      }
+    } finally {
+      f.coreDb.sqlite.exec('ROLLBACK');
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('serves progressive product guidance and never issues OAuth metadata or a refresh token', async () => {
     const f = await fixture();
     const token = f.token();
     const guide = await f.call('guide', {}, token.secret);
     expect(guide.content[0].text).toContain('Ask the user');
     expect(guide.content[0].text).toContain('default_tools_approval_mode');
+    expect(guide.content[0].text).not.toMatch(
+      /OpenKit Skill|not yet migrated|Goal execution remains unavailable/
+    );
+    for (const criterion of [
+      'Chat',
+      'Task',
+      'Goal',
+      'Action Center',
+      'exact proposal',
+      'requestId',
+      'Web Portability',
+      'openkit-ops',
+      'bootstrap',
+      'knowledge',
+      'acceptance',
+    ]) {
+      expect(guide.content[0].text).toContain(criterion);
+    }
     const init = await (
       await f.message(
         'initialize',

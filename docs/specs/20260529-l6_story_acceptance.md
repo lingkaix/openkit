@@ -418,7 +418,7 @@ These questions create no current implementation or test obligation. A future pr
 - `docs/change-execution.md`
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `tests/stories/README.md`
 - `README.md`

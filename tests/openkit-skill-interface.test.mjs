@@ -23,7 +23,7 @@ import { createCoreClient } from '@openkit/core-client';
 import * as protocol from '@openkit/protocol';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const skillRoot = join(repoRoot, 'skills', 'openkit');
+const skillRoot = join(repoRoot, 'skills', 'openkit-ops');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const protocolExports = new Map(Object.entries(protocol));
 
@@ -435,45 +435,18 @@ test('Worker environment preparation and activation use the global Agent contrac
   );
 });
 
-test('the OpenKit Skill ships only the accepted release tree', () => {
+test('the operations Skill includes the standalone administrator CLI and the public package is absent', () => {
+  assert.equal(existsSync(join(repoRoot, 'skills', 'openkit')), false);
   assert.deepEqual(listFiles(skillRoot), [
     'SKILL.md',
-    'agents/openai.yaml',
-    'references/acceptance.md',
-    'references/administration.md',
-    'references/capability-map.md',
-    'references/knowledge.md',
-    'references/loop.md',
-    'references/recovery.md',
-    'references/setup.md',
+    'references/getting-started.en.md',
+    'references/nanocore-data-root-config.en.md',
+    'references/nanocore-deployment-modes.en.md',
+    'references/nanocore-operations.en.md',
+    'references/sandbox-container-tests.en.md',
+    'references/using-openkit.en.md',
     'scripts/openkit',
   ]);
-
-  const skill = readFileSync(join(skillRoot, 'SKILL.md'), 'utf8');
-  const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
-  assert.ok(frontmatter);
-  assert.deepEqual(
-    frontmatter[1]
-      .split('\n')
-      .filter((line) => /^[A-Za-z_][A-Za-z0-9_-]*\s*:/.test(line))
-      .map((line) => line.slice(0, line.indexOf(':')))
-      .sort(),
-    ['description', 'name']
-  );
-  assert.ok(skill.split('\n').length < 500);
-
-  for (const name of [
-    'acceptance',
-    'administration',
-    'capability-map',
-    'knowledge',
-    'loop',
-    'recovery',
-    'setup',
-  ]) {
-    assert.match(skill, new RegExp(`references/${name}\\.md`));
-  }
-
   assert.equal(statSync(cliPath).mode & 0o111, 0o111);
 });
 
@@ -499,6 +472,28 @@ test('one catalog covers the checked App API and public Core projection', async 
   const { operationCatalog, operationExclusions } = await operations();
   const client = createCoreClient({ baseUrl: 'http://127.0.0.1' });
   const appOperationIds = readAppOperationIds();
+  assert.deepEqual(
+    new Set(appOperationIds),
+    new Set(Object.keys(appSchemas.OPERATION_DEFINITIONS))
+  );
+  assert.deepEqual(
+    Object.entries(appSchemas.OPERATION_DEFINITIONS)
+      .filter(([, definition]) => !appSchemas.operationMcpEligible(definition))
+      .map(([id]) => id)
+      .sort(),
+    [
+      'bootstrap.consume',
+      'token.create',
+      'token.rotate',
+      'workspace.archive-download',
+      'workspace.archive-import',
+      'workspace.archive-import-dry-run',
+    ]
+  );
+  for (const exclusion of operationExclusions) {
+    assert.ok(exclusion.reason);
+    assert.ok(exclusion.owner);
+  }
   const appMappings = operationCatalog
     .filter((entry) => entry.source === 'app-api')
     .map((entry) => entry.appOperationId);

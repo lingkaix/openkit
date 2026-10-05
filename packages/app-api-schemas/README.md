@@ -1,6 +1,6 @@
 # @openkit/app-api-schemas
 
-Thread dashboard taskInputs carry only Item identity and objective from NanoCore-verified structured Worker requests. They add no durable task payload or runtime identity, and are shared by Web and the public Skill.
+Thread dashboard taskInputs carry only Item identity and objective from NanoCore-verified structured Worker requests. They add no durable task payload or runtime identity, and are shared by Web, remote MCP and the administrator CLI.
 
 Thread dashboard schemas include the nullable authenticated viewer id and a narrow participant display-name projection. These release-coupled labels do not replace immutable protocol actors or expose private profile fields.
 
@@ -46,7 +46,7 @@ App-update schemas define the closed release/exact-commit prepare request, maint
 
 Worker environment schemas project bounded retained-storage summaries, explicit ordinary Task and Goal storage choices, exact host observations, immutable authored/resolved candidate references, canonical human activation and purge confirmations, and truthful unknown outcomes. They expose no administrator Token, host path, native runtime handle, credential, or retained file content. The administration conversation request names only private conversation input and optional continuity; NanoCore derives and authorizes its private Workspace.
 
-Workspace Sync Review patch schemas scan metadata and ordinary file contents for raw-secret-shaped strings. Only complete Git unified-diff hunks for the exact generated `skills/openkit/scripts/openkit` path are exempt; unsupported or malformed patches retain full scanning. Nested review and list schemas preserve this boundary without rescanning patch text.
+Workspace Sync Review patch schemas scan metadata and ordinary file contents for raw-secret-shaped strings. Only complete Git unified-diff hunks for the exact generated `skills/openkit/scripts/openkit` (retained review data) and `skills/openkit-ops/scripts/openkit` (current bundle) path are exempt; unsupported or malformed patches retain full scanning. Nested review and list schemas preserve this boundary without rescanning patch text.
 
 `ThreadDashboard.runtimeActivity` is an optional bounded per-Turn projection with structural coverage and separate `contentCapture` off/on/unknown. Its exported timeline bounds are shared by storage projection and response validation. It contains display-safe text and source sequence only, not body references, native identities, execution authority or approval controls.
 

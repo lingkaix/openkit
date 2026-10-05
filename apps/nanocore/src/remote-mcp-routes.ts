@@ -31,15 +31,21 @@ function mcpInputSchema(schema: z.ZodObject) {
 }
 
 /** Product guidance for plain MCP clients; tool presence and client approval never grant authority. */
-const GUIDE = `Use search to discover an operation, then describe it to learn its complete input and mutation posture. Call one operation at a time with that input. Discovery is metadata, never a permission decision. Only operations currently migrated into the definition tables are available here; the user-facing OpenKit Skill remains available for the remaining product surface.
+const GUIDE = `Use search to discover an operation, then describe it to learn its complete input and mutation posture. Call one operation at a time with that input. Discovery is metadata, never a permission decision. Remote MCP reaches the release operation definitions except one-time-secret results and the three streaming Workspace archives.
 
-NanoCore owns authorization, durable state, approval, idempotency, audit, recovery and execution. Ask the user for each server-required human approval and convey only their explicit decision for the exact proposal. A client approval prompt is not an OpenKit human decision. Existing authorization for a bounded action remains valid; do not repeatedly request it.
+NanoCore owns authorization, durable state, approval, idempotency, audit, recovery and execution. Ask the user for each server-required human approval and convey only their explicit decision for the exact proposal and Pending Request identity. A client approval prompt is not an OpenKit human decision. Existing authorization for a bounded action remains valid; do not repeatedly request it. Never answer a secret question or infer approval, spending authority, review acceptance or budget extension.
 
-Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay. Never claim cancellation from a disconnected client. Keep credentials and one-time secrets out of conversation, logs, artifacts and knowledge. Token issuance, rotation and bootstrap secret responses are unavailable over MCP. Workspace archive operations are streaming-only: ordinary users use Web Portability, and administrators use the administrator CLI with local archive files.
+Follow the product loop: select a Workspace, inspect resources and repositories within the user's authority, select or create a Thread, and read its durable state. Use Chat for a lightweight answer, Task for bounded delegated work, or Goal for a continuous outcome with immutable Plan approval and completion acceptance. Describe Goal operations before use; card and intent edits do not steer running workers, and there is no Goal step, pause or resume. Formal Task/Goal Threads use workspace visibility explicitly. Read Action Center, the exact receiving Thread and Turn, artifacts, evidence, audit and usage before reporting completion. Command acceptance and configured Worker health do not prove Worker success. Private audiences and credential limits remain enforced even when operation metadata is visible.
 
-For external Codex clients, set default_tools_approval_mode = "approve" for this OpenKit MCP server. NanoCore still enforces its own permission and approval requirements.
+Read durable state after a mutation. A transport failure does not prove that an effect did not happen. Inspect the owner outcome before retrying; reuse the exact requestId only for an exact replay with unchanged input. Never claim cancellation from a disconnected client. Follow long work through bounded reads with a deadline. For recovery_required, stale lineage, denied admission or contradictory evidence, retain the typed refusal and inspect the owning records; do not manufacture receipts, edit storage, silently substitute Worker storage or automatically rerun work. Worker storage selection is an eligibility preview, not attachment or checkout recovery. Preserve exact storage revisions and predecessor work-slot lineage. Administrator-originated Tasks retain the presented credential for later effect revalidation.
 
-Follow the product loop: select a Workspace, inspect resources, select or create a Thread, use Chat for a lightweight answer or Task for bounded work, read Action Center and durable results, present required decisions to the user, then continue or recover from current state. New Goal execution remains unavailable until its implementation lands. Use the retained OpenKit Skill's relevant setup, loop, knowledge, recovery, administration or acceptance reference when the needed operation is not yet migrated.`;
+Use knowledge discovery for sources, observations, claims, retrieval, context packages, conflicts and proposals. Read provenance and health, preserve contradictory evidence, and request the responsible user's exact decision before accepting, rejecting or reversing proposals. Artifacts and evidence are review inputs; compare their actual content with the user's objective and constraints. Artifact introduction alone starts no work. Restricted Material content remains unavailable to model delivery even for administrators; use the authorized human Web path. App update is discoverable but model delivery remains refused until its owner admits exact approval binding; administrators use Web or the administrator CLI.
+
+Keep credentials and one-time secrets out of conversation, logs, artifacts and knowledge. Token issuance, rotation and bootstrap secret responses are unavailable over MCP. Authorized operators use the openkit-ops administrator CLI with preflighted local secret-safe sinks; bootstrap and offline host recovery need their separate authority. Workspace archive operations are streaming-only: ordinary users use Web Portability, and administrators use the administrator CLI with local archive files. Host diagnosis, source editing, installation and process replacement use separately authorized host tools, never arbitrary MCP routes or shell calls. Worker-side MCP and product Skill catalogs remain separate capability supply.
+
+For real-use acceptance, reuse the persistent deployment and normal public operations. Keep the user's objective open-ended; do not inspect story answers, seed hidden state, or require a fixed call trajectory. Independently read back meaningful results and distinguish product, environment, tool and insufficient-evidence outcomes. Optional telemetry is diagnostic support. Preserve unknown effects and attempt attribution; a repair or upgrade begins a new attempt. Report actual identifiers, evidence and remaining limitations without closing untested work or user-reserved gates.
+
+For external Codex clients, set default_tools_approval_mode = "approve" for this OpenKit MCP server. NanoCore still enforces its own permission and approval requirements.`;
 
 /** Truthful operation metadata derived from the single definition, never a grant. */
 function descriptor(id: string, definition: (typeof OPERATION_DEFINITIONS)[OperationId]) {
@@ -77,7 +83,11 @@ function search(query: string) {
         id,
         description: definition.description,
         mutating: definition.mutating,
-        score: wanted.filter((term) => tokens.some((token) => token.startsWith(term))).length,
+        // An exact id must remain reachable even when many descriptions share its terms.
+        score:
+          id === query.trim().toLowerCase()
+            ? wanted.length + 1
+            : wanted.filter((term) => tokens.some((token) => token.startsWith(term))).length,
       };
     })
     .filter((entry) => wanted.length === 0 || entry.score > 0)

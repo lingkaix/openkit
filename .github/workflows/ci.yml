@@ -564,10 +564,9 @@ jobs:
             --openshell-notices nanohost-input/openshell-THIRD-PARTY-NOTICES
           cd dist/release
           sha256sum -c SHA256SUMS
-          tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/SKILL.md"
-          tar -tzf "openkit-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-skill-${GITHUB_REF_NAME}/skills/openkit/scripts/openkit"
           tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/LICENSE"
           tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/skills/openkit-ops/SKILL.md"
+          tar -tzf "openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" | grep -Fx "openkit-ops-skill-${GITHUB_REF_NAME}/skills/openkit-ops/scripts/openkit"
           ops_extract="$(mktemp -d)"
           OPS_ARCHIVE="openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" OPS_EXTRACT="${ops_extract}" node --input-type=module <<'NODE'
           import { verifyOperationsSkillArchive } from '../../scripts/package-release-assets.mjs';
@@ -997,7 +996,6 @@ jobs:
             release_flags+=(--latest)
           fi
           gh release create "${GITHUB_REF_NAME}" \
-            "portable-assets/openkit-skill-${GITHUB_REF_NAME}.tar.gz" \
             "portable-assets/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
             portable-assets/SHA256SUMS \
@@ -1077,7 +1075,6 @@ jobs:
           const names = release.assets.map((asset) => asset.name).sort();
           const expected = [
             'SHA256SUMS',
-            `openkit-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
             `openkit-ops-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-arm64.tar.gz`,
           ].sort();
@@ -1104,11 +1101,6 @@ jobs:
           }
           NODE
           (cd release-download && sha256sum -c SHA256SUMS)
-          archive="release-download/openkit-skill-${GITHUB_REF_NAME}.tar.gz"
-          prefix="openkit-skill-${GITHUB_REF_NAME}"
-          tar -tzf "${archive}" | grep -Fx "${prefix}/LICENSE"
-          tar -tzf "${archive}" | grep -Fx "${prefix}/skills/openkit/SKILL.md"
-          tar -tzf "${archive}" | grep -Fx "${prefix}/skills/openkit/scripts/openkit"
           ops_archive="release-download/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz"
           ops_prefix="openkit-ops-skill-${GITHUB_REF_NAME}"
           tar -tzf "${ops_archive}" | grep -Fx "${ops_prefix}/LICENSE"
@@ -1121,12 +1113,10 @@ jobs:
             destDir: process.env.OPS_EXTRACT,
           });
           NODE
-          mkdir release-extract
-          tar -xzf "${archive}" -C release-extract
           docker run --rm \
-            --volume "${PWD}/release-extract:/release:ro" \
+            --volume "${ops_extract}:/release:ro" \
             "${TEST_IMAGE}" \
-            node "/release/${prefix}/skills/openkit/scripts/openkit" ops search workspace
+            node "/release/${ops_prefix}/skills/openkit-ops/scripts/openkit" ops search workspace
           verification_parent="$(mktemp -d)"
           node scripts/verify-nanohost-release.mjs \
             --archive "release-download/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \

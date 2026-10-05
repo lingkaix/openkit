@@ -13,7 +13,7 @@ Source: engineer request and GitHub issue #54. Deliver one focused PR for privat
 - `docs/specs/20260909-thread_visibility_and_sharing.md`
 - `docs/core/permissions.md`
 - `docs/core/storage.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/retired/20260713-openkit_agent_skill_interface.md`
 - `docs/specs/20260704-app_api_openapi_projection.md`
 
 ## Closeout Summary

@@ -54,7 +54,7 @@ The clean target is a strict derivation flow: NanoCore-owned records (`VaultRefe
 
 - Do not build an OpenKit-owned injection proxy in this slice.
 - Do not adopt OpenShell roadmap items that are not current behavior. Profile-driven explicit credential placement and endpoint- or binary-scoped static credential injection MUST be treated as unavailable.
-- Do not make OpenShell provider profiles, provider instances, policy YAML, gateway names, or sandbox ids part of public App API, unified Skill operation catalog, bundled CLI, or Web UI contracts.
+- Do not make OpenShell provider profiles, provider instances, policy YAML, gateway names, or sandbox ids part of public App API, remote MCP operation metadata, bundled CLI, or Web UI contracts.
 - Do not preserve compatibility layers for earlier OpenKit-internal credential upload shapes; the explicit Codex credential file upload path is replaced, not aliased.
 - Do not fork or patch OpenShell. The backend supports only the official matched SDK, Gateway, and Supervisor release selected by the NanoHost runtime owner.
 - Do not define the encrypted vault backend; that remains owned by the vault spec.
@@ -83,7 +83,7 @@ OpenKit internalizes the definition layer and borrows the mechanism layer.
 
 - NanoCore MUST be able to regenerate every OpenShell provider profile, provider instance definition, and derived policy artifact from `VaultReference`, `VaultGrant`, `VaultInjectionPlan`, `PermissionDecision`, AEP snapshot, and workspace records alone.
 - Generated OpenShell artifacts MUST NOT be edited in place on the gateway as a way of changing OpenKit behavior. The change path is: change NanoCore records, regenerate, re-derive.
-- Public App API, unified Skill, bundled CLI, Web UI, and Action Center surfaces MUST expose only NanoCore record ids and redacted summaries, never OpenShell profile ids, instance names, policy YAML, gateway internals, or placeholder variable values.
+- Public App API, remote MCP, administrator CLI, Web UI, and Action Center surfaces MUST expose only NanoCore record ids and redacted summaries, never OpenShell profile ids, instance names, policy YAML, gateway internals, or placeholder variable values.
 - The mapping layer (the code that renders NanoCore records into OpenShell artifacts and imports OpenShell evidence back) MUST carry an explicit mapping version, and every derived artifact and imported record MUST record that mapping version and the actual OpenShell release identity used by the runtime.
 
 ### Derivation Contract

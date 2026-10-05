@@ -1,11 +1,21 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  seedDemoWorkspaceAuthority,
+  seedDemoWorkspaceDataRoot,
+} from '../../../tests/support/demo-data.mjs';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
-const cliPath = fileURLToPath(new URL('../../../skills/openkit/scripts/openkit', import.meta.url));
+const cliPath = fileURLToPath(
+  new URL('../../../skills/openkit-ops/scripts/openkit', import.meta.url)
+);
 let harness: NanoCoreHarness | null = null;
+let administratorToken = '';
 
 /** Minimal successful CLI envelope used by this acceptance story. */
 type CliEnvelope = {
@@ -25,9 +35,29 @@ afterEach(async () => {
   }
 });
 
-describe('OpenKit Skill CLI e2e', () => {
+describe('OpenKit administrator CLI e2e', () => {
   it('diagnoses NanoCore and persists one public mutation', async () => {
-    harness = await startNanoCoreHarness({ seedDemoWorkspace: false });
+    const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-cli-admin-'));
+    seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceAuthority(dataRoot);
+    const { openCoreDb } = await import('../dist/storage/db.js');
+    const { createOpenKitAccessTokenRecord } = await import('../dist/auth/access-token-store.js');
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      administratorToken = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'user_local',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      }).secret;
+    } finally {
+      coreDb.sqlite.close();
+    }
+    harness = await startNanoCoreHarness({
+      coreMode: 'server',
+      dataRoot,
+      seedDemoWorkspace: false,
+    });
 
     const doctor = await runCli(harness.baseUrl, ['doctor']);
     expect(doctor).toMatchObject({
@@ -35,7 +65,7 @@ describe('OpenKit Skill CLI e2e', () => {
       command: 'doctor',
       data: {
         endpoint: harness.baseUrl,
-        authentication: 'unauthenticated-local',
+        authentication: 'environment',
         nanocore: { ready: true, protocolVersion: PROTOCOL_VERSION },
       },
     });
@@ -65,7 +95,7 @@ describe('OpenKit Skill CLI e2e', () => {
 });
 
 /**
- * Runs the checked standalone CLI against one local NanoCore process.
+ * Runs the checked standalone CLI against one server-mode NanoCore process with a current administrator bearer.
  *
  * @param baseUrl NanoCore base URL.
  * @param args CLI arguments.
@@ -78,7 +108,7 @@ function runCli(baseUrl: string, args: string[], input = '{}'): Promise<CliEnvel
       env: {
         ...process.env,
         OPENKIT_NANOCORE_URL: baseUrl,
-        OPENKIT_NANOCORE_TOKEN: '',
+        OPENKIT_NANOCORE_TOKEN: administratorToken,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

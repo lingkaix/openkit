@@ -17,7 +17,7 @@ updated: 2026-09-08
 - Agent Plugin packaging or MCP configuration versions, which have separate specifications.
 - Skill execution, model obedience, sandbox privileges, network access, credentials, or tool permission.
 - An experiment scheduler, Judge, scoring system, autonomous promotion policy, generic improvement framework, or business-model implementation.
-- Knowledge Proposal or Review semantics, the end-user `openkit` Skill, Git hosting, or source-development workflows.
+- Knowledge Proposal or Review semantics, external product client packaging, Git hosting, or source-development workflows.
 - AEP, AgentSession, transport, command-ledger, audit, or evidence lifecycles already owned elsewhere.
 
 ## Core References
@@ -116,7 +116,7 @@ Portable Workspace export preserves independently readable Skill version bytes, 
 
 ### Management surface
 
-The transport-neutral operation catalog exposes entry/version list and read, exact content/diff reads, create/import, candidate submit/withdraw/decide, default selection, pin set/clear, remove, and explicit unreferenced purge. App API, Core Client, OpenAPI, and the unified `openkit` Skill/CLI project those same operations. Workspace reads require `workspace.read`; candidate submission and its validated inactive payload require `workspace.write`; ordinary catalog creation/import, activation, promotion, pins, removal, and purge require `workspace.configure`. Withdrawal follows the candidate rule above. Resource sensitivity may further restrict reads. Server mutation, other Workspaces, Vault use, and worker launch never follow implicitly.
+The transport-neutral operation catalog exposes entry/version list and read, exact content/diff reads, create/import, candidate submit/withdraw/decide, default selection, pin set/clear, remove, and explicit unreferenced purge. App API, Core Client, OpenAPI, and remote MCP and the administrator CLI project those same operations. Workspace reads require `workspace.read`; candidate submission and its validated inactive payload require `workspace.write`; ordinary catalog creation/import, activation, promotion, pins, removal, and purge require `workspace.configure`. Withdrawal follows the candidate rule above. Resource sensitivity may further restrict reads. Server mutation, other Workspaces, Vault use, and worker launch never follow implicitly.
 
 ## Proposed Design
 
@@ -178,7 +178,7 @@ Experiment scheduling, statistical analysis, held-back evaluation suites, autono
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260711-evaluation_harness_design.md`
 - `docs/specs/20260710-self_improvement_evaluation_loop.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260529-test_strategy.md`
 - [Agent Skills format](https://agentskills.io/specification).
 - [skills local hash implementation](https://github.com/vercel-labs/skills/blob/main/src/local-lock.ts), evidence for content identification rather than OpenKit's encoding or a runtime dependency.

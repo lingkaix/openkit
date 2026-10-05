@@ -24,7 +24,7 @@ Where a rule below names another owner, that owner keeps the rule. This specific
 - The accepted browser OAuth design, including protected-resource metadata and the challenge pointer. [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md) owns that design. This specification states only where the endpoint serves it once it is implemented.
 - Operation eligibility inside an owner that does not yet admit a bearer actor. That owner keeps the refusal. This specification says the endpoint returns the refusal.
 - Worker MCP supply. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns it. This endpoint is not that supply.
-- Retirement of the user-facing Skill stays with [OpenKit Agent Skill Interface](20260713-openkit_agent_skill_interface.md); ownership and relocation of the retained bundled CLI stay with [Agent Operator Skill](20260910-agent_operator_skill.md), and this specification performs neither transition.
+- Release composition and operations package ownership stay with [Release Management](20260829-release_management.md) and [Agent Operator Skill](20260910-agent_operator_skill.md).
 - The configured public origin's authorship. [NanoCore Config And Identity Contract](20260628-nanocore_config_identity_contract.md) owns `server.publicBaseUrl`.
 - Policy evaluation, private-audience semantics, and per-effect authority objects. Their owners keep them.
 
@@ -139,7 +139,7 @@ The externally observable acceptance predicates are Testing Strategy / Acceptanc
 
 The restricted-Material preflight is implemented inside the Material family map. The server-owned `/mcp` entry supplies trusted model delivery; restricted revision read/save and creation return a safe `sensitive_content` tool result with semantic status 409 before content access or command writes. Authorized JSON exact reads and edits remain available through the human delivery entry.
 
-The App listener serves stateless Streamable HTTP at `/mcp` from `apps/nanocore/src/remote-mcp-routes.ts`, registered in `apps/nanocore/src/app.ts` behind the existing authentication middleware. Admission accepts only an `Authorization: Bearer` Token through the existing Token verifier, in both local and server mode. A missing or unusable credential, a query, body or cookie credential, a browser session, and implicit local authority receive HTTP 401 with `WWW-Authenticate: Bearer` and no MCP dispatch. Non-loopback plaintext is refused from the Node socket before verification. Successful verification records last-used channel and source `remote-mcp` before any caller channel or source header is read. The tools are `search`, `describe`, `guide`, and `call`, derived from the composed operation definition tables with no maintained operation list. `call` uses the native operation invocation with the presented Token actor, and product refusals are tool results. A definition whose output schema is the access-token issuance or rotation schema is refused before dispatch, and the bootstrap response schema is that issuance schema; a new secret-returning output contract must join that predicate before it joins the tables. Request audit is an existing server AuditEvent recording the Token user, the Token id, and `remote-mcp`, without tool arguments or results. The endpoint has no MCP session store, refresh token, protected-resource metadata, or browser OAuth route.
+The App listener serves stateless Streamable HTTP at `/mcp` from `apps/nanocore/src/remote-mcp-routes.ts`, registered in `apps/nanocore/src/app.ts` behind the existing authentication middleware. Admission accepts only an `Authorization: Bearer` Token through the existing Token verifier, in both local and server mode. A missing or unusable credential, a query, body or cookie credential, a browser session, and implicit local authority receive HTTP 401 with `WWW-Authenticate: Bearer` and no MCP dispatch. Non-loopback plaintext is refused from the Node socket before verification. Successful verification records last-used channel and source `remote-mcp` before any caller channel or source header is read. The tools are `search`, `describe`, `guide`, and `call`, derived from the composed operation definition tables with no maintained operation list. `call` uses the native operation invocation with the presented Token actor, and product refusals are tool results. Declared returnsOneTimeSecret and binding facts determine eligibility: all one-time-secret results and the three Workspace archive streams are omitted from discovery and refused before invocation. Guide provides current Chat, Task, Goal, exact human-decision, knowledge, recovery and acceptance instructions with Web and operator handoffs. Exact-id search remains reachable within bounded results. Tests compare the full table partition and forward each eligible id/input and Token actor through the existing invocation seam; separate real invocation and domain tests prove owner behavior. Request audit is an existing server AuditEvent recording the Token user, the Token id, and `remote-mcp`, without tool arguments or results. The endpoint has no MCP session store, refresh token, protected-resource metadata, or browser OAuth route.
 
 ## Alternatives Considered
 
@@ -155,6 +155,12 @@ Rejected alternatives for authentication and for retiring the Skill before the e
 ## Rollout / Migration Plan
 
 The endpoint is new. It adds no compatibility reader, alias, or dual write for the deleted stdio MCP package. Retained Tokens stay usable under the existing verifier. No Token migration is required for this release.
+
+## Product Guide And Retirement Coverage
+
+Guide teaches current Chat, Task and Goal work, Workspace/Thread selection, exact human decisions, knowledge, durable results and bounded recovery. It contains no retired Skill fallback or unavailable-Goal claim. Public acceptance uses a persistent authorized instance, normal operations, open-ended user intent, no hidden seeding/story answers/fixed call trajectory/new runner, and independent durable readback. Existing task authorization persists; reserved human gates require the exact responsible user's decision. A disconnected client does not cancel work, and an accepted command is not completed execution. Owner-required private audience, restricted Material and App-update model-delivery refusals remain truthful.
+
+Every eligible composed definition must be discoverable, describable and reachable through call with its exact id, input and authenticated Token actor. The exact exclusions are the three one-time-secret operations and the three streaming Workspace archives owned by Operation Definition. Secret-safe operator procedures and Web/administrator archive transfers cover those exclusions; support metadata is outside the operation catalog. Whole-public coverage remains mechanically checked against the checked OpenAPI and typed Core projections, with unique mappings or reason/owner-backed exclusions. Retired user-facing stdio and four-Skill packages remain absent without compatibility aliases; worker capability supply is unaffected.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -193,6 +199,6 @@ Peers are listed in Related Docs.
 - [Administrator Authority](../decisions/20261002-administrator_authority.md)
 - [Operation Definition](20261002-operation_definition.md)
 - [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md)
-- [OpenKit Agent Skill Interface](20260713-openkit_agent_skill_interface.md)
+- [Agent Operator Skill](20260910-agent_operator_skill.md)
 - [NanoCore Config And Identity Contract](20260628-nanocore_config_identity_contract.md)
 - [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md)

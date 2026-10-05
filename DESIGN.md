@@ -92,7 +92,7 @@ Everything the UI shows is a projection of that hierarchy. The interface's job i
 
 **The UI is a supervisor's instrument, not a chat toy and not a marketing page.** The first screen is the usable workbench. No landing page, hero section, or walkthrough shell precedes the product. It should feel like a dense, calm, professional tool — *capable but neat*.
 
-**Posture note (2026):** the current implementation is NanoCore-first and the primary end-user agent path is one `openkit` Skill with its bundled CLI. The Web UI is the *visible follower* over stable NanoCore read models. The design must therefore make work legible **regardless of which channel initiated it** (see §9.7), and must stay honest when the Core it follows is unreachable (see §9.12, §11).
+**Posture note (2026):** the current implementation is NanoCore-first and the primary end-user agent path is remote MCP with its guide. The Web UI is the *visible follower* over stable NanoCore read models. The design must therefore make work legible **regardless of which channel initiated it** (see §9.7), and must stay honest when the Core it follows is unreachable (see §9.12, §11).
 
 ---
 
@@ -310,7 +310,7 @@ Replaces the lone status chip in the goal header: **Draft › Plan › Execute �
 A light labeled divider that groups the items of one **Turn** (a bounded execution step/attempt) without boxing the stream. Quiet by default; can carry a one-line note. Reflects the `Thread → Turn → Item` work model.
 
 ### 9.7 Channel attribution (`ok-via`) — D-008 → channel
-Every item can say **where** it came from: a quiet `via openkit Skill` / `via Slack` tag next to the initiator. This makes the Web UI the single visible layer for work driven from *any* channel.
+Every item can say **where** it came from: a quiet `via remote MCP` / `via Slack` tag next to the initiator. This makes the Web UI the single visible layer for work driven from *any* channel.
 
 ### 9.8 Kanban (goal board lens, `ok-kanban`)
 250px columns on `layer-1`, 8px-radius cards with title + worker avatar + meta. **Drag = command, never free arrangement** (D-007): within-column = reprioritize; To do → In progress = "start now"; dragging into Done is forbidden (use the card menu's "Skip this step"). Card menu: Prioritize / Reassign / Skip / Pause. Cards open **back into the conversation** — the board indexes the thread, never a parallel world.

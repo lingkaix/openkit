@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe('nanocore e2e workspace portability', () => {
-  it('round-trips identical archive bytes through Web streams and administrator CLI local sinks', async () => {
+  it('round-trips identical archive bytes through authenticated HTTP streams and administrator CLI local sinks', async () => {
     const sourceDataRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-source-'));
     const targetDataRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-target-'));
     const sourceToken = await seedArchiveAdministrator(sourceDataRoot);
@@ -355,7 +355,14 @@ function administratorArchiveCall(
   return new Promise((resolveResult, reject) => {
     const child = spawn(
       process.execPath,
-      [resolve('../../skills/openkit/scripts/openkit'), 'ops', 'call', operation, '--input', '-'],
+      [
+        resolve('../../skills/openkit-ops/scripts/openkit'),
+        'ops',
+        'call',
+        operation,
+        '--input',
+        '-',
+      ],
       {
         env: {
           ...process.env,

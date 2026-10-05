@@ -136,7 +136,7 @@ Follow the current design-to-code loop in [`docs/cookbooks/claude-design-web-ui-
 - the account gate
 - Thread runtime activity
 
-`docs/specs/20260721-provider_subscription_accounts.md` (Web And Skill Observation Semantics) owns Gateway account quota, billing, refresh, and time display.
+`docs/specs/20260721-provider_subscription_accounts.md` (Web And Agent Observation Semantics) owns Gateway account quota, billing, refresh, and time display.
 
 `docs/specs/20260831-unified_conversation_composer.md` (Composer Interaction Contract, Advanced Worker Environment Choice, and Target Catalog) owns Composer layout, keyboard behavior, the advanced Worker environment choice, and per-Thread Worker targets.
 
@@ -311,7 +311,7 @@ The Web fixture-cleanup regression injects a failure at a surviving provider-pro
 
 Use `useConnection` in `src/app/core-client.tsx` for the shared `core.meta()` connection probe; General Settings reads its Workspace through `useSettingsWorkspace` in `src/screens/settings/data.ts`. Starter and Thread Composer uploads share `importComposerFile` in `src/screens/artifacts/data.ts` over the existing Artifact mutation; each screen retains its own non-awaited Artifact-list refresh after import. Sidebar, starter Recent, and Overview activity destinations share `conversationThreadPath` in `src/screens/chat/data.ts`, preserving encoded owner identifiers and unknown activity opening Chat; Sidebar active matching remains cross-mode and includes nested Thread routes.
 
-**jsonc-parser** is scanner-only JSONC syntax highlighting for the native configuration textarea; NanoCore remains the parser and validator. **markdown-it** is the parser already supplied by A2UI, directly configured for readable assistant reports. Raw HTML is disabled, images remain escaped text, and only explicit HTTP(S) links are navigable. Human messages and raw evidence remain verbatim; the Web projection does not change API or Skill message text.
+**jsonc-parser** is scanner-only JSONC syntax highlighting for the native configuration textarea; NanoCore remains the parser and validator. **markdown-it** is the parser already supplied by A2UI, directly configured for readable assistant reports. Raw HTML is disabled, images remain escaped text, and only explicit HTTP(S) links are navigable. Human messages and raw evidence remain verbatim; the Web projection does not change App API, remote MCP or administrator CLI message text.
 
 ### Account, theme, and invitations
 

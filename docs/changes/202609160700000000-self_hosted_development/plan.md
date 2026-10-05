@@ -64,7 +64,7 @@ Two earlier session.close operations lost their result and exhausted the existin
 
 - `docs/core/work-model.md` owns the user-facing work backbone and execution narratives.
 - `docs/specs/20260628-web_product_surface_projection.md` and `DESIGN.md` own Web projections.
-- `docs/specs/20260713-openkit_agent_skill_interface.md` owns the public Skill and operation parity.
+- `docs/specs/retired/20260713-openkit_agent_skill_interface.md` owns the public Skill and operation parity.
 - `docs/specs/20260704-task_mode_worker_delegation.md` and the applicable Goal, repository, approval, and workspace-sync specifications own execution and delivery.
 - `docs/specs/20260909-persistent_deployment_acceptance.md` and `docs/cookbooks/persistent-live-acceptance.md` own live-use attribution and repair boundaries.
 

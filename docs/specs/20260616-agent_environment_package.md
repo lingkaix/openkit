@@ -284,7 +284,7 @@ runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
 
 The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, AgentSession, Agent, runtime kind, backend kind, `createdAt`, the redacted package, and a SHA-256 digest of the exact serialized redacted package.
 
-Snapshot list and read operations expose only the redacted record through App API, Core Client, OpenAPI, and the unified Skill/CLI. The durable snapshot remains evidence and diagnostics; it is not a replay instruction or current access grant.
+Snapshot list and read operations expose only the redacted record through App API, Core Client, OpenAPI, and the remote MCP and administrator CLI. The durable snapshot remains evidence and diagnostics; it is not a replay instruction or current access grant.
 
 Normal resolution, snapshot reads, restart, export, and import accept version 4 only. No runtime alias, compatibility union, or fallback form is authorized, and no reader accepts a version 2 or version 3 package. A later package version carries retained snapshots forward as evidence through a one-way migration or an explicit data-retirement decision under Retained Data Continuity in `docs/core/contract-evolution.md`; current execution still accepts only the current version.
 

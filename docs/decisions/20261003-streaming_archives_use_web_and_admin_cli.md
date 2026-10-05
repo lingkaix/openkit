@@ -7,7 +7,7 @@ decider: Coordinator, under the engineer's standing delegation to decide in the 
 
 ## Decision
 
-The Coordinator adopted an exception to first-release remote MCP coverage: the three definition-owned Workspace archive operations retain their streaming bindings through Web and the administrator CLI. Remote MCP omits them from search and describe, refuses call before archive processing with a typed unsupported-operation result, and directs users to those channels through guide. [Operation Definition](../specs/20261002-operation_definition.md#remote-mcp-projection) owns projection; [OpenKit Agent Skill Interface](../specs/20260713-openkit_agent_skill_interface.md#live-product-use-and-acceptance) counts demonstrated Web and administrator CLI archive coverage toward Skill retirement. This revises the earlier expectation of remote MCP coverage for every non-secret operation; it does not provide ordinary users an equivalent agent archive channel.
+The Coordinator adopted an exception to first-release remote MCP coverage: the three definition-owned Workspace archive operations retain their streaming bindings through Web and the administrator CLI. Remote MCP omits them from search and describe, refuses call before archive processing with a typed unsupported-operation result, and directs users to those channels through guide. [Operation Definition](../specs/20261002-operation_definition.md#remote-mcp-projection) owns projection; [OpenKit Agent Skill Interface](../specs/retired/20260713-openkit_agent_skill_interface.md#live-product-use-and-acceptance) counts demonstrated Web and administrator CLI archive coverage toward Skill retirement. This revises the earlier expectation of remote MCP coverage for every non-secret operation; it does not provide ordinary users an equivalent agent archive channel.
 
 ## Reason
 
@@ -29,6 +29,6 @@ None recorded.
 - [Operation Definition](../specs/20261002-operation_definition.md)
 - [Remote MCP Interface](../specs/20261002-remote_mcp_interface.md)
 - [Workspace Backup, Export, Import, And Data-Root Migration](../specs/20260704-workspace_backup_export_import.md)
-- [OpenKit Agent Skill Interface](../specs/20260713-openkit_agent_skill_interface.md)
+- [OpenKit Agent Skill Interface](../specs/retired/20260713-openkit_agent_skill_interface.md)
 - [Agent Operator Skill](../specs/20260910-agent_operator_skill.md)
 - [Release Management](../specs/20260829-release_management.md)

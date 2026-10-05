@@ -36,7 +36,9 @@ Internal Chat, administration and Goal planning calls keep private cache scope a
 
 ## Scope
 
-NanoCore's App listener serves stateless Streamable HTTP at `/mcp`. This endpoint requires an ordinary `Authorization: Bearer` Token in both server and local mode, reuses the existing verifier and native invocation, and exposes only `search`, `describe`, `guide`, and `call` over the composed operation definitions. Its read-only discovery tools expose metadata rather than permission grants; the multiplexed call can mutate, and describe gives the selected operation's posture. Token issuance, rotation and bootstrap output contracts are refused before invocation. Token last-use and request audit record `remote-mcp`; no MCP session is product authority. The retained Skill covers operations not yet migrated. Run `pnpm --filter @openkit/nanocore exec vitest run src/remote-mcp-routes.test.ts src/auth/middleware.test.ts src/operation-projections.test.ts` for the focused endpoint, credential and native-seam regressions.
+NanoCore's App listener serves stateless Streamable HTTP at `/mcp`. This endpoint requires an ordinary `Authorization: Bearer` Token in both server and local mode, reuses the existing verifier and native invocation, and exposes only `search`, `describe`, `guide`, and `call` over the composed operation definitions. Its read-only discovery tools expose metadata rather than permission grants; the multiplexed call can mutate, and describe gives the selected operation's posture. Token issuance, rotation and bootstrap output contracts are refused before invocation. Token last-use and request audit record `remote-mcp`; no MCP session is product authority. The first-release public Skill package is retired. The `openkit-ops` administrator CLI is generated at `skills/openkit-ops/scripts/openkit`; authorized operator procedures cover one-time-secret results, and Web and this CLI retain the three streaming archive transfers excluded from MCP. Run `pnpm --filter @openkit/nanocore exec vitest run src/remote-mcp-routes.test.ts src/auth/middleware.test.ts src/operation-projections.test.ts` for the focused endpoint, credential and native-seam regressions.
+
+The all-definition MCP regression exercises search, describe and call for every definition, including the exact one-time-secret and archive-stream exclusions. It uses real bearer verification and request audit writes in one fixture-local SQLite transaction until teardown to avoid a disk commit per request; the native invocation double inspects exact inputs and Token actor. Domain effects and persistence are covered by the native-seam and owner tests.
 
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
@@ -59,7 +61,7 @@ Automatic conversational routing through Workflow Coordinator preserves affirmat
 
 Direct `task.start` supplies trusted explicit delegation intent from the operation and admits one bounded worker attempt for a structurally valid nonempty instruction under the existing hard admission and effect controls. It preserves exact instruction bytes and skips semantic reclassification and keyword Goal creation; see the [explicit Task entry](src/README.md) and [Task Mode contract](../../docs/specs/20260704-task_mode_worker_delegation.md#decision).
 
-Selected-Worker `conversation.submit` returns its existing accepted Turn and result Item before Worker completion. The full Worker loop retains ownership of the Workspace database, checkpoint, scheduler lease, output and cleanup until closeout. The exact result Item then reflects terminal failure or interruption; replay validates current durable state without relaunching the Worker or repairing contradictory history. Web and the public Skill follow the returned receiving Thread and Turn for progress rather than keeping the submit request open through execution.
+Selected-Worker `conversation.submit` returns its existing accepted Turn and result Item before Worker completion. The full Worker loop retains ownership of the Workspace database, checkpoint, scheduler lease, output and cleanup until closeout. The exact result Item then reflects terminal failure or interruption; replay validates current durable state without relaunching the Worker or repairing contradictory history. Web and the remote MCP follow the returned receiving Thread and Turn for progress rather than keeping the submit request open through execution.
 
 Before creating a receiving Thread or Turn, selected-Worker submission validates the assembled conversation prompt against the structured delegation objective schema. The 2,000-character limit includes attached Artifact text; invalid input returns HTTP 400 `invalid_request` with the schema issue text and creates no Worker admission or executor effect. Valid objectives pass unchanged, without truncation. Run `pnpm --filter @openkit/nanocore exec vitest run src/mode-entry-routes.test.ts` for the focused route regressions, including rejection at 2,073 characters and unchanged delivery at 2,000.
 
@@ -126,7 +128,7 @@ Conversation-target discovery and submission share one Thread-scoped catalog. Ex
 
 Optional boot-bound `appUpdate` configuration enables deployment-admin `app-update.prepare`, `app-update.start` and `app-update.status` operations through a restricted SSH host helper. The helper owns replacement outside the App process; Core records authorization and projects its receipt. Without configuration the capability reports `app_update_unconfigured`. It is not supplied to Workspace Workers, and it never owns NanoHost updates. See [App Update Delivery](../../docs/specs/20260910-app_update_delivery.md) for the accepted boundary and current rollout status.
 
-Run this app first when you want to drive the product through the browser or the bundled OpenKit Skill CLI with the configured worker container runtime:
+Run this app first when you want to drive the product through the browser or the bundled OpenKit administrator CLI with the configured worker container runtime:
 
 ```bash
 pnpm --filter @openkit/nanocore dev
@@ -304,7 +306,7 @@ pnpm -w verify:release
 
 That command runs L0-L2 verification, NanoCore e2e, and built-artifact smoke tests. Use `pnpm -w verify:full` only for explicit full local validation that also includes Web Playwright e2e. The real Codex smoke spec is skipped unless explicitly enabled, so the normal gate succeeds without host credentials.
 
-The end-user interface L6 is the agentic [OpenKit Agent Skill Progressive Discovery story](../../tests/stories/openkit-agent-skill-progressive-discovery.story.md). It has no committed runner; execute it with a real Skill-capable agent only when accepting provider quota use, and reduce deterministic defects to the lowest sufficient L1-L5 regression.
+The end-user interface L6 is the agentic [Remote MCP Progressive Discovery story](../../tests/stories/openkit-agent-skill-progressive-discovery.story.md). It has no committed runner; execute it with a real MCP-capable agent only when accepting provider quota use, and reduce deterministic defects to the lowest sufficient L1-L5 regression.
 
 ## Server Mode Auth
 

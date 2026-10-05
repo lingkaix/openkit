@@ -47,7 +47,7 @@ const INNER_CHECKSUM_FILES = NANOHOST_FILES.filter((name) => name !== 'SHA256SUM
  * @param {string} [input.ref] Git revision to archive.
  * @param {string} input.outputDir Destination directory.
  * @param {object} [input.nanohost] NanoHost packaging input.
- * @returns {{ archivePath: string, opsArchivePath: string, checksumPath: string, checksum: string, nanohostArchivePath?: string }} Produced assets.
+ * @returns {{ opsArchivePath: string, checksumPath: string, nanohostArchivePath?: string }} Produced assets.
  */
 export function packageReleaseAssets(input) {
   parseVersionTag(input.tag);
@@ -58,20 +58,12 @@ export function packageReleaseAssets(input) {
   const repoRoot = resolve(input.repoRoot);
   const outputDir = resolve(input.outputDir);
   mkdirSync(outputDir, { recursive: true });
-  const skill = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-skill-${input.tag}`, [
-    'LICENSE',
-    'skills/openkit',
-  ]);
   const ops = gitArchiveSkill(repoRoot, ref, outputDir, `openkit-ops-skill-${input.tag}`, [
     'LICENSE',
     'skills/openkit-ops',
   ]);
 
-  const checksum = sha256File(skill.archivePath);
-  const checksums = [
-    [skill.archiveName, checksum],
-    [ops.archiveName, sha256File(ops.archivePath)],
-  ];
+  const checksums = [[ops.archiveName, sha256File(ops.archivePath)]];
   let nanohostArchivePath;
   if (input.nanohost) {
     nanohostArchivePath = packageNanoHost({
@@ -89,10 +81,8 @@ export function packageReleaseAssets(input) {
     `${checksums.map(([name, digest]) => `${digest}  ${name}`).join('\n')}\n`
   );
   return {
-    archivePath: skill.archivePath,
     opsArchivePath: ops.archivePath,
     checksumPath,
-    checksum,
     nanohostArchivePath,
   };
 }
@@ -123,8 +113,8 @@ function gitArchiveSkill(repoRoot, ref, outputDir, prefix, paths) {
  * @param {object} input Verification input.
  * @param {string} input.archivePath Path to `openkit-ops-skill-<tag>.tar.gz`.
  * @param {string} input.destDir Empty directory that receives the extracted envelope.
- * @returns {{ envelopePath: string, skillPath: string }} Extracted envelope and entrypoint.
- * @throws {Error} When the entrypoint is missing or a packaged reference does not resolve inside the envelope.
+ * @returns {{ envelopePath: string, skillPath: string, cliPath: string }} Extracted envelope and entrypoint.
+ * @throws {Error} When package inputs, reference closure, executable mode, Node runtime or local discovery are invalid.
  */
 export function verifyOperationsSkillArchive(input) {
   const archivePath = resolve(input.archivePath);
@@ -169,7 +159,28 @@ export function verifyOperationsSkillArchive(input) {
     }
   }
 
-  return { envelopePath, skillPath };
+  const cliPath = join(skillRoot, 'scripts', 'openkit');
+  const cli = lstatSync(cliPath, { throwIfNoEntry: false });
+  if (!cli?.isFile() || (cli.mode & 0o111) === 0) {
+    throw new Error('Operations Skill archive requires an executable scripts/openkit.');
+  }
+  if (Number(process.versions.node.split('.')[0]) !== 24) {
+    throw new Error('Operations Skill CLI verification requires Node.js 24.');
+  }
+  const discovery = run(process.execPath, [cliPath, 'ops', 'search', 'workspace'], {
+    cwd: envelopePath,
+    message: 'Packaged administrator CLI discovery failed',
+  });
+  const result = JSON.parse(discovery.stdout);
+  if (
+    result.ok !== true ||
+    result.command !== 'ops.search' ||
+    !Array.isArray(result.data) ||
+    !result.data.some((entry) => entry.id === 'workspace.list')
+  ) {
+    throw new Error('Packaged administrator CLI returned invalid discovery.');
+  }
+  return { envelopePath, skillPath, cliPath };
 }
 
 /** Lists Markdown files below one directory recursively. */
@@ -452,7 +463,6 @@ function main() {
     repoRoot: String(args['repo-root'] ?? process.cwd()),
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
   });
-  console.log(`Release Skill archive: ${result.archivePath}`);
   console.log(`Release operations Skill archive: ${result.opsArchivePath}`);
   if (result.nanohostArchivePath)
     console.log(`Release NanoHost archive: ${result.nanohostArchivePath}`);

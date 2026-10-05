@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,6 +88,86 @@ function exportUsage(root: string) {
 }
 
 describe('Workspace JSON transfer cutover', () => {
+  it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
+    const source = fixture();
+    const target = fixture();
+    // The test controls only session admission; export, streams, staging, import and reads use real owners.
+    const sessionApp = (f: ReturnType<typeof fixture>) =>
+      createApp({
+        dataRoot: f.root,
+        coreDb: f.db,
+        store: f.store,
+        mode: 'server',
+        auth: {
+          api: {
+            getSession: async () => ({
+              session: { id: 'archive_session' },
+              user: { id: 'user_local' },
+            }),
+          },
+          handler: async () => Response.json({ status: 'auth-ok' }),
+        },
+      });
+    for (const f of [source, target])
+      createOpenKitAccessTokenRecord(f.db, {
+        ownerUserId: 'user_local',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+    const sourceWeb = sessionApp(source);
+    const targetWeb = sessionApp(target);
+    const content = 'Web session archive: café and exact retained content.';
+    const [createPath, createInit] = request('/api/app/operations/knowledge.create', {
+      workspaceId: 'ws_demo',
+      title: 'Web archive proof',
+      kind: 'project-context',
+      content,
+    });
+    const created = await sourceWeb.request(createPath, {
+      ...createInit,
+      headers: { ...createInit.headers, 'x-openkit-request-id': randomUUID() },
+    });
+    expect(created.status, await created.clone().text()).toBe(200);
+    const exported = await sourceWeb.request(
+      ...request('/api/app/operations/workspace.export', { workspaceId: 'ws_demo' })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const downloaded = await sourceWeb.request(
+      `/api/app/workspaces/ws_demo/exports/${exportId}/archive`
+    );
+    expect(downloaded.status, await downloaded.clone().text()).toBe(200);
+    const bytes = await downloaded.arrayBuffer();
+    expect(bytes.byteLength).toBeGreaterThan(0);
+    const upload = (path: string, requestId?: string) =>
+      targetWeb.request(path, {
+        method: 'POST',
+        body: new Blob([bytes]),
+        headers: {
+          'content-type': downloaded.headers.get('content-type')!,
+          ...(requestId ? { 'x-openkit-request-id': requestId } : {}),
+        },
+      });
+    const dryRun = await upload('/api/app/workspace-archives/import-dry-run');
+    expect(dryRun.status, await dryRun.clone().text()).toBe(200);
+    expect(await dryRun.json()).toMatchObject({
+      mode: 'dry-run',
+      collision: { status: 'collides' },
+    });
+    const imported = await upload('/api/app/workspace-archives/import', randomUUID());
+    expect(imported.status, await imported.clone().text()).toBe(200);
+    const result = await imported.json();
+    expect(result.mode).toBe('imported');
+    const readback = await targetWeb.request(
+      ...request('/api/app/operations/knowledge.list', { workspaceId: result.importedWorkspaceId })
+    );
+    expect(readback.status).toBe(200);
+    expect((await readback.json()).items).toContainEqual(
+      expect.objectContaining({ title: 'Web archive proof', content })
+    );
+  });
+
   it.each([
     'workspace.import-dry-run',
     'workspace.import',

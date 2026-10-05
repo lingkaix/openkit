@@ -15,7 +15,7 @@ Calibrated premises about scope and priority for this layer, formed from how the
 
 ### The App API Is A Replaceable Product Projection, Not A Public API
 
-The App API exists to serve this repository's own Web UI, CLI, and Skill within one release, so it is optimized for reducing round trips and matching product workflows rather than for external stability.
+The App API exists to serve this repository's own Web UI and administrator CLI within one release, so it is optimized for reducing round trips and matching product workflows rather than for external stability.
 
 Rests on: every first-party consumer shipping in the same release as the server, per `docs/core/contract-evolution.md`; root `AGENTS.md` NONNEG-001, which places compatibility obligations on retained data rather than on release-coupled APIs; and no third-party integrator depending on these endpoints today.
 
@@ -47,7 +47,7 @@ This guide does not own the semantic contracts, executable route facts, package 
 - Typed Core Client projection: `packages/core-client/README.md`
 - Web consumer: `apps/web/README.md`
 - Change execution evidence: `docs/changes/`
-- Accepted channel design: [Remote MCP Interface](specs/20261002-remote_mcp_interface.md) owns the user-facing agent endpoint over the same operations, not an App API consumer; [OpenKit Agent Skill Interface](specs/20260713-openkit_agent_skill_interface.md) owns Skill retirement after endpoint coverage; [Agent Operator Skill](specs/20260910-agent_operator_skill.md) owns retention and relocation of the bundled CLI as the administrator channel.
+- Accepted channel design: [Remote MCP Interface](specs/20261002-remote_mcp_interface.md) owns the user-facing agent endpoint over the same operations, not an App API consumer; [Agent Operator Skill](specs/20260910-agent_operator_skill.md) owns the retained bundled administrator CLI as the administrator channel.
 
 ## Receiving Contract Owners
 
@@ -89,7 +89,7 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/specs/20260704-workspace_backup_export_import.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`
 - `docs/specs/20260709-quick_chat_workspace.md`
-- `docs/specs/20260713-openkit_agent_skill_interface.md`
+- `docs/specs/20261002-remote_mcp_interface.md`
 - `docs/specs/20260713-work_resource_interaction_model.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
 - `docs/specs/20260721-provider_subscription_accounts.md`

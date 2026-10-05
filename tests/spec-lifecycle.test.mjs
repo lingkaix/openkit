@@ -380,3 +380,188 @@ test('validates every specification even when a path is listed as legacy', () =>
   assert(errors.some((error) => error.includes('20260711-inventoried.md')));
   assert(errors.some((error) => error.includes('20260711-unexpected.md')));
 });
+
+/**
+ * Supplies independent evidence for historical-resolution fixtures.
+ *
+ * @param {string} root Fixture repository root.
+ */
+function writeHistoricalEvidence(root) {
+  writeFixture(root, 'docs/audits/20260102-sample_reading.md', '# Independent Reading\n');
+}
+
+/**
+ * Makes both lifecycle fields name the same historical target.
+ *
+ * @param {string} target Lifecycle metadata target, including any Markdown syntax.
+ * @returns {string} Superseded specification fixture.
+ */
+function historicalReferrer(target) {
+  return terminalLifecycle('Superseded', target).replace(
+    '`docs/audits/20260102-sample_reading.md`',
+    target
+  );
+}
+
+for (const [referrerDirectory, referrerStatus] of [
+  ['superseded', 'Superseded'],
+  ['retired', 'Retired'],
+  ['rejected', 'Rejected'],
+]) {
+  for (const [targetDirectory, targetStatus] of [
+    ['superseded', 'Superseded'],
+    ['retired', 'Retired'],
+    ['rejected', 'Rejected'],
+  ]) {
+    for (const form of ['repository path', 'relative Markdown link']) {
+      test(`resolves frozen ${referrerDirectory} metadata to ${targetDirectory} using a ${form}`, () => {
+        const root = createRepository();
+        writeHistoricalEvidence(root);
+        const name = '20260711-later.md';
+        const target =
+          form === 'repository path' ? `\`docs/specs/${name}\`` : `[Later](../../${name})`;
+        const referrer = historicalReferrer(target)
+          .replace('status: Superseded', `status: ${referrerStatus}`)
+          .replace(
+            `current-guidance: "${target}"`,
+            referrerStatus === 'Retired'
+              ? 'current-guidance: "None"'
+              : `current-guidance: "${target}"`
+          );
+        writeFixture(root, `docs/specs/${referrerDirectory}/nested/20260711-frozen.md`, referrer);
+        writeFixture(
+          root,
+          `docs/specs/${targetDirectory}/${name}`,
+          terminalLifecycle(
+            targetStatus,
+            targetStatus === 'Superseded' ? '`docs/audits/20260102-sample_reading.md`' : 'None'
+          )
+        );
+        assert.deepEqual(validateSpecLifecycle(root), []);
+      });
+    }
+  }
+}
+
+for (const refusal of [
+  'missing',
+  'ambiguous',
+  'non-specification path',
+  'non-specification filename',
+  'directory target',
+]) {
+  test(`rejects historical lifecycle resolution for a ${refusal}`, () => {
+    const root = createRepository();
+    writeHistoricalEvidence(root);
+    const name = refusal === 'non-specification filename' ? 'later.md' : '20260711-later.md';
+    const target = `${refusal === 'non-specification path' ? 'docs/audits' : 'docs/specs'}/${name}`;
+    const referrer = 'docs/specs/superseded/nested/20260711-frozen.md';
+    writeFixture(root, referrer, historicalReferrer(`\`${target}\``));
+    if (refusal === 'directory target') {
+      mkdirSync(join(root, 'docs/specs/retired', name), { recursive: true });
+    } else if (refusal !== 'missing') {
+      writeFixture(root, `docs/specs/retired/${name}`, terminalLifecycle('Retired', 'None'));
+      if (refusal === 'ambiguous') {
+        writeFixture(root, `docs/specs/rejected/${name}`, terminalLifecycle('Rejected', 'None'));
+      }
+    }
+    assert.deepEqual(validateSpecLifecycle(root), [
+      `${referrer}: Current Guidance path does not exist: ${target}.`,
+      `${referrer}: Decision Evidence must name an existing Markdown file: ${target}.`,
+    ]);
+  });
+}
+
+test('rejects archive resolution for an active deprecated referrer', () => {
+  const root = createRepository();
+  writeHistoricalEvidence(root);
+  const referrer = 'docs/specs/20260711-deprecated.md';
+  const target = 'docs/specs/20260711-later.md';
+  writeFixture(root, 'docs/specs/retired/20260711-later.md', terminalLifecycle('Retired', 'None'));
+  writeFixture(
+    root,
+    referrer,
+    historicalReferrer(`\`${target}\``)
+      .replace('status: Superseded', 'status: Deprecated')
+      .replace('implementation: N/A', 'implementation: Partial') +
+      '\n## Rollout / Migration Plan\n\nRemove after migration.\n'
+  );
+  assert.deepEqual(validateSpecLifecycle(root), [
+    `${referrer}: Current Guidance path does not exist: ${target}.`,
+    `${referrer}: Decision Evidence must name an existing Markdown file: ${target}.`,
+  ]);
+});
+
+test('does not substitute archives for an existing root specification', () => {
+  const root = createRepository();
+  writeHistoricalEvidence(root);
+  const target = 'docs/specs/20260711-later.md';
+  writeFixture(
+    root,
+    target,
+    '---\nstatus: Accepted\nimplementation: Implemented\nkind: concept\n---\n# Later\n'
+  );
+  writeFixture(root, 'docs/specs/retired/20260711-later.md', terminalLifecycle('Retired', 'None'));
+  writeFixture(
+    root,
+    'docs/specs/rejected/20260711-later.md',
+    terminalLifecycle('Rejected', 'None')
+  );
+  writeFixture(
+    root,
+    'docs/specs/superseded/20260711-frozen.md',
+    historicalReferrer(`\`${target}\``)
+  );
+  assert.deepEqual(validateSpecLifecycle(root), []);
+});
+
+test('still rejects unrelated missing evidence alongside a resolved historical target', () => {
+  const root = createRepository();
+  writeHistoricalEvidence(root);
+  const referrer = 'docs/specs/superseded/20260711-frozen.md';
+  const missing = 'docs/audits/20260103-missing.md';
+  writeFixture(root, 'docs/specs/retired/20260711-later.md', terminalLifecycle('Retired', 'None'));
+  writeFixture(
+    root,
+    referrer,
+    historicalReferrer('`docs/specs/20260711-later.md`').replace(
+      'decision-evidence: "`docs/specs/20260711-later.md`"',
+      `decision-evidence: "\`docs/specs/20260711-later.md\`; \`${missing}\`"`
+    )
+  );
+  assert.deepEqual(validateSpecLifecycle(root), [
+    `${referrer}: Decision Evidence path does not exist: ${missing}.`,
+  ]);
+});
+
+for (const transitive of [false, true]) {
+  test(`rejects a ${transitive ? 'transitive' : 'self'} decision-evidence cycle through historical root paths`, () => {
+    const root = createRepository();
+    const first = 'docs/specs/retired/20260711-first.md';
+    const second = 'docs/specs/rejected/20260711-second.md';
+    writeFixture(
+      root,
+      first,
+      terminalLifecycle('Retired', 'None').replace(
+        '`docs/audits/20260102-sample_reading.md`',
+        `\`docs/specs/20260711-${transitive ? 'second' : 'first'}.md\``
+      )
+    );
+    if (transitive) {
+      writeFixture(
+        root,
+        second,
+        terminalLifecycle('Rejected', 'None').replace(
+          '`docs/audits/20260102-sample_reading.md`',
+          '`docs/specs/20260711-first.md`'
+        )
+      );
+    }
+    assert.deepEqual(
+      validateSpecLifecycle(root),
+      (transitive ? [first, second] : [first])
+        .map((path) => `${path}: Decision Evidence must not form a terminal-spec dependency cycle.`)
+        .sort()
+    );
+  });
+}

@@ -21,7 +21,7 @@ Do not change repository or package visibility as an implied part of preparation
 One lowercase semantic-version tag identifies the complete product bundle:
 
 - every `release: true` image in `containers/images.json`,
-- `openkit-skill-<tag>.tar.gz`, containing `LICENSE` and the complete `skills/openkit/` tree,
+- `openkit-ops-skill-<tag>.tar.gz`, containing `LICENSE` and the complete operations Skill tree with its generated administrator executable,
 - `openkit-nanohost-<tag>-linux-arm64.tar.gz`, containing the verified NanoHost binary, pin-bound Gateway, service unit, installer, manifests, checksums, and licenses,
 - `SHA256SUMS` for both portable archives,
 - one GitHub Release with image digests and gate evidence.
@@ -60,7 +60,7 @@ Preflight validates lowercase tag syntax, portable Skill and NanoHost inputs, th
 ```bash
 pnpm release:package -- --tag "${OPENKIT_RELEASE_TAG}"
 (cd dist/release && sha256sum -c SHA256SUMS)
-tar -tzf "dist/release/openkit-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
+tar -tzf "dist/release/openkit-ops-skill-${OPENKIT_RELEASE_TAG}.tar.gz"
 ```
 
 The Skill packager uses `git archive`, and NanoHost packaging reads its checkout-owned files from the selected Git revision, so uncommitted files are intentionally excluded. The tag workflow obtains the NanoHost binary from its native arm64 build job and downloads the Gateway and source-license bytes from the pin-derived coordinates before invoking the same packager and verifier.

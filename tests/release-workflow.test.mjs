@@ -212,6 +212,8 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .join('\n');
   assert.match(portableCommands, /verify-nanohost-release\.mjs/);
   assert.match(portableCommands, /verifyOperationsSkillArchive/);
+  assert.doesNotMatch(portableCommands, /openkit-skill-/);
+  assert.match(portableCommands, /skills\/openkit-ops\/scripts\/openkit/);
   assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
   assert.match(portableCommands, /openkit-ops-skill-.*\.tar\.gz/);
   assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
@@ -246,7 +248,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .map((candidate) => candidate.run)
     .filter(Boolean)
     .join('\n');
-  assert.match(releaseCommands, /openkit-skill-.*\.tar\.gz/);
+  assert.doesNotMatch(releaseCommands, /openkit-skill-.*\.tar\.gz/);
   assert.match(releaseCommands, /openkit-ops-skill-.*\.tar\.gz/);
   assert.match(releaseCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
   assert.match(releaseCommands, /portable-assets\/SHA256SUMS/);
@@ -257,6 +259,8 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .join('\n');
   assert.match(verificationCommands, /verify-nanohost-release\.mjs/);
   assert.match(verificationCommands, /verifyOperationsSkillArchive/);
+  assert.doesNotMatch(verificationCommands, /openkit-skill-/);
+  assert.match(verificationCommands, /skills\/openkit-ops\/scripts\/openkit/);
   assert.match(verificationCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
 });
 

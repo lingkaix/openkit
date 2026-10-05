@@ -658,7 +658,7 @@ Release workflow state:
 - `.github/workflows/ci.yml` runs on version tags and manual dispatch.
 - Version tags run the release gate through L0-L3 and L5.
 - After the release gate passes, the workflow pushes, smokes, and promotes `release: true` images from `containers/images.json`, then verifies every published digest.
-- The workflow packages the complete end-user Skill, creates an immutable GitHub Release, and runs the product-wide completion predicates owned by `docs/specs/20260829-release_management.md`.
+- The workflow packages the complete operations Skill with its administrator executable, creates an immutable GitHub Release, and runs the product-wide completion predicates owned by `docs/specs/20260829-release_management.md`.
 
 Runtime default state:
 

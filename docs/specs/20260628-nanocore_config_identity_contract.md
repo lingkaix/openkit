@@ -20,7 +20,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - Runtime config loading, validation, reload posture, and public config-editing boundaries.
 - Server config and data-root behavior at the implementation-contract level.
 - The concrete configuration-scope relationship and file ownership for Server resources, Workspace shared composition, User preference, Gateway logical models, and internal-role execution profiles.
-- Public channel server-mode credential boundaries consumed by the Agent Skill Interface.
+- Public channel server-mode credential boundaries consumed by the remote MCP interface.
 - The deployment configuration, validation, reload posture, and redacted diagnostics for exactly one configured NanoHost identity, NanoCore rendezvous endpoint, and non-secret NanoHost credential reference.
 - The replacement path for historical identity, auth, config, and data-layout specs.
 
@@ -31,7 +31,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - Vault secret storage, secret injection, or credential material lifecycle.
 - Complete physical storage layout, database schema, backup policy, or migration plan.
 - Workspace membership, invitation, role, owner-transfer, or user-lifecycle behavior.
-- App API route design, Web UI editing UX, or Agent Skill Interface operation design.
+- App API route design, Web UI editing UX, or remote MCP interface operation design.
 - Agent setup, AEP resolution, worker scheduling, runtime placement, or workspace synchronization.
 - Logical-model route eligibility, fallback behavior, Agent Manifest composition fields, or internal-role runtime semantics beyond locating their owning configuration files.
 - Runtime Epoch lifecycle, OpenShell effects, transport replacement, route-family credentials, or sandbox-local Integration bindings.
@@ -75,7 +75,7 @@ Server-mode authentication establishes the request actor. It does not by itself 
 
 One server-mode deployment is one personal or small-team trust domain, not a legal tenant host. Better Auth owns authentication and session mechanics; NanoCore owns canonical users, Workspace relationships, authorization facts, and product policy.
 
-Runtime config is managed through NanoCore-owned routes and schemas. The Agent Skill Interface may expose product-level CLI operations for listing, validating, updating, and reloading runtime config, but it must not become a raw file editor or secret browser.
+Runtime config is managed through NanoCore-owned routes and schemas. Remote MCP and the administrator CLI may expose product-level operations for listing, validating, updating, and reloading runtime config, but neither projection may become a raw file editor or secret browser.
 
 The Web deployment-admin Configuration surface may project exact authored JSONC sources only through those same NanoCore runtime-config routes. Local mode uses its implicit local actor. Server mode uses the current Better Auth session client, while NanoCore derives deployment-admin authority only when the active canonical User owns a currently usable `server-admin` Token; the browser does not accept, recover, persist, log, route, render, or cache that Token. File listing, reads, validation, revision-protected writes, and reload retain NanoCore authority, path containment, secret rejection, last-known-good, and restart-required semantics.
 
@@ -184,7 +184,7 @@ The NanoCore config, authentication, bundled CLI credential substrate, and V1 sh
 - Local mode resolves an implicit local human `User` through `LOCAL_USER_ID` with `kind = local` when no authenticated server-mode subject exists; this is a projection of the ordinary Core `User` family, not another identity type.
 - `apps/nanocore/src/auth/middleware.ts` attaches actor context and enforces server-mode authentication for protected APIs.
 - Core owns fixed `owner`, `editor`, and `viewer` access derived from the canonical owner and active membership records. Invitations, member access changes and removal, leave, ownership transfer, bounded administrator recovery, and canonical-user disable are implemented through centralized operation authorization and caller-owned effect checks; disabling a user revokes live sessions and tokens without deleting history.
-- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, the reusable credential-storage substrate, and the bundled CLI credential path are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md` and `docs/specs/20260713-openkit_agent_skill_interface.md`. Current access tokens are owned by a responsible human `User`; `AutomationIdentity` token issuance and membership remain outside V1 until separately specified. The [Recurring Trigger specification](20260711-scheduler_recurring_event_triggers.md) owns only the schedule-to-responsible-user binding and current-authority resolution, with no new token, member, or authored config identity.
+- Server-mode bearer-token authentication, first-boot bootstrap, scoped token administration, the reusable credential-storage substrate, and the bundled CLI credential path are implemented by `docs/specs/20260704-remote_auth_credential_bootstrap.md`, `docs/specs/20260910-agent_operator_skill.md`, and `docs/specs/20261002-remote_mcp_interface.md`. Current access tokens are owned by a responsible human `User`; `AutomationIdentity` token issuance and membership remain outside V1 until separately specified. The [Recurring Trigger specification](20260711-scheduler_recurring_event_triggers.md) owns only the schedule-to-responsible-user binding and current-authority resolution, with no new token, member, or authored config identity.
 - The bundled CLI reads `OPENKIT_NANOCORE_TOKEN` as the explicit ephemeral override or resolves an endpoint-scoped stored credential, sends fixed `openkit-cli` / `agent-skill` channel metadata, and ignores the removed raw `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` passthrough variables.
 - `apps/nanocore/src/config/bind-host.ts` resolves the App HTTP/1.1 listener host and port from explicit environment overrides, then the startup server config, then mode defaults. It currently accepts an explicit non-loopback `OPENKIT_BIND_HOST` or `server.bind.host` value in local mode instead of rejecting it, so the desktop-embedded loopback-only contract is not yet fully implemented. The NanoHost native HTTP/2 listener instead uses the explicit restart-required `nanohost.bind` and never consumes those App-listener overrides.
 - Server mode constructs Better Auth explicitly from the startup config, requires a deployment-specific secret of at least 32 characters, applies `server.publicBaseUrl`, shares `server.cors.origins` with browser CORS, and enforces `auth.signup.enabled` through Better Auth's sign-up policy.
@@ -241,4 +241,4 @@ They remain useful for implementation background, but this spec and the core ide
 - [Vault Model](../core/vault.md)
 - [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)
-- [OpenKit Agent Skill Interface](./20260713-openkit_agent_skill_interface.md)
+- [Remote MCP Interface](./20261002-remote_mcp_interface.md)
