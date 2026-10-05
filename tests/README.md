@@ -6,7 +6,7 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 ## Layout
 
-- `app-image-entrypoint.test.mjs` checks App proxy routing, shared upstream idle keep-alive ordering against Node's server default, and process supervision. Its lifecycle cases require Bash with `wait -n` support.
+- `app-image-entrypoint.test.mjs` checks App proxy routing, shared upstream idle keep-alive ordering against NanoCore's configured timeout and socket buffer, and process supervision. Its lifecycle cases require Bash with `wait -n` support.
 
 - `dogfood-deploy.test.mjs` executes the A2 helper's Bash functions with isolated external-command doubles to verify release-metadata digest selection, obsolete NanoHost environment removal, and complete App cutover mount arguments.
 

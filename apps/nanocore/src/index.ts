@@ -44,6 +44,7 @@ import {
   type RuntimeConfigSnapshot,
   unknownModelContextFailure,
 } from './config/runtime-config.js';
+import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
 import { FsStore } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
@@ -585,7 +586,7 @@ const appServer = appTlsListen
         fetch: appFetch,
         hostname,
         port,
-        serverOptions: appTlsListen,
+        serverOptions: { ...appTlsListen, ...NANOCORE_HTTP_SERVER_OPTIONS },
       },
       (info) => {
         console.log(`App server is running on https://${info.address}:${info.port}`);
@@ -597,11 +598,14 @@ const appServer = appTlsListen
         fetch: appFetch,
         hostname,
         port,
+        serverOptions: NANOCORE_HTTP_SERVER_OPTIONS,
       },
       (info) => {
         console.log(`App server is running on http://${info.address}:${info.port}`);
       }
     );
+// Native HTTP/2 sessions have no idle-close timer (timeout = 0), including TLS.
+// Their long-lived h2 clients therefore need no HTTP/1 keep-alive margin options.
 const nanoHostServer = nanoHostListener
   ? nanoHostTlsListen
     ? serve(

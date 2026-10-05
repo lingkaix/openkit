@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { NANOCORE_HTTP_SERVER_OPTIONS } from '../apps/nanocore/src/http-server-options.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const caddyfile = join(repoRoot, 'Caddyfile');
 const dockerfile = join(repoRoot, 'containers', 'app', 'Dockerfile');
 const entrypoint = join(repoRoot, 'containers', 'app', 'entrypoint.sh');
 
-test('retires every upstream idle connection before Node closes it', async () => {
+test('retires every upstream idle connection well before configured NanoCore idle close', async () => {
   const source = await readFile(caddyfile, 'utf8');
   const transport = source.match(
     /^\(nanocore_transport\) \{\s+transport http \{\s+(?:#[^\n]*\n\s*)?keepalive (\d+)s\s+\}\s+\}/mu
@@ -21,11 +22,14 @@ test('retires every upstream idle connection before Node closes it', async () =>
   // Caddy 2.6.2 defaults to two minutes when no transport is configured.
   // https://github.com/caddyserver/caddy/blob/v2.6.2/modules/caddyhttp/reverseproxy/httptransport.go
   const proxyIdleTimeoutMs = transport ? Number(transport[1]) * 1000 : 120_000;
-  const server = createServer();
-  // Compare against the advertised Node default, without depending on its extra socket buffer.
+  const server = createServer(NANOCORE_HTTP_SERVER_OPTIONS);
   assert.ok(
     proxyIdleTimeoutMs > 0 && proxyIdleTimeoutMs < server.keepAliveTimeout,
-    `Caddy idle timeout ${proxyIdleTimeoutMs}ms must be below Node's ${server.keepAliveTimeout}ms`
+    `Caddy idle timeout ${proxyIdleTimeoutMs}ms must be below NanoCore's ${server.keepAliveTimeout}ms`
+  );
+  assert.ok(
+    server.keepAliveTimeout + server.keepAliveTimeoutBuffer - proxyIdleTimeoutMs >= 30_000,
+    'NanoCore idle close must leave Caddy at least 30 seconds of stall margin'
   );
   assert.equal([...source.matchAll(/^\s*keepalive /gmu)].length, 1, source);
   const proxies = [...source.matchAll(/reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}/gu)];

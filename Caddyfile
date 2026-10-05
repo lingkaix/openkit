@@ -1,6 +1,6 @@
 (nanocore_transport) {
 	transport http {
-		# Retire idle sockets before Node's 5s timeout to avoid reset races on POSTs.
+		# Retire well before NanoCore's configured 360s idle close, leaving room for stalls.
 		keepalive 4s
 	}
 }
