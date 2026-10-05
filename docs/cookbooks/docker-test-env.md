@@ -28,7 +28,7 @@ The image embeds that full build-input digest. When `scripts/test-env.sh any` is
 
 ## Contents
 
-Node 24.18.0 from `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d`, the same digest as the worker-common stage, pnpm 10.33.3 through Corepack, Git, the exact NanoHost-scoped Rust toolchain (`ENV RUST_VERSION`, mirrored from `apps/nanohost/mise.toml` via rustup minimal profile with cargo, rustc, clippy, and rustfmt on `PATH`), the C/C++ build tools NanoHost Cargo compilation requires (`gcc`, `g++`, `make`, `cmake`, `pkg-config`, `libc6-dev`), and a Playwright Chromium install at `PLAYWRIGHT_BROWSERS_PATH` are the image contents. Xvfb is not installed because no gate uses it. Rust is present so ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` (each `turbo run …` inside this image) can execute `@openkit/nanohost` Cargo scripts without a parallel command surface.
+Node 24.18.0 from `node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d`, the same digest as the worker-common stage, pnpm 10.33.3 through Corepack, Git, jq for deployment OCI index parsing, Python 3 for the supervisor release-metadata lookup, the exact NanoHost-scoped Rust toolchain (`ENV RUST_VERSION`, mirrored from `apps/nanohost/mise.toml` via rustup minimal profile with cargo, rustc, clippy, and rustfmt on `PATH`), the C/C++ build tools NanoHost Cargo compilation requires (`gcc`, `g++`, `make`, `cmake`, `pkg-config`, `libc6-dev`), and a Playwright Chromium install at `PLAYWRIGHT_BROWSERS_PATH` are the image contents. Xvfb is not installed because no gate uses it. Rust is present so ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` (each `turbo run …` inside this image) can execute `@openkit/nanohost` Cargo scripts without a parallel command surface.
 
 This image is an internal sibling of `worker-common` and is not built `FROM worker-common`. There is no publication dependency. A Node digest that does not equal the worker common stage is a mirror failure: update this `FROM` line in the same change as the worker baseline, which changes `OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST` and forces a rebuild.
 
@@ -55,7 +55,7 @@ This is the supported way in: it resolves the tag, builds if needed, and applies
 scripts/docker/smoke-image.sh test-env
 ```
 
-It reports Node, pnpm, Git, rustc, cargo, clippy, rustfmt, and the installed Chromium. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
+It reports Node, pnpm, Git, jq, Python 3, rustc, cargo, clippy, rustfmt, and the installed Chromium. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
 
 ## Reclaim Disk
 

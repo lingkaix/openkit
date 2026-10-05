@@ -2046,15 +2046,33 @@ test('token create and rotate require named delivery and preflight before the pu
  * Isolates bundled CLI credential storage from the host OpenKit config directory.
  *
  * @param {string} root Temporary home and XDG config root.
- * @returns {{configDir: string, env: NodeJS.ProcessEnv, machineId?: string}} Matching CLI and test-store paths.
+ * @param {NodeJS.Platform} [platform] Credential backend selected in the CLI child.
+ * @returns {{configDir: string, env: NodeJS.ProcessEnv, machineId: string, imports: string[]}} Matching CLI and test-store paths.
  */
-function isolatedCredentialLayout(root) {
-  const darwin = process.platform === 'darwin';
+function isolatedCredentialLayout(root, platform = process.platform) {
+  const darwin = platform === 'darwin';
   return {
     configDir: darwin
       ? join(root, 'Library', 'Application Support', 'OpenKit')
       : join(root, 'openkit'),
-    machineId: darwin ? `${hostname()}:${root}` : undefined,
+    // The child has HOME=root; the parent must decrypt with that same fallback seed.
+    machineId: `${hostname()}:${root}`,
+    // Model a minimal Linux image without machine-id files or keychain executables.
+    imports: [
+      dataModule(`
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+      const readFileSync = fs.readFileSync;
+      fs.readFileSync = (path, ...args) => {
+        if (path === '/etc/machine-id' || path === '/var/lib/dbus/machine-id') {
+          throw Object.assign(new Error('Fixture machine-id unavailable'), { code: 'ENOENT' });
+        }
+        return readFileSync(path, ...args);
+      };
+      syncBuiltinESMExports();
+    `),
+    ],
     env: {
       HOME: root,
       XDG_CONFIG_HOME: root,
@@ -2063,61 +2081,68 @@ function isolatedCredentialLayout(root) {
   };
 }
 
-test('bundled token create and rotate preserve transport, redaction, and auth denials', async (t) => {
-  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
-  const root = mkdtempSync(join(tmpdir(), 'openkit-token-cli-'));
-  t.after(() => rmSync(root, { force: true, recursive: true }));
-  const endpoint = 'https://nanocore.example';
-  const { configDir, env: isolatedEnv, machineId } = isolatedCredentialLayout(root);
-  const env = {
-    ...isolatedEnv,
-    OPENKIT_NANOCORE_URL: endpoint,
-    OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
-  };
-  const record = {
-    tokenId: 'tok_new',
-    ownerUserId: 'user_demo',
-    scope: 'workspace',
-    workspaceIds: ['ws_demo'],
-    status: 'active',
-    issuedAt: '2026-09-14T00:00:00.000Z',
-    expiresAt: '2027-01-01T00:00:00.000Z',
-    revokedAt: null,
-    predecessorTokenId: null,
-    rotatedGraceExpiresAt: null,
-    lastUsedAt: null,
-    lastUsedChannel: null,
-    lastUsedSource: null,
-  };
-  const store = createDefaultOpenKitCredentialStore({
-    configDir,
-    ...(machineId === undefined ? {} : { machineId }),
-    execFile() {
-      throw new Error('unavailable');
-    },
-    warn() {},
-  });
-  store.writeToken({ baseUrl: endpoint, token: 'okt_fake_stored_admin' });
-  for (const action of ['create', 'rotate']) {
-    const body =
-      action === 'create'
-        ? { scope: 'workspace', workspaceIds: ['ws_demo'], expiresAt: record.expiresAt }
-        : { graceSeconds: 60, tokenId: 'tok_old' };
-    const input = {
-      ...body,
-      destination: 'automation',
-      ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+for (const platform of ['darwin', 'linux']) {
+  test(`bundled token create and rotate preserve transport, redaction, and auth denials (${platform})`, async (t) => {
+    const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'openkit-token-cli-'));
+    t.after(() => rmSync(root, { force: true, recursive: true }));
+    const endpoint = 'https://nanocore.example';
+    const {
+      configDir,
+      env: isolatedEnv,
+      machineId,
+      imports,
+    } = isolatedCredentialLayout(root, platform);
+    const env = {
+      ...isolatedEnv,
+      OPENKIT_NANOCORE_URL: endpoint,
+      OPENKIT_NANOCORE_TOKEN: 'okt_fake_admin',
     };
-    const response = {
-      token: `okt_fake_${action}`,
-      record,
-      ...(action === 'rotate'
-        ? { rotatedRecord: { ...record, tokenId: 'tok_old', status: 'rotated' } }
-        : {}),
+    const record = {
+      tokenId: 'tok_new',
+      ownerUserId: 'user_demo',
+      scope: 'workspace',
+      workspaceIds: ['ws_demo'],
+      status: 'active',
+      issuedAt: '2026-09-14T00:00:00.000Z',
+      expiresAt: '2027-01-01T00:00:00.000Z',
+      revokedAt: null,
+      predecessorTokenId: null,
+      rotatedGraceExpiresAt: null,
+      lastUsedAt: null,
+      lastUsedChannel: null,
+      lastUsedSource: null,
     };
-    const url = `${endpoint}/api/app/operations/token.${action}`;
-    const args = ['ops', 'call', `token.${action}`, '--input', '-'];
-    const transport = dataModule(`
+    const store = createDefaultOpenKitCredentialStore({
+      configDir,
+      platform,
+      machineId,
+      execFile() {
+        throw new Error('unavailable');
+      },
+      warn() {},
+    });
+    store.writeToken({ baseUrl: endpoint, token: 'okt_fake_stored_admin' });
+    for (const action of ['create', 'rotate']) {
+      const body =
+        action === 'create'
+          ? { scope: 'workspace', workspaceIds: ['ws_demo'], expiresAt: record.expiresAt }
+          : { graceSeconds: 60, tokenId: 'tok_old' };
+      const input = {
+        ...body,
+        destination: 'automation',
+        ...(action === 'rotate' ? { tokenId: 'tok_old' } : {}),
+      };
+      const response = {
+        token: `okt_fake_${action}`,
+        record,
+        ...(action === 'rotate'
+          ? { rotatedRecord: { ...record, tokenId: 'tok_old', status: 'rotated' } }
+          : {}),
+      };
+      const url = `${endpoint}/api/app/operations/token.${action}`;
+      const args = ['ops', 'call', `token.${action}`, '--input', '-'];
+      const transport = dataModule(`
       globalThis.fetch = async (url, options) => {
         const headers = new Headers(options.headers);
         if (url !== ${JSON.stringify(url)} || options.method !== 'POST') throw new Error('wrong route');
@@ -2127,88 +2152,96 @@ test('bundled token create and rotate preserve transport, redaction, and auth de
         return new Response(${JSON.stringify(JSON.stringify(response))}, { status: 200, headers: { 'content-type': 'application/json' } });
       };
     `);
-    const result = await runCli(args, env, JSON.stringify(input), [transport]);
-    assert.equal(result.code, 0, result.stdout);
-    assert.deepEqual(JSON.parse(result.stdout).data, {
-      record,
-      ...(action === 'rotate' ? { rotatedRecord: response.rotatedRecord } : {}),
-      credentialStorageBackend: 'encrypted-file',
-      destination: 'automation',
-    });
-    assert.match(result.stderr, /encrypted-file/);
-    assert.doesNotMatch(result.stdout + result.stderr, /okt_fake_/);
-    assert.equal(
-      store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
-      response.token
-    );
-    assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fake_stored_admin');
-    for (const status of [401, 403]) {
-      const denied = await runCli(args, env, JSON.stringify(input), [
-        responseModule(status, {
-          code: status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required',
-          message: 'Denied okt_fake_admin',
-          protocolVersion: '0.4.0',
-        }),
-      ]);
-      assert.equal(denied.code, 3, denied.stdout);
-      assert.equal(
-        JSON.parse(denied.stdout).error.code,
-        status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required'
-      );
-      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fake_/);
+      const result = await runCli(args, env, JSON.stringify(input), [...imports, transport]);
+      assert.equal(result.code, 0, result.stdout);
+      assert.deepEqual(JSON.parse(result.stdout).data, {
+        record,
+        ...(action === 'rotate' ? { rotatedRecord: response.rotatedRecord } : {}),
+        credentialStorageBackend: 'encrypted-file',
+        destination: 'automation',
+      });
+      assert.match(result.stderr, /encrypted-file/);
+      assert.doesNotMatch(result.stdout + result.stderr, /okt_fake_/);
       assert.equal(
         store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
         response.token
       );
+      assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fake_stored_admin');
+      for (const status of [401, 403]) {
+        const denied = await runCli(args, env, JSON.stringify(input), [
+          ...imports,
+          responseModule(status, {
+            code: status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required',
+            message: 'Denied okt_fake_admin',
+            protocolVersion: '0.4.0',
+          }),
+        ]);
+        assert.equal(denied.code, 3, denied.stdout);
+        assert.equal(
+          JSON.parse(denied.stdout).error.code,
+          status === 401 ? 'core.auth.unauthenticated' : 'deployment_admin_required'
+        );
+        assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fake_/);
+        assert.equal(
+          store.readNamedToken({ baseUrl: endpoint, destination: 'automation' }),
+          response.token
+        );
+      }
+      const invalid = await runCli(args, env, JSON.stringify({ ...input, destination: 'admin' }), [
+        ...imports,
+        dataModule(`globalThis.fetch = async () => { throw new Error('must not request'); };`),
+      ]);
+      assert.equal(invalid.code, 2);
+      assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
     }
-    const invalid = await runCli(args, env, JSON.stringify({ ...input, destination: 'admin' }), [
-      dataModule(`globalThis.fetch = async () => { throw new Error('must not request'); };`),
-    ]);
-    assert.equal(invalid.code, 2);
-    assert.equal(JSON.parse(invalid.stdout).error.code, 'invalid_input');
-  }
-});
+  });
 
-test('bundled bootstrap uses only its secret input and stores its one-time result without printing credentials', async (t) => {
-  const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
-  const root = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-cli-'));
-  t.after(() => rmSync(root, { force: true, recursive: true }));
-  const endpoint = 'https://nanocore.example';
-  const { configDir, env: isolatedEnv, machineId } = isolatedCredentialLayout(root);
-  const input = {
-    token: 'okt_bootstrap_canary_do_not_print',
-    ownerUserId: 'user_owner',
-    displayName: 'Owner',
-    email: 'owner@example.test',
-    password: 'password-canary-do-not-print',
-    tokenExpiresAt: '2027-01-01T00:00:00.000Z',
-  };
-  const record = {
-    tokenId: 'tok_bootstrap',
-    ownerUserId: 'user_owner',
-    scope: 'server-admin',
-    workspaceIds: [],
-    status: 'active',
-    issuedAt: '2026-10-05T00:00:00.000Z',
-    expiresAt: input.tokenExpiresAt,
-    revokedAt: null,
-    predecessorTokenId: null,
-    rotatedGraceExpiresAt: null,
-    lastUsedAt: null,
-    lastUsedChannel: null,
-    lastUsedSource: null,
-  };
-  const response = { record, token: 'okt_bootstrap_return_canary' };
-  const result = await runCli(
-    ['ops', 'call', 'bootstrap.consume', '--input', '-'],
-    {
-      ...isolatedEnv,
-      OPENKIT_NANOCORE_URL: endpoint,
-      OPENKIT_NANOCORE_TOKEN: 'okt_ordinary_admin_canary',
-    },
-    JSON.stringify(input),
-    [
-      dataModule(`
+  test(`bundled bootstrap uses only its secret input and stores its one-time result without printing credentials (${platform})`, async (t) => {
+    const { createDefaultOpenKitCredentialStore } = await import('../skills/openkit-secrets.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'openkit-bootstrap-cli-'));
+    t.after(() => rmSync(root, { force: true, recursive: true }));
+    const endpoint = 'https://nanocore.example';
+    const {
+      configDir,
+      env: isolatedEnv,
+      machineId,
+      imports,
+    } = isolatedCredentialLayout(root, platform);
+    const input = {
+      token: 'okt_bootstrap_canary_do_not_print',
+      ownerUserId: 'user_owner',
+      displayName: 'Owner',
+      email: 'owner@example.test',
+      password: 'password-canary-do-not-print',
+      tokenExpiresAt: '2027-01-01T00:00:00.000Z',
+    };
+    const record = {
+      tokenId: 'tok_bootstrap',
+      ownerUserId: 'user_owner',
+      scope: 'server-admin',
+      workspaceIds: [],
+      status: 'active',
+      issuedAt: '2026-10-05T00:00:00.000Z',
+      expiresAt: input.tokenExpiresAt,
+      revokedAt: null,
+      predecessorTokenId: null,
+      rotatedGraceExpiresAt: null,
+      lastUsedAt: null,
+      lastUsedChannel: null,
+      lastUsedSource: null,
+    };
+    const response = { record, token: 'okt_bootstrap_return_canary' };
+    const result = await runCli(
+      ['ops', 'call', 'bootstrap.consume', '--input', '-'],
+      {
+        ...isolatedEnv,
+        OPENKIT_NANOCORE_URL: endpoint,
+        OPENKIT_NANOCORE_TOKEN: 'okt_ordinary_admin_canary',
+      },
+      JSON.stringify(input),
+      [
+        ...imports,
+        dataModule(`
     globalThis.fetch = async (url, options) => {
       if (url !== '${endpoint}/api/app/operations/bootstrap.consume' || options.method !== 'POST') throw new Error('wrong bootstrap route');
       const headers = new Headers(options.headers);
@@ -2217,25 +2250,27 @@ test('bundled bootstrap uses only its secret input and stores its one-time resul
       return Response.json(${JSON.stringify(response)}, { status: 201 });
     };
   `),
-    ]
-  );
-  assert.equal(result.code, 0, result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout).data, {
-    record: { ...record, ownerUserId: '[redacted]', expiresAt: '[redacted]' },
-    credentialStorageBackend: 'encrypted-file',
+      ]
+    );
+    assert.equal(result.code, 0, result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout).data, {
+      record: { ...record, ownerUserId: '[redacted]', expiresAt: '[redacted]' },
+      credentialStorageBackend: 'encrypted-file',
+    });
+    for (const secret of [input.token, input.password, response.token, 'okt_ordinary_admin_canary'])
+      assert.ok(!(result.stdout + result.stderr).includes(secret));
+    const store = createDefaultOpenKitCredentialStore({
+      configDir,
+      platform,
+      machineId,
+      execFile() {
+        throw new Error('unavailable');
+      },
+      warn() {},
+    });
+    assert.equal(store.readToken({ baseUrl: endpoint }), response.token);
   });
-  for (const secret of [input.token, input.password, response.token, 'okt_ordinary_admin_canary'])
-    assert.ok(!(result.stdout + result.stderr).includes(secret));
-  const store = createDefaultOpenKitCredentialStore({
-    configDir,
-    ...(machineId === undefined ? {} : { machineId }),
-    execFile() {
-      throw new Error('unavailable');
-    },
-    warn() {},
-  });
-  assert.equal(store.readToken({ baseUrl: endpoint }), response.token);
-});
+}
 
 test('bundled token delivery reports preflight and post-issuance storage failures without secrets', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-token-failure-'));

@@ -46,9 +46,11 @@ RUN apt-get update \
     g++ \
     gcc \
     git \
+    jq \
     libc6-dev \
     make \
     pkg-config \
+    python3 \
   && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable \

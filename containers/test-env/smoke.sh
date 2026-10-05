@@ -17,6 +17,8 @@ print_required_version() {
 print_required_version "node" node --version
 print_required_version "pnpm" pnpm --version
 print_required_version "git" git --version
+print_required_version "jq" jq --version
+print_required_version "python3" python3 --version
 print_required_version "rustc" rustc --version
 print_required_version "cargo" cargo --version
 print_required_version "clippy" cargo clippy --version
