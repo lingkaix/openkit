@@ -20,9 +20,19 @@ import {
 import type { WorkspaceDb } from '../storage/db.js';
 import { artifactReferenceItemId } from '../storage/workspace-file-records.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
+import {
+  type CredentialCheckValues,
+  findWorkerCredentialMatches,
+  type LocalSimulatorCredentialCheckValues,
+  requireLocalSimulatorCredentialCheckValues,
+  requireWorkerCredentialCheckValues,
+  type WorkerCredentialCheckValues,
+} from './worker-credential-guard.js';
 
 /** Worker transcript import payload collected at turn end. */
 export interface WorkerTranscriptPayload {
+  /** Complete backend-private original-materialization evidence, outside worker JSONL. */
+  credentialCheckValues?: WorkerCredentialCheckValues | null;
   /** Serialized `/openkit/session/events.jsonl` content. */
   eventsJsonl?: string;
   /** Serialized `/openkit/session/items.jsonl` content. */
@@ -34,6 +44,15 @@ export interface WorkerTranscriptPayload {
   /** Backend-local restricted runtime provenance files, when the AEP requested collection. */
   runtimeProvenance?: WorkerRuntimeProvenanceCollection;
 }
+
+/** Local simulator candidates with explicit private proof of its credential-free execution path. */
+export type LocalSimulatorTranscriptPayload = Omit<
+  WorkerTranscriptPayload,
+  'credentialCheckValues'
+> & {
+  /** Evidence from the local simulator constructor, excluded from Worker collection's type. */
+  credentialCheckValues: LocalSimulatorCredentialCheckValues;
+};
 
 /** One backend-validated Artifact payload retained only through canonical import. */
 export interface WorkerTranscriptArtifactFile {
@@ -100,6 +119,31 @@ export function importWorkerTranscript(
   payload: WorkerTranscriptPayload,
   options: WorkerTranscriptImportOptions = {}
 ): WorkerTranscriptImportResult {
+  return importTranscript(store, environmentPackage, payload, options, () =>
+    requireWorkerCredentialCheckValues(payload.credentialCheckValues)
+  );
+}
+
+/** Imports local simulator candidates through the canonical admission path. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Local candidates and explicit no-injection proof. @param options Accepted proof. @returns IDs and diagnostics. */
+export function importLocalSimulatorTranscript(
+  store: FsStore,
+  environmentPackage: AgentEnvironmentPackage,
+  payload: LocalSimulatorTranscriptPayload,
+  options: WorkerTranscriptImportOptions = {}
+): WorkerTranscriptImportResult {
+  return importTranscript(store, environmentPackage, payload, options, () =>
+    requireLocalSimulatorCredentialCheckValues(payload.credentialCheckValues)
+  );
+}
+
+/** Shares canonical admission while keeping each execution owner's evidence validation separate. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Candidates. @param options Accepted proof. @param requireEvidence Execution-specific validator. @returns IDs and diagnostics. */
+function importTranscript(
+  store: FsStore,
+  environmentPackage: AgentEnvironmentPackage,
+  payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>,
+  options: WorkerTranscriptImportOptions,
+  requireEvidence: () => CredentialCheckValues
+): WorkerTranscriptImportResult {
   const result: WorkerTranscriptImportResult = {
     artifactIds: [],
     dedupedEventSequences: [],
@@ -113,13 +157,24 @@ export function importWorkerTranscript(
   if (result.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))) {
     return result;
   }
-  const artifacts = prepareArtifactRecords(store, environmentPackage, payload, options);
+  const checkValues =
+    payload.itemsJsonl?.trim() || payload.artifactsJsonl?.trim() || payload.artifactFiles?.length
+      ? requireEvidence()
+      : null;
+  const artifacts = prepareArtifactRecords(
+    store,
+    environmentPackage,
+    payload,
+    options,
+    checkValues
+  );
   importItemRecords(
     store,
     environmentPackage,
     payload.itemsJsonl ?? '',
     options.recordedAt,
-    result
+    result,
+    checkValues
   );
   for (const prepared of artifacts) {
     if (!prepared.replay) {
@@ -153,7 +208,7 @@ function importEventRecords(
       result.diagnostics.push({
         code: 'worker_transcript_invalid_event',
         path: record.path,
-        message: parsed.error.issues[0]?.message ?? 'Worker transcript event is invalid.',
+        message: 'Worker transcript event is invalid.',
       });
       continue;
     }
@@ -207,13 +262,14 @@ function importEventRecords(
   }
 }
 
-/** Imports assistant Items. @param store Canonical store. @param environmentPackage Expected AEP. @param jsonl Item JSONL. @param recordedAt Stable time. @param result Mutable result. */
+/** Imports assistant Items. @param store Canonical store. @param environmentPackage Expected AEP. @param jsonl Item JSONL. @param recordedAt Stable time. @param result Mutable result. @param checkValues Original credential evidence. */
 function importItemRecords(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
   jsonl: string,
   recordedAt: string | undefined,
-  result: WorkerTranscriptImportResult
+  result: WorkerTranscriptImportResult,
+  checkValues: CredentialCheckValues | null
 ): void {
   for (const record of parseJsonl(jsonl, '$.items', result.diagnostics)) {
     const parsed = WorkerTranscriptItemRecordSchema.safeParse(record.value);
@@ -222,7 +278,7 @@ function importItemRecords(
       result.diagnostics.push({
         code: 'worker_transcript_invalid_item',
         path: record.path,
-        message: parsed.error.issues[0]?.message ?? 'Worker transcript item is invalid.',
+        message: 'Worker transcript item is invalid.',
       });
       continue;
     }
@@ -244,7 +300,7 @@ function importItemRecords(
       turnId: environmentPackage.scope.turnId,
       type: 'assistant-message',
       status: parsed.data.item.status,
-      text: itemText(parsed.data.item),
+      text: redactWorkerText(itemText(parsed.data.item), checkValues),
       createdAt: timestamp,
       completedAt: parsed.data.item.status === 'completed' ? timestamp : null,
     } as const;
@@ -262,12 +318,13 @@ function importItemRecords(
   }
 }
 
-/** Prepares Artifacts. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Collected files. @param options Accepted proof. @returns Classified candidates. */
+/** Prepares Artifacts. @param store Canonical store. @param environmentPackage Accepted AEP. @param payload Collected files. @param options Accepted proof. @param checkValues Validated execution-specific evidence. @returns Classified candidates. */
 function prepareArtifactRecords(
   store: FsStore,
   environmentPackage: AgentEnvironmentPackage,
-  payload: WorkerTranscriptPayload,
-  options: WorkerTranscriptImportOptions
+  payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>,
+  options: WorkerTranscriptImportOptions,
+  checkValues: CredentialCheckValues | null
 ) {
   if (!(payload.artifactsJsonl?.trim() || payload.artifactFiles?.length)) {
     return [];
@@ -314,6 +371,12 @@ function prepareArtifactRecords(
       throw transcriptError('invalid_request', 'Artifact lineage does not match the accepted AEP.');
     }
     const bytes = files.get(record.sequence) as Buffer;
+    if (findWorkerCredentialMatches(bytes, checkValues!).length > 0) {
+      throw transcriptError(
+        'invalid_request',
+        'Worker Artifact content contains injected credential material.'
+      );
+    }
     let body: string;
     try {
       body = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -370,7 +433,7 @@ function prepareArtifactRecords(
       threadId: environmentPackage.scope.threadId,
       turnId: environmentPackage.scope.turnId,
       kind: record.artifact.kind,
-      title: record.artifact.title,
+      title: redactWorkerText(record.artifact.title, checkValues),
       status: 'ready',
       summary: null,
       version: 1,
@@ -422,7 +485,7 @@ function prepareArtifactRecords(
 
 /** Parses Artifact declarations. @param payload Collected files. @returns Artifacts after channel-local sequence validation. */
 function parseTranscriptDeclarations(
-  payload: WorkerTranscriptPayload
+  payload: Omit<WorkerTranscriptPayload, 'credentialCheckValues'>
 ): Array<z.infer<typeof WorkerTranscriptArtifactRecordSchema>> {
   const diagnostics: WorkerTranscriptDiagnostic[] = [];
   const seen = new Set<number>();
@@ -523,11 +586,12 @@ function parseJsonl(
 
     try {
       records.push({ path, value: JSON.parse(line) });
-    } catch (error) {
+    } catch {
+      // Native parser errors can quote secret-bearing candidate bytes.
       diagnostics.push({
         code: 'worker_transcript_invalid_json',
         path,
-        message: error instanceof Error ? error.message : 'Worker transcript line is invalid JSON.',
+        message: 'Worker transcript line is invalid JSON.',
       });
     }
   }
@@ -557,6 +621,21 @@ function itemText(item: z.infer<typeof WorkerTranscriptItemRecordSchema>['item']
   }
 
   return item.parts?.map((part) => part.text).join('') ?? '';
+}
+
+/** Replaces exact credential ranges before canonical creation or replay. @param text Candidate text. @param evidence Original private comparison evidence. @returns Guarded text. */
+function redactWorkerText(text: string, evidence: CredentialCheckValues | null): string {
+  const bytes = Buffer.from(text, 'utf8');
+  const matches = findWorkerCredentialMatches(bytes, evidence!);
+  if (matches.length === 0) return text;
+  const parts: Buffer[] = [];
+  let offset = 0;
+  for (const match of matches) {
+    parts.push(bytes.subarray(offset, match.start), Buffer.from('[redacted]'));
+    offset = match.end;
+  }
+  parts.push(bytes.subarray(offset));
+  return Buffer.concat(parts).toString('utf8');
 }
 
 /** Indexes events. @param records Accepted events. @returns Fingerprints by sequence. */

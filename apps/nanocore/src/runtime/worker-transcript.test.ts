@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { openWorkspaceDb } from '../storage/db.js';
@@ -11,7 +11,16 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
-import { importWorkerTranscript } from './worker-transcript.js';
+import {
+  createLocalSimulatorCredentialCheckValues,
+  type WorkerCredentialCheckValues,
+} from './worker-credential-guard.js';
+import {
+  importLocalSimulatorTranscript,
+  importWorkerTranscript,
+  type LocalSimulatorTranscriptPayload,
+  type WorkerTranscriptPayload,
+} from './worker-transcript.js';
 
 /**
  * Creates a package fixture for transcript import tests.
@@ -117,6 +126,504 @@ function importedOwnerCounts(fixture: ReturnType<typeof createTranscriptFixture>
   };
 }
 
+/** Builds complete synthetic comparison evidence. @param values Exact injected values. @returns Memory-only check set. */
+function transcriptCredentialChecks(values: string[] = []): WorkerCredentialCheckValues {
+  return {
+    sensitiveValues: values,
+    loopbackDigests: [
+      createHash('sha256').update('a'.repeat(43)).digest('hex'),
+      createHash('sha256').update('b'.repeat(43)).digest('hex'),
+    ],
+    routeTokenHashes: {
+      workerControl: createHash('sha256').update(Buffer.alloc(32, 17)).digest('hex'),
+      inference: createHash('sha256').update(Buffer.alloc(32, 34)).digest('hex'),
+      capability: createHash('sha256').update(Buffer.alloc(32, 51)).digest('hex'),
+    },
+  };
+}
+
+/** Builds a candidate and its separate trusted memory proof. @param fixture Real store fixture. @param item Worker body fields. @param checks Complete proof or unavailable evidence. @returns Collection payload. */
+function credentialItemPayload(
+  fixture: ReturnType<typeof createTranscriptFixture>,
+  item: { text?: string; parts?: Array<{ type: 'text'; text: string }> },
+  checks: WorkerCredentialCheckValues | null = transcriptCredentialChecks()
+): WorkerTranscriptPayload & { credentialCheckValues: WorkerCredentialCheckValues | null } {
+  return {
+    credentialCheckValues: checks,
+    itemsJsonl: JSON.stringify({
+      schemaVersion: 1,
+      kind: 'item',
+      lineage: transcriptLineage(fixture),
+      sequence: 1,
+      item: { type: 'assistant-message', status: 'completed', ...item },
+    }),
+  };
+}
+
+/** Reads actual canonical revision bytes, including earlier revisions. @param fixture Real store fixture. @returns Item history bytes. */
+function transcriptItemHistory(fixture: ReturnType<typeof createTranscriptFixture>): string {
+  return readFileSync(
+    join(
+      fixture.store.getDataRoot() as string,
+      'workspaces',
+      'ws_demo',
+      'threads',
+      'th_demo',
+      'turns',
+      fixture.turn.id,
+      'items.jsonl'
+    ),
+    'utf8'
+  );
+}
+
+describe('worker transcript product-safe diagnostics', () => {
+  it.each([
+    'malformed-json',
+    'unrecognized-key',
+  ])('keeps Item %s diagnostics candidate-free alongside a guarded reply', (failure) => {
+    const fixture = createTranscriptFixture();
+    const value = 'privateZ';
+    const payload = credentialItemPayload(
+      fixture,
+      { text: `Reply ${value}` },
+      transcriptCredentialChecks([value])
+    );
+    const invalidLine =
+      failure === 'malformed-json'
+        ? value
+        : JSON.stringify({ ...JSON.parse(payload.itemsJsonl!), sequence: 2, [value]: true });
+    payload.itemsJsonl += `\n${invalidLine}\n`;
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.itemIds).toHaveLength(1);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: result.itemIds[0], text: 'Reply [redacted]' })
+    );
+    expect(transcriptItemHistory(fixture)).not.toContain(value);
+    expect(JSON.stringify(result.diagnostics)).not.toContain(value);
+    expect(result.diagnostics).toEqual([
+      {
+        code:
+          failure === 'malformed-json'
+            ? 'worker_transcript_invalid_json'
+            : 'worker_transcript_invalid_item',
+        path: '$.items[2]',
+        message:
+          failure === 'malformed-json'
+            ? 'Worker transcript line is invalid JSON.'
+            : 'Worker transcript item is invalid.',
+      },
+    ]);
+  });
+
+  it.each([
+    { failure: 'malformed-json', evidence: 'complete' },
+    { failure: 'unrecognized-key', evidence: 'complete' },
+    { failure: 'malformed-json', evidence: 'unavailable' },
+    { failure: 'unrecognized-key', evidence: 'unavailable' },
+  ])('keeps event $failure diagnostics candidate-free with $evidence evidence and retains the guarded reply', ({
+    failure,
+    evidence,
+  }) => {
+    const fixture = createTranscriptFixture();
+    const value = 'privateZ';
+    const payload = credentialItemPayload(
+      fixture,
+      { text: `Reply ${value}` },
+      transcriptCredentialChecks([value])
+    );
+    const admitted = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    const before = transcriptItemHistory(fixture);
+    // Event admission failures block publication; they must preserve the already guarded reply.
+    const event = {
+      schemaVersion: 1,
+      kind: 'event',
+      sequence: 3,
+      lineage: transcriptLineage(fixture),
+      event: { type: 'worker.heartbeat', data: { status: 'running' } },
+      [value]: true,
+    };
+    payload.eventsJsonl = `\n${failure === 'malformed-json' ? value : JSON.stringify(event)}\n`;
+    if (evidence === 'unavailable') payload.credentialCheckValues = null;
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.itemIds).toEqual([]);
+    expect(result.artifactIds).toEqual([]);
+    expect(transcriptItemHistory(fixture)).toBe(before);
+    expect(before).not.toContain(value);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: admitted.itemIds[0], text: 'Reply [redacted]' })
+    );
+    expect(JSON.stringify(result.diagnostics)).not.toContain(value);
+    expect(result.diagnostics).toEqual([
+      {
+        code:
+          failure === 'malformed-json'
+            ? 'worker_transcript_invalid_json'
+            : 'worker_transcript_invalid_event',
+        path: '$.events[2]',
+        message:
+          failure === 'malformed-json'
+            ? 'Worker transcript line is invalid JSON.'
+            : 'Worker transcript event is invalid.',
+      },
+    ]);
+  });
+});
+
+describe('worker transcript Item exact-value admission', () => {
+  // Owner: Worker Control Protocol, Exact-Value Protection At Transcript Item Admission.
+  // The real importer and file-backed store are the deciding seam; no diagnostic regex is used.
+  it('keeps explicit local no-injection evidence outside Worker admission and preserves local candidate bytes', () => {
+    expectTypeOf<LocalSimulatorTranscriptPayload>().not.toExtend<WorkerTranscriptPayload>();
+    const fixture = createTranscriptFixture();
+    const before = transcriptItemHistory(fixture);
+    const text = 'Local output sk-not-injected and aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const body = Buffer.from(text);
+    const payload: LocalSimulatorTranscriptPayload = {
+      ...credentialItemPayload(fixture, { text }, null),
+      credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
+      artifactsJsonl: JSON.stringify(artifactRecord(fixture)),
+      artifactFiles: [{ bytes: body, sequence: 2 }],
+    };
+    // Deliberately cross the static boundary to prove Worker admission also rejects this at runtime.
+    expect(() =>
+      importWorkerTranscript(
+        fixture.store,
+        fixture.environmentPackage,
+        payload as unknown as WorkerTranscriptPayload,
+        importOptions(fixture)
+      )
+    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    expect(transcriptItemHistory(fixture)).toBe(before);
+    expect(fixture.store.listArtifacts('ws_demo')).toHaveLength(0);
+    expect(
+      fixture.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()
+    ).toEqual({ count: 0 });
+    const result = importLocalSimulatorTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.itemIds).toHaveLength(1);
+    expect(result.artifactIds).toHaveLength(1);
+    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0]!).content.body).toBe(text);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: result.itemIds[0], text })
+    );
+    expect(getArtifactReview(fixture.workspaceDb, result.artifactIds[0]!, 1).contentDigest).toBe(
+      artifactDigest(body)
+    );
+  });
+
+  it('refuses absent or reconstructed local proof before any local transcript writes', () => {
+    const fixture = createTranscriptFixture();
+    const before = transcriptItemHistory(fixture);
+    const proof = createLocalSimulatorCredentialCheckValues();
+    for (const invalid of [null, {}, { ...proof }]) {
+      const payload = {
+        ...credentialItemPayload(fixture, { text: 'Local reply.' }, null),
+        credentialCheckValues: invalid,
+      } as unknown as LocalSimulatorTranscriptPayload;
+      expect(() =>
+        importLocalSimulatorTranscript(
+          fixture.store,
+          fixture.environmentPackage,
+          payload,
+          importOptions(fixture)
+        )
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(transcriptItemHistory(fixture)).toBe(before);
+    }
+  });
+
+  it.each([
+    'runtime-env',
+    'runtime-file',
+    'direct-provider',
+    'worker-control',
+    'trusted-relay',
+  ])('replaces an exact %s injected value before canonical persistence', (source) => {
+    const fixture = createTranscriptFixture();
+    const value = `synthetic-${source}-injected-value`;
+    const payload = credentialItemPayload(
+      fixture,
+      { text: `Before ${value} after ${value}.` },
+      transcriptCredentialChecks([value, value, ''])
+    );
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.itemIds).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({
+        id: result.itemIds[0],
+        type: 'assistant-message',
+        text: 'Before [redacted] after [redacted].',
+      })
+    );
+    expect(transcriptItemHistory(fixture)).not.toContain(value);
+    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    expect(reopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({
+        id: result.itemIds[0],
+        text: 'Before [redacted] after [redacted].',
+      })
+    );
+  });
+
+  it('checks concatenated parts, including an injected value split across their boundary', () => {
+    const fixture = createTranscriptFixture();
+    const value = 'synthetic-split-credential';
+    const payload = credentialItemPayload(
+      fixture,
+      {
+        parts: [
+          { type: 'text', text: 'Before synthetic-split-' },
+          { type: 'text', text: 'credential after.' },
+        ],
+      },
+      transcriptCredentialChecks([value])
+    );
+    const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
+    expect(result.itemIds).toHaveLength(1);
+    expect(transcriptItemHistory(fixture)).not.toContain(value);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: result.itemIds[0], text: 'Before [redacted] after.' })
+    );
+  });
+
+  it('stores uninjected credential-looking text unchanged without a heuristic', () => {
+    const fixture = createTranscriptFixture();
+    const text = 'Authorization: Bearer sk-synthetic-uninjected-key; password=ordinary-example';
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      credentialItemPayload(fixture, { text }, transcriptCredentialChecks(['different-value']))
+    );
+    expect(result.itemIds).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: result.itemIds[0], text })
+    );
+    expect(transcriptItemHistory(fixture)).toContain(text);
+  });
+
+  it.each([0, 1])('checks session loopback digest %s inside a longer alphabet run', (index) => {
+    const fixture = createTranscriptFixture();
+    const credential = index === 0 ? 'a'.repeat(43) : 'b'.repeat(43);
+    const payload = credentialItemPayload(fixture, { text: `prefix_${credential}_suffix` });
+    const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
+    expect(result.itemIds).toHaveLength(1);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ id: result.itemIds[0], text: 'prefix_[redacted]_suffix' })
+    );
+    expect(transcriptItemHistory(fixture)).not.toContain(credential);
+  });
+
+  it.each([
+    ['worker-control', 17],
+    ['inference', 34],
+    ['capability', 51],
+  ] as const)('admits a guarded %s echo with only original route hashes in a reopened Store', (_route, byte) => {
+    const fixture = createTranscriptFixture();
+    // Reopening FsStore exercises durable Item admission, not executor evidence reconstruction.
+    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const token = Buffer.alloc(32, byte).toString('base64url');
+    // An alternate final character decodes identically but is not the injected literal spelling.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const alternate = `${token.slice(0, -1)}${alphabet[alphabet.indexOf(token.at(-1) as string) + 1]}`;
+    const checks = transcriptCredentialChecks();
+    expect(checks.sensitiveValues).toEqual([]);
+    expect(Object.values(checks.routeTokenHashes)).toHaveLength(3);
+    const payload = credentialItemPayload(
+      fixture,
+      { text: `prefix_${token}_suffix alternative_${alternate}_end` },
+      checks
+    );
+    const result = importWorkerTranscript(
+      reopened,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.itemIds).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+    expect(reopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({
+        id: result.itemIds[0],
+        text: `prefix_[redacted]_suffix alternative_${alternate}_end`,
+      })
+    );
+    expect(transcriptItemHistory(fixture)).not.toContain(token);
+    const rereopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    expect(rereopened.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({
+        id: result.itemIds[0],
+        text: `prefix_[redacted]_suffix alternative_${alternate}_end`,
+      })
+    );
+  });
+
+  it('guards the worker-derived Artifact reference title while preserving its canonical mirror', () => {
+    const fixture = createTranscriptFixture();
+    const value = 'synthetic-title-credential';
+    const payload = {
+      credentialCheckValues: transcriptCredentialChecks([value]),
+      artifactsJsonl: JSON.stringify(
+        artifactRecord(fixture, { artifact: { title: `Report ${value}` } })
+      ),
+      artifactFiles: [{ bytes: Buffer.from('Safe report body.'), sequence: 2 }],
+    };
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      importOptions(fixture)
+    );
+    expect(result.artifactIds).toHaveLength(1);
+    expect(fixture.store.listThreadItems('ws_demo', 'th_demo')).toContainEqual(
+      expect.objectContaining({ type: 'artifact-reference', title: 'Report [redacted]' })
+    );
+    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0] as string).title).toBe(
+      'Report [redacted]'
+    );
+    expect(transcriptItemHistory(fixture)).not.toContain(value);
+  });
+
+  it('rejects an Artifact credential match before any Item, Artifact or Review write', () => {
+    const fixture = createTranscriptFixture();
+    const value = 'synthetic-artifact-credential';
+    const before = transcriptItemHistory(fixture);
+    const payload = credentialItemPayload(
+      fixture,
+      { text: 'Safe reply accompanying the candidate set.' },
+      transcriptCredentialChecks([value])
+    );
+    payload.artifactsJsonl = [
+      artifactRecord(fixture),
+      artifactRecord(fixture, { sequence: 3, artifact: { path: '/workspace/output/other.md' } }),
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    payload.artifactFiles = [
+      { bytes: Buffer.from('Safe first candidate.'), sequence: 2 },
+      { bytes: Buffer.from(`Report ${value} end.`), sequence: 3 },
+    ];
+    expect(() =>
+      importWorkerTranscript(
+        fixture.store,
+        fixture.environmentPackage,
+        payload,
+        importOptions(fixture)
+      )
+    ).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
+    expect(transcriptItemHistory(fixture)).toBe(before);
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 0,
+      references: 0,
+      reviews: { count: 0 },
+    });
+  });
+
+  it('accepts Artifact credential-looking non-injected bytes unchanged', () => {
+    const fixture = createTranscriptFixture();
+    const bytes = Buffer.from('Authorization: Bearer sk-synthetic-non-injected; password=example');
+    const result = importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      {
+        credentialCheckValues: transcriptCredentialChecks(['other-injected-value']),
+        artifactsJsonl: JSON.stringify(artifactRecord(fixture)),
+        artifactFiles: [{ bytes, sequence: 2 }],
+      },
+      importOptions(fixture)
+    );
+    expect(result.artifactIds).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+    expect(fixture.store.getArtifact('ws_demo', result.artifactIds[0] as string)).toMatchObject({
+      content: { body: bytes.toString('utf8') },
+      contentDigest: artifactDigest(bytes),
+    });
+    expect(importedOwnerCounts(fixture)).toEqual({
+      artifacts: 1,
+      references: 1,
+      reviews: { count: 1 },
+    });
+  });
+
+  describe.each(['Item-only', 'mixed Item and Artifact'])('%s missing-evidence import', (kind) => {
+    it.each([
+      'missing-set',
+      'missing-envelope',
+      'missing-inference-loopback-digest',
+      'missing-capability-loopback-digest',
+      'missing-worker-control-route-hash',
+      'missing-inference-route-hash',
+      'missing-capability-route-hash',
+    ])('fails closed before transcript writes with %s in a reopened Store', (missing) => {
+      const fixture = createTranscriptFixture();
+      const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+      const before = transcriptItemHistory(fixture);
+      const payload = credentialItemPayload(fixture, { text: 'Unchecked recovered reply.' });
+      if (missing === 'missing-set') payload.credentialCheckValues = null;
+      if (missing === 'missing-envelope') Reflect.deleteProperty(payload, 'credentialCheckValues');
+      if (missing === 'missing-inference-loopback-digest') {
+        payload.credentialCheckValues!.loopbackDigests[0] = '';
+      }
+      if (missing === 'missing-capability-loopback-digest') {
+        payload.credentialCheckValues!.loopbackDigests[1] = '';
+      }
+      if (missing === 'missing-worker-control-route-hash') {
+        payload.credentialCheckValues!.routeTokenHashes.workerControl = '';
+      }
+      if (missing === 'missing-inference-route-hash') {
+        payload.credentialCheckValues!.routeTokenHashes.inference = '';
+      }
+      if (missing === 'missing-capability-route-hash') {
+        payload.credentialCheckValues!.routeTokenHashes.capability = '';
+      }
+      if (kind === 'mixed Item and Artifact') {
+        payload.artifactsJsonl = JSON.stringify(artifactRecord(fixture));
+        payload.artifactFiles = [{ bytes: Buffer.from('Safe Artifact body.'), sequence: 2 }];
+      }
+      expect(() =>
+        importWorkerTranscript(
+          reopened,
+          fixture.environmentPackage,
+          payload,
+          importOptions(fixture)
+        )
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(transcriptItemHistory(fixture)).toBe(before);
+      expect(importedOwnerCounts({ ...fixture, store: reopened })).toEqual({
+        artifacts: 0,
+        references: 0,
+        reviews: { count: 0 },
+      });
+    });
+  });
+});
+
 describe('worker transcript import', () => {
   it('imports exact Artifact bytes with deterministic reference and Review ownership', () => {
     const fixture = createTranscriptFixture();
@@ -125,6 +632,7 @@ describe('worker transcript import', () => {
       fixture.store,
       fixture.environmentPackage,
       {
+        credentialCheckValues: transcriptCredentialChecks(),
         itemsJsonl: `${JSON.stringify({
           schemaVersion: 1,
           kind: 'item',
@@ -199,6 +707,7 @@ describe('worker transcript import', () => {
     const fixture = createTranscriptFixture();
     const bytes = Buffer.from('# Stable output\n', 'utf8');
     const payload = {
+      credentialCheckValues: transcriptCredentialChecks(),
       artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
       artifactFiles: [{ bytes, sequence: 2 }],
       itemsJsonl: `${JSON.stringify({
@@ -258,6 +767,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: [artifactRecord(fixture), artifactRecord(fixture, { sequence: 3 })]
             .map((record) => JSON.stringify(record))
             .join('\n'),
@@ -275,6 +785,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           ...payload,
           artifactFiles: [{ bytes: Buffer.from('# Changed output\n'), sequence: 2 }],
         },
@@ -349,7 +860,7 @@ describe('worker transcript import', () => {
       importWorkerTranscript(
         fixture.store,
         fixture.environmentPackage,
-        payload(fixture),
+        { ...payload(fixture), credentialCheckValues: transcriptCredentialChecks() },
         importOptions(fixture)
       )
     ).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
@@ -391,6 +902,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
           artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
         },
@@ -409,6 +921,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: `${JSON.stringify(artifactRecord(fixture))}\n`,
           artifactFiles: [{ bytes: Buffer.from('output'), sequence: 2 }],
         },
@@ -431,6 +944,7 @@ describe('worker transcript import', () => {
         fixture.store,
         environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: `${JSON.stringify({
             ...record,
             lineage: { ...record.lineage, requestId: null },
@@ -491,6 +1005,7 @@ describe('worker transcript import', () => {
       fixture.store,
       fixture.environmentPackage,
       {
+        credentialCheckValues: transcriptCredentialChecks(),
         artifactsJsonl: `${JSON.stringify(record)}\n`,
         artifactFiles: [{ bytes: Buffer.from('# Proposed replacement\n'), sequence: 2 }],
       },
@@ -509,6 +1024,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: `${JSON.stringify(
             artifactRecord(fixture, { artifact: { materialProposal: proposal }, sequence: 3 })
           )}\n`,
@@ -569,6 +1085,7 @@ describe('worker transcript import', () => {
         fixture.store,
         fixture.environmentPackage,
         {
+          credentialCheckValues: transcriptCredentialChecks(),
           artifactsJsonl: `${JSON.stringify(artifactRecord(fixture, { artifact }))}\n`,
           artifactFiles: [{ bytes: Buffer.from('proposal'), sequence: 2 }],
         },
@@ -585,6 +1102,7 @@ describe('worker transcript import', () => {
   it('rejects transcript records whose lineage does not match the package scope', () => {
     const { environmentPackage, store, turn } = createTranscriptFixture();
     const result = importWorkerTranscript(store, environmentPackage, {
+      credentialCheckValues: transcriptCredentialChecks(),
       itemsJsonl: `${JSON.stringify({
         schemaVersion: 1,
         kind: 'item',
@@ -648,6 +1166,7 @@ describe('worker transcript import', () => {
       store,
       environmentPackage,
       {
+        credentialCheckValues: transcriptCredentialChecks(),
         eventsJsonl: `${JSON.stringify(eventRecord)}\n`,
       },
       {
@@ -683,6 +1202,7 @@ describe('worker transcript import', () => {
     };
 
     const result = importWorkerTranscript(store, environmentPackage, {
+      credentialCheckValues: transcriptCredentialChecks(),
       eventsJsonl: `${JSON.stringify(eventRecord)}\n`,
     });
 
@@ -733,6 +1253,7 @@ describe('worker transcript import', () => {
       store,
       environmentPackage,
       {
+        credentialCheckValues: transcriptCredentialChecks(),
         eventsJsonl: `${JSON.stringify(transcriptRecord)}\n`,
       },
       {
@@ -773,7 +1294,10 @@ describe('worker transcript import', () => {
     const result = importWorkerTranscript(
       store,
       environmentPackage,
-      { eventsJsonl: `${JSON.stringify(transcriptRecord)}\n` },
+      {
+        credentialCheckValues: transcriptCredentialChecks(),
+        eventsJsonl: `${JSON.stringify(transcriptRecord)}\n`,
+      },
       { acceptedLiveEvents: [acceptedRecord] }
     );
 
@@ -808,7 +1332,10 @@ describe('worker transcript import', () => {
     const result = importWorkerTranscript(
       store,
       environmentPackage,
-      { eventsJsonl: '' },
+      {
+        credentialCheckValues: transcriptCredentialChecks(),
+        eventsJsonl: '',
+      },
       { acceptedLiveEvents: [liveRecord] }
     );
 

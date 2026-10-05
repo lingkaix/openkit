@@ -70,6 +70,8 @@ The missing design is the concrete protocol boundary and message family.
 
 ## Current Implementation Projection
 
+NanoCore implements Artifact and Review exact-value rejection and transcript Item replacement through one shared byte matcher, requiring complete original-materialization evidence and exact-version restart reconstruction before canonical admission.
+
 The poll cadence is implemented with an independent heartbeat and a private Harness poll. After an empty private Harness poll, the loop waits until 250 ms from that poll's start before polling again; heartbeat delivery is separate, and retryable outages follow the bounded retry owner. The private Harness poll is the only interrupt path; the bounded-turn command loop is deleted.
 
 The current implementation uses the closed version-2 literal for worker-control request, response, and private Harness outer envelopes while canonical transcript, event, Artifact, provenance, workspace-change, and inner capability-summary records retain version 1. Refreshed exact-candidate real-host success and restart/reconnect interrupt evidence remain pending:
@@ -423,6 +425,14 @@ The shim can suggest item records, but NanoCore owns:
 - artifact linkage
 - approval linkage
 - final turn state
+
+### Exact-Value Protection At Transcript Item Admission
+
+Before creating an Item from worker transcript content, NanoCore MUST apply the shared exact injected-value comparison rule owned by [Worker Runtime Communication Model](20260629-worker_runtime_communication_model.md#workspace-and-artifact-plane-projections), including that owner's distinct route-token and loopback hash domains and permitted restart reconstruction. Each matched byte range MUST be replaced with the fixed marker `[redacted]` before canonical creation. A match still creates the Item and does not reject the reply. Overlapping matches MUST leave none of the matched bytes in the admitted text.
+
+The covered Item fields are the `assistant-message` body, supplied as `text` or assembled by concatenating its text `parts`, and the `artifact-reference` title derived from a worker Artifact declaration. When `text` is present it is the admitted body; otherwise all text parts are concatenated before checking, so a value split across parts is caught. The Artifact reference MUST mirror the guarded canonical Artifact title rather than retaining a second unguarded copy. Tool-call arguments and results are not accepted transcript Item kinds and gain no new admission path through this rule. NanoCore owns the resulting canonical Items; worker files remain candidates. Matched original bytes and comparison values MUST NOT be persisted or logged by canonical admission. This is exact-value protection, not generic DLP: credential-looking strings outside the injected set remain unchanged, and encoded, transformed, derived, or non-literal material is outside this check. The decision and reason are recorded in [Transcript Item Exact-Value Guard](../decisions/20261005-transcript_item_exact_value_guard.md).
+
+The check runs before any transcript Item write, including restart closeout and exact replay, using complete evidence for the original materialization under the communication model's reconstruction and association rule; current-value substitution and skipped checks are forbidden. Only genuinely unavailable or contradictory required evidence after that permitted reconstruction makes transcript import return `recovery_required` with product-safe diagnostics and zero transcript Item, Artifact, or Review writes, after the existing backend cleanup lifecycle. It MUST NOT silently publish unchecked text. Recovery follows the existing closeout and replay owners once the exact comparison evidence is available; this rule adds no durable record, automatic retry, update lifecycle, or termination lifecycle. Acceptance is an Item containing the fixed marker and no matched value, an unchanged body when no exact match exists, or the zero-write recovery result when evidence is unavailable.
 
 ## Relationship To Agent Capability
 

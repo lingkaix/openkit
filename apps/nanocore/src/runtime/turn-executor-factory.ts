@@ -20,7 +20,7 @@ import {
 import { currentWorkerLineageWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadVisible } from '../auth/thread-visibility.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
 import {
   listSchedulerSessionLeasesForTurn,
   requireSchedulerSessionLeaseAdmissionContext,
@@ -72,11 +72,15 @@ import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
 } from './worker-backend-sessions.js';
-import type { WorkerControlGateway } from './worker-control-gateway.js';
+import { hashWorkerRouteToken, type WorkerControlGateway } from './worker-control-gateway.js';
 import {
   getWorkerControlAcceptedFinalStatus,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
+import {
+  requireWorkerCredentialCheckValues,
+  type WorkerCredentialCheckValues,
+} from './worker-credential-guard.js';
 import { parseNanoHostImageInspection } from './worker-environment-runtime-effects.js';
 import type {
   NanoHostContextPackageImport,
@@ -399,11 +403,12 @@ interface NanoHostBackendTurnSession {
   /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
   pendingImports: NanoHostContextPackageImport[];
   /**
-   * Session-static Vault material consumed once at the `session.open` dispatch; never persisted
-   * or restored. A Turn that reuses an open binding drops it, because the resident host's
-   * environment was fixed when it started.
+   * Original session-static Vault material used at open and collection; never persisted.
+   * Reuse and restart collection resolve the binding's recorded versions, because the resident host's environment was fixed when it started.
    */
   runtimeEnvironment: Record<string, string> | null;
+  /** Original dispatch tokens retained only until closeout; restart uses their durable hashes. */
+  liveRouteTokens: [string, string, string] | null;
   runtimeCheckVersions: Array<{
     targetEnvVarName: string;
     vaultReferenceId: string;
@@ -660,6 +665,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           workerControlToken,
           workerInferenceToken,
         });
+        session.liveRouteTokens = [workerControlToken, workerInferenceToken, workerCapabilityToken];
       } catch (error) {
         if (pending.timeout) clearTimeout(pending.timeout);
         session.pendingHarnessOperation = null;
@@ -1018,6 +1024,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment: null,
+      liveRouteTokens: null,
       runtimeCheckVersions: null,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
@@ -2467,6 +2474,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       recordNativeHandleDigest: null,
       pendingImports: [],
       runtimeEnvironment,
+      liveRouteTokens: null,
       runtimeCheckVersions: (context.runtimeEnvCredentials ?? []).every(
         (item) =>
           item.vaultReferenceId &&
@@ -2978,12 +2986,63 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
     }
     return {
+      credentialCheckValues:
+        itemsBytes.toString('utf8').trim() || artifactsJsonl.trim() || artifactFiles.length
+          ? this.transcriptCredentialCheckValues(session)
+          : null,
       artifactsJsonl,
       eventsJsonl: eventsBytes.toString('utf8'),
       itemsJsonl: itemsBytes.toString('utf8'),
       ...(artifactFiles.length > 0 ? { artifactFiles } : {}),
       ...(runtimeProvenance ? { runtimeProvenance } : {}),
     };
+  }
+
+  /** Reconstructs complete private admission evidence without requiring the old serving lease to remain live. */
+  private transcriptCredentialCheckValues(
+    session: NanoHostBackendTurnSession
+  ): WorkerCredentialCheckValues {
+    try {
+      const scope = session.environmentPackage.scope;
+      const leases = listSchedulerSessionLeasesForTurn(this.coreDb, scope).filter(
+        (lease) =>
+          lease.leaseId === session.leaseId &&
+          lease.agentSessionId === scope.agentSessionId &&
+          lease.packageSnapshotId === session.environmentPackage.snapshotId
+      );
+      const lease = leases.length === 1 ? leases[0] : null;
+      if (!lease || !lease.sandboxBindingRef)
+        throw new Error('Original lease association is unavailable.');
+      const runtime = this.collectionRuntimeCheckValues(session);
+      const evidence = requireWorkerCredentialCheckValues({
+        sensitiveValues: [
+          ...runtime.runtimeEnv,
+          lease.sandboxBindingRef,
+          ...(session.liveRouteTokens ?? []),
+        ],
+        loopbackDigests: runtime.loopbackDigests,
+        routeTokenHashes: {
+          workerControl: lease.workerControlTokenHash,
+          inference: lease.workerInferenceTokenHash,
+          capability: lease.workerCapabilityTokenHash,
+        },
+      });
+      if (
+        session.liveRouteTokens &&
+        !isDeepStrictEqual(session.liveRouteTokens.map(hashWorkerRouteToken), [
+          lease.workerControlTokenHash,
+          lease.workerInferenceTokenHash,
+          lease.workerCapabilityTokenHash,
+        ])
+      )
+        throw new Error('Original route-token evidence is contradictory.');
+      return evidence;
+    } catch {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Original worker credential comparison evidence is unavailable or contradictory.'
+      );
+    }
   }
 
   /** Collects the outside snapshot chain after accepted final status and waits before another Turn. */
@@ -3087,6 +3146,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** Loads the original session environment and loopback evidence for both collection consumers. */
+  private collectionRuntimeCheckValues(session: NanoHostBackendTurnSession) {
+    const digests = this.coreDb.sqlite
+      .prepare(
+        `SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability
+         FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?
+           AND harness_instance_id = ? AND agent_session_id = ? AND workspace_id = ? AND thread_id = ?`
+      )
+      .get(
+        session.agentSessionRuntimeBindingId,
+        session.harnessInstanceId,
+        session.environmentPackage.scope.agentSessionId,
+        session.environmentPackage.scope.workspaceId,
+        session.environmentPackage.scope.threadId
+      ) as { inference: string | null; capability: string | null } | undefined;
+    const values = session.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+    return {
+      runtimeEnv: Object.values(values).filter((value) => value.length > 0),
+      loopbackDigests: [digests?.inference, digests?.capability],
+    };
+  }
+
   /** Constructs the complete bounded credential-check command; it never truncates the check set. */
   private workspaceCollectionCommand(
     session: NanoHostBackendTurnSession,
@@ -3094,14 +3175,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     mode: 'baseline' | 'capture',
     cursor: ReturnType<typeof readWorkspaceSnapshotCursor>
   ) {
-    const digests = this.coreDb.sqlite
-      .prepare(
-        'SELECT inference_loopback_credential_digest AS inference, capability_loopback_credential_digest AS capability FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-      )
-      .get(session.agentSessionRuntimeBindingId) as
-      | { inference: string | null; capability: string | null }
-      | undefined;
-    const values = session.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
+    const checkValues = this.collectionRuntimeCheckValues(session);
     let command: ReturnType<typeof WorkspaceCollectCommandSchema.parse>;
     try {
       command = WorkspaceCollectCommandSchema.parse({
@@ -3110,10 +3184,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         mode,
         acceptedBase: mode === 'baseline' ? null : cursor?.acceptedBase,
         previousHead: mode === 'baseline' ? null : cursor?.head,
-        checkValues: {
-          runtimeEnv: Object.values(values).filter((value) => value.length > 0),
-          loopbackDigests: [digests?.inference, digests?.capability],
-        },
+        checkValues,
       });
     } catch {
       throw new WorkspaceCollectionError({

@@ -53,12 +53,13 @@ import {
 } from '../runtime/worker-backend-sessions.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { recordWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
+import { createLocalSimulatorCredentialCheckValues } from '../runtime/worker-credential-guard.js';
 import {
   acceptPreparedWorkerTurnContextPackage,
   prepareWorkerTurnContextPackage,
   workerVisibleWorkspaceCwd,
 } from '../runtime/worker-governance-turn-executor.js';
-import { importWorkerTranscript } from '../runtime/worker-transcript.js';
+import { importLocalSimulatorTranscript } from '../runtime/worker-transcript.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -1224,10 +1225,12 @@ export class SimulatedTurnExecutor implements TurnExecutor {
         })
       )
       .join('\n');
-    const result = importWorkerTranscript(
+    const result = importLocalSimulatorTranscript(
       store,
       environmentPackage,
       {
+        // This local generator injects no Vault material, route tokens, or loopback credentials.
+        credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
         artifactsJsonl: `${artifactsJsonl}\n`,
         artifactFiles: candidates.map((bytes, index) => ({ bytes, sequence: index + 1 })),
       },

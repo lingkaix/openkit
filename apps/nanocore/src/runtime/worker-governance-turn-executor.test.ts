@@ -3273,6 +3273,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnStatus: 'completed',
     },
     {
+      finalStatus: 'completed',
+      stopReason: 'completed',
+      turnStatus: 'completed',
+      routeHashEcho: true,
+    },
+    {
       artifactRecoveryRequired: true,
       finalStatus: 'completed',
       stopReason: 'completed',
@@ -3357,6 +3363,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     backend.artifactRecoveryRequired = 'artifactRecoveryRequired' in testCase;
     backend.artifactCollectionInvalid = 'artifactCollectionInvalid' in testCase;
+    if ('routeHashEcho' in testCase) {
+      backend.assistantText = `Echo ${[17, 34, 51].map((byte) => Buffer.alloc(32, byte).toString('base64url')).join(' ')}.`;
+    }
     const completion = new Promise<void>(() => {});
     let reportWaiterStarted!: () => void;
     const waiterStarted = new Promise<void>((resolve) => {
@@ -3431,9 +3440,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       recordKey: '1',
       sequence: 1,
     });
-    const reopenedCoreDb = finalStatus === 'failed' ? openCoreDb(coreDb.dataRoot) : coreDb;
-    const reopenedStore =
-      finalStatus === 'failed' ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    const reopensStore = finalStatus === 'failed' || 'routeHashEcho' in testCase;
+    const reopenedCoreDb = reopensStore ? openCoreDb(coreDb.dataRoot) : coreDb;
+    const reopenedStore = reopensStore ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
     const restartedExecutor = new WorkerGovernanceTurnExecutor({
       backend,
       coreDb: reopenedCoreDb,
@@ -3556,8 +3565,30 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'cleanupSession',
     ]);
     if (reopenedCoreDb !== coreDb) reopenedCoreDb.sqlite.close();
-    const durableStore =
-      finalStatus === 'failed' ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    const durableStore = reopensStore ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    if ('routeHashEcho' in testCase) {
+      expect(durableStore.listThreadItems(turn.workspaceId, turn.threadId)).toContainEqual(
+        expect.objectContaining({
+          type: 'assistant-message',
+          text: 'Echo [redacted] [redacted] [redacted].',
+        })
+      );
+      const history = readFileSync(
+        join(
+          coreDb.dataRoot,
+          'workspaces',
+          turn.workspaceId,
+          'threads',
+          turn.threadId,
+          'turns',
+          turn.id,
+          'items.jsonl'
+        ),
+        'utf8'
+      );
+      for (const byte of [17, 34, 51])
+        expect(history).not.toContain(Buffer.alloc(32, byte).toString('base64url'));
+    }
     expect(durableStore.getTurnById(turn.id)).toMatchObject({
       agentSessionId,
       status: turnStatus,
@@ -8070,6 +8101,8 @@ function turnRuntimeSha256(bytes: Uint8Array): string {
 
 class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public readonly calls: string[] = [];
+  /** Candidate reply; private comparison evidence never includes echoed route plaintext. */
+  public assistantText = 'Governed worker completed the task.';
   public artifactCollectionInvalid = false;
   public artifactOutput: {
     readonly bytes: Buffer;
@@ -8243,6 +8276,23 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
 
     const artifactOutput = this.artifactOutput;
     return {
+      credentialCheckValues: {
+        sensitiveValues: [
+          ...(this.lastContext?.providerCredentials ?? []).map((item) => item.credentialValue),
+          ...(this.lastContext?.runtimeEnvCredentials ?? []).map((item) => item.credentialValue),
+          ...(this.lastContext?.runtimeFileCredentials ?? []).map((item) => item.credentialValue),
+          ...(this.lastContext?.sandboxBindingRef ? [this.lastContext.sandboxBindingRef] : []),
+        ],
+        loopbackDigests: [
+          createHash('sha256').update('a'.repeat(43)).digest('hex'),
+          createHash('sha256').update('b'.repeat(43)).digest('hex'),
+        ],
+        routeTokenHashes: {
+          workerControl: createHash('sha256').update(Buffer.alloc(32, 17)).digest('hex'),
+          inference: createHash('sha256').update(Buffer.alloc(32, 34)).digest('hex'),
+          capability: createHash('sha256').update(Buffer.alloc(32, 51)).digest('hex'),
+        },
+      },
       ...(this.eventsJsonlFactory
         ? { eventsJsonl: this.eventsJsonlFactory(this.lastPackage) }
         : {}),
@@ -8288,7 +8338,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
         item: {
           type: 'assistant-message',
           status: 'completed',
-          text: 'Governed worker completed the task.',
+          text: this.assistantText,
         },
       })}\n`,
       ...(this.runtimeProvenanceFactory

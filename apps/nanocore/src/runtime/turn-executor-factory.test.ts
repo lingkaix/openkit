@@ -3292,6 +3292,52 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+
+  it('retains original credential evidence after live-memory loss and lease expiry, refusing missing route hashes', async () => {
+    const f = await admitIdleSupplyResident('credential_admission');
+    try {
+      const collector = f.backend as unknown as {
+        transcriptCredentialCheckValues(
+          session: unknown
+        ): import('./worker-credential-guard.js').WorkerCredentialCheckValues;
+      };
+      const session = f.session as {
+        liveRouteTokens: [string, string, string] | null;
+        runtimeEnvironment: Record<string, string> | null;
+      };
+      const live = collector.transcriptCredentialCheckValues(session);
+      expect(session.liveRouteTokens).toHaveLength(3);
+      for (const token of session.liveRouteTokens!) expect(live.sensitiveValues).toContain(token);
+      expect(live.sensitiveValues).toContain('sandbox-binding:credential_admission');
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_session_leases SET expires_at = ? WHERE lease_id = ?')
+        .run('2000-01-01T00:00:00.000Z', 'lease_credential_admission');
+      const recovered = collector.transcriptCredentialCheckValues({
+        ...session,
+        liveRouteTokens: null,
+        runtimeEnvironment: null,
+      });
+      expect(recovered.routeTokenHashes).toEqual(live.routeTokenHashes);
+      expect(recovered.loopbackDigests).toEqual(live.loopbackDigests);
+      expect(recovered.sensitiveValues).toEqual(['sandbox-binding:credential_admission']);
+      for (const token of session.liveRouteTokens!)
+        expect(recovered.sensitiveValues).not.toContain(token);
+      f.coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_session_leases SET worker_control_token_hash = NULL WHERE lease_id = ?'
+        )
+        .run('lease_credential_admission');
+      expect(() =>
+        collector.transcriptCredentialCheckValues({
+          ...session,
+          liveRouteTokens: null,
+          runtimeEnvironment: null,
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
   it('constructs collection from exact attachment proof and refuses oversized or incomplete check commands', async () => {
     const f = await admitIdleSupplyResident('association');
     try {
