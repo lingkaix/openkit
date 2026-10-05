@@ -10,6 +10,8 @@ The authorized Thread dashboard projects the authenticated viewer and only recor
 
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.
 
+Thread dashboard work status projects selected Agent, active Turn status, pending attention counts and latest Artifact only. Workspace active-work rows project recorded Turn activity without a mode label. Product mode and handoff proof comes from the owning conversation, Task or Goal result and its exact Thread, Turn and Item lineage; dashboards compute no routing decision.
+
 `nanocore` is the tiny real demo core server for the UI-first protocol slice.
 
 NanoCore derives private AEP and Context input paths from the admitted AgentSession, opens or inspects that exact session before importing its complete Turn inputs, and starts the Worker only after all imports succeed. Turn-specific paths and payloads do not partition otherwise compatible shared Sandbox or Harness identities.

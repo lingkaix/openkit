@@ -3523,6 +3523,42 @@ describe('app api schemas', () => {
     }
   });
 
+  it('discards unowned dashboard mode and routing fields as additive read metadata', () => {
+    const workStatus = {
+      selectedAgentId: 'quick-chat',
+      activeTurnStatus: 'idle',
+      pendingApprovalCount: 0,
+      pendingQuestionCount: 0,
+      latestArtifact: null,
+    };
+    expect(
+      appApiSchemas.ThreadWorkStatusSchema.parse({
+        ...workStatus,
+        currentMode: 'automation',
+        routing: {
+          decision: 'worker_turn',
+          explanation: 'Unowned projection.',
+          selectedAgentId: 'quick-chat',
+          confidence: 1,
+          requiredUserAction: null,
+        },
+      })
+    ).toEqual(workStatus);
+    const activeWork = {
+      threadId: 'th_demo',
+      title: 'Active conversation',
+      status: 'running',
+      agentId: 'quick-chat',
+      summary: null,
+      updatedAt: timestamp,
+    };
+    expect(
+      appApiSchemas.WorkspaceActiveWorkSchema.parse({ ...activeWork, mode: 'automation' })
+    ).toEqual(activeWork);
+    expect(appApiSchemas).not.toHaveProperty('ProductWorkModeSchema');
+    expect(appApiSchemas).not.toHaveProperty('WorkRoutingSchema');
+  });
+
   it('keeps AgentSession continuity out of ordinary App API schemas', () => {
     expect(appApiSchemas.ThreadDashboardResponseSchema.shape).not.toHaveProperty('activeSession');
     expect(appApiSchemas.ThreadDashboardResponseSchema.shape).toHaveProperty('taskInputs');
@@ -3576,19 +3612,11 @@ describe('app api schemas', () => {
       turns: [turn],
       artifacts: [],
       workStatus: {
-        currentMode: 'chat',
         selectedAgentId: null,
         activeTurnStatus: 'running',
         pendingApprovalCount: 0,
         pendingQuestionCount: 0,
         latestArtifact: null,
-        routing: {
-          decision: 'idle',
-          explanation: 'Idle.',
-          selectedAgentId: null,
-          confidence: null,
-          requiredUserAction: null,
-        },
       },
       composer: {
         disabled: false,

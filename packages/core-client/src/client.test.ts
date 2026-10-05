@@ -557,19 +557,11 @@ function threadDashboard() {
       },
     ],
     workStatus: {
-      currentMode: 'chat',
       selectedAgentId: 'agent_demo',
       activeTurnStatus: 'running',
       pendingApprovalCount: 0,
       pendingQuestionCount: 0,
       latestArtifact: null,
-      routing: {
-        decision: 'worker_turn',
-        explanation: 'Route to the demo agent.',
-        selectedAgentId: 'agent_demo',
-        confidence: 1,
-        requiredUserAction: null,
-      },
     },
     composer: {
       disabled: false,
@@ -4100,6 +4092,7 @@ describe('createCoreClient', () => {
       threadId: 'th_demo',
     });
     expect(dashboard).not.toHaveProperty('activeSession');
+    expect(dashboard.workStatus).toEqual(threadDashboard().workStatus);
     expect(dashboard.taskInputs).toEqual(threadDashboard().taskInputs);
     expect('runThreadGoalTestSuperviseStep' in client.app).toBe(false);
     await expect(

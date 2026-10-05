@@ -4,6 +4,8 @@ Thread dashboard taskInputs carry only Item identity and objective from NanoCore
 
 Thread dashboard schemas include the nullable authenticated viewer id and a narrow participant display-name projection. These release-coupled labels do not replace immutable protocol actors or expose private profile fields.
 
+Dashboard work-status and active-work schemas carry recorded activity and output summaries without product mode or routing fields. Their descriptive readers discard unknown additive fields; conversation, Task and Goal results retain their own mode and handoff contracts.
+
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
 The [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md) permits browser-safe config-schema subpaths, including `@openkit/config-schema/native-environment` for shared native-environment literals. App API schemas never import the server-only config root; the built browser import graph regression lives in Web's `test/browser-package-boundary.test.ts`.

@@ -12,37 +12,8 @@ import { z } from 'zod';
 import { ApprovalEffectPreviewSchema } from './pending-request.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 
-/** Product work modes surfaced by app-level dashboard read models. */
-export const ProductWorkModeSchema = z.enum([
-  'chat',
-  'automation',
-  'plan',
-  'review',
-  'organize',
-  'delegation',
-]);
-
 /** Current status for a thread workbench, including the idle no-turn state. */
 export const ActiveTurnStatusSchema = z.union([TurnStatusSchema, z.literal('idle')]);
-
-/** Routing decision summary returned by NanoCore app dashboards. */
-export const WorkRoutingSchema = z.object({
-  decision: z.enum([
-    'quick_chat',
-    'worker_turn',
-    'review',
-    'plan',
-    'organize',
-    'delegation',
-    'handoff',
-    'unsupported',
-    'idle',
-  ]),
-  explanation: z.string(),
-  selectedAgentId: z.string().min(1).nullable(),
-  confidence: z.number().min(0).max(1).nullable(),
-  requiredUserAction: z.string().min(1).nullable(),
-});
 
 /** Compact artifact summary shown in product work status surfaces. */
 export const DashboardArtifactSummarySchema = z.object({
@@ -58,7 +29,6 @@ export const WorkspaceActiveWorkSchema = z.object({
   threadId: z.string().min(1),
   title: z.string().min(1),
   status: TurnStatusSchema,
-  mode: ProductWorkModeSchema,
   agentId: z.string().min(1).nullable(),
   summary: z.string().nullable(),
   updatedAt: z.string().min(1),
@@ -95,13 +65,11 @@ export const ThreadTaskInputSchema = z
 
 /** Thread-level product work status shown above the protocol item stream. */
 export const ThreadWorkStatusSchema = z.object({
-  currentMode: ProductWorkModeSchema,
   selectedAgentId: z.string().min(1).nullable(),
   activeTurnStatus: ActiveTurnStatusSchema,
   pendingApprovalCount: z.number().int().nonnegative(),
   pendingQuestionCount: z.number().int().nonnegative(),
   latestArtifact: DashboardArtifactSummarySchema.nullable(),
-  routing: WorkRoutingSchema,
 });
 
 /** Product-safe context assembly shared by ordinary Task recovery. */
@@ -365,10 +333,6 @@ export const ListThreadItemsResponseSchema = z.object({
   nextCursor: z.string().min(1).nullable(),
 });
 
-/** Product work mode surfaced by app-level dashboard read models. */
-export type ProductWorkMode = z.infer<typeof ProductWorkModeSchema>;
-/** Routing decision summary returned by NanoCore app dashboards. */
-export type WorkRouting = z.infer<typeof WorkRoutingSchema>;
 /** Compact artifact summary shown in product work status surfaces. */
 export type DashboardArtifactSummary = z.infer<typeof DashboardArtifactSummarySchema>;
 /** Thread-level product work status shown above the protocol item stream. */

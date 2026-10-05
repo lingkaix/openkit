@@ -2,6 +2,8 @@
 
 Thread dashboard reads validate the authenticated viewer id and bounded participant display names alongside existing work state; no separate user-directory request is needed for conversation attribution.
 
+Dashboard work status contains selected Agent, active Turn status, pending attention counts and latest Artifact; active-work rows contain no mode field. Conversation, Task and Goal operation results and their exact lineage prove the selected workflow.
+
 The same dashboard preserves NanoCore's verified `taskInputs` objective summaries for Web and administrator CLI consumers; the client does not infer summaries from message JSON.
 
 `client.operations` exposes the ten Goal definitions with strict input and output codecs and automatic missing request-id insertion. `goal.read` returns current intent and cards, exact proposed and active Plan versions, shared request state and claim, linked ordinary Tasks and disposition. Human decision operations resolve exact Pending Requests; grant consumption belongs to the Goal owner and does not launch work. Retired Goal SDK methods and routes have no aliases.

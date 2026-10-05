@@ -163,18 +163,17 @@ describe('workspace dashboard app API', () => {
           threadId: activeThread.id,
           title: 'Active worker turn',
           status: 'running',
-          mode: 'automation',
           agentId: 'agent_codex_host',
         }),
         expect.objectContaining({
           threadId: attentionThread.id,
           title: 'Approval handoff',
           status: 'running',
-          mode: 'automation',
           agentId: null,
         }),
       ])
     );
+    for (const row of dashboard.activeWork) expect(row).not.toHaveProperty('mode');
     expect(dashboard).toMatchObject({
       recentCompletions: [
         {

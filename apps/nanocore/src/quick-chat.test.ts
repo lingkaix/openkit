@@ -782,6 +782,19 @@ describe('quick chat app API', () => {
     });
     expect(parsed.turn.status).toBe('completed');
     expect(parsed.turn.agentId).toBe('quick-chat');
+    const dashboardResponse = await app.request(
+      ...operationRequest('thread.dashboard', { workspaceId: 'ws_demo', threadId: 'th_demo' })
+    );
+    expect(dashboardResponse.status).toBe(200);
+    const dashboard = await dashboardResponse.json();
+    expect(dashboard.turns).toEqual([parsed.turn]);
+    expect(dashboard.workStatus).toEqual({
+      selectedAgentId: 'quick-chat',
+      activeTurnStatus: 'idle',
+      pendingApprovalCount: 0,
+      pendingQuestionCount: 0,
+      latestArtifact: null,
+    });
     expect(parsed.turn.triggerActor).toEqual({ kind: 'user', id: 'user_local' });
     expect(parsed.turn.items.find((item) => item.type === 'user-message')).toMatchObject({
       actor: parsed.turn.triggerActor,

@@ -25687,17 +25687,6 @@
                     "failed"
                   ]
                 },
-                "mode": {
-                  "type": "string",
-                  "enum": [
-                    "chat",
-                    "automation",
-                    "plan",
-                    "review",
-                    "organize",
-                    "delegation"
-                  ]
-                },
                 "agentId": {
                   "anyOf": [
                     {
@@ -25724,7 +25713,6 @@
                 "threadId",
                 "title",
                 "status",
-                "mode",
                 "agentId",
                 "summary",
                 "updatedAt"
@@ -36855,17 +36843,6 @@
           "workStatus": {
             "type": "object",
             "properties": {
-              "currentMode": {
-                "type": "string",
-                "enum": [
-                  "chat",
-                  "automation",
-                  "plan",
-                  "review",
-                  "organize",
-                  "delegation"
-                ]
-              },
               "selectedAgentId": {
                 "anyOf": [
                   {
@@ -36951,80 +36928,14 @@
                     "type": "null"
                   }
                 ]
-              },
-              "routing": {
-                "type": "object",
-                "properties": {
-                  "decision": {
-                    "type": "string",
-                    "enum": [
-                      "quick_chat",
-                      "worker_turn",
-                      "review",
-                      "plan",
-                      "organize",
-                      "delegation",
-                      "handoff",
-                      "unsupported",
-                      "idle"
-                    ]
-                  },
-                  "explanation": {
-                    "type": "string"
-                  },
-                  "selectedAgentId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "confidence": {
-                    "anyOf": [
-                      {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "requiredUserAction": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "decision",
-                  "explanation",
-                  "selectedAgentId",
-                  "confidence",
-                  "requiredUserAction"
-                ],
-                "additionalProperties": false
               }
             },
             "required": [
-              "currentMode",
               "selectedAgentId",
               "activeTurnStatus",
               "pendingApprovalCount",
               "pendingQuestionCount",
-              "latestArtifact",
-              "routing"
+              "latestArtifact"
             ],
             "additionalProperties": false
           },
@@ -91325,5 +91236,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:446986c8b0fb3a9c974238d2df529567d329d2169e6af48eb16121ef6cb0d319"
+  "x-openkit-source-digest": "sha256:1180b75b80b04ea88bbed096c79421a41d9c4beb98cc5acbdaba6f594dc71ce8"
 }

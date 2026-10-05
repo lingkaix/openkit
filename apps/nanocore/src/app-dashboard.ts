@@ -6,7 +6,6 @@ import {
   type ThreadDashboardResponse,
   ThreadDashboardResponseSchema,
   type ThreadWorkStatus,
-  type WorkRouting,
   type WorkspaceDashboardResponse,
   WorkspaceDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -199,48 +198,6 @@ function summarizeDashboardArtifact(artifact: Artifact): DashboardArtifactSummar
 }
 
 /**
- * Builds the product-visible routing explanation for a worker-backed thread.
- *
- * @param selectedAgentId Worker agent id selected for the thread.
- * @param pendingApprovalCount Number of pending approvals.
- * @param pendingQuestionCount Number of pending questions.
- * @returns Routing summary for the thread.
- */
-function buildWorkerRouting(
-  selectedAgentId: string | null,
-  pendingApprovalCount: number,
-  pendingQuestionCount: number
-): WorkRouting {
-  if (!selectedAgentId) {
-    return {
-      decision: 'unsupported',
-      explanation: 'NanoCore cannot route this thread until a worker agent is selected.',
-      selectedAgentId: null,
-      confidence: 1,
-      requiredUserAction: 'Select a worker agent before starting a turn.',
-    };
-  }
-
-  const requiredUserAction =
-    pendingApprovalCount > 0 && pendingQuestionCount > 0
-      ? 'Respond to the pending approval and question.'
-      : pendingApprovalCount > 0
-        ? 'Respond to the pending approval.'
-        : pendingQuestionCount > 0
-          ? 'Respond to the pending question.'
-          : null;
-
-  return {
-    decision: 'worker_turn',
-    explanation:
-      'NanoCore routes thread prompts through WorkerCoordinator to the selected worker agent because automation changes workspace state.',
-    selectedAgentId,
-    confidence: 1,
-    requiredUserAction,
-  };
-}
-
-/**
  * Returns a stable product title for a thread.
  *
  * @param thread Thread to name.
@@ -321,17 +278,11 @@ function buildThreadWorkStatus(input: {
   );
 
   return {
-    currentMode: 'automation',
     selectedAgentId: input.selectedAgentId,
     activeTurnStatus: activeTurn?.status ?? 'idle',
     pendingApprovalCount: pendingApprovals.length,
     pendingQuestionCount: pendingQuestions.length,
     latestArtifact: latestArtifact ? summarizeDashboardArtifact(latestArtifact) : null,
-    routing: buildWorkerRouting(
-      input.selectedAgentId,
-      pendingApprovals.length,
-      pendingQuestions.length
-    ),
   };
 }
 
@@ -372,7 +323,6 @@ function buildWorkspaceWorkSections(
         threadId: thread.id,
         title: threadTitle(thread),
         status: activeTurn.status,
-        mode: 'automation',
         agentId: activeTurn.agentId ?? null,
         summary: thread.preview ?? null,
         updatedAt: activeTurn.startedAt ?? thread.updatedAt,

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ProductTurnSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
@@ -705,7 +706,6 @@ describe('thread dashboard app API', () => {
         workStatus: {
           pendingApprovalCount: 0,
           pendingQuestionCount: 0,
-          routing: { requiredUserAction: null },
         },
         composer: { disabled: true },
       });
@@ -824,23 +824,40 @@ describe('thread dashboard app API', () => {
     });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    const dashboard = await res.json();
+    const latestArtifact = {
+      id: 'ar_thread_status',
+      title: 'Latest artifact',
+      status: 'draft',
+      summary: 'Current delegated output.',
+      updatedAt: timestamp,
+    };
+    expect(dashboard).toEqual({
+      viewerUserId: 'user_local',
+      participants: [{ kind: 'agent', id: 'agent_codex_host', displayName: 'agent_codex_host' }],
+      thread: store.getThread('ws_demo', thread.id),
+      turns: store
+        .listThreadTurns('ws_demo', thread.id)
+        .map((turn) => ProductTurnSchema.parse(turn)),
+      artifacts: [latestArtifact],
       workStatus: {
-        currentMode: 'automation',
         selectedAgentId: 'agent_codex_host',
         activeTurnStatus: 'running',
         pendingApprovalCount: 1,
         pendingQuestionCount: 1,
-        latestArtifact: {
-          id: 'ar_thread_status',
-          title: 'Latest artifact',
-        },
-        routing: {
-          decision: 'worker_turn',
-          selectedAgentId: 'agent_codex_host',
-          requiredUserAction: 'Respond to the pending approval and question.',
-        },
+        latestArtifact,
       },
+      composer: { disabled: false, defaultAgentId: null },
+      itemLog: { href: '/api/app/operations/thread.items' },
+      taskInputs: [],
+      pendingRequests: [],
+      runtimeActivity: [approvalTurn, questionTurn].map((turn) => ({
+        turnId: turn.id,
+        contentCapture: 'unknown',
+        coverage: 'unavailable',
+        entries: [],
+        omittedEntryCount: 0,
+      })),
     });
   });
 
@@ -927,7 +944,6 @@ describe('thread dashboard app API', () => {
       workStatus: {
         pendingApprovalCount: 1,
         pendingQuestionCount: 0,
-        routing: { requiredUserAction: 'Respond to the pending approval.' },
       },
     });
   });
