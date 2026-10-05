@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { LIFECYCLE_DEFAULTS } from '../lifecycle-deadline.js';
 
 /** Generated schema document fields the adapter actually consults. */
 interface SchemaFile {
@@ -142,8 +143,6 @@ export function redactDiagnostic(text: string, secrets: readonly string[]): stri
   return bytes.subarray(0, end).toString('utf8');
 }
 
-/** Native request deadline; cleanup has a separate four-second allowance below the Harness budget. */
-export const CODEX_RPC_TIMEOUT_MS = 4_000;
 const KNOWN_PERMISSION_METHODS = new Set([
   'item/commandExecution/requestApproval',
   'item/fileChange/requestApproval',
@@ -181,7 +180,7 @@ export class CodexAppServer {
     private readonly secrets: readonly string[],
     private readonly onNotification: (method: string, params: unknown) => void,
     private readonly onBroken: (reason: string) => void,
-    private readonly controlTimeoutMs = CODEX_RPC_TIMEOUT_MS
+    private readonly controlTimeoutMs: number = LIFECYCLE_DEFAULTS.nativeRequestMs
   ) {
     child.stdout.on('data', (chunk: Buffer) => this.onStdout(chunk));
     child.stdout.on('end', () => this.endStdout());
@@ -217,7 +216,7 @@ export class CodexAppServer {
   async request(
     method: string,
     params: unknown,
-    timeoutMs = this.controlTimeoutMs
+    timeoutMs: number = this.controlTimeoutMs
   ): Promise<unknown> {
     if (timeoutMs <= 0) throw new Error('Codex app-server control deadline expired.');
     if (this.broken) throw new Error('Codex app-server stream is unusable.');
@@ -252,7 +251,7 @@ export class CodexAppServer {
   }
 
   /** Bounded handshake notification, including any outbound backpressure. */
-  async notify(method: string, timeoutMs = this.controlTimeoutMs): Promise<void> {
+  async notify(method: string, timeoutMs: number = this.controlTimeoutMs): Promise<void> {
     if (timeoutMs <= 0) throw new Error('Codex app-server control deadline expired.');
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), timeoutMs);

@@ -28,7 +28,7 @@ import type {
 } from '../adapter-registry.js';
 import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
-import { LifecycleDeadline } from '../lifecycle-deadline.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeCaptureInput } from '../runtime-capture.js';
 import { runResidentTurn } from '../turn.js';
 import {
@@ -2427,6 +2427,99 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
 });
 
 describe('round 4 failure boundaries', () => {
+  it('uses the shared native request budget and releases an expired request timer', async () => {
+    const child = controlledPeer();
+    child.stdin.removeAllListeners('data');
+    const rpc = new CodexAppServer(
+      child,
+      [],
+      () => undefined,
+      () => undefined
+    );
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let outcome = 'pending';
+      const request = rpc.request('config/read', {}).then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'expired';
+        }
+      );
+      await vi.advanceTimersByTimeAsync(4_001);
+      expect(outcome).toBe('pending');
+      await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeRequestMs - 4_002);
+      expect(outcome).toBe('pending');
+      await vi.advanceTimersByTimeAsync(1);
+      await request;
+      expect(outcome).toBe('expired');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    'open',
+    'preparation',
+  ])('allows %s beyond the former local setup budget', async (phase) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer();
+    const signals = vi.spyOn(child, 'kill');
+    let session: WorkerResidentSession | undefined;
+    if (phase === 'preparation') {
+      session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    }
+    const respond = child.stdin.listeners('data')[0]!;
+    child.stdin.removeAllListeners('data');
+    let acknowledge: () => void = () => undefined;
+    const requested = new Promise<void>((resolve) => {
+      child.stdin.on('data', (chunk: Buffer) => {
+        const message = JSON.parse(chunk.toString());
+        if (message.method !== 'config/read') {
+          respond(chunk);
+          return;
+        }
+        acknowledge = () =>
+          child.stdout.write(`${JSON.stringify({ id: message.id, result: { config: {} } })}\n`);
+        resolve();
+      });
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const starting =
+      phase === 'open'
+        ? openCodexResidentSession(openInput(roots), { spawnProcess: () => child })
+        : session!.startTurn(turnInput(roots, []));
+    starting.catch(() => undefined);
+    try {
+      await requested;
+      await vi.advanceTimersByTimeAsync(5_500);
+      expect(signals).not.toHaveBeenCalled();
+      acknowledge();
+      const result = await starting;
+      if (phase === 'open') {
+        session = result as WorkerResidentSession;
+        expect(session.childState()).toBe('running');
+        expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+      } else {
+        child.stdout.write(terminalFrame());
+        await expect(
+          (result as Awaited<ReturnType<WorkerResidentSession['startTurn']>>).settled
+        ).resolves.toMatchObject({ status: 'completed' });
+      }
+    } finally {
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeStopMs);
+      await starting.catch(() => undefined);
+      vi.useRealTimers();
+      await session?.close().catch(() => undefined);
+      signals.mockRestore();
+    }
+  });
+
   async function fixture() {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));

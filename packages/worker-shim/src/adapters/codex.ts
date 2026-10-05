@@ -21,7 +21,6 @@ import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
   CODEX_APPROVAL_POLICY,
-  CODEX_RPC_TIMEOUT_MS,
   CODEX_SANDBOX,
   CodexAppServer,
   codexThreadItemTypes,
@@ -37,8 +36,6 @@ import {
 
 /** Wait after SIGTERM, and again after SIGKILL, before an exit is treated as unproved. */
 const CODEX_STOP_GRACE_MS = LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2;
-/** Complete setup control budget; the following bounded stop keeps the total below ten seconds. */
-const CODEX_SETUP_TIMEOUT_MS = 5_000;
 /** Filesystem inspection and correlated interrupt-terminal deadlines. */
 const CODEX_INSPECT_TIMEOUT_MS = 1_000;
 
@@ -377,7 +374,7 @@ class CodexResidentSession implements WorkerResidentSession {
         this.closeEvidenceLost = true;
         void this.invalidateTurn('malformed-result').catch(() => undefined);
       },
-      launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS
+      launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
     );
     child.stdout.once('end', () => {
       this.stdoutEnded = true;
@@ -483,7 +480,9 @@ class CodexResidentSession implements WorkerResidentSession {
             threadId: this.threadId,
             includeTurns: true,
           },
-          deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+          deadline.workRemainingMs(
+            this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+          )
         );
         retained = await controlDeadline(
           readCodexCloseRollout(this.rolloutPath, this.threadId),
@@ -536,11 +535,11 @@ class CodexResidentSession implements WorkerResidentSession {
       {
         clientInfo: { name: 'openkit-worker', title: 'OpenKit', version: CODEX_ADAPTER_VERSION },
       },
-      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     );
     await this.rpc.notify(
       'initialized',
-      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     );
     let cwd = this.open.stateRoot;
     if (resumeThreadId) {
@@ -551,7 +550,7 @@ class CodexResidentSession implements WorkerResidentSession {
           threadId: resumeThreadId,
           includeTurns: false,
         },
-        deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+        deadline.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
       )) as ThreadBody;
       if (
         metadata?.thread?.id !== resumeThreadId ||
@@ -574,7 +573,7 @@ class CodexResidentSession implements WorkerResidentSession {
         threadId: resumeThreadId,
         cwd,
       },
-      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     )) as ThreadBody;
     this.rememberThread(resumed, resumeThreadId);
   }
@@ -587,7 +586,7 @@ class CodexResidentSession implements WorkerResidentSession {
     const effective = (await this.rpc.request(
       'config/read',
       { includeLayers: false, cwd },
-      deadline?.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      deadline?.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     )) as {
       config?: { mcp_servers?: Record<string, unknown> };
     };
@@ -654,7 +653,9 @@ class CodexResidentSession implements WorkerResidentSession {
     let submitted = false;
     const native = {
       outstanding: false,
-      deadline: new LifecycleDeadline(this.launch.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS),
+      deadline: new LifecycleDeadline(
+        this.launch.setupTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeOpenMs
+      ),
     };
     try {
       const setup = async (): Promise<TurnBody> => {
@@ -727,13 +728,17 @@ class CodexResidentSession implements WorkerResidentSession {
                 const result = await this.rpc.request(
                   'turn/interrupt',
                   { threadId, turnId },
-                  deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+                  deadline.workRemainingMs(
+                    this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+                  )
                 );
                 if (!result || typeof result !== 'object' || Array.isArray(result))
                   throw new Error('Codex interrupt result is malformed.');
                 await settled;
               })(),
-              deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+              deadline.workRemainingMs(
+                this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+              )
             );
           } catch {
             await this.invalidateTurn('interrupt-unproved', deadline);
@@ -891,7 +896,9 @@ class CodexResidentSession implements WorkerResidentSession {
     const result = await this.rpc.request(
       method,
       params,
-      native.deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      native.deadline.remainingMs(
+        this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+      )
     );
     native.outstanding = false;
     return result;
@@ -1411,7 +1418,7 @@ export async function openCodexResidentSession(
     launch?.stopGraceMs ?? CODEX_STOP_GRACE_MS,
     launch
   );
-  const deadline = new LifecycleDeadline(launch?.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS);
+  const deadline = new LifecycleDeadline(launch?.setupTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeOpenMs);
   try {
     await controlDeadline(session.establish(resumeThreadId, deadline), deadline.remainingMs());
   } catch (error) {
