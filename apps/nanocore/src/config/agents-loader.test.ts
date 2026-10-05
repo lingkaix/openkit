@@ -201,7 +201,7 @@ describe('loadAgentManifests', () => {
     ]);
   });
 
-  it('rejects unknown v0.0.4 top-level fields outside extensions', () => {
+  it('warns about and strips unknown descriptive top-level fields', () => {
     const { dataRoot, agentsRoot } = createAgentRoot();
     writeFileSync(
       join(agentsRoot, 'unknown-field.agent.jsonc'),
@@ -217,12 +217,13 @@ describe('loadAgentManifests', () => {
 
     const result = loadAgentManifests(dataRoot);
 
-    expect(result.manifests).toEqual([]);
+    expect(result.manifests).toHaveLength(1);
+    expect(result.manifests[0]).not.toHaveProperty('unsupportedTopLevel');
     expect(result.diagnostics).toEqual([
       expect.objectContaining({
-        code: 'agent.invalid_manifest',
+        code: 'authored_config.unknown_key',
         message: expect.stringContaining('unsupportedTopLevel'),
-        severity: 'error',
+        severity: 'warning',
         agentId: 'agent_unknown',
       }),
     ]);

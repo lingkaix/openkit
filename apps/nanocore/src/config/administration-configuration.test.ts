@@ -147,6 +147,38 @@ function fixture() {
 }
 
 describe('administration catalog configuration', () => {
+  it('publishes only editable schema fields while preserving their constraints', () => {
+    const f = fixture();
+    const provider = f.service.schema('provider').schema;
+    expect(Object.keys(provider.properties ?? {})).toEqual([
+      'displayName',
+      'models',
+      'defaultModel',
+      'modelMetadata',
+    ]);
+    expect(provider.additionalProperties).toBe(false);
+    expect(provider).toHaveProperty('properties.models.minItems', 1);
+    expect(provider).toHaveProperty(
+      'properties.modelMetadata.additionalProperties.additionalProperties',
+      false
+    );
+    expect(provider).toHaveProperty(
+      'properties.modelMetadata.additionalProperties.properties.limit.properties.context.exclusiveMinimum',
+      0
+    );
+    const gateway = f.service.schema('gateway').schema;
+    expect(Object.keys(gateway.properties ?? {})).toEqual([
+      'logicalModels',
+      'defaultLogicalModelId',
+    ]);
+    expect(gateway.additionalProperties).toBe(false);
+    expect(gateway).toHaveProperty('properties.logicalModels.items.additionalProperties', false);
+    for (const schema of [provider, gateway]) {
+      for (const field of ['secretRef', 'apiKey', 'clientSecret', 'secret', 'token'])
+        expect(JSON.stringify(schema)).not.toContain(`"${field}"`);
+    }
+  });
+
   it('proposes through the Tool without writes, then applies exact Provider and Gateway catalogs', async () => {
     const f = fixture();
     const original = readFileSync(f.providerPath, 'utf8');
@@ -219,6 +251,7 @@ describe('administration catalog configuration', () => {
       { extensions: {} },
       { baseUrl: 'https://bad.invalid' },
       { models: [] },
+      { modelMetadata: { 'gpt-5': { secretRef: 'vault://not-editable' } } },
       { modelMetadata: { missing: { tool_call: true } } },
     ]) {
       expect(() => f.service.propose({ ...f.request, changes }, f.home)).toThrow();

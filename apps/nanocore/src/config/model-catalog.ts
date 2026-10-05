@@ -3,15 +3,22 @@ import { join } from 'node:path';
 import { type ModelCatalog, ModelCatalogSchema } from '@openkit/config-schema';
 import { parseJsoncObject } from './jsonc.js';
 import type { ModelMetadataSource, ProviderProfile } from './providers-loader.js';
+import { type UnknownConfigKey, unknownConfigKeys } from './unknown-config-keys.js';
 
-/** Loads the strict deployment extension catalog; absence means no extension metadata. */
-export function loadModelCatalog(dataRoot: string): ModelCatalog {
+/** Loads known deployment metadata and reports discarded descriptive keys; absence means no extension metadata. */
+export function loadModelCatalog(
+  dataRoot: string,
+  reportUnknownKey?: (key: UnknownConfigKey, path: string) => void
+): ModelCatalog {
   const path = join(dataRoot, 'config', 'model-catalog.jsonc');
-  return ModelCatalogSchema.parse(
-    existsSync(path)
-      ? parseJsoncObject(readFileSync(path, 'utf8'), path)
-      : { schemaVersion: 1, providers: {} }
-  );
+  const raw = existsSync(path)
+    ? parseJsoncObject(readFileSync(path, 'utf8'), path)
+    : { schemaVersion: 1, providers: {} };
+  const catalog = ModelCatalogSchema.parse(raw);
+  for (const key of unknownConfigKeys('model-catalog', raw, catalog)) {
+    reportUnknownKey?.(key, path);
+  }
+  return catalog;
 }
 
 /** Projects exact catalog entries beneath profile leaves without modifying authored inputs. */

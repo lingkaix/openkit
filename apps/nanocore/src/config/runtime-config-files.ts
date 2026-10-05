@@ -638,7 +638,10 @@ export class RuntimeConfigFileService {
         spec.kind === 'workspace' ||
         spec.kind === 'data-source' ||
         spec.kind === 'agent' ||
-        spec.kind === 'gateway'
+        spec.kind === 'gateway' ||
+        spec.kind === 'provider' ||
+        spec.kind === 'model-catalog' ||
+        spec.kind === 'internal-role'
       ) {
         return unknownConfigKeys(spec.kind, parsed, result.data).map((key) => ({
           fileId: spec.relativePath,

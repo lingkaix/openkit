@@ -16,7 +16,6 @@ describe('provider config schema', () => {
       'extensions',
       'id',
       'kind',
-      'modelMetadata',
       'models',
       'secretRef',
     ] as const;
@@ -234,16 +233,19 @@ describe('provider config schema', () => {
     expect(JSON.stringify(providerSchema)).toContain('accountSlotId');
   });
 
-  it('omits unowned provider fields from generated provider and server schemas', () => {
+  it('excludes native request carriers from generated provider and server contracts', () => {
     const schemas = getConfigSchemaCatalog().filter(({ kind }) =>
       ['provider', 'server'].includes(kind)
     );
 
     expect(schemas).toHaveLength(2);
 
-    for (const { schema } of schemas) {
-      expect(JSON.stringify(schema)).not.toContain('extraBody');
-      expect(JSON.stringify(schema)).not.toContain('extraHeaders');
+    for (const { kind, schema } of schemas) {
+      const properties = schema.properties as Record<string, unknown>;
+      for (const field of ['extraBody', 'extraHeaders']) {
+        if (kind === 'provider') expect(properties[field]).toEqual({ not: {} });
+        else expect(properties).not.toHaveProperty(field);
+      }
     }
   });
 
@@ -321,7 +323,7 @@ describe('provider config schema', () => {
     ).toBe(false);
   });
 
-  it('rejects provider fields without a runtime owner', () => {
+  it('strips descriptive provider fields and keeps native request carriers excluded', () => {
     const profile = {
       id: 'openai',
       displayName: 'OpenAI',
@@ -339,7 +341,11 @@ describe('provider config schema', () => {
       { retry: { backoffMs: 100 } },
       { unknownProviderField: true },
     ]) {
-      expect(() => ProviderProfileSchema.parse({ ...profile, ...field })).toThrow();
+      if ('extraBody' in field || 'extraHeaders' in field) {
+        expect(() => ProviderProfileSchema.parse({ ...profile, ...field })).toThrow();
+      } else {
+        expect(ProviderProfileSchema.parse({ ...profile, ...field })).toEqual(profile);
+      }
       expect(() => OpenKitProviderInstanceSchema.parse({ ...serverProvider, ...field })).toThrow();
     }
   });
@@ -409,7 +415,7 @@ describe('provider config schema', () => {
     ).toBe(true);
   });
 
-  it('rejects metadata keys outside the model list, unknown leaves, and camelCase cost fields', () => {
+  it('rejects metadata keys outside the model list and invalid values, while stripping unknown leaves', () => {
     const base = {
       displayName: 'Custom',
       id: 'custom',
@@ -428,13 +434,13 @@ describe('provider config schema', () => {
         ...base,
         modelMetadata: { listed: { cacheRead: 1 } },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       ProviderProfileSchema.safeParse({
         ...base,
         modelMetadata: { listed: { extra: true } },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       ProviderProfileSchema.safeParse({
         ...base,
@@ -488,4 +494,32 @@ describe('reasoning options metadata', () => {
       }).success
     ).toBe(false);
   });
+});
+
+/** Output projections remain exact even when authored metadata readers discard additions. */
+it('keeps materialized Provider metadata strict and generated descriptive shapes closed', () => {
+  const base = {
+    id: 'custom',
+    vendor: 'custom',
+    displayName: 'Custom',
+    kind: 'custom',
+    models: ['model'],
+  };
+  for (const metadata of [
+    { note: true },
+    { limit: { context: 32000, note: true } },
+    { cost: { input: 0, note: true } },
+    { modalities: { input: ['text'], note: true } },
+  ]) {
+    expect(
+      OpenKitProviderInstanceSchema.safeParse({ ...base, modelMetadata: { model: metadata } })
+        .success
+    ).toBe(false);
+    const parsed = ProviderProfileSchema.parse({ ...base, modelMetadata: { model: metadata } });
+    expect(JSON.stringify(parsed)).not.toContain('note');
+  }
+  const kinds = new Set(['provider', 'gateway', 'model-catalog', 'internal-role', 'agent']);
+  for (const { schema } of getConfigSchemaCatalog().filter(({ kind }) => kinds.has(kind))) {
+    expect(schema.additionalProperties).toBe(false);
+  }
 });

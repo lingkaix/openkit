@@ -21,7 +21,6 @@ describe('deployment model extension catalog', () => {
     { limit: { context: 0 } },
     { cost: { input: -1 } },
     { reasoning: 'high' },
-    { reasoning_effort: ['high'] },
     { limit: { output: 1.5 } },
     { secretRef: 'vault://x' },
   ])('rejects malformed metadata %j', (metadata) => {
@@ -62,4 +61,13 @@ it.each([
   const result = ModelCatalogSchema.safeParse(catalog);
   expect(result.success).toBe(valid);
   if (result.success) expect(result.data).toEqual(catalog);
+});
+
+it('discards obsolete descriptive metadata without extending model controls', () => {
+  expect(
+    ModelCatalogSchema.parse({
+      schemaVersion: 1,
+      providers: { vendor: { models: { model: { reasoning_effort: ['high'] } } } },
+    }).providers.vendor?.models.model
+  ).toEqual({});
 });

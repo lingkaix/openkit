@@ -98,7 +98,7 @@ describe('scoped runtime config schemas', () => {
       roleId: 'assistant',
       limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
     });
-    expect(() =>
+    expect(
       InternalRoleProfilesConfigSchema.parse({
         schemaVersion: 1,
         profiles: [
@@ -108,7 +108,7 @@ describe('scoped runtime config schemas', () => {
             context: { maxTokens: 1_000, reservedTokens: 1_000 },
           },
         ],
-      })
-    ).toThrow();
+      }).profiles[0]
+    ).not.toHaveProperty('context');
   });
 });

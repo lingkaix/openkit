@@ -24,11 +24,20 @@ const BUILD_ARGUMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Authored published-image reference. */
 const AuthoredAgentRuntimeImageReferenceSchema = z
   .object({
+    // Build-only inputs cannot coexist with the reference arm.
+    arguments: z.never().optional(),
+    contextDigest: z.never().optional(),
+    contextRef: z.never().optional(),
+    egress: z.never().optional(),
+    input: z.never().optional(),
+    layerLimit: z.never().optional(),
+    outputLimitBytes: z.never().optional(),
+    timeLimitSeconds: z.never().optional(),
     kind: z.literal('reference'),
     pullPolicy: z.enum(['always', 'if-not-present', 'never']),
     ref: z.string().min(1),
   })
-  .strict();
+  .strip();
 
 /** Authored bounded image build definition. */
 const AuthoredAgentRuntimeImageBuildSchema = z
@@ -51,11 +60,14 @@ const AuthoredAgentRuntimeImageBuildSchema = z
       .min(1),
     input: AgentEnvironmentDockerfileInputSchema,
     kind: z.literal('build'),
+    // Reference-only selectors cannot coexist with the build arm.
+    pullPolicy: z.never().optional(),
+    ref: z.never().optional(),
     layerLimit: z.number().int().min(1).max(128),
     outputLimitBytes: z.number().int().min(1).max(21_474_836_480),
     timeLimitSeconds: z.number().int().min(1).max(1800),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     for (const [name, argument] of Object.entries(value.arguments)) {
       if (
@@ -120,7 +132,7 @@ export const AuthoredAgentLogicalModelsSchema = z
         }),
     ]),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     if (
       value.allowedLogicalModelIds !== 'all' &&
@@ -191,7 +203,7 @@ export const AuthoredAgentProfileSchema = z
     skills: z.array(z.object({ id: z.string().min(1) }).strict()).default([]),
     mcp: z.array(AuthoredAgentMcpEntrySchema).default([]),
   })
-  .strict();
+  .strip();
 
 /**
  * v0.0.4 agent backend requirement schema.
@@ -234,6 +246,18 @@ export const AuthoredAgentSandboxSchema = z
  */
 export const AuthoredAgentConfigSchema = z
   .object({
+    // Placement and Provider routes are server-owned, never optional manifest metadata.
+    mode: z.never().optional(),
+    deployment: z.never().optional(),
+    transport: z.never().optional(),
+    runtimeConfig: z.never().optional(),
+    provider: z.never().optional(),
+    // Unsupported authority sections must fail closed rather than be stripped as metadata.
+    vault: z.never().optional(),
+    policy: z.never().optional(),
+    providers: z.never().optional(),
+    tools: z.never().optional(),
+    scale: z.never().optional(),
     defaultProfileId: z.string().min(1).optional(),
     displayName: z.string().min(1),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
@@ -244,7 +268,7 @@ export const AuthoredAgentConfigSchema = z
     observability: z.record(z.string().min(1), z.unknown()).optional(),
     permissions: z.record(z.string().min(1), z.unknown()).optional(),
     profiles: z.array(AuthoredAgentProfileSchema).optional(),
-    readiness: ProviderReadinessSchema.optional(),
+    readiness: ProviderReadinessSchema.strip().optional(),
     requiredFeatures: z.array(z.string().min(1)).default([]),
     resources: z.record(z.string().min(1), z.unknown()).optional(),
     runtime: AuthoredAgentRuntimeSchema,
@@ -253,7 +277,7 @@ export const AuthoredAgentConfigSchema = z
     skills: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
     workspace: AuthoredAgentWorkspaceSchema.optional(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     for (const [index, feature] of value.requiredFeatures.entries()) {
       if (!isRegisteredRequiredFeature(feature)) {

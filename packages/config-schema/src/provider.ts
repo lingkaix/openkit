@@ -76,6 +76,8 @@ export type ProviderReasoningOption = z.infer<typeof ProviderReasoningOptionSche
 /** One models.dev-shaped Provider model metadata entry. */
 export const ProviderModelMetadataEntrySchema = z
   .object({
+    // Metadata cannot introduce a credential binding.
+    secretRef: z.never().optional(),
     attachment: z.boolean().optional(),
     cost: z
       .object({
@@ -84,7 +86,7 @@ export const ProviderModelMetadataEntrySchema = z
         input: z.number().finite().nonnegative().optional(),
         output: z.number().finite().nonnegative().optional(),
       })
-      .strict()
+      .strip()
       .optional(),
     family: z.string().min(1).optional(),
     limit: z
@@ -92,21 +94,21 @@ export const ProviderModelMetadataEntrySchema = z
         context: z.number().int().positive().optional(),
         output: z.number().int().positive().optional(),
       })
-      .strict()
+      .strip()
       .optional(),
     modalities: z
       .object({
         input: z.array(ModelModalitySchema).optional(),
         output: z.array(ModelModalitySchema).optional(),
       })
-      .strict()
+      .strip()
       .optional(),
     reasoning: z.boolean().optional(),
     reasoning_options: z.array(ProviderReasoningOptionSchema).optional(),
     temperature: z.boolean().optional(),
     tool_call: z.boolean().optional(),
   })
-  .strict();
+  .strip();
 
 /** Per-native-id Provider model metadata map. */
 export const ProviderModelMetadataSchema = z.record(
@@ -117,6 +119,13 @@ export const ProviderModelMetadataSchema = z.record(
 /** Shared provider-profile fields before cross-field validation. */
 const ProviderProfileObjectSchema = z
   .object({
+    // Credential and native request carriers stay excluded rather than becoming ignored metadata.
+    apiKey: z.never().optional(),
+    clientSecret: z.never().optional(),
+    secret: z.never().optional(),
+    token: z.never().optional(),
+    extraBody: z.never().optional(),
+    extraHeaders: z.never().optional(),
     baseUrl: z
       .string()
       .url()
@@ -137,11 +146,11 @@ const ProviderProfileObjectSchema = z
     kind: ProviderKindSchema,
     modelMetadata: ProviderModelMetadataSchema.optional(),
     models: z.array(z.string().min(1)).min(1),
-    readiness: ProviderReadinessSchema.optional(),
+    readiness: ProviderReadinessSchema.strip().optional(),
     secretRef: z.string().min(1).optional(),
     vendor: z.string().min(1).optional(),
   })
-  .strict();
+  .strip();
 
 /**
  * Adds provider-subscription issues shared by profile and server-instance schemas.
@@ -228,6 +237,19 @@ export const OpenKitProviderInstanceSchema = z
   })
   .extend({
     vendor: ProviderProfileObjectSchema.shape.vendor.unwrap(),
+    modelMetadata: z
+      .record(
+        z.string().min(1),
+        ProviderModelMetadataEntrySchema.strict().extend({
+          cost: ProviderModelMetadataEntrySchema.shape.cost.unwrap().strict().optional(),
+          limit: ProviderModelMetadataEntrySchema.shape.limit.unwrap().strict().optional(),
+          modalities: ProviderModelMetadataEntrySchema.shape.modalities
+            .unwrap()
+            .strict()
+            .optional(),
+        })
+      )
+      .optional(),
   })
   .strict()
   .superRefine(addProviderProfileCrossFieldIssues);

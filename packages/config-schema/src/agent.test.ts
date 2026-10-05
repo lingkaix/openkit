@@ -186,6 +186,7 @@ describe('AuthoredAgentConfigSchema', () => {
     for (const image of [
       {},
       { ...reference.runtime.image, ...build.runtime.image },
+      { ...build.runtime.image, ...reference.runtime.image },
       { ...build.runtime.image, contextRef: undefined },
       { ...build.runtime.image, contextDigest: undefined },
       { ...build.runtime.image, contextRef: 'workspace://build-context' },

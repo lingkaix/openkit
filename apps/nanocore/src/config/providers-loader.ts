@@ -8,6 +8,7 @@ import {
 import { z } from 'zod';
 import { parseJsoncObject } from './jsonc.js';
 import { extendProviderModelMetadata, loadModelCatalog } from './model-catalog.js';
+import { type UnknownConfigKey, unknownConfigKeys } from './unknown-config-keys.js';
 
 /** Provenance of a known effective metadata leaf; absent leaves have no source. */
 export type ModelMetadataSource = 'upstream-snapshot' | 'deployment-extension' | 'profile-override';
@@ -53,11 +54,13 @@ export interface ProviderProfileLoadResult {
  *
  * @param dataRoot Data root to read.
  * @param modelCatalog Validated deployment metadata; loaded from disk when omitted.
+ * @param reportUnknownKey Optional existing configuration-warning sink for discarded keys.
  * @returns Loaded profiles and diagnostics.
  */
 export function loadProviderProfiles(
   dataRoot: string,
-  modelCatalog: ModelCatalog = loadModelCatalog(dataRoot)
+  modelCatalog: ModelCatalog = loadModelCatalog(dataRoot),
+  reportUnknownKey?: (key: UnknownConfigKey, path: string) => void
 ): ProviderProfileLoadResult {
   const providersRoot = join(dataRoot, 'config', 'providers');
   const result: ProviderProfileLoadResult = { profiles: [], diagnostics: [] };
@@ -85,6 +88,10 @@ export function loadProviderProfiles(
         severity: 'error',
       });
       continue;
+    }
+
+    for (const key of unknownConfigKeys('provider', parsed, profileResult.data)) {
+      reportUnknownKey?.(key, path);
     }
 
     const profile = applyRequiredExtensionDiagnostics(profileResult.data, path, result.diagnostics);

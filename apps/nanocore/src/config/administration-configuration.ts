@@ -208,7 +208,17 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       requireCurrentDeploymentAdmin(coreDb, actor);
       return {
         targetFamily,
-        schema: z.toJSONSchema(changeSchema(targetFamily)),
+        schema: z.toJSONSchema(changeSchema(targetFamily), {
+          override: ({ zodSchema, jsonSchema }) => {
+            if (!(zodSchema instanceof z.ZodObject)) return;
+            // The administration schema advertises editable fields, not excluded carriers.
+            // Admission still rejects these fields, and output objects remain closed.
+            for (const [name, field] of Object.entries(zodSchema.shape)) {
+              if (field instanceof z.ZodOptional && field.unwrap() instanceof z.ZodNever)
+                delete jsonSchema.properties?.[name];
+            }
+          },
+        }),
         operation: 'update',
         excludedFields: ['credentials', 'extensions', 'endpoint', 'policy'],
       };

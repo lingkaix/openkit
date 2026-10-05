@@ -7,7 +7,7 @@ export const GatewayRouteMemberSchema = z
     providerProfileId: z.string().min(1),
     providerModel: z.string().min(1),
   })
-  .strict();
+  .strip();
 
 /** OpenKit-owned context policy for one logical model. */
 export const GatewayContextManagementSchema = z
@@ -15,7 +15,7 @@ export const GatewayContextManagementSchema = z
     type: z.literal('compaction'),
     compactThreshold: z.number().int().positive(),
   })
-  .strict();
+  .strip();
 
 /** Optional routing controls; unknown additive keys are ignored by the reader. */
 export const GatewayRoutingSchema = z.object({ autoFailover: z.boolean() });
@@ -29,10 +29,10 @@ export const GatewayLogicalModelSchema = z
     contextManagement: z.array(GatewayContextManagementSchema).length(1),
     routes: z.array(GatewayRouteMemberSchema).min(1),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => addDuplicateIdIssues(value.routes, ctx, ['routes']));
 
-/** Strict Server-scoped Gateway configuration. */
+/** Server-scoped Gateway reader; descriptive additions are discarded. */
 export const GatewayConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -42,7 +42,7 @@ export const GatewayConfigSchema = z
     requiredFeatures: z.array(z.string().min(1)).default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     addDuplicateIdIssues(value.logicalModels, ctx, ['logicalModels']);
     if (

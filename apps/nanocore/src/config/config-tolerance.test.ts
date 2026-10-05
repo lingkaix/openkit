@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EMPTY_BUILD_CONTEXT_DIGEST, EMPTY_BUILD_CONTEXT_REF } from '@openkit/config-schema';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -408,5 +410,364 @@ describe('authored configuration tolerance', () => {
       JSON.stringify({ ...base, requiredFeatures: ['future.config.rule'] })
     );
     expect(() => loadRuntimeConfig(dataRoot)).toThrow(/future\.config\.rule/);
+  });
+});
+
+/** Known authored envelopes used to observe real schema-to-loader-to-snapshot composition. */
+const descriptiveFixtures = {
+  gateway: {
+    file: 'gateway.jsonc',
+    value: {
+      schemaVersion: 1,
+      logicalModels: [
+        {
+          id: 'tier',
+          displayName: 'Tier',
+          routing: { autoFailover: true },
+          contextManagement: [{ type: 'compaction', compactThreshold: 8000 }],
+          routes: [{ id: 'route', providerProfileId: 'missing', providerModel: 'model' }],
+        },
+      ],
+    },
+    locations: [
+      [],
+      ['logicalModels', 0],
+      ['logicalModels', 0, 'routing'],
+      ['logicalModels', 0, 'contextManagement', 0],
+      ['logicalModels', 0, 'routes', 0],
+    ],
+  },
+  provider: {
+    file: 'providers/future.provider.jsonc',
+    value: {
+      id: 'future',
+      displayName: 'Future',
+      kind: 'custom',
+      models: ['native.model'],
+      modelMetadata: {
+        'native.model': {
+          limit: { context: 32000, output: 1000 },
+          cost: { input: 0 },
+          modalities: { input: ['text'] },
+        },
+      },
+      readiness: { status: 'ready' },
+    },
+    locations: [
+      [],
+      ['readiness'],
+      ['modelMetadata', 'native.model'],
+      ['modelMetadata', 'native.model', 'limit'],
+      ['modelMetadata', 'native.model', 'cost'],
+      ['modelMetadata', 'native.model', 'modalities'],
+    ],
+  },
+  'model-catalog': {
+    file: 'model-catalog.jsonc',
+    value: {
+      schemaVersion: 1,
+      providers: {
+        vendor: {
+          models: {
+            'native.model': {
+              limit: { context: 32000 },
+              cost: { input: 0 },
+              modalities: { input: ['text'] },
+            },
+          },
+        },
+      },
+    },
+    locations: [
+      [],
+      ['providers', 'vendor'],
+      ['providers', 'vendor', 'models', 'native.model'],
+      ['providers', 'vendor', 'models', 'native.model', 'limit'],
+      ['providers', 'vendor', 'models', 'native.model', 'cost'],
+      ['providers', 'vendor', 'models', 'native.model', 'modalities'],
+    ],
+  },
+  'internal-role': {
+    file: 'internal-role-profiles.jsonc',
+    value: {
+      schemaVersion: 1,
+      profiles: [
+        {
+          id: 'assistant',
+          roleId: 'assistant',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120000 },
+        },
+      ],
+    },
+    locations: [[], ['profiles', 0]],
+  },
+  agent: {
+    file: 'agents/future.agent.jsonc',
+    value: {
+      schemaVersion: 1,
+      id: 'agent_future',
+      displayName: 'Future',
+      models: { preferredLogicalModelId: 'tier', allowedLogicalModelIds: ['tier'] },
+      runtime: {
+        kind: 'future-runtime',
+        adapter: 'future-adapter',
+        image: { kind: 'reference', ref: 'test:image', pullPolicy: 'never' },
+        binaries: [{ id: 'shim', path: '/usr/local/bin/shim' }],
+      },
+      profiles: [{ id: 'default', skills: [{ id: 'skill' }], mcp: [{ id: 'mcp' }] }],
+      readiness: { status: 'ready' },
+      workspace: { root: '.' },
+      sandbox: { network: [], backend: { preferred: 'openshell' } },
+    },
+    locations: [[], ['runtime'], ['runtime', 'image'], ['models'], ['profiles', 0], ['readiness']],
+  },
+};
+
+/** Selects a fixture object without conflating map keys and path syntax. */
+function atPath(value: unknown, path: readonly (string | number)[]): Record<string, unknown> {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== 'object') throw new Error(`Missing fixture path: ${path}`);
+    current = (current as Record<string, unknown>)[String(key)];
+  }
+  if (!current || typeof current !== 'object' || Array.isArray(current))
+    throw new Error(`Not a fixture object: ${path}`);
+  return current as Record<string, unknown>;
+}
+
+/** Selects only the effective authored surface, excluding timestamps and warning diagnostics. */
+function effectiveConfig(snapshot: ReturnType<typeof loadRuntimeConfig>, kind: string): unknown {
+  switch (kind) {
+    case 'gateway':
+      return snapshot.gatewayConfig;
+    case 'provider':
+      return snapshot.providerRegistry.get('future');
+    case 'model-catalog':
+      return snapshot.modelCatalog;
+    case 'internal-role':
+      return snapshot.internalRoleProfiles;
+    default:
+      return snapshot.agentManifests;
+  }
+}
+
+const descriptiveCases = Object.entries(descriptiveFixtures).flatMap(([kind, fixture]) =>
+  fixture.locations.map((location) => ({
+    kind,
+    file: fixture.file,
+    value: fixture.value,
+    location,
+  }))
+);
+
+/** Independent expected JSON location, including consumed identifiers with punctuation. */
+function jsonLocation(path: readonly (string | number)[]): string {
+  return path.reduce<string>(
+    (parent, key) =>
+      typeof key === 'number'
+        ? `${parent}[${key}]`
+        : /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key)
+          ? `${parent}.${key}`
+          : `${parent}[${JSON.stringify(key)}]`,
+    '$'
+  );
+}
+
+describe('descriptive configuration extension loading', () => {
+  it.each(
+    descriptiveCases
+  )('strips and warns through snapshot, reload and editing for $kind at $location', ({
+    kind,
+    file,
+    value,
+    location,
+  }) => {
+    const { dataRoot, path } = authoredFile(`config/${file}`, JSON.stringify(value));
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    const draft = structuredClone(value);
+    atPath(draft, location)['future.note'] = { secret: 'ignored-private-canary' };
+    const content = JSON.stringify(draft);
+    writeFileSync(path, content);
+    const candidate = loadRuntimeConfig(dataRoot);
+    expect(effectiveConfig(candidate, kind)).toEqual(effectiveConfig(before, kind));
+    expect(candidate.contentHash).toBe(before.contentHash);
+    const expectedPath = `${jsonLocation(location)}["future.note"]`;
+    expect(
+      candidate.diagnostics.filter(
+        (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        source: expect.stringContaining(file),
+        message: `Unknown configuration key "future.note" at ${expectedPath} was ignored.`,
+      }),
+    ]);
+    const reloaded = manager.reload({ mode: 'safe', dryRun: false });
+    expect(reloaded.status).toBe('applied');
+    expect(reloaded.plan.warnings).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining(expectedPath) })
+    );
+    expect(effectiveConfig(manager.current(), kind)).toEqual(effectiveConfig(before, kind));
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'user_demo',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const validation = files.validate({ files: [{ id: file, content }], mode: 'safe' });
+    expect(validation.valid).toBe(true);
+    expect(
+      validation.diagnostics.filter(
+        (diagnostic) => diagnostic.code === 'authored_config.unknown_key'
+      )
+    ).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'authored_config.unknown_key',
+        jsonPath: expectedPath,
+      }),
+    ]);
+    files.updateFile({
+      id: file,
+      kind: kind as Parameters<typeof files.updateFile>[0]['kind'],
+      content,
+      expectedRevision: files.readFile(file).file.revision,
+    });
+    expect(readFileSync(path, 'utf8')).toBe(content);
+    expect(
+      JSON.stringify([
+        ...candidate.diagnostics,
+        ...validation.diagnostics,
+        ...reloaded.plan.warnings,
+      ])
+    ).not.toContain('ignored-private-canary');
+  });
+
+  it('strips a descriptive build-image key while retaining exact build inputs', () => {
+    const draft = structuredClone(descriptiveFixtures.agent.value);
+    const content = 'FROM scratch';
+    atPath(draft, ['runtime']).image = {
+      kind: 'build',
+      contextRef: EMPTY_BUILD_CONTEXT_REF,
+      contextDigest: EMPTY_BUILD_CONTEXT_DIGEST,
+      input: {
+        kind: 'dockerfile',
+        content,
+        digest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      },
+      egress: [{ host: 'example.com', port: 443 }],
+      layerLimit: 1,
+      outputLimitBytes: 1024,
+      timeLimitSeconds: 30,
+      futureNote: 'ignored-private-canary',
+    };
+    const { dataRoot } = authoredFile('config/agents/future.agent.jsonc', JSON.stringify(draft));
+    const loaded = loadAgentManifests(dataRoot);
+    expect(loaded.manifests).toHaveLength(1);
+    expect(loaded.manifests[0]?.runtime.image).not.toHaveProperty('futureNote');
+    expect(loaded.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        message: expect.stringContaining('$.runtime.image.futureNote'),
+      }),
+    ]);
+    expect(loadRuntimeConfig(dataRoot).agentManifests).toEqual(loaded.manifests);
+  });
+
+  it.each([
+    { kind: 'provider', location: ['extensions', 'openkit'], field: 'futureRule', value: true },
+    { kind: 'agent', location: [], field: 'vault', value: { futureRule: true } },
+    { kind: 'agent', location: [], field: 'policy', value: { futureRule: true } },
+    { kind: 'agent', location: [], field: 'providers', value: { futureRule: true } },
+    { kind: 'agent', location: [], field: 'tools', value: { futureRule: true } },
+    { kind: 'agent', location: [], field: 'scale', value: { futureRule: true } },
+    {
+      kind: 'agent',
+      location: ['runtime'],
+      field: 'image',
+      value: {
+        arguments: {},
+        contextDigest: EMPTY_BUILD_CONTEXT_DIGEST,
+        contextRef: EMPTY_BUILD_CONTEXT_REF,
+        egress: [{ host: 'example.com', port: 443 }],
+        input: {
+          kind: 'dockerfile',
+          content: 'FROM scratch',
+          digest: `sha256:${createHash('sha256').update('FROM scratch').digest('hex')}`,
+        },
+        layerLimit: 1,
+        outputLimitBytes: 1024,
+        timeLimitSeconds: 30,
+        kind: 'reference',
+        ref: 'test:image',
+        pullPolicy: 'never',
+      },
+    },
+    { kind: 'agent', location: ['sandbox'], field: 'futureRule', value: true },
+    { kind: 'agent', location: ['sandbox', 'backend'], field: 'futureRule', value: true },
+    { kind: 'agent', location: ['workspace'], field: 'futureRule', value: true },
+    { kind: 'agent', location: ['profiles', 0, 'mcp', 0], field: 'futureRule', value: true },
+    { kind: 'agent', location: ['profiles', 0, 'skills', 0], field: 'futureRule', value: true },
+    {
+      kind: 'internal-role',
+      location: ['profiles', 0, 'limits'],
+      field: 'futureRule',
+      value: true,
+    },
+    {
+      kind: 'gateway',
+      location: ['logicalModels', 0, 'contextManagement', 0],
+      field: 'type',
+      value: 'future',
+    },
+    { kind: 'provider', location: [], field: 'kind', value: 'future' },
+    {
+      kind: 'provider',
+      location: ['modelMetadata', 'native.model', 'limit'],
+      field: 'context',
+      value: 0,
+    },
+    { kind: 'model-catalog', location: [], field: 'schemaVersion', value: 2 },
+    { kind: 'agent', location: ['models'], field: 'reasoningEffort', value: 'future' },
+    { kind: 'agent', location: ['runtime', 'image'], field: 'pullPolicy', value: 'future' },
+    { kind: 'agent', location: ['readiness'], field: 'status', value: 'future' },
+    { kind: 'internal-role', location: ['profiles', 0, 'limits'], field: 'deadlineMs', value: -1 },
+  ])('refuses authority additions or invalid core values on reload for $kind at $location for $field', ({
+    kind,
+    location,
+    field,
+    value,
+  }) => {
+    const fixture = descriptiveFixtures[kind as keyof typeof descriptiveFixtures];
+    const { dataRoot, path } = authoredFile(
+      `config/${fixture.file}`,
+      JSON.stringify(fixture.value)
+    );
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    const draft = structuredClone(fixture.value);
+    if (kind === 'provider' && field === 'futureRule')
+      atPath(draft, []).extensions = { openkit: {} };
+    atPath(draft, location)[field] = value;
+    writeFileSync(path, JSON.stringify(draft));
+    const result = manager.reload({ mode: 'safe', dryRun: false });
+    expect(result.status).toBe('failed');
+    expect(manager.current()).toBe(before);
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      userId: 'user_demo',
+      workspaceIds: [],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    expect(
+      files.validate({
+        files: [{ id: fixture.file, content: JSON.stringify(draft) }],
+        mode: 'safe',
+      }).valid
+    ).toBe(false);
   });
 });

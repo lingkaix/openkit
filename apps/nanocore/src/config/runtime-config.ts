@@ -42,13 +42,16 @@ import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
+import { loadModelCatalog } from './model-catalog.js';
 import {
   loadOpenKitConfigWithDiagnostics,
   type OpenKitConfig,
   type OpenKitConfigDiagnostic,
 } from './openkit-config.js';
+import { loadProviderProfiles } from './providers-loader.js';
 import {
   type TolerantConfigKind,
+  type UnknownConfigKey,
   unknownConfigKeyMessage,
   unknownConfigKeys,
 } from './unknown-config-keys.js';
@@ -307,7 +310,23 @@ export function loadRuntimeConfig(
   options: LoadRuntimeConfigOptions = {}
 ): RuntimeConfigSnapshot {
   const configLoadResult = loadOpenKitConfigWithDiagnostics(dataRoot);
-  const providerLoadResult = loadProviderRegistryFromDataRoot(dataRoot);
+  const authoredDiagnostics: RuntimeConfigDiagnostic[] = [];
+  const reportUnknownKey = (key: UnknownConfigKey, path: string): void => {
+    authoredDiagnostics.push({
+      code: 'authored_config.unknown_key',
+      message: unknownConfigKeyMessage(key),
+      severity: 'warning',
+      source: `DATA_ROOT/${relative(dataRoot, path)}`,
+    });
+  };
+  // Compose the existing loaders here so warning provenance is captured before metadata inheritance.
+  const modelCatalog = loadModelCatalog(dataRoot, reportUnknownKey);
+  const providerProfiles = loadProviderProfiles(dataRoot, modelCatalog, reportUnknownKey);
+  const providerLoadResult = {
+    modelCatalog,
+    providerRegistry: new ProviderRegistry(providerProfiles.profiles),
+    providerDiagnostics: createProviderDiagnostics(providerProfiles),
+  };
   const agentLoadResult = loadAgentManifests(dataRoot);
   const gatewayDiagnostics: RuntimeConfigDiagnostic[] = [];
   const gatewayConfig = loadServerScopedConfig(
@@ -319,9 +338,9 @@ export function loadRuntimeConfig(
   const internalRoleProfiles = loadServerScopedConfig(
     join(dataRoot, 'config', 'internal-role-profiles.jsonc'),
     InternalRoleProfilesConfigSchema,
-    { schemaVersion: 1, profiles: [] }
+    { schemaVersion: 1, profiles: [] },
+    { diagnostics: authoredDiagnostics, dataRoot, kind: 'internal-role' }
   );
-  const authoredDiagnostics: RuntimeConfigDiagnostic[] = [];
   const userConfigs = loadUserConfigs(dataRoot, authoredDiagnostics);
   const workspaceConfigs = loadWorkspaceConfigs(dataRoot, authoredDiagnostics);
   const workspaceDataSourceCatalogs = loadWorkspaceDataSourceCatalogs(

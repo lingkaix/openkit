@@ -16,7 +16,10 @@ export type TolerantConfigKind =
   | 'workspace'
   | 'data-source'
   | 'agent'
-  | 'gateway';
+  | 'gateway'
+  | 'provider'
+  | 'model-catalog'
+  | 'internal-role';
 
 /** Narrows a JSON object while excluding arrays and null. */
 function record(value: unknown): Record<string, unknown> | null {
@@ -40,6 +43,26 @@ function strippedKeys(raw: unknown, parsed: unknown, path: string): UnknownConfi
   return Object.keys(source)
     .filter((key) => !Object.hasOwn(accepted, key))
     .map((key) => ({ key, path: childPath(path, key) }));
+}
+
+/** Finds discarded keys recursively after admission; consumed maps and closed authority sections retain their schema semantics. */
+function nestedStrippedKeys(raw: unknown, parsed: unknown, path: string): UnknownConfigKey[] {
+  if (Array.isArray(raw) && Array.isArray(parsed)) {
+    return raw.flatMap((value, index) =>
+      nestedStrippedKeys(value, parsed[index], `${path}[${index}]`)
+    );
+  }
+  const source = record(raw);
+  const accepted = record(parsed);
+  if (!source || !accepted) return [];
+  return [
+    ...strippedKeys(source, accepted, path),
+    ...Object.keys(source).flatMap((key) =>
+      Object.hasOwn(accepted, key)
+        ? nestedStrippedKeys(source[key], accepted[key], childPath(path, key))
+        : []
+    ),
+  ];
 }
 
 /** Finds passthrough data-source keys outside the public schema shape. */
@@ -79,25 +102,14 @@ export function unknownConfigKeys(
   const accepted = record(parsed);
   if (kind === 'server' || !source || !accepted) return keys;
 
-  if (kind === 'gateway') {
-    const rawModels = source.logicalModels;
-    const parsedModels = accepted.logicalModels;
-    if (Array.isArray(rawModels) && Array.isArray(parsedModels)) {
-      for (const [index, model] of rawModels.entries()) {
-        keys.push(
-          ...strippedKeys(
-            record(model)?.routing,
-            record(parsedModels[index])?.routing,
-            `$.logicalModels[${index}].routing`
-          )
-        );
-      }
-    }
-    return keys;
-  }
-
-  if (kind === 'agent') {
-    return [...keys, ...strippedKeys(source.runtime, accepted.runtime, '$.runtime')];
+  if (
+    kind === 'gateway' ||
+    kind === 'agent' ||
+    kind === 'provider' ||
+    kind === 'model-catalog' ||
+    kind === 'internal-role'
+  ) {
+    return nestedStrippedKeys(raw, parsed, '$');
   }
 
   if (kind === 'user') {

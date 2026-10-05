@@ -17,9 +17,9 @@ export const InternalRoleExecutionProfileSchema = z
       .strict()
       .default({ maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 }),
   })
-  .strict();
+  .strip();
 
-/** Strict Server-scoped internal-role profile file. */
+/** Server-scoped internal-role reader; descriptive additions are discarded. */
 export const InternalRoleProfilesConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -27,7 +27,7 @@ export const InternalRoleProfilesConfigSchema = z
     profiles: z.array(InternalRoleExecutionProfileSchema).default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     const ids = new Set<string>();
     for (const [index, profile] of value.profiles.entries()) {

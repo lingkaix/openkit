@@ -17,10 +17,10 @@ export const ModelCatalogSchema = z
         .object({
           models: z.record(CatalogKeySchema, ProviderModelMetadataEntrySchema),
         })
-        .strict()
+        .strip()
     ),
   })
-  .strict();
+  .strip();
 
 /** Validated deployment model extension catalog; it contains no Provider credentials or routes. */
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
