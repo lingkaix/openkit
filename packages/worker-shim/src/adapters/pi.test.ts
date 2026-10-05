@@ -20,6 +20,8 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LifecycleDeadline } from '../lifecycle-deadline.js';
+import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
 
 const spawnCalls = vi.hoisted(
@@ -754,11 +756,9 @@ describe('Pi rejected open and Turn', () => {
     pipe.destroy();
     const turn = await pending;
     await expect(turn.settled).rejects.toThrow('Pi host channel is lost.');
-    const winner = await Promise.race([
-      turn.interrupt().then(() => 'resolved'),
-      new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
-    ]);
-    expect(winner).toBe('pending');
+    await expect(turn.interrupt(new LifecycleDeadline(50, 20))).rejects.toThrow(
+      'Pi native cleanup was not proved.'
+    );
     const child = latestChild();
     expect(child.exitCode).toBeNull();
     expect(child.signalCode).toBeNull();
@@ -843,6 +843,365 @@ describe('Pi controlled channel faults', () => {
     await readiness;
     return { dirs, session };
   }
+
+  it('landing omits unobserved evidence and reports independent terminal and close facts', async () => {
+    const running = await peer('interrupt-no-terminal', undefined, { requestTimeoutMs: 100 });
+    const runningTurn = await running.session.startTurn(turnInput(running.dirs));
+    expect(running.session.nativeEvidence?.()).toEqual({});
+    await runningTurn.interrupt();
+    expect((await runningTurn.settled).nativeEvidence).toMatchObject({ nativeTerminal: false });
+    expect(running.session.nativeEvidence?.()).toMatchObject({ nativeTerminal: false });
+
+    const invalid = await peer('semantic-status');
+    const invalidTurn = await invalid.session.startTurn(turnInput(invalid.dirs));
+    expect((await invalidTurn.settled).nativeEvidence).toMatchObject({ nativeTerminal: false });
+    expect(invalid.session.nativeEvidence?.()).toMatchObject({ nativeTerminal: false });
+
+    const { dirs, session } = await peer('ordinary');
+    expect(session.nativeEvidence?.()).toEqual({});
+    const turn = await session.startTurn(turnInput(dirs));
+    expect((await turn.settled).nativeEvidence).toEqual({ nativeTerminal: true });
+    expect(session.nativeEvidence?.()).toEqual({ nativeTerminal: true });
+    await session.close();
+    expect(session.nativeEvidence?.()).toEqual({
+      nativeTerminal: true,
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
+  });
+
+  it.each([
+    'off',
+    'on',
+  ] as const)('landing collects structural facts with content %s', async (value) => {
+    const { dirs, session } = await peer('ordinary');
+    const input = turnInput(dirs);
+    const records: RuntimeObservation[] = [];
+    const bodies: Uint8Array[] = [];
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value },
+        emit: async (record, body) => {
+          records.push(record);
+          if (body) bodies.push(body);
+        },
+      },
+    });
+    await turn.settled;
+    expect(records.map((record) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'origin', phase: 'started' }),
+        expect.objectContaining({ kind: 'assistant', phase: 'completed' }),
+        expect.objectContaining({ kind: 'coverage', coverage: 'ended' }),
+      ])
+    );
+    expect(bodies.map((body) => Buffer.from(body).toString())).toEqual(
+      value === 'on' ? ['answer'] : []
+    );
+    await session.close();
+  });
+
+  it.each([
+    'off',
+    'on',
+    'aborted',
+  ] as const)('landing captures native tools and outward text with content %s', async (value) => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const input = turnInput(dirs);
+    const records: RuntimeObservation[] = [];
+    const bodies: string[] = [];
+    const write = channel.write.bind(channel);
+    vi.spyOn(channel, 'write').mockImplementation(((bytes: unknown) => {
+      const request = JSON.parse(String(bytes));
+      if (request.op === 'turn') {
+        for (const data of [
+          {
+            type: 'tool_execution_start',
+            toolCallId: '/private/call-identity',
+            toolName: 'echo',
+            args: { text: 'input' },
+          },
+          {
+            type: 'tool_execution_end',
+            toolCallId: '/private/call-identity',
+            toolName: 'echo',
+            isError: false,
+            result: { content: [{ type: 'text', text: 'result' }] },
+          },
+          {
+            type: 'message_end',
+            message: {
+              role: 'assistant',
+              stopReason: value === 'aborted' ? 'aborted' : 'stop',
+              content: [
+                { type: 'thinking', thinking: 'private-reasoning' },
+                { type: 'text', text: 'outward' },
+              ],
+            },
+          },
+        ])
+          channel.emit(
+            'data',
+            Buffer.from(`${JSON.stringify({ event: 'native', turnId: request.turnId, data })}\n`)
+          );
+      }
+      return write(bytes as string);
+    }) as typeof channel.write);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value: value === 'off' ? 'off' : 'on' },
+        emit: async (record, body) => {
+          records.push(record);
+          if (body) bodies.push(Buffer.from(body).toString());
+        },
+      },
+    });
+    await turn.settled;
+    expect(records.map((record) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'tool', phase: 'started', toolName: 'echo' }),
+        expect.objectContaining({ kind: 'tool', phase: 'completed', toolName: 'echo' }),
+        expect.objectContaining({
+          kind: 'assistant',
+          phase: value === 'aborted' ? 'interrupted' : 'completed',
+        }),
+      ])
+    );
+    expect(bodies).toEqual(
+      value !== 'off'
+        ? ['{"text":"input"}', '{"content":[{"type":"text","text":"result"}]}', 'outward']
+        : []
+    );
+    expect(JSON.stringify(records)).not.toContain('/private/call-identity');
+    expect(JSON.stringify(records) + bodies.join('')).not.toContain('private-reasoning');
+    await session.close();
+  });
+
+  it('landing preserves original terminal text separately from the trimmed Turn result', async () => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      observeChannel: (observed) => {
+        channel = observed;
+      },
+    });
+    const input = turnInput(dirs);
+    const original = '  answer \n';
+    const bodies: string[] = [];
+    const emit = channel.emit.bind(channel);
+    vi.spyOn(channel, 'emit').mockImplementation((event, ...args) => {
+      if (event === 'data') {
+        const text = Buffer.from(args[0]).toString();
+        if (text.includes('"event":"turn_settled"')) {
+          const frames = text
+            .trimEnd()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+          for (const frame of frames)
+            if (frame.event === 'turn_settled') frame.outcome.assistantText = original;
+          return emit(
+            event,
+            Buffer.from(`${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`)
+          );
+        }
+      }
+      return emit(event, ...args);
+    });
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'server', value: 'on' },
+        emit: async (_record, body) => {
+          if (body) bodies.push(Buffer.from(body).toString());
+        },
+      },
+    });
+    expect(await turn.settled).toMatchObject({ assistantText: 'answer', status: 'completed' });
+    expect(bodies).toEqual([original]);
+    await session.close();
+  });
+
+  it('landing bounds pre-prompt capture before native admission', async () => {
+    const { dirs, session } = await peer('ordinary');
+    const input = turnInput(dirs);
+    const original = LifecycleDeadline.prototype.workRemainingMs;
+    vi.spyOn(LifecycleDeadline.prototype, 'workRemainingMs').mockImplementation(function (
+      this: LifecycleDeadline,
+      maximum
+    ) {
+      return Math.min(40, original.call(this, maximum));
+    });
+    const write = vi.spyOn(spawnControl.children.at(-1)!.stdio[3] as Duplex, 'write');
+    await expect(
+      session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          emit: () => new Promise<void>(() => undefined),
+        },
+      })
+    ).rejects.toThrow('capture');
+    expect(
+      write.mock.calls.map(([bytes]) => String(bytes)).some((line) => line.includes('"op":"turn"'))
+    ).toBe(false);
+  });
+
+  it('landing settles interruption when capture-off finalization is held', async () => {
+    const { dirs, session } = await peer('ordinary');
+    const input = turnInput(dirs);
+    let entered!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const atEnd = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const accepted: RuntimeObservation[] = [];
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        emit: async (record) => {
+          if (record.fact.kind === 'coverage' && record.fact.coverage === 'ended') {
+            entered();
+            await held;
+          }
+          accepted.push(record);
+        },
+      },
+    });
+    await Promise.race([
+      atEnd,
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('No structural finalization')), 500)
+      ),
+    ]);
+    const before = accepted.length;
+    const started = performance.now();
+    await turn.interrupt(new LifecycleDeadline(100, 30));
+    expect(await turn.settled).toMatchObject({
+      status: 'completed',
+      diagnostics: { runtimeCapture: 'incomplete' },
+    });
+    expect(performance.now() - started).toBeLessThan(200);
+    release();
+    await waitFor(() => accepted.length === before + 1);
+    expect(accepted.slice(before).map((record) => record.fact)).toEqual([
+      expect.objectContaining({ kind: 'coverage', coverage: 'ended' }),
+    ]);
+    await session.close();
+  });
+
+  it('landing bounds a short join without another interrupt or signal owner', async () => {
+    const { dirs, session } = await peer('interrupt-silent', undefined, { requestTimeoutMs: 400 });
+    const turn = await session.startTurn(turnInput(dirs));
+    const child = spawnControl.children.at(-1)!;
+    const kill = vi.spyOn(child, 'kill');
+    const write = vi.spyOn(child.stdio[3] as Duplex, 'write');
+    const first = turn.interrupt(new LifecycleDeadline(600, 100));
+    const joinedAt = performance.now();
+    await expect(turn.interrupt(new LifecycleDeadline(20))).rejects.toThrow('not proved');
+    expect(performance.now() - joinedAt).toBeLessThan(150);
+    await first;
+    expect(
+      write.mock.calls.filter(([bytes]) => String(bytes).includes('"op":"interrupt"'))
+    ).toHaveLength(1);
+    expect(kill).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'malformed',
+    'partial',
+    'duplicate',
+    'native',
+    'native-inline',
+    'omitted',
+  ])('landing parses the %s channel tail after exit before close proof', async (tail) => {
+    let channel!: Duplex;
+    const { dirs, session } = await peer('ordinary', undefined, {
+      closeExitTimeoutMs: 100,
+      observeChannel: (value) => {
+        channel = value;
+      },
+    });
+    await (await session.startTurn(turnInput(dirs))).settled;
+    const child = spawnControl.children.at(-1)!;
+    const write = channel.write.bind(channel);
+    vi.spyOn(channel, 'write').mockImplementation(((
+      bytes: unknown,
+      callback?: (error?: Error) => void
+    ) => {
+      const request = JSON.parse(String(bytes));
+      if (request.op !== 'close') return write(bytes as string);
+      callback?.();
+      channel.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({ id: request.id, ok: true, result: { state: 'closed' } })}\n${tail === 'native-inline' ? `${JSON.stringify({ event: 'native', turnId: 'turn-1', data: { type: 'message_end' } })}\n` : ''}`
+        )
+      );
+      setImmediate(() => {
+        child.emit('exit', 0, null);
+        channel.emit(
+          'data',
+          Buffer.from(
+            tail === 'native-inline'
+              ? '\n'
+              : tail === 'malformed'
+                ? '{bad}\n'
+                : tail === 'partial'
+                  ? '{"event":'
+                  : tail === 'omitted'
+                    ? `${JSON.stringify({ event: 'native_omitted', turnId: 'turn-1' })}\n`
+                    : tail === 'native'
+                      ? `${JSON.stringify({ event: 'native', turnId: 'turn-1', data: { type: 'message_end' } })}\n`
+                      : `${JSON.stringify({
+                          event: 'turn_settled',
+                          turnId: 'turn-1',
+                          outcome: { status: 'failed', reason: 'pi-prompt-failed' },
+                          nativeHandle: { state: 'pending' },
+                          compactionEntryIds: [],
+                        })}\n`
+          )
+        );
+        channel.emit('end');
+        child.stdout!.emit('end');
+        child.stderr!.emit('end');
+      });
+      return true;
+    }) as typeof channel.write);
+    await expect(session.close()).rejects.toThrow('not proved');
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      persistencePreservingClose: false,
+    });
+  });
+
+  it('landing refuses retaining close without both diagnostic pipe EOFs', async () => {
+    const { session } = await peer('ordinary', undefined, { closeExitTimeoutMs: 40 });
+    const stdout = spawnControl.children.at(-1)!.stdout!;
+    const original = stdout.emit.bind(stdout);
+    vi.spyOn(stdout, 'emit').mockImplementation((event, ...args) =>
+      event === 'end' ? true : original(event, ...args)
+    );
+    await expect(session.close()).rejects.toThrow('not proved');
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      pipesDrained: false,
+      persistencePreservingClose: false,
+    });
+  });
 
   it(
     'R5 changes the admitted set only through an exact real-host successor',
@@ -1307,6 +1666,7 @@ describe('Pi resident host', () => {
       ).settled;
       expect(first).toEqual({
         assistantText: 'answer-1',
+        nativeEvidence: { nativeTerminal: true },
         status: 'completed',
         stopReason: 'stop',
         diagnostics: {

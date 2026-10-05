@@ -76,7 +76,8 @@ export interface PiTurnSettledFrame {
 export type PiParsedFrame =
   | { readonly kind: 'ignored' }
   | { readonly kind: 'invalid' }
-  | { readonly kind: 'native'; readonly turnId: string }
+  | { readonly kind: 'native'; readonly turnId: string; readonly data: unknown }
+  | { readonly kind: 'omitted'; readonly turnId: string }
   | { readonly kind: 'response'; readonly response: PiHostResponse }
   | { readonly kind: 'settled'; readonly settled: PiTurnSettledFrame }
   | { readonly kind: 'ui'; readonly method: string; readonly turnId: string | null };
@@ -94,11 +95,11 @@ export function createPiLineReader(
   onLine: (line: string) => void,
   onOverflow: () => void,
   maxBytes = PI_CHANNEL_FRAME_MAX_BYTES
-): (chunk: Buffer) => void {
+): ((chunk: Buffer) => void) & { finish(): void } {
   let pending: Buffer[] = [];
   let pendingBytes = 0;
   let discarding = false;
-  return (chunk) => {
+  const read = (chunk: Buffer) => {
     let start = 0;
     while (start < chunk.length) {
       const newline = chunk.indexOf(10, start);
@@ -132,6 +133,14 @@ export function createPiLineReader(
       start = newline + 1;
     }
   };
+  return Object.assign(read, {
+    /** Refuses a torn final frame, including a partial UTF-8 sequence, at actual channel EOF. */
+    finish(): void {
+      if (pendingBytes > 0 || discarding) onOverflow();
+      pending = [];
+      pendingBytes = 0;
+    },
+  });
 }
 
 /**
@@ -202,13 +211,16 @@ function parseEvent(value: Readonly<Record<string, unknown>>): PiParsedFrame {
   const event = value.event;
   if (typeof event !== 'string') return { kind: 'invalid' };
   if (!KNOWN_EVENTS.has(event)) return { kind: 'ignored' };
-  if (event === 'native_omitted') return { kind: 'ignored' };
+  if (event === 'native_omitted')
+    return typeof value.turnId === 'string'
+      ? { kind: 'omitted', turnId: value.turnId }
+      : { kind: 'invalid' };
   if (event === 'extension_error') {
     return typeof value.message === 'string' ? { kind: 'ignored' } : { kind: 'invalid' };
   }
   if (event === 'native') {
     return typeof value.turnId === 'string'
-      ? { kind: 'native', turnId: value.turnId }
+      ? { kind: 'native', turnId: value.turnId, data: value.data }
       : { kind: 'invalid' };
   }
   if (event === 'ui_unsupported') {

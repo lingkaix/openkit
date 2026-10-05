@@ -8,6 +8,7 @@ import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
+  WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
   WorkerResidentOpenInput,
@@ -15,6 +16,7 @@ import type {
   WorkerResidentTurn,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
@@ -34,6 +36,7 @@ import {
   redactPiText,
 } from './pi-channel.js';
 import { initializePiNativeHome, piAgentDirectory } from './pi-native-home.js';
+import { PiRuntimeCapture } from './pi-runtime-capture.js';
 
 /**
  * Image path of the dedicated Pi SDK host. The runtime image installs the
@@ -46,13 +49,6 @@ const MCP_SERVER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HANDLE_DIGEST = /^[0-9a-f]{64}$/;
 const HEADER_MAX_BYTES = 64 * 1024;
 const FAILED_REASONS = new Set<string>(PI_FAILED_REASONS);
-/** How long a failure may wait for the host's exit event after SIGKILL. */
-const PI_STOP_CONFIRM_MS = 1_000;
-/** Each host control reply must fit inside the Harness's 10 s native stop budget. */
-const PI_REQUEST_TIMEOUT_MS = 4_000;
-/** A close acknowledgement must be followed by process exit within this budget. */
-const PI_CLOSE_EXIT_TIMEOUT_MS = 5_000;
-
 /** Failure of the Pi adapter before or during a native operation. The message carries no secret. */
 export class PiAdapterError extends Error {
   /**
@@ -72,9 +68,9 @@ export interface PiResidentAdapterOptions {
   readonly hostCommand?: readonly string[] | undefined;
   /** Observes the private channel after it is connected. Tests use it to drop the channel. */
   readonly observeChannel?: ((channel: Duplex) => void) | undefined;
-  /** Test-only shorter control deadline. Production uses PI_REQUEST_TIMEOUT_MS. */
+  /** Test-only shorter control deadline. Production uses the shared native request default. */
   readonly requestTimeoutMs?: number | undefined;
-  /** Test-only shorter close exit deadline. Production uses PI_CLOSE_EXIT_TIMEOUT_MS. */
+  /** Test-only shorter close exit deadline. Production uses the shared native stop default. */
   readonly closeExitTimeoutMs?: number | undefined;
 }
 
@@ -120,6 +116,13 @@ export interface PiTurnProjection {
 interface ActiveTurn {
   /** A settlement is being proved. A second frame for this Turn must not start another one. */
   applying: boolean;
+  readonly capture: PiRuntimeCapture;
+  collectionIncomplete: boolean;
+  readonly collectionCancelled: Promise<void>;
+  cancelCollection: () => void;
+  /** Native proof is distinct from the observational sink join. */
+  nativeSettlementProved: boolean;
+  interruptPromise: Promise<void> | null;
   done: boolean;
   /** Stop ownership poisons ordinary settlement before exit confirmation starts. */
   violated: boolean;
@@ -263,7 +266,7 @@ export const piResidentAdapter: WorkerResidentAdapter = createPiResidentAdapter(
 /**
  * One resident Pi host process and the conversation bound to it.
  *
- * Native session events are counted and dropped here. They are not part of the Turn result.
+ * Native session events feed the existing structural capture sink; raw envelopes are not retained in the Turn result.
  */
 export class PiResidentBinding implements WorkerResidentSession {
   /** Resolves when the host process exits for any reason, including a proved close. */
@@ -320,6 +323,21 @@ export class PiResidentBinding implements WorkerResidentSession {
   #unsupportedUi: string[] = [];
   #lost = false;
   #compactionEntryIds: readonly string[] = [];
+  #nativeTerminal: boolean | undefined;
+  #processExitEvaluated = false;
+  #pipesDrainEvaluated = false;
+  #persistencePreservingClose: boolean | undefined;
+  #stdoutEnded = false;
+  #stderrEnded = false;
+  #channelEnded = false;
+  #pipeFailure = false;
+  #closeEvidenceLost = false;
+  #drainedResolve!: () => void;
+  #drained = new Promise<void>((resolve) => {
+    this.#drainedResolve = resolve;
+  });
+  /** Only this promise owns delivery of failure-stop signals; joiners never signal again. */
+  #stopPromise: Promise<boolean> | null = null;
   #loopback: WorkerResidentOpenInput['loopback'];
 
   private constructor(
@@ -331,8 +349,8 @@ export class PiResidentBinding implements WorkerResidentSession {
   ) {
     this.#child = child;
     this.#channel = channel;
-    this.#requestTimeoutMs = options.requestTimeoutMs ?? PI_REQUEST_TIMEOUT_MS;
-    this.#closeExitTimeoutMs = options.closeExitTimeoutMs ?? PI_CLOSE_EXIT_TIMEOUT_MS;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs;
+    this.#closeExitTimeoutMs = options.closeExitTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeStopMs;
     this.#agentDir = piAgentDirectory(input.stateRoot);
     this.#stateRoot = resolve(input.stateRoot);
     this.#resume = resume;
@@ -362,11 +380,23 @@ export class PiResidentBinding implements WorkerResidentSession {
     hostCommand: readonly string[],
     options: PiResidentAdapterOptions = {}
   ): Promise<PiResidentBinding> {
+    const deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeOpenMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    );
     assertLoopback(input.loopback);
     const resume = input.resumeReference
-      ? await proveResumeReference(input.resumeReference, input.stateRoot)
+      ? await piDeadline(
+          proveResumeReference(input.resumeReference, input.stateRoot),
+          deadline.workRemainingMs(),
+          'Pi resume proof timed out.'
+        )
       : null;
-    await initializePiNativeHome(input.stateRoot);
+    await piDeadline(
+      initializePiNativeHome(input.stateRoot),
+      deadline.workRemainingMs(),
+      'Pi native home preparation timed out.'
+    );
     if (hostCommand.length === 0 || !hostCommand[0]) {
       throw new PiAdapterError('Pi host command is missing.');
     }
@@ -388,13 +418,17 @@ export class PiResidentBinding implements WorkerResidentSession {
       options
     );
     if (!connected) {
-      await binding.#releaseOrSurface(new PiAdapterError('Pi host channel is missing.'));
+      await binding.#releaseOrSurface(new PiAdapterError('Pi host channel is missing.'), deadline);
       return binding;
     }
     try {
-      await binding.#waitUntilSpawned();
+      await piDeadline(
+        binding.#waitUntilSpawned(),
+        deadline.workRemainingMs(),
+        'Pi host spawn timed out.'
+      );
     } catch (error) {
-      await binding.#releaseOrSurface(error);
+      await binding.#releaseOrSurface(error, deadline);
       return binding;
     }
     options.observeChannel?.(binding.#channel);
@@ -424,11 +458,25 @@ export class PiResidentBinding implements WorkerResidentSession {
     return 'running';
   }
 
+  /** Reports only independent observations or evaluated proof attempts; exit never proves EOF or flush. */
+  public nativeEvidence(): WorkerNativeEvidence {
+    return {
+      ...(this.#nativeTerminal === undefined ? {} : { nativeTerminal: this.#nativeTerminal }),
+      ...(this.#exitSeen || this.#processExitEvaluated ? { processExited: this.#exitSeen } : {}),
+      ...(this.#pipeFailure || this.#pipesDrainEvaluated || this.#pipesEnded()
+        ? { pipesDrained: this.#pipesEnded() && !this.#pipeFailure }
+        : {}),
+      ...(this.#persistencePreservingClose === undefined
+        ? {}
+        : { persistencePreservingClose: this.#persistencePreservingClose }),
+    };
+  }
+
   /**
    * Closes the host. Retained session bytes stay. A lost channel or a nonzero exit rejects so
    * the Harness can fence an unproved stop. The process is not killed on that failure.
    *
-   * @returns Resolves once the host reports `closed` and exits 0.
+   * @returns Resolves only after the host reports `closed`, exits 0 and all owned outputs reach error-free EOF.
    */
   public close(): Promise<void> {
     this.#closePromise ??= this.#finishClose();
@@ -508,7 +556,7 @@ export class PiResidentBinding implements WorkerResidentSession {
    * A rejection means this Turn was not accepted and no native Turn work remains. A host response
    * that refuses the Turn is that proof, and the resident process stays. A written request with
    * no such response stops the process and waits for its exit before rejecting. When that exit
-   * is not observed, the returned Turn rejects `settled` and leaves `interrupt` pending so the
+   * is not observed, the returned Turn rejects `settled` and rejects bounded `interrupt` so the
    * Harness fences the stop. An accepted Turn also rejects settlement if native stop is unproved.
    *
    * @param input Turn input from the Harness.
@@ -531,6 +579,11 @@ export class PiResidentBinding implements WorkerResidentSession {
     }
     if (this.#busy) throw new PiAdapterError('A Pi Turn is already active.');
     this.#busy = true;
+    const deadline = new LifecycleDeadline(
+      LIFECYCLE_DEFAULTS.nativeOpenMs,
+      LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+    );
+    let capture: PiRuntimeCapture | undefined;
     try {
       this.#unansweredWrite = false;
       const prepared = prepareTurn(input, this.#loopback);
@@ -554,18 +607,28 @@ export class PiResidentBinding implements WorkerResidentSession {
           'Pi Skill supply changed; a successor host must resume the session.'
         );
       }
-      await this.#ensureOpen(prepared);
+      await this.#ensureOpen(prepared, deadline);
       this.#routes ??= prepared.routes;
-      await this.#ensureModel(prepared.model);
-      const active = this.#beginTurn(prepared.turnId);
-      const response = await this.#request({
-        op: 'turn',
-        ...(effort !== undefined && input.llmRoute.reasoningEffortLevels !== undefined
-          ? { reasoningEffort: effort }
-          : {}),
-        prompt: prepared.prompt,
-        turnId: prepared.turnId,
-      });
+      await this.#ensureModel(prepared.model, deadline);
+      capture = new PiRuntimeCapture(input.runtimeCapture, prepared.turnId);
+      await piDeadline(
+        capture.start(),
+        deadline.workRemainingMs(),
+        'Pi structural capture preparation timed out.'
+      );
+      const active = this.#beginTurn(prepared.turnId, capture);
+      this.#nativeTerminal = undefined;
+      const response = await this.#request(
+        {
+          op: 'turn',
+          ...(effort !== undefined && input.llmRoute.reasoningEffortLevels !== undefined
+            ? { reasoningEffort: effort }
+            : {}),
+          prompt: prepared.prompt,
+          turnId: prepared.turnId,
+        },
+        deadline.workRemainingMs(this.#requestTimeoutMs)
+      );
       if (!response.ok || response.result.state !== 'started') {
         if (response.ok) this.#unansweredWrite = true;
         if (response.ok === false && response.error.code === 'invalid_state') this.#fenced = true;
@@ -577,14 +640,15 @@ export class PiResidentBinding implements WorkerResidentSession {
         );
       }
       return {
-        interrupt: () => this.#interrupt(active),
+        interrupt: (deadline) => this.#interrupt(active, deadline),
         settled: active.settled,
       };
     } catch (error) {
+      capture?.abandon();
       const processLive =
         !this.#exitSeen && this.#child.exitCode === null && this.#child.signalCode === null;
       if (this.#unansweredWrite || (this.#lost && processLive)) {
-        return await this.#abandonUnaccepted(error);
+        return await this.#abandonUnaccepted(error, deadline);
       }
       if (!this.#turn) this.#busy = false;
       throw error;
@@ -594,15 +658,41 @@ export class PiResidentBinding implements WorkerResidentSession {
   #attach(): void {
     const reader = createPiLineReader(
       (line) => this.#onFrame(parsePiHostFrame(line)),
-      () => this.#markLost(),
+      () => {
+        this.#closeEvidenceLost = true;
+        this.#markLost();
+      },
       PI_CHANNEL_FRAME_MAX_BYTES
     );
     this.#channel.on('data', (chunk: Buffer) => reader(chunk));
-    this.#channel.on('end', () => this.#onChannelEnd());
-    this.#channel.on('error', () => this.#onChannelEnd());
+    this.#channel.on('end', () => {
+      reader.finish();
+      this.#channelEnded = true;
+      this.#noteDrain();
+      this.#onChannelEnd();
+    });
+    this.#channel.on('error', () => {
+      this.#pipeFailure = true;
+      this.#onChannelEnd();
+    });
     this.#channel.on('close', () => this.#onChannelEnd());
     this.#child.stdout?.on('data', (chunk: Buffer) => this.#keepPrefix('stdout', chunk));
     this.#child.stderr?.on('data', (chunk: Buffer) => this.#keepPrefix('stderr', chunk));
+    for (const [name, pipe] of [
+      ['stdout', this.#child.stdout],
+      ['stderr', this.#child.stderr],
+    ] as const) {
+      pipe?.on('end', () => {
+        if (name === 'stdout') this.#stdoutEnded = true;
+        else this.#stderrEnded = true;
+        this.#noteDrain();
+      });
+      pipe?.on('error', () => {
+        this.#pipeFailure = true;
+        this.#closeEvidenceLost = true;
+        this.#markLost();
+      });
+    }
     this.#child.on('spawn', () => {
       this.#spawned = true;
     });
@@ -612,7 +702,8 @@ export class PiResidentBinding implements WorkerResidentSession {
       if (this.#exitSeen) return;
       this.#exitSeen = true;
       this.#exitCode = code;
-      if (!this.#closeAccepted) this.#markLost();
+      // Exit is not EOF. Keep the channel reader alive to inspect the complete buffered tail.
+      if (!this.#closing) this.#markLost();
       else if (this.#turn) this.#failActive('pi-channel-lost');
       this.#exitedResolve();
     });
@@ -624,8 +715,11 @@ export class PiResidentBinding implements WorkerResidentSession {
    * A confirmed exit rejects with the original failure. An exit that is not observed returns
    * the Turn the Harness fences.
    */
-  async #abandonUnaccepted(error: unknown): Promise<WorkerResidentTurn> {
-    if (await this.#confirmStopped()) {
+  async #abandonUnaccepted(
+    error: unknown,
+    deadline: LifecycleDeadline
+  ): Promise<WorkerResidentTurn> {
+    if (await this.#confirmStopped(deadline)) {
       this.#failActive('pi-channel-lost');
       this.#busy = false;
       this.#exitUnproved = false;
@@ -634,14 +728,24 @@ export class PiResidentBinding implements WorkerResidentSession {
     return this.#surfaceUnprovedTurn(error);
   }
 
-  #beginTurn(turnId: string): ActiveTurn {
+  #beginTurn(turnId: string, capture: PiRuntimeCapture): ActiveTurn {
     let resolve: (result: WorkerAdapterResult) => void = () => undefined;
     let reject: (error: Error) => void = () => undefined;
     const settled = new Promise<WorkerAdapterResult>((settle, fail) => {
       resolve = settle;
       reject = fail;
     });
+    let cancelCollection!: () => void;
+    const collectionCancelled = new Promise<void>((resolve) => {
+      cancelCollection = resolve;
+    });
     const active: ActiveTurn = {
+      capture,
+      collectionIncomplete: false,
+      collectionCancelled,
+      cancelCollection,
+      nativeSettlementProved: false,
+      interruptPromise: null,
       applying: false,
       done: false,
       violated: false,
@@ -669,58 +773,85 @@ export class PiResidentBinding implements WorkerResidentSession {
    *
    * A child that never spawned has no exit event; that absence is itself the proof that no
    * process remains. SIGKILL is required because the host may ignore a termination signal.
-   * The exit event is the only proof the process is gone.
+   * A spawned exit is reported only from its event; ESRCH supports cleanup absence separately.
    *
    * @returns True only when no host process remains.
    */
-  async #confirmStopped(): Promise<boolean> {
+  async #confirmStopped(deadline = stopDeadline()): Promise<boolean> {
+    if (this.#exitSeen) return true;
+    if (this.#stopPromise) {
+      return piDeadline(
+        this.#stopPromise,
+        deadline.remainingMs(),
+        'Pi joined native cleanup was not proved.'
+      ).catch(() => false);
+    }
+    if (deadline.remainingMs() <= 0) {
+      this.#processExitEvaluated = true;
+      return false;
+    }
+    const stopping = this.#stopChild(deadline);
+    this.#stopPromise = stopping;
+    try {
+      return await stopping;
+    } finally {
+      if (this.#stopPromise === stopping) this.#stopPromise = null;
+    }
+  }
+
+  /** Delivers the existing dedicated-host SIGKILL once and spends only the remaining cleanup tail. */
+  async #stopChild(deadline: LifecycleDeadline): Promise<boolean> {
+    this.#processExitEvaluated = true;
     const child = this.#child;
-    if (this.#exitSeen || child.exitCode !== null || child.signalCode !== null) return true;
     if (!this.#spawned && typeof child.pid !== 'number') return true;
     try {
       const signaled = child.kill('SIGKILL');
-      if (!signaled && child.exitCode === null && child.signalCode === null) return false;
+      if (!signaled && !this.#exitSeen) return false;
     } catch (error) {
-      const gone = isProcessGone(error) || child.exitCode !== null || child.signalCode !== null;
-      if (gone) return true;
-      return false;
+      // ESRCH can establish absence for cleanup, but it is not an observed process-exit event.
+      return isProcessGone(error);
     }
-    return await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), PI_STOP_CONFIRM_MS);
-      void this.exited.then(() => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
+    await piDeadline(
+      this.exited,
+      deadline.remainingMs(LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs),
+      'Pi native cleanup was not proved.'
+    ).catch(() => undefined);
+    return this.#exitSeen;
   }
 
-  async #ensureModel(model: PiModel): Promise<void> {
+  async #ensureModel(model: PiModel, deadline: LifecycleDeadline): Promise<void> {
     if (this.#model && sameModel(this.#model, model)) return;
     if (!this.#model) {
       this.#model = model;
       return;
     }
-    const response = await this.#request({ model, op: 'configure' });
+    const response = await this.#request(
+      { model, op: 'configure' },
+      deadline.workRemainingMs(this.#requestTimeoutMs)
+    );
     if (!response.ok) throw new PiAdapterError('Pi host did not accept the model.');
     this.#model = model;
   }
 
-  async #ensureOpen(prepared: PreparedTurn): Promise<void> {
+  async #ensureOpen(prepared: PreparedTurn, deadline: LifecycleDeadline): Promise<void> {
     if (this.#hostOpen) return;
-    const response = await this.#request({
-      agentDir: this.#agentDir,
-      capabilityBaseUrl: this.#loopback.capabilityBaseUrl,
-      capabilityCredential: this.#loopback.capabilityCredential,
-      inferenceBaseUrl: this.#loopback.inferenceBaseUrl,
-      inferenceCredential: this.#loopback.inferenceCredential,
-      mcpServers: [...prepared.mcpServerIds],
-      skillTargetPaths: [...prepared.skillTargetPaths],
-      model: prepared.model,
-      op: 'open',
-      resume: this.#resume ? { handle: this.#resume.text } : null,
-      stateRoot: this.#stateRoot,
-      workingDirectory: prepared.workingDirectory,
-    });
+    const response = await this.#request(
+      {
+        agentDir: this.#agentDir,
+        capabilityBaseUrl: this.#loopback.capabilityBaseUrl,
+        capabilityCredential: this.#loopback.capabilityCredential,
+        inferenceBaseUrl: this.#loopback.inferenceBaseUrl,
+        inferenceCredential: this.#loopback.inferenceCredential,
+        mcpServers: [...prepared.mcpServerIds],
+        skillTargetPaths: [...prepared.skillTargetPaths],
+        model: prepared.model,
+        op: 'open',
+        resume: this.#resume ? { handle: this.#resume.text } : null,
+        stateRoot: this.#stateRoot,
+        workingDirectory: prepared.workingDirectory,
+      },
+      deadline.workRemainingMs(this.#requestTimeoutMs)
+    );
     if (!response.ok) {
       this.#fenced = true;
       throw new PiAdapterError(`Pi host open failed (${response.error.code}).`);
@@ -760,18 +891,23 @@ export class PiResidentBinding implements WorkerResidentSession {
   #failActive(stopReason: string, stopOwner = false): void {
     const active = this.#turn;
     if (!active || active.done || (active.violated && !stopOwner)) return;
+    this.#abandonCapture(active);
     active.done = true;
     this.#lastTurnId = active.turnId;
     active.stopReason = stopReason;
     this.#turn = null;
     this.#busy = false;
     if (!this.#established) this.#fenced = true;
-    const diagnostics = this.#diagnostics();
+    const diagnostics = {
+      ...this.#diagnostics(),
+      ...(active.collectionIncomplete ? { runtimeCapture: 'incomplete' } : {}),
+    };
     active.resolve({
       assistantText: null,
       ...(diagnostics ? { diagnostics } : {}),
       status: 'failed',
       stopReason,
+      nativeEvidence: this.nativeEvidence(),
     });
   }
 
@@ -779,6 +915,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   #rejectActive(error: Error): void {
     const active = this.#turn;
     if (!active || active.done) return;
+    this.#abandonCapture(active);
     active.done = true;
     this.#lastTurnId = active.turnId;
     this.#turn = null;
@@ -788,43 +925,56 @@ export class PiResidentBinding implements WorkerResidentSession {
   }
 
   /** Stop before publishing a failed Turn when its settlement evidence is lost. */
-  async #stopActive(reason: string): Promise<void> {
+  async #stopActive(reason: string, deadline = stopDeadline()): Promise<void> {
     if (this.#turn) this.#turn.violated = true;
     this.#fenced = true;
     this.#lost = true;
     this.#rejectPending(new PiAdapterError('Pi host channel is lost.'));
-    if (await this.#confirmStopped()) this.#failActive(reason, true);
+    if (await this.#confirmStopped(deadline)) this.#failActive(reason, true);
     else this.#rejectActive(new PiAdapterError('Pi native stop was not proved.'));
   }
 
   async #finishClose(): Promise<void> {
     this.#closing = true;
+    this.#persistencePreservingClose = false;
+    const deadline = stopDeadline();
     try {
       if (this.#lost || this.#exitSeen) throw new PiAdapterError('Pi host close was not proved.');
-      const response = await this.#request({ op: 'close' });
-      if (!response.ok || response.result.state !== 'closed') {
+      const response = await this.#request(
+        { op: 'close' },
+        deadline.workRemainingMs(this.#requestTimeoutMs)
+      );
+      if (!response.ok || response.result.state !== 'closed')
         throw new PiAdapterError('Pi host close was not proved.');
-      }
       this.#closeAccepted = true;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          this.exited,
-          new Promise<void>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new PiAdapterError('Pi host close exit timed out.')),
-              this.#closeExitTimeoutMs
-            );
-          }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-      if (this.#exitCode !== 0) throw new PiAdapterError('Pi host close was not proved.');
+      this.#processExitEvaluated = true;
+      await piDeadline(
+        this.exited,
+        deadline.remainingMs(this.#closeExitTimeoutMs),
+        'Pi host close exit timed out.'
+      );
+      this.#pipesDrainEvaluated = true;
+      await piDeadline(
+        this.#drained,
+        deadline.remainingMs(this.#closeExitTimeoutMs),
+        'Pi host close was not proved.'
+      );
+      if (this.#exitCode !== 0 || this.#pipeFailure || this.#closeEvidenceLost)
+        throw new PiAdapterError('Pi host close was not proved.');
+      this.#persistencePreservingClose = true;
     } catch (error) {
       if (error instanceof PiAdapterError) throw error;
       throw new PiAdapterError('Pi host close was not proved.');
     }
+  }
+
+  /** Only actual EOF on all owned outputs qualifies drain; the private channel is an output too. */
+  #pipesEnded(): boolean {
+    return this.#stdoutEnded && this.#stderrEnded && this.#channelEnded;
+  }
+
+  #noteDrain(): void {
+    if (this.#pipesEnded()) this.#drainedResolve();
   }
 
   /** Fences admission and releases active work only after bounded stop proof. */
@@ -833,45 +983,89 @@ export class PiResidentBinding implements WorkerResidentSession {
     if (this.#turn) await this.#stopActive('pi-identity-failed');
   }
 
-  async #interrupt(active: ActiveTurn): Promise<void> {
+  #interrupt(active: ActiveTurn, deadline = stopDeadline()): Promise<void> {
+    if (active.interruptPromise)
+      return piDeadline(
+        active.interruptPromise,
+        deadline.remainingMs(),
+        'Pi joined native cleanup was not proved.'
+      );
+    const interrupt = this.#interruptOnce(active, deadline);
+    active.interruptPromise = interrupt;
+    // A failed attempt may be retried after new evidence, while concurrent callers share its owner.
+    void interrupt
+      .finally(() => {
+        if (active.interruptPromise === interrupt) active.interruptPromise = null;
+      })
+      .catch(() => undefined);
+    return interrupt;
+  }
+
+  /** Native cancellation and correlation spend the work budget; failure-stop proof uses only its reserved tail. */
+  async #interruptOnce(active: ActiveTurn, deadline: LifecycleDeadline): Promise<void> {
     if (this.#lost || active.stopReason === 'pi-channel-lost') {
-      if (this.#exitUnproved && (await this.#confirmStopped())) return;
+      if (this.#exitUnproved && (await this.#confirmStopped(deadline))) {
+        this.#exitUnproved = false;
+        return;
+      }
       throw new PiAdapterError('Pi host channel is lost.');
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancellationAccepted = false;
+    let invalidReply = false;
     try {
-      const response = await this.#request({ op: 'interrupt', turnId: active.turnId });
+      const response = await this.#request(
+        { op: 'interrupt', turnId: active.turnId },
+        deadline.workRemainingMs(this.#requestTimeoutMs)
+      );
       if (
         !response.ok ||
         typeof response.result.outcome !== 'string' ||
         !['completed', 'failed', 'interrupted', 'not_active'].includes(response.result.outcome)
       ) {
+        invalidReply = true;
         throw new PiAdapterError('Pi host interrupt response is invalid.');
       }
-      // A reply is not terminal evidence. Reuse the control budget for correlation; together
-      // with the reply and 1 s kill confirmation this stays below the Harness stop budget.
-      await Promise.race([
+      cancellationAccepted = true;
+      await piDeadline(
         active.settled,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new PiAdapterError('Pi interrupt settlement timed out.')),
-            this.#requestTimeoutMs
-          );
-        }),
-      ]);
+        deadline.workRemainingMs(this.#requestTimeoutMs),
+        'Pi interrupt settlement timed out.'
+      );
     } catch (error) {
+      if (
+        cancellationAccepted &&
+        active.nativeSettlementProved &&
+        !active.done &&
+        !active.violated
+      ) {
+        // Native work ended; release its observation join without another native signal or result inference.
+        this.#abandonCapture(active);
+        await piDeadline(
+          active.settled,
+          deadline.remainingMs(),
+          'Pi native cleanup was not proved.'
+        );
+        return;
+      }
       if (!active.done) {
-        await this.#stopActive('pi-terminal-correlation-failed');
-        if (this.#exitSeen) return;
+        // Failed cancellation or correlation evaluates missing proof; admission alone does not.
+        if (this.#nativeTerminal === undefined) this.#nativeTerminal = false;
+        await this.#stopActive('pi-terminal-correlation-failed', deadline);
+        if (this.#exitSeen && !invalidReply) return;
       }
       throw error instanceof PiAdapterError
         ? error
         : new PiAdapterError('Pi host channel is lost.');
-    } finally {
-      if (timer) clearTimeout(timer);
     }
     if (this.#lost || active.stopReason === 'pi-channel-lost')
       throw new PiAdapterError('Pi host channel is lost.');
+  }
+
+  /** Releases only collection, preserving accepted observations and the native stop latch. */
+  #abandonCapture(active: ActiveTurn): void {
+    active.collectionIncomplete = true;
+    active.capture.abandon();
+    active.cancelCollection();
   }
 
   #keepPrefix(stream: 'stderr' | 'stdout', chunk: Buffer): void {
@@ -893,18 +1087,27 @@ export class PiResidentBinding implements WorkerResidentSession {
 
   #onChannelEnd(): void {
     if (this.#closeAccepted) return;
+    this.#closeEvidenceLost = true;
     this.#markLost();
   }
 
   #onFrame(frame: PiParsedFrame): void {
     if (frame.kind === 'invalid') {
+      this.#closeEvidenceLost = true;
       void this.#stopActive('pi-output-malformed');
       this.#rejectPending(new PiAdapterError('Pi host frame is invalid.'));
       return;
     }
     if (frame.kind === 'ignored') return;
+    if (frame.kind === 'omitted') {
+      if (this.#closeAccepted || this.#exitSeen) this.#closeEvidenceLost = true;
+      if (this.#turn?.turnId === frame.turnId) this.#turn.capture.omitted();
+      return;
+    }
     if (frame.kind === 'native') {
+      if (this.#closeAccepted || this.#exitSeen) this.#closeEvidenceLost = true;
       if (this.#turn?.turnId === frame.turnId) {
+        this.#turn.capture.observe(frame.data);
         this.#nativeEventCount += 1;
         this.#recordLifecycleFact?.({ label: 'native_event' });
       }
@@ -932,6 +1135,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   }
 
   #onSettled(settled: PiTurnSettledFrame): void {
+    if (this.#closeAccepted || this.#exitSeen) this.#closeEvidenceLost = true;
     const active = this.#turn;
     if (this.#lastTurnId === settled.turnId && active && !active.done) {
       active.violated = true;
@@ -969,6 +1173,7 @@ export class PiResidentBinding implements WorkerResidentSession {
       expectedHandleText: this.#cachedHandle,
       secrets: this.#secrets,
     });
+    this.#nativeTerminal = projected.validEvidence;
     if (!projected.validEvidence) {
       await this.#stopActive(projected.stopReason);
       return;
@@ -983,6 +1188,22 @@ export class PiResidentBinding implements WorkerResidentSession {
       await this.#stopActive('pi-identity-failed');
       return;
     }
+    active.nativeSettlementProved = true;
+    // Restricted capture keeps original strings; the product result above deliberately trims them.
+    const originalAssistantText =
+      projected.assistantText !== null &&
+      isRecord(settled.outcome) &&
+      typeof settled.outcome.assistantText === 'string'
+        ? settled.outcome.assistantText
+        : null;
+    await Promise.race([
+      active.capture.finalize(projected.status, originalAssistantText).catch(() => {
+        active.collectionIncomplete = true;
+        active.capture.abandon();
+      }),
+      active.collectionCancelled,
+    ]);
+    if (active.done || this.#turn !== active || active.violated) return;
     active.done = true;
     this.#lastTurnId = active.turnId;
     active.stopReason = projected.stopReason;
@@ -997,12 +1218,16 @@ export class PiResidentBinding implements WorkerResidentSession {
     const status = projected.status;
     const effective = ReasoningEffortSchema.safeParse(settled.reasoningEffort);
     this.#effortDiagnostics.reasoningEffort = effective.success ? effective.data : 'unknown';
-    const diagnostics = this.#diagnostics();
+    const diagnostics = {
+      ...this.#diagnostics(),
+      ...(active.collectionIncomplete ? { runtimeCapture: 'incomplete' } : {}),
+    };
     active.resolve({
       assistantText: projected.assistantText,
       ...(diagnostics ? { diagnostics } : {}),
       status,
       stopReason: active.stopReason,
+      nativeEvidence: this.nativeEvidence(),
     });
   }
 
@@ -1023,8 +1248,8 @@ export class PiResidentBinding implements WorkerResidentSession {
    *
    * @param error Failure observed while the process was being started.
    */
-  async #releaseOrSurface(error: unknown): Promise<void> {
-    if (await this.#confirmStopped()) throw error;
+  async #releaseOrSurface(error: unknown, deadline = stopDeadline()): Promise<void> {
+    if (await this.#confirmStopped(deadline)) throw error;
     this.#exitUnproved = true;
     this.#fenced = true;
     this.#lost = true;
@@ -1039,10 +1264,14 @@ export class PiResidentBinding implements WorkerResidentSession {
     }
   }
 
-  #request(body: Record<string, unknown>): Promise<PiHostResponse> {
+  #request(
+    body: Record<string, unknown>,
+    timeoutMs = this.#requestTimeoutMs
+  ): Promise<PiHostResponse> {
     if (this.#lost || this.#exitSeen) {
       return Promise.reject(new PiAdapterError('Pi host channel is lost.'));
     }
+    if (timeoutMs <= 0) return Promise.reject(new PiAdapterError('Pi host request timed out.'));
     const id = this.#nextId;
     this.#nextId += 1;
     const line = `${JSON.stringify({ ...body, id })}\n`;
@@ -1053,10 +1282,13 @@ export class PiResidentBinding implements WorkerResidentSession {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
         reject(new PiAdapterError('Pi host request timed out.'));
-      }, this.#requestTimeoutMs);
+      }, timeoutMs);
       this.#pending.set(id, {
         fail: reject,
         reply: (response) => {
+          // Mark the native acknowledgement while parsing, before another frame in this chunk.
+          if (body.op === 'close' && response.ok && response.result.state === 'closed')
+            this.#closeAccepted = true;
           this.#unansweredWrite = false;
           resolve(response);
         },
@@ -1078,7 +1310,7 @@ export class PiResidentBinding implements WorkerResidentSession {
    * Returns the Turn the Harness fences when a host process may still be live.
    *
    * `settled` rejects with the original failure. `interrupt` resolves only after a later stop
-   * is confirmed, and otherwise stays pending. The Turn runner fences a started Turn whose
+   * is confirmed, and otherwise rejects within the deadline. The Turn runner fences a started Turn whose
    * interrupt does not prove a stop.
    */
   #surfaceUnprovedTurn(error: unknown): WorkerResidentTurn {
@@ -1089,12 +1321,12 @@ export class PiResidentBinding implements WorkerResidentSession {
     const settled = Promise.reject(error);
     settled.catch(() => undefined);
     return {
-      interrupt: async () => {
-        if (await this.#confirmStopped()) {
+      interrupt: async (deadline) => {
+        if (await this.#confirmStopped(deadline)) {
           this.#exitUnproved = false;
           return;
         }
-        await new Promise<void>(() => undefined);
+        throw new PiAdapterError('Pi native cleanup was not proved.');
       },
       settled,
     };
@@ -1524,4 +1756,27 @@ function boundObservations(values: readonly string[], secrets: readonly string[]
       .toString('utf8')
       .replace(/\uFFFD$/, '');
   });
+}
+
+/** Creates only a top-level default; nested callers propagate the deadline they already hold. */
+function stopDeadline(): LifecycleDeadline {
+  return new LifecycleDeadline(
+    LIFECYCLE_DEFAULTS.nativeStopMs,
+    LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs
+  );
+}
+
+/** Bounds an observation or exchange without canceling or claiming rollback of its in-flight effect. */
+function piDeadline<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  if (timeoutMs <= 0) {
+    void work.catch(() => undefined);
+    return Promise.reject(new PiAdapterError(message));
+  }
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PiAdapterError(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
