@@ -1692,22 +1692,75 @@ pub async fn poll_effect_command(
         .ok_or_else(|| terminal("effect command requestId invalid"))?
         .to_string();
     if kind != RuntimeEffectKind::CollectWorkspace {
-        for rejected in [
-            "operation",
-            "kind",
-            "bytes",
-            "payload",
-            "dockerfile",
-            "authorization",
-            "connectionGeneration",
-            "physicalHandle",
-        ] {
-            if object.contains_key(rejected) {
-                return Err(terminal("effect command contains forbidden field"));
+        let allowed: &[&str] = match kind {
+            RuntimeEffectKind::CreateSandbox => &[
+                "backendSessionId",
+                "environment",
+                "imageDigest",
+                "leaseId",
+                "packageSnapshotId",
+                "policy",
+                "requestId",
+                "sandboxId",
+                "storage",
+            ],
+            RuntimeEffectKind::DeleteSandbox | RuntimeEffectKind::CloseBridge => &[
+                "backendSessionId",
+                "leaseId",
+                "packageSnapshotId",
+                "requestId",
+                "sandboxId",
+            ],
+            RuntimeEffectKind::OpenBridge => &["requestId", "sandboxIntegrationBindingRef"],
+            RuntimeEffectKind::AcquireImage => &[
+                "backendSessionId",
+                "imageReference",
+                "leaseId",
+                "packageSnapshotId",
+                "requestId",
+            ],
+            RuntimeEffectKind::BuildImage => &[
+                "arguments",
+                "argumentsDigest",
+                "backendSessionId",
+                "contextDigest",
+                "contextRef",
+                "dockerfileByteLength",
+                "dockerfileDigest",
+                "egress",
+                "layerLimit",
+                "leaseId",
+                "outputLimitBytes",
+                "packageSnapshotId",
+                "requestId",
+                "timeLimitSeconds",
+            ],
+            RuntimeEffectKind::ExportFile => &[
+                "backendSessionId",
+                "finalStatusAccepted",
+                "leaseId",
+                "maxByteLength",
+                "packageSnapshotId",
+                "presence",
+                "relativePath",
+                "requestId",
+                "sandboxId",
+                "slot",
+                "terminalBarrierProved",
+            ],
+            RuntimeEffectKind::InspectImage => &["imageDigest", "requestId"],
+            RuntimeEffectKind::InspectStorage | RuntimeEffectKind::PurgeStorage => {
+                &["attachmentGeneration", "requestId", "storageRef"]
             }
+            RuntimeEffectKind::ImportReference | RuntimeEffectKind::CollectWorkspace => {
+                unreachable!("separate raw import or additive collection parser")
+            }
+        };
+        if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+            return Err(terminal("effect command contains forbidden field"));
         }
-        if kind == RuntimeEffectKind::OpenBridge {
-            if object.len() != 2
+        if kind == RuntimeEffectKind::OpenBridge
+            && (object.len() != 2
                 || !object
                     .get("sandboxIntegrationBindingRef")
                     .and_then(serde_json::Value::as_str)
@@ -1715,14 +1768,9 @@ pub async fn poll_effect_command(
                         !value.is_empty()
                             && value.len() <= 512
                             && !value.contains(['\r', '\n', '\0'])
-                    })
-            {
-                return Err(terminal("static Harness bridge command invalid"));
-            }
-        } else if object.contains_key("sandboxIntegrationBindingRef") {
-            return Err(terminal(
-                "Harness binding field rejected for non-bridge effect",
-            ));
+                    }))
+        {
+            return Err(terminal("static Harness bridge command invalid"));
         }
     }
     let mut input = input;
@@ -2672,6 +2720,301 @@ mod tests {
         NANOHOST_CONTROL_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
         PER_STREAM_RECEIVE_WINDOW_BYTES, WORKER_CONTROL_IN_FLIGHT_BYTES,
     };
+
+    /// Parses Core dispatcher output before intervening with an unowned authority field.
+    #[tokio::test]
+    async fn core_produced_fixed_commands_reject_unknown_top_level_fields() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("core-effect-command-fixture.json")).unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let operation = fixture["kind"].as_str().unwrap();
+            let (index, (_, _, kind)) = EFFECT_PATHS
+                .iter()
+                .enumerate()
+                .find(|(_, (path, _, _))| path.rsplit('/').next() == Some(operation))
+                .unwrap();
+            for extra in [false, true] {
+                let mut command = fixture["command"].clone();
+                let dockerfile = fixture["input"]["dockerfile"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .as_bytes()
+                    .to_vec();
+                if extra {
+                    command
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("futureAuthority".into(), serde_json::json!(true));
+                }
+                let (client_io, server_io) = tokio::io::duplex(65536);
+                let raw_import = *kind == RuntimeEffectKind::ImportReference && !extra;
+                let additive_collect = *kind == RuntimeEffectKind::CollectWorkspace;
+                let body = if raw_import {
+                    command["body"]["hex"]
+                        .as_str()
+                        .unwrap()
+                        .as_bytes()
+                        .chunks_exact(2)
+                        .map(|pair| {
+                            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()
+                        })
+                        .collect()
+                } else {
+                    serde_json::to_vec(&command).unwrap()
+                };
+                let server = tokio::spawn(async move {
+                    let mut connection = h2::server::handshake(server_io).await.unwrap();
+                    let (_, mut respond) = connection.accept().await.unwrap().unwrap();
+                    let mut headers = Response::builder().status(200).header(
+                        "content-type",
+                        if raw_import {
+                            FILE_CONTENT_TYPE
+                        } else {
+                            "application/json"
+                        },
+                    );
+                    if raw_import {
+                        headers = headers
+                            .header("content-length", body.len().to_string())
+                            .header(REQUEST_ID_HEADER, command["requestId"].as_str().unwrap())
+                            .header(SLOT_HEADER, command["slot"].as_str().unwrap())
+                            .header(
+                                RELATIVE_PATH_HEADER,
+                                command["relativePath"].as_str().unwrap(),
+                            )
+                            .header(SHA256_HEADER, command["sha256"].as_str().unwrap())
+                            .header(BYTE_LENGTH_HEADER, body.len().to_string());
+                    }
+                    let mut response = respond
+                        .send_response(headers.body(()).unwrap(), false)
+                        .unwrap();
+                    response.send_data(Bytes::from(body), true).unwrap();
+                    while let Some(request) = connection.accept().await {
+                        let (request, mut respond) = request.unwrap();
+                        assert!(request.uri().path().ends_with("/image.build/input"));
+                        let bytes = &dockerfile;
+                        let headers = Response::builder()
+                            .status(200)
+                            .header("content-type", FILE_CONTENT_TYPE)
+                            .header("content-length", bytes.len().to_string())
+                            .header(REQUEST_ID_HEADER, command["requestId"].as_str().unwrap())
+                            .header(SHA256_HEADER, command["dockerfileDigest"].as_str().unwrap())
+                            .header(BYTE_LENGTH_HEADER, bytes.len().to_string());
+                        respond
+                            .send_response(headers.body(()).unwrap(), false)
+                            .unwrap()
+                            .send_data(Bytes::copy_from_slice(bytes), true)
+                            .unwrap();
+                    }
+                });
+                let (mut sender, driver) = h2::client::handshake(client_io).await.unwrap();
+                let driver = tokio::spawn(driver);
+                let mut cursor = index;
+                let result =
+                    poll_effect_command("http://nanocore.test", &mut sender, &mut cursor, false)
+                        .await;
+                if extra && !additive_collect {
+                    assert!(
+                        result.is_err(),
+                        "{operation} admitted an unknown authority field"
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Ok(Some(_))),
+                        "{operation} refused its Core-produced command"
+                    );
+                    let command = result.unwrap().unwrap();
+                    let input = &command.input;
+                    let text = |key: &str| input[key].as_str().unwrap();
+                    match kind {
+                        RuntimeEffectKind::CreateSandbox => {
+                            let policy = crate::parse_sandbox_policy(&input["policy"])
+                                .expect("Core-produced sandbox policy must parse for execution");
+                            let storage = crate::parse_storage_attachment(input.get("storage"))
+                                .expect("Core-produced storage must parse for execution");
+                            crate::parse_sandbox_environment(input.get("environment"))
+                                .expect("Core-produced environment must parse for execution");
+                            assert!(crate::storage_targets_allowed(&policy, &storage));
+                            crate::openshell_client::LifecycleEffectRequest::new(
+                                &command.request_id,
+                                text("leaseId"),
+                                text("sandboxId"),
+                                crate::openshell_client::LifecycleEffectKind::CreateSandbox,
+                            )
+                            .validate()
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::DeleteSandbox | RuntimeEffectKind::CloseBridge => {
+                            crate::openshell_client::LifecycleEffectRequest::new(
+                                &command.request_id,
+                                text("leaseId"),
+                                text("sandboxId"),
+                                if *kind == RuntimeEffectKind::DeleteSandbox {
+                                    crate::openshell_client::LifecycleEffectKind::DeleteSandbox
+                                } else {
+                                    crate::openshell_client::LifecycleEffectKind::CloseBridge
+                                },
+                            )
+                            .validate()
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::OpenBridge => {
+                            // Sandbox identity comes from the admitted create, never bridge carriage.
+                            let sandbox = fixtures
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|item| item["kind"] == "sandbox.create")
+                                .unwrap()["command"]["sandboxId"]
+                                .as_str()
+                                .unwrap()
+                                .to_string();
+                            crate::openshell_client::WorkerBootstrapRequest {
+                                request_id: command.request_id.clone(),
+                                sandbox_id: sandbox,
+                                sandbox_integration_binding_ref: text(
+                                    "sandboxIntegrationBindingRef",
+                                )
+                                .to_string(),
+                            }
+                            .validate()
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::AcquireImage => {
+                            crate::image_acquisition::ImageEffectRequest::reference(
+                                &command.request_id,
+                                text("imageReference"),
+                            )
+                            .validate()
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::BuildImage => {
+                            crate::image_acquisition::ImageEffectRequest::build(
+                                &command.request_id,
+                                text("contextDigest"),
+                                text("dockerfileDigest"),
+                                text("argumentsDigest"),
+                            )
+                            .validate()
+                            .unwrap();
+                            let definition = crate::image_acquisition::BuildDefinition {
+                                context_ref: text("contextRef").into(),
+                                context_digest: text("contextDigest").into(),
+                                dockerfile: text("dockerfile").into(),
+                                arguments: input["arguments"]
+                                    .as_object()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|(key, value)| {
+                                        (key.clone(), value.as_str().unwrap().into())
+                                    })
+                                    .collect(),
+                                egress_grants: input["egress"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|grant| {
+                                        format!(
+                                            "{}:{}",
+                                            grant["host"].as_str().unwrap(),
+                                            u16::try_from(grant["port"].as_u64().unwrap()).unwrap()
+                                        )
+                                    })
+                                    .collect(),
+                                time_limit: std::time::Duration::from_secs(
+                                    input["timeLimitSeconds"].as_u64().unwrap(),
+                                ),
+                                output_limit_bytes: input["outputLimitBytes"].as_u64().unwrap(),
+                                layer_limit: u32::try_from(input["layerLimit"].as_u64().unwrap())
+                                    .unwrap(),
+                            };
+                            crate::image_acquisition::BuildPlan::validate(
+                                definition,
+                                &std::collections::BTreeSet::from(["docker.io".into()]),
+                                std::path::Path::new("/run/openkit/pin/docker.sock"),
+                                std::path::Path::new("/var/lib/openkit/pin/build"),
+                            )
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::InspectImage => {
+                            crate::persistent_volume::validate_digest(text("imageDigest")).unwrap();
+                        }
+                        RuntimeEffectKind::InspectStorage | RuntimeEffectKind::PurgeStorage => {
+                            crate::persistent_volume::validate_opaque_ref(text("storageRef"))
+                                .unwrap();
+                            assert!(
+                                input["attachmentGeneration"]
+                                    .as_u64()
+                                    .is_some_and(
+                                        |value| value > 0 && value <= 9_007_199_254_740_991
+                                    )
+                            );
+                        }
+                        RuntimeEffectKind::ExportFile | RuntimeEffectKind::ImportReference => {
+                            let (sandbox_id, slot, path, sha256, byte_length, presence) =
+                                if let Some(raw) = &command.file_data {
+                                    (
+                                        fixture["command"]["sandboxId"]
+                                            .as_str()
+                                            .unwrap()
+                                            .to_string(),
+                                        raw.slot.clone(),
+                                        raw.relative_path.clone(),
+                                        raw.sha256.clone(),
+                                        raw.byte_length,
+                                        crate::sandbox_bridge::FileEffectPresence::Required,
+                                    )
+                                } else {
+                                    assert_eq!(input["finalStatusAccepted"], true);
+                                    assert_eq!(input["terminalBarrierProved"], true);
+                                    (
+                                        text("sandboxId").into(),
+                                        text("slot").into(),
+                                        text("relativePath").into(),
+                                        String::new(),
+                                        input["maxByteLength"].as_u64().unwrap(),
+                                        match text("presence") {
+                                            "required" => {
+                                                crate::sandbox_bridge::FileEffectPresence::Required
+                                            }
+                                            "optional" => {
+                                                crate::sandbox_bridge::FileEffectPresence::Optional
+                                            }
+                                            _ => panic!("invalid file presence"),
+                                        },
+                                    )
+                                };
+                            crate::sandbox_bridge::FileEffectRequest {
+                                request_id: command.request_id.clone(),
+                                sandbox_id,
+                                slot,
+                                relative_path: path,
+                                sha256,
+                                byte_length,
+                                presence,
+                                kind: if raw_import {
+                                    crate::sandbox_bridge::FileEffectKind::ImportReference
+                                } else {
+                                    crate::sandbox_bridge::FileEffectKind::ExportFile
+                                },
+                            }
+                            .validate()
+                            .unwrap();
+                        }
+                        RuntimeEffectKind::CollectWorkspace => {
+                            crate::workspace_collect::validate_collect_command(
+                                &serde_json::to_vec(input).unwrap(),
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+                drop(sender);
+                driver.abort();
+                server.abort();
+            }
+        }
+    }
 
     #[tokio::test]
     async fn image_settlement_deferral_redelivers_without_new_effect_or_connection() {

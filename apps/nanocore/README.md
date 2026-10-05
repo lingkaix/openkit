@@ -71,6 +71,8 @@ Before creating a receiving Thread or Turn, selected-Worker submission validates
 
 The App HTTP and HTTPS listeners share `src/http-server-options.ts`: a 300-second advertised keep-alive timeout plus a 60-second server socket buffer yields a 360-second idle close under pinned Node 24.18.0. The five-minute window covers Chromium's used idle sockets when Web connects directly through `VITE_CORE_BASE_URL`; the physical close leaves 356 seconds beyond Caddy's 4-second upstream reuse and at least 60 seconds beyond clients following the advertised hint, so stalls lasting tens of seconds do not consume the margin. Node fetch and the repository's Undici 7.28.0 clients follow that hint with a 2-second subtraction (298-second idle reuse); merely extending the advertised timeout would leave those clients close to server expiry. Header receipt stays at 60 seconds and complete request receipt at 300 seconds, with no general socket/response deadline. The dedicated cleartext and TLS NanoHost HTTP/2 listeners have no idle-close timer (`timeout = 0`); the NanoHost h2 session and relayed Sandbox Integration session can remain open without inheriting HTTP/1 idle expiry. Run `pnpm --filter @openkit/nanocore exec vitest run src/http-server-options.test.ts` for listener defaults and the reused-socket regression with a three-second check-phase event-loop block; stalls exceeding the configured margin remain outside this containment.
 
+Authored Agent `resources` remains loadable configuration, but no resource key is currently supported for execution. NanoCore refuses non-empty values during AEP resolution before Sandbox effects; empty and absent values resolve normally. See [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md).
+
 Authored manifests and profiles are validated by AuthoredAgentConfigSchema in `@openkit/config-schema`; `src/agents/setup-resolver.ts` owns profile selection and composition. The dispatch retry service calls `src/runtime/scheduler-dispatch-loop.ts` directly; its timer, snapshot refresh, and error handling remain in `src/runtime/scheduler-dispatch-service.ts`.
 
 - `nanocore` admits governed worker sessions only through the configured NanoHost RuntimeTarget and its current native HTTP/2 connection generation.
@@ -351,6 +353,8 @@ curl -i http://127.0.0.1:3000/api/auth/sign-in/email \
 Use the returned session cookie for protected JSON operations such as `POST /api/app/operations/workspace.list` with input `{}`. Sign out with `POST /api/auth/sign-out`.
 
 ## NanoHost Worker Mode
+
+Per-Turn file export carries accepted final-status proof and does not claim process-group absence or stop a reusable resident Harness. Physical termination proof remains with Harness and Sandbox close operations.
 
 NanoCore runs real Worker Agent Turns only through one configured NanoHost RuntimeTarget. NanoHost owns the stock OpenShell Gateway `0.0.99`, its private container backend, the shared Harness and Sandbox, and the private Harness operations; NanoCore owns product admission, Turn leases, AgentSession continuity, and durable runtime projections.
 

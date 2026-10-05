@@ -7,7 +7,6 @@ import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
-
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -28,6 +27,112 @@ import {
 } from './nanohost-session-dispatch.js';
 
 describe('authoritative NanoHost session dispatch', () => {
+  it('pins Core-produced fixed commands to Host parsing and rejects unknown input before polling', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-command-pin-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const target = {
+      deploymentId: 'command-pin',
+      identityId: 'command-pin',
+      targetId: 'command-pin',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-10-05T00:00:00.000Z',
+    });
+    let admit!: (value: object) => void;
+    const physicalReady = new Promise<object>((resolve) => {
+      admit = resolve;
+    });
+    const server = createHttp2Server((request, response) => {
+      admit(readNanoHostPhysicalConnectionContext(request)!);
+      response.writeHead(204).end();
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    // This fixture is captured from the runtime and preparation producers in the factory test.
+    const fixtures = JSON.parse(
+      readFileSync(
+        new URL('../../../nanohost/src/core-effect-command-fixture.json', import.meta.url),
+        'utf8'
+      ),
+      (_key, value) => (value?.type === 'Buffer' ? Buffer.from(value.hex, 'hex') : value)
+    ) as Array<{
+      producer: string;
+      kind: (typeof NANO_HOST_EFFECT_OPERATIONS)[number];
+      input: Record<string, unknown>;
+      requestId: string;
+      command: Record<string, unknown>;
+    }>;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing pin address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client
+        .request({ ':method': 'POST', ':path': '/' })
+        .on('data', () => {})
+        .end();
+      const physical = await physicalReady;
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection: physical,
+      });
+      expect(new Set(fixtures.map(({ kind }) => kind))).toEqual(
+        new Set(NANO_HOST_EFFECT_OPERATIONS)
+      );
+      for (const fixture of fixtures) {
+        const { kind } = fixture;
+        const request = {
+          kind,
+          requestId: fixture.requestId,
+          input:
+            kind === 'workspace.collect'
+              ? { ...fixture.input, futureAuthority: true }
+              : fixture.input,
+        };
+        const current = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+        await current.readiness!(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+          { ...target, coreDb }
+        );
+        if (kind !== 'workspace.collect') {
+          const rejection = current
+            .effect({ ...request, input: { ...request.input, futureAuthority: true } })
+            .catch((error: unknown) => error);
+          expect(await current.poll(physical, kind)).toBeNull();
+          await expect(rejection).resolves.toMatchObject({
+            message: expect.stringMatching(/unowned field|storage command is invalid/i),
+          });
+        }
+        void current.effect(request).catch(() => undefined);
+        expect(await current.poll(physical, kind), `${fixture.producer} ${kind}`).toEqual(
+          fixture.command
+        );
+        if (kind === 'workspace.collect')
+          await current.result(
+            physical,
+            kind,
+            request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false }
+          );
+      }
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps current-epoch result-only cleanup pending after a live connection completed a poll', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-cleanup-poll-')));
     applyMigrations(coreDb);

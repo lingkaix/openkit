@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -71,7 +71,10 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
-import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
+import {
+  createNanoHostSessionDispatch,
+  NANO_HOST_EFFECT_OPERATIONS,
+} from './nanohost-session-dispatch.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import {
@@ -82,6 +85,7 @@ import type { PrepareAgentSessionForTurnInput } from './types.js';
 import { transitionWorkerBackendSessionState } from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
+import { createWorkerEnvironmentRuntimeEffects } from './worker-environment-runtime-effects.js';
 import {
   openShellFilesystemGrantsFromPackagePolicy,
   type WorkerGovernanceBackend,
@@ -612,6 +616,7 @@ function createFactoryNanoHostDispatch(
     onInspect?: () => void;
     onRetirement?: () => void;
     onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
+    onExport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
   } = {}
 ): NanoHostSessionDispatch {
   return {
@@ -624,6 +629,7 @@ function createFactoryNanoHostDispatch(
             ? request.input.imageReference
             : `sha256:${'a'.repeat(64)}`,
         };
+      if (request.kind === 'image.build') return { digest: `sha256:${'a'.repeat(64)}` };
       if (request.kind === 'image.inspect') {
         hooks.onInspect?.();
         return nanoHostImageInspection(request);
@@ -645,6 +651,7 @@ function createFactoryNanoHostDispatch(
                 },
               }
             : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+      if (request.kind === 'file.export' && hooks.onExport) return await hooks.onExport(request);
       if (request.kind === 'reference.import') return { state: 'imported' };
       if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
         hooks.onRetirement?.();
@@ -1381,12 +1388,7 @@ describe('createConfiguredTurnExecutor', () => {
     expect(identitySource).toContain('stableNanoHostEffectJson');
     expect(identitySource).toContain('operation');
     expect(identitySource).toContain("operation === 'bridge.open'");
-    for (const bootstrapField of [
-      'harnessBindingRef',
-      'integrationReady',
-      'session.open',
-      'processGroupAbsent',
-    ]) {
+    for (const bootstrapField of ['harnessBindingRef', 'integrationReady', 'session.open']) {
       expect(backendSource).toContain(bootstrapField);
     }
     expect(materializeSource).not.toContain('workerControlToken');
@@ -2051,6 +2053,7 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb: ReturnType<typeof createFactoryCoreDb>
       ) => void;
       onCollection?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
+      onExport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       beforeFirstTurn?: (input: {
         coreDb: ReturnType<typeof createFactoryCoreDb>;
         environmentPackage: AgentEnvironmentPackage;
@@ -2061,10 +2064,10 @@ describe('createConfiguredTurnExecutor', () => {
   ) {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = options.effects ?? [];
-    const sessionDispatch = createFactoryNanoHostDispatch(
-      effects,
-      options.onCollection ? { onCollection: options.onCollection } : {}
-    );
+    const sessionDispatch = createFactoryNanoHostDispatch(effects, {
+      onCollection: options.onCollection,
+      onExport: options.onExport,
+    });
     const nativeValues = options.nativeValues;
     const effect = sessionDispatch.effect.bind(sessionDispatch);
     if (options.inspection)
@@ -2301,6 +2304,334 @@ describe('createConfiguredTurnExecutor', () => {
       effects,
     };
   }
+
+  it('pins actual runtime and preparation producers to the Host effect fixture', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-producer-pin-'));
+    const captured: Array<{ producer: string; request: NanoHostSessionEffectRequest }> = [];
+    const residents: Awaited<ReturnType<typeof admitIdleSupplyResident>>[] = [];
+    const dockerfile = `FROM docker.io/library/alpine@sha256:${'d'.repeat(64)}\n`;
+    const buildImage: AgentEnvironmentPackage['runtime']['image'] = {
+      kind: 'build',
+      arguments: {},
+      argumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+      contextRef: 'build-context://empty/v1',
+      contextDigest: `sha256:${createHash('sha256').update('').digest('hex')}`,
+      input: {
+        kind: 'dockerfile',
+        content: dockerfile,
+        digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+      },
+      egress: [{ host: 'example.com', port: 443 }],
+      layerLimit: 128,
+      outputLimitBytes: 1024 * 1024,
+      timeLimitSeconds: 60,
+    };
+    let serial = 0;
+    const onExport = async () => {
+      const directory = join(root, String(serial++));
+      mkdirSync(directory);
+      const stagingPath = join(directory, 'complete');
+      const bytes = Buffer.from('\n');
+      writeFileSync(stagingPath, bytes);
+      return {
+        stagingPath,
+        byteLength: bytes.length,
+        sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      };
+    };
+    let pinCoreDb: ReturnType<typeof openCoreDb> | undefined;
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    let server: ReturnType<typeof createHttp2Server> | undefined;
+    try {
+      const registryImage = {
+        kind: 'reference' as const,
+        pullPolicy: 'if-not-present' as const,
+        ref: `docker.io/library/alpine@sha256:${'a'.repeat(64)}`,
+      };
+      const resident = await admitIdleSupplyResident('producer_pin', {
+        onExport,
+        configurePackage: (pkg) => {
+          pkg.runtime.image = registryImage;
+        },
+      });
+      residents.push(resident);
+      resident.backend.sessions.set(resident.environmentPackage.snapshotId, resident.session);
+      await resident.backend.collectTranscript(resident.environmentPackage.snapshotId, true);
+      await resident.backend.collectWorkspaceChanges(resident.environmentPackage.snapshotId, true);
+      const created = resident.effects.find((request) => request.kind === 'sandbox.create')!;
+      // Invoke the existing wider-cleanup producer with the resident's actual identities.
+      await (
+        resident.backend as unknown as {
+          deleteSandbox(
+            identity: WorkerGovernanceBackendSessionIdentity,
+            input: { leaseId: string; sandboxId: string },
+            bridgeOpen: boolean
+          ): Promise<void>;
+        }
+      ).deleteSandbox(
+        resident.backend.planSession(resident.environmentPackage),
+        {
+          leaseId: String(created.input.leaseId),
+          sandboxId: String(created.input.sandboxId),
+        },
+        true
+      );
+      captured.push(
+        ...resident.effects.map((request) => ({ producer: 'runtime-reference', request }))
+      );
+      for (const variant of ['build', 'confirmed'] as const) {
+        const next = await admitIdleSupplyResident(
+          `producer_pin_${variant}`,
+          variant === 'confirmed'
+            ? { nativeValues: {} }
+            : {
+                configurePackage: (pkg) => {
+                  pkg.runtime.image = buildImage;
+                },
+              }
+        );
+        residents.push(next);
+        captured.push(
+          ...next.effects
+            .filter((request) => request.kind.startsWith('image.'))
+            .map((request) => ({ producer: `runtime-${variant}`, request }))
+        );
+      }
+      const preparationRequests: NanoHostSessionEffectRequest[] = [];
+      const storage = getWorkerStorageBinding(resident.coreDb, {
+        storageRef: String((created.input.storage as Record<string, unknown>).storageRef),
+      })!;
+      const preparation = createWorkerEnvironmentRuntimeEffects({
+        ...createFactoryNanoHostDispatch([]),
+        effect: (async (request: NanoHostSessionEffectRequest) => {
+          preparationRequests.push(request);
+          if (request.kind === 'image.acquire' || request.kind === 'image.build')
+            return { digest: `sha256:${'a'.repeat(64)}` };
+          if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+          if (request.kind === 'storage.inspect')
+            return {
+              attachment: null,
+              capacity: { availableBytes: 2048, totalBytes: 4096 },
+              layoutDigest: storage.layoutDigest,
+              scopeDigest: storage.scopeDigest,
+              state: 'available',
+              storageRef: storage.storageRef,
+              targets: storage.targets.map(({ target, volumeRef, initialized }) => ({
+                target,
+                volumeRef,
+                initialized,
+              })),
+            };
+          if (request.kind === 'storage.purge')
+            return { state: 'purged', storageRef: storage.storageRef };
+          throw new Error(`Unexpected preparation effect ${request.kind}`);
+        }) as NanoHostSessionDispatch['effect'],
+      });
+      const candidate = {
+        artifactId: 'artifact_pin',
+        artifactVersion: 1,
+        contentDigest: `sha256:${'c'.repeat(64)}`,
+      };
+      await preparation.prepareImage({
+        authorize: () => true,
+        candidate,
+        image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'a'.repeat(64)}` },
+      });
+      await preparation.prepareImage({ authorize: () => true, candidate, image: buildImage });
+      await preparation.prepareImage({ authorize: () => true, candidate, image: registryImage });
+      await preparation.inspectImage({
+        authorize: () => true,
+        imageDigest: `sha256:${'a'.repeat(64)}`,
+        requestId: 'inspect-pin',
+      });
+      await preparation.inspectStorage({
+        authorize: () => true,
+        binding: storage,
+        commandRequestId: 'storage-inspect-pin',
+      });
+      await preparation.purgeStorage({
+        authorize: () => true,
+        binding: { ...storage, state: 'purge-pending' },
+        commandRequestId: 'storage-purge-pin',
+      });
+      captured.push(
+        ...preparationRequests.map((request) => ({ producer: 'preparation', request }))
+      );
+      expect(new Set(captured.map(({ request }) => request.kind))).toEqual(
+        new Set(NANO_HOST_EFFECT_OPERATIONS)
+      );
+      const coreDb = openCoreDb(join(root, 'dispatch'));
+      pinCoreDb = coreDb;
+      applyMigrations(coreDb);
+      const authority = createNanoHostTransportSessionAuthority();
+      let admit!: (physical: object) => void;
+      const ready = new Promise<object>((resolve) => {
+        admit = resolve;
+      });
+      server = createHttp2Server((request, response) => {
+        admit(readNanoHostPhysicalConnectionContext(request)!);
+        response.writeHead(204).end();
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing producer pin address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client
+        .request({ ':method': 'POST', ':path': '/' })
+        .on('data', () => {})
+        .end();
+      const physical = await ready;
+      const target = {
+        targetId: 'producer-pin',
+        identityId: 'producer-pin',
+        deploymentId: 'producer-pin',
+      };
+      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: '2026-10-05T00:00:00.000Z',
+      });
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection: physical,
+      });
+      const fixture = [];
+      for (const { producer, request } of captured) {
+        const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+        await dispatch.readiness!(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+          { ...target, coreDb }
+        );
+        void dispatch.effect(request).catch(() => undefined);
+        const command = await dispatch.poll(physical, request.kind);
+        expect(command, `${producer} ${request.kind}`).not.toBeNull();
+        fixture.push({
+          producer,
+          kind: request.kind,
+          requestId: request.requestId,
+          input: request.input,
+          command,
+        });
+        if (request.kind === 'workspace.collect')
+          await dispatch.result(
+            physical,
+            request.kind,
+            request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false }
+          );
+      }
+      // Normalize only generated identity values, never field names or authored payloads.
+      const volumeIds = new Map<string, string>();
+      const normalized = JSON.parse(
+        JSON.stringify(fixture, (key, value) => {
+          if (value?.type === 'Buffer')
+            return { type: 'Buffer', hex: Buffer.from(value.data).toString('hex') };
+          if (key === 'requestId') {
+            expect(value).toMatch(/^[0-9a-f]{64}$/);
+            return 'a'.repeat(64);
+          }
+          if (key === 'backendSessionId') {
+            expect(value).toMatch(/^nh-[0-9a-f]{16}-[0-9a-f]{16}$/);
+            return `nh-${'1'.repeat(16)}-${'2'.repeat(16)}`;
+          }
+          if (key === 'sandboxId') {
+            expect(value).toMatch(/^nh-[0-9a-f]{16}$/);
+            return `nh-${'1'.repeat(16)}`;
+          }
+          if (key === 'storageRef') {
+            expect(value).toMatch(/^wst_[0-9a-f]{32}$/);
+            return `wst_${'1'.repeat(32)}`;
+          }
+          if (key === 'sandboxIntegrationBindingRef') {
+            expect(value).toMatch(/^integration-binding-/);
+            return 'integration-pin';
+          }
+          if (key === 'attemptNonce') {
+            expect(value).toMatch(/^[0-9a-f]{32}$/);
+            return '0'.repeat(32);
+          }
+          if (key === 'loopbackDigests') {
+            expect(value).toEqual([
+              expect.stringMatching(/^[0-9a-f]{64}$/),
+              expect.stringMatching(/^[0-9a-f]{64}$/),
+            ]);
+            return ['b'.repeat(64), 'c'.repeat(64)];
+          }
+          if (key === 'volumeRef') {
+            expect(value).toMatch(/^wsv_[0-9a-f]{32}$/);
+            if (!volumeIds.has(value))
+              volumeIds.set(value, `wsv_${(volumeIds.size + 1).toString(16).padStart(32, '0')}`);
+            return volumeIds.get(value);
+          }
+          return value;
+        })
+      );
+      const fixturePath = new URL(
+        '../../../nanohost/src/core-effect-command-fixture.json',
+        import.meta.url
+      );
+      if (process.env.OPENKIT_UPDATE_EFFECT_FIXTURE === '1')
+        writeFileSync(fixturePath, `${JSON.stringify(normalized, null, 2)}\n`);
+      expect(normalized).toEqual(JSON.parse(readFileSync(fixturePath, 'utf8')));
+    } finally {
+      client?.destroy();
+      if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+      pinCoreDb?.sqlite.close();
+      for (const resident of residents) resident.coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exports accepted final status while retaining a running Harness without process absence claims', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-resident-export-'));
+    const bytes = Buffer.from('\n');
+    let serial = 0;
+    const f = await admitIdleSupplyResident('export_barrier', {
+      onExport: async () => {
+        const directory = join(root, String(serial++));
+        mkdirSync(directory);
+        const stagingPath = join(directory, 'complete');
+        writeFileSync(stagingPath, bytes);
+        return {
+          stagingPath,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          byteLength: bytes.length,
+        };
+      },
+    });
+    f.backend.sessions.set(f.environmentPackage.snapshotId, f.session);
+    try {
+      await expect(
+        f.backend.collectTranscript!(f.environmentPackage.snapshotId, true)
+      ).resolves.toMatchObject({ eventsJsonl: '\n', itemsJsonl: '\n', artifactsJsonl: '\n' });
+      const exports = f.effects.filter((request) => request.kind === 'file.export');
+      expect(exports).toHaveLength(3);
+      for (const request of exports) {
+        expect(request.input).toMatchObject({
+          finalStatusAccepted: true,
+          terminalBarrierProved: true,
+        });
+        expect(request.input).not.toHaveProperty('processGroupAbsent');
+      }
+      expect(f.effects.map((request) => request.kind)).not.toContain('bridge.close');
+      expect(f.effects.map((request) => request.kind)).not.toContain('sandbox.delete');
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT lifecycle_state AS lifecycle FROM agent_session_runtime_bindings')
+          .all()
+      ).toEqual([{ lifecycle: 'open' }]);
+    } finally {
+      f.coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('waits for source-less baseline completion and its durable pair before dispatching the first Turn', async () => {
     let finish!: (result: Record<string, unknown>) => void;

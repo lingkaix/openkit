@@ -448,6 +448,8 @@ A worker-local export, shell-local change or native-written environment file is 
 
 ## Current Implementation Projection
 
+No authored `resources` key is currently supported. NanoCore refuses a non-empty `resources` value through its typed Agent preparation failure before any Sandbox effect; an empty or absent value remains usable. The schema retains authored values for data continuity rather than dropping them. Resource enforcement remains deferred.
+
 The migrated resource and Agent catalog families use the canonical definition-derived `client.operations` map, JSON bindings and MCP/CLI projections under [Operation Definition](20261002-operation_definition.md). Native catalog, selection, supply and authorization owners retain their existing outcomes; former routes and client namespaces are absent.
 
 The current implementation follows the composed logical-model contract:

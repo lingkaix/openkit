@@ -835,7 +835,7 @@ export interface WorkerGovernanceBackend {
    * Collects worker-written OpenKit transcript files for canonical turn-end import.
    *
    * @param packageSnapshotId Package snapshot id whose transcript should be collected.
-   * @param terminalBarrierProved Exact accepted worker terminal/process-group proof.
+   * @param terminalBarrierProved Exact accepted worker final-status proof.
    * @returns Worker transcript payload.
    */
   collectTranscript(
@@ -847,7 +847,7 @@ export interface WorkerGovernanceBackend {
    * Collects worker-produced workspace change sets for review.
    *
    * @param packageSnapshotId Package snapshot id whose workspace changes should be collected.
-   * @param terminalBarrierProved Exact accepted worker terminal/process-group proof.
+   * @param terminalBarrierProved Exact accepted worker final-status proof.
    * @returns Workspace change records ready to surface as NanoCore evidence.
    */
   collectWorkspaceChanges(

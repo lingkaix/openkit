@@ -345,6 +345,12 @@ function resolveOpenShellAgentEnvironmentPackage(
   const responsibleUserId =
     triggerActor.kind === 'user' ? triggerActor.id : triggerActor.responsibleUserId;
   const manifest = input.agentSetup.manifest;
+  // No execution backend currently enforces authored resource limits; preserve intent by refusing it.
+  if (manifest.resources && Object.keys(manifest.resources).length > 0) {
+    throw new DeterministicAgentPreparationError(
+      'Agent resources is not supported; leave resources empty or absent.'
+    );
+  }
   const agent = projectAgentEnvironmentIdentity(input.agentSetup);
   const logicalModels = input.agentSetup.logicalModels;
   const sandboxAccess = manifest.sandbox ?? {

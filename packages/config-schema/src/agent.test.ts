@@ -44,6 +44,17 @@ function validAgentConfig() {
 }
 
 describe('AuthoredAgentConfigSchema', () => {
+  it('preserves authored resource intent for retained configuration even when runtime support is absent', () => {
+    const resources = { cpu: { maxCores: 1 }, futureLimit: { value: 0 } };
+    expect(AuthoredAgentConfigSchema.parse({ ...validAgentConfig(), resources }).resources).toEqual(
+      resources
+    );
+    expect(
+      AuthoredAgentConfigSchema.parse({ ...validAgentConfig(), resources: {} }).resources
+    ).toEqual({});
+    expect(AuthoredAgentConfigSchema.parse(validAgentConfig()).resources).toBeUndefined();
+  });
+
   it('accepts reusable credential requirements and rejects ambiguous direct grants', () => {
     const requirement = AuthoredAgentConfigSchema.parse({
       ...validAgentConfig(),

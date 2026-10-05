@@ -646,6 +646,26 @@ fn execute_effect_command(
         RuntimeEffectKind::CreateSandbox
         | RuntimeEffectKind::DeleteSandbox
         | RuntimeEffectKind::CloseBridge => {
+            if command.kind == RuntimeEffectKind::CreateSandbox
+                && command.input.as_object().is_none_or(|object| {
+                    object.keys().any(|key| {
+                        ![
+                            "backendSessionId",
+                            "environment",
+                            "imageDigest",
+                            "leaseId",
+                            "packageSnapshotId",
+                            "policy",
+                            "requestId",
+                            "sandboxId",
+                            "storage",
+                        ]
+                        .contains(&key.as_str())
+                    })
+                })
+            {
+                return Err("sandbox.create contains unowned field");
+            }
             let sandbox_id = string("sandboxId")?;
             let kind = match command.kind {
                 RuntimeEffectKind::CreateSandbox => LifecycleEffectKind::CreateSandbox,
@@ -878,17 +898,8 @@ fn execute_effect_command(
                 .get("finalStatusAccepted")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true);
-            let process_group_absent = command
-                .input
-                .get("processGroupAbsent")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true);
-            let retained_export_result = coordinator.export_file(
-                &request,
-                terminal_barrier_proved,
-                final_status,
-                process_group_absent,
-            )?;
+            let retained_export_result =
+                coordinator.export_file(&request, terminal_barrier_proved, final_status)?;
             Ok(match retained_export_result {
                 Some(result) => ExecutedEffectResult::FileExport(result),
                 None => ExecutedEffectResult::Json(serde_json::json!({"state": "absent"})),
@@ -2042,7 +2053,7 @@ mod tests {
             .expect("end of fixed effect execution owner")
             .0;
         assert!(effect_owner.contains("final_status"));
-        assert!(effect_owner.contains("process_group_absent"));
+        assert!(!effect_owner.contains("process_group_absent"));
         let epoch_source = include_str!("epoch_coordinator.rs");
         let export_owner = epoch_source
             .split_once("pub fn export_file(")

@@ -8,6 +8,8 @@ Provider model declarations require an effective positive maximum context length
 
 Every Gateway logical model may declare `routing: { autoFailover: boolean }`; omitting it keeps automatic failover enabled. The boolean is required when the object is present. Readers strip unknown additive routing keys, and NanoCore reports located warnings; invalid core values remain errors. Every Gateway logical model declares one OpenKit-owned `contextManagement` compaction policy. NanoCore validates its threshold and output reserve against every authored route, including routes whose Provider is currently disabled; runtime consumers fail closed when compaction is required but no durable OpenKit compaction adapter is available.
 
+Authored Agent `resources` remains loadable configuration, but no resource key is currently supported for execution. NanoCore refuses non-empty values during AEP resolution before Sandbox effects; empty and absent values resolve normally. See [Agent Manifest And AEP Resolution](../../docs/specs/20260703-agent_manifest_aep_resolution.md).
+
 NanoCore consumes this package so runtime loading, draft validation, reload planning, and UI schema hints follow one contract instead of copying rules into routes or UI components.
 
 The required-feature registry includes `openkit.thread-entry.v1` for file-backed Thread records carrying the immutable server-authored conversation or administration entry path. Readers must name support before accepting those records.

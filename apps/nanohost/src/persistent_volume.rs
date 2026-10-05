@@ -1114,7 +1114,12 @@ fn validate_target(target: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_opaque_ref(value: &str) -> Result<(), &'static str> {
+/// Validates the non-path storage identity used by attachment, inspection, and purge.
+///
+/// # Errors
+///
+/// Rejects empty, oversized, whitespace-padded, or control-bearing references.
+pub(crate) fn validate_opaque_ref(value: &str) -> Result<(), &'static str> {
     if value.is_empty()
         || value.len() > 512
         || value.chars().any(char::is_control)
@@ -1125,7 +1130,12 @@ fn validate_opaque_ref(value: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_digest(value: &str) -> Result<(), &'static str> {
+/// Validates the canonical SHA-256 image and storage lineage accepted by this owner.
+///
+/// # Errors
+///
+/// Rejects malformed or non-canonical digests before storage access.
+pub(crate) fn validate_digest(value: &str) -> Result<(), &'static str> {
     let valid = value.strip_prefix("sha256:").is_some_and(|digest| {
         digest.len() == 64
             && digest

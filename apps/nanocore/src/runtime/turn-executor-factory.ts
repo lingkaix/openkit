@@ -2880,10 +2880,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<WorkerTranscriptPayload> {
     const session = this.requireSession(packageSnapshotId);
     await this.inspectTerminalHarnessSession(session);
-    // The executor supplies this only after accepted `final_status`; NanoHost
-    // still requires its retained monitor to prove `processGroupAbsent` locally.
+    // Accepted final_status permits export while the resident Harness remains running.
     const finalStatusAccepted = terminalBarrierProved;
-    const processGroupAbsent = terminalBarrierProved;
     const transcript = session.environmentPackage.control.transcript;
     if (!transcript) {
       return {};
@@ -2897,7 +2895,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const result = await this.effect(session.identity, session.leaseId, 'file.export', {
         finalStatusAccepted,
         maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
-        processGroupAbsent,
         presence: 'required',
         relativePath,
         sandboxId: session.sharedHarness.sandbox.sandboxId,
@@ -2937,7 +2934,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const result = await this.effect(session.identity, session.leaseId, 'file.export', {
           finalStatusAccepted,
           maxByteLength: NANO_HOST_FILE_EXPORT_MAX_BYTES,
-          processGroupAbsent,
           presence: 'required',
           relativePath,
           sandboxId: session.sharedHarness.sandbox.sandboxId,

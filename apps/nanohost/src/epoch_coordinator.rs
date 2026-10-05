@@ -2148,7 +2148,7 @@ impl EpochCoordinator {
         }
     }
 
-    /// Exports one regular file after the owning terminal/process-group barrier.
+    /// Exports one regular file after accepted final status while the Harness may remain live.
     ///
     /// # Errors
     ///
@@ -2159,17 +2159,12 @@ impl EpochCoordinator {
         request: &FileEffectRequest,
         terminal_barrier_proved: bool,
         final_status: bool,
-        process_group_absent: bool,
     ) -> Result<Option<RetainedExportResult>, &'static str> {
         let sandbox = self
             .current_sandbox
             .clone()
             .ok_or("file.export current sandbox unavailable")?;
-        if request.kind != FileEffectKind::ExportFile
-            || !terminal_barrier_proved
-            || !final_status
-            || !process_group_absent
-        {
+        if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved || !final_status {
             let _ = self.delete_sandbox(&sandbox.name, Duration::from_secs(120));
             return Err("file.export terminal barrier missing");
         }
@@ -4856,7 +4851,7 @@ mod tests {
 
         let compact_export = compact(export);
         assert!(compact_export.contains(
-            "if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved || !final_status || !process_group_absent {"
+            "if request.kind != FileEffectKind::ExportFile || !terminal_barrier_proved || !final_status {"
         ));
         assert!(compact_export.contains(
             "Ok(result) if result.exit_status == 2 && result.stdout.is_empty() && request.presence == FileEffectPresence::Optional =>"
@@ -5156,7 +5151,7 @@ mod tests {
             export.matches("delete_sandbox(&sandbox.name").count(),
             "every export failure must clean up by public sandbox name"
         );
-        for bootstrap_rule in ["harness_ready", "final_status", "process_group_absent"] {
+        for bootstrap_rule in ["harness_ready", "final_status"] {
             assert!(
                 source.contains(bootstrap_rule),
                 "missing worker bootstrap lifecycle rule {bootstrap_rule}"

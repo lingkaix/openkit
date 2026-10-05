@@ -62,6 +62,7 @@ import { TurnStartValidationError } from './orchestrator.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
+import { DeterministicAgentPreparationError } from './types.js';
 
 // Other-contract fixtures explicitly confirm synthetic image defaults before resolution.
 const environmentFixtureDb = createTestNativeEnvironmentDb();
@@ -239,6 +240,60 @@ function leaseCredentialFixture(
 }
 
 describe('agent environment package resolver', () => {
+  it.each([
+    { cpu: { maxCores: 1 } },
+    { unsupportedLimit: 0 },
+    { cpu: null },
+  ])('refuses non-empty authored resources before runtime effects: %j', (resources) => {
+    const setup = createTestSetup();
+    const input = {
+      agentSetup: { ...setup, manifest: { ...setup.manifest, resources } },
+      agentSessionId: 'session_resource_refusal',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Respect authored resource intent'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    for (const resolve of [
+      resolveAgentEnvironmentPackageMetadata,
+      resolveAgentSessionCompatibilityKey,
+    ]) {
+      expect(() => resolve(input)).toThrow(DeterministicAgentPreparationError);
+      expect(() => resolve(input)).toThrow(
+        'Agent resources is not supported; leave resources empty or absent.'
+      );
+    }
+    expect(() =>
+      resolveAgentEnvironmentPackage({
+        ...input,
+        captureCoverage: { scope: 'server', value: 'off' },
+      })
+    ).toThrow(DeterministicAgentPreparationError);
+  });
+
+  it.each([undefined, {}])('keeps absent and empty authored resources usable: %j', (resources) => {
+    const setup = createTestSetup();
+    const input = {
+      agentSetup: {
+        ...setup,
+        manifest: { ...setup.manifest, ...(resources ? { resources } : {}) },
+      },
+      agentSessionId: 'session_resource_empty',
+      backend: { kind: 'openshell' as const },
+      turn: createTurnFixture('Use supported default resources'),
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+    };
+    expect(resolveAgentEnvironmentPackageMetadata(input).resources).toEqual({});
+    expect(
+      resolveAgentEnvironmentPackage({
+        ...input,
+        captureCoverage: { scope: 'server', value: 'off' },
+      }).resources
+    ).toEqual({});
+    expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
   it('resolves the shipped DeepSeek template with its authored dsh binary', () => {
     const loaded = loadAgentManifests(
       fileURLToPath(new URL('../../data-templates/', import.meta.url))

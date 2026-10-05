@@ -481,6 +481,31 @@ export function createNanoHostSessionDispatch(
         } else if (operation === 'storage.inspect' || operation === 'storage.purge') {
           command = requireStorageCommand(request.input, requestId);
         } else {
+          const allowed =
+            operation === 'sandbox.create'
+              ? [
+                  'backendSessionId',
+                  'environment',
+                  'imageDigest',
+                  'leaseId',
+                  'packageSnapshotId',
+                  'policy',
+                  'requestId',
+                  'sandboxId',
+                  'storage',
+                ]
+              : operation === 'image.acquire'
+                ? [
+                    'backendSessionId',
+                    'imageReference',
+                    'leaseId',
+                    'packageSnapshotId',
+                    'requestId',
+                  ]
+                : ['backendSessionId', 'leaseId', 'packageSnapshotId', 'requestId', 'sandboxId'];
+          if (Object.keys(request.input).some((key) => !allowed.includes(key))) {
+            throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
+          }
           command = { ...request.input, requestId };
         }
         if (pendingEffects.has(operation)) {
@@ -1537,6 +1562,26 @@ function requireFileExportCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<Record<string, unknown>> {
+  if (
+    Object.keys(value).some(
+      (key) =>
+        ![
+          'backendSessionId',
+          'finalStatusAccepted',
+          'leaseId',
+          'maxByteLength',
+          'packageSnapshotId',
+          'presence',
+          'relativePath',
+          'requestId',
+          'sandboxId',
+          'slot',
+          'terminalBarrierProved',
+        ].includes(key)
+    )
+  ) {
+    throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
+  }
   if (!/^[0-9a-f]{64}$/.test(requestId)) {
     throw effectTransportError(400, 'NanoHost file export requestId is invalid.');
   }
@@ -1632,6 +1677,29 @@ function requireImageBuildCommand(
   }
   if (Object.hasOwn(value, 'dockerfileByteLength')) {
     throw effectTransportError(409, 'NanoHost image build byte length must be derived.');
+  }
+  if (
+    Object.keys(value).some(
+      (key) =>
+        ![
+          'arguments',
+          'argumentsDigest',
+          'backendSessionId',
+          'contextDigest',
+          'contextRef',
+          'dockerfile',
+          'dockerfileDigest',
+          'egress',
+          'layerLimit',
+          'leaseId',
+          'outputLimitBytes',
+          'packageSnapshotId',
+          'requestId',
+          'timeLimitSeconds',
+        ].includes(key)
+    )
+  ) {
+    throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
   }
   const dockerfile = value.dockerfile;
   const dockerfileDigest = value.dockerfileDigest;
@@ -1768,6 +1836,25 @@ function requireReferenceImportCommand(
   sha256: string;
   slot: string;
 }> {
+  if (
+    Object.keys(value).some(
+      (key) =>
+        ![
+          'backendSessionId',
+          'body',
+          'byteLength',
+          'leaseId',
+          'packageSnapshotId',
+          'relativePath',
+          'requestId',
+          'sandboxId',
+          'sha256',
+          'slot',
+        ].includes(key)
+    )
+  ) {
+    throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
+  }
   if (!/^[0-9a-f]{64}$/.test(requestId)) {
     throw effectTransportError(400, 'NanoHost file effect requestId is invalid.');
   }

@@ -345,7 +345,7 @@ impl WorkerBootstrapRequest {
     /// # Errors
     ///
     /// Rejects missing, oversized, or control-bearing bootstrap lineage.
-    fn validate(&self) -> Result<(), EpochFault> {
+    pub(crate) fn validate(&self) -> Result<(), EpochFault> {
         let lineage_valid = [
             &self.sandbox_id,
             &self.request_id,
