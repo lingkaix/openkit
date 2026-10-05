@@ -101,6 +101,7 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import { dispatchOpenkitWorkTool } from './openkit-work-mcp.js';
+import { TurnStartValidationError } from './orchestrator.js';
 import {
   answerPendingRequest,
   freezeReadyOutcomes,
@@ -130,6 +131,7 @@ import type {
 import {
   WORKER_ARTIFACT_COLLECTION_INVALID,
   WORKER_ARTIFACT_RECOVERY_REQUIRED,
+  WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
   prepareWorkerTurnContextPackage,
@@ -886,6 +888,118 @@ function testGitRefExists(repositoryPath: string, reference: string): boolean {
 }
 
 describe('WorkerGovernanceTurnExecutor', () => {
+  it.each([
+    'backend',
+    'typed-preview',
+    'native-proof',
+  ] as const)('retains safe capacity inspection cause and request correlation: %s', async (scenario) => {
+    const store = createDemoStore();
+    const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Capacity inspection');
+    const backend = new FakeWorkerGovernanceBackend();
+    const cause =
+      scenario === 'typed-preview'
+        ? new TurnStartValidationError('preparation_refused', 'Fixed preparation refusal.', 403)
+        : scenario === 'native-proof'
+          ? new WorkerNativeProofValidationError('package-binding-lineage', {
+              proofAgentSessionId: 'as_original_proof',
+              packageSnapshotId: 'snapshot_original_proof',
+              leaseId: 'lease_original_proof',
+              originPhysicalEpoch: 'a'.repeat(64),
+              attachmentPhysicalEpoch: 'b'.repeat(64),
+            })
+          : Object.assign(new Error('credential-canary /private/package-path received=secret'), {
+              name: 'secret-error-name',
+            });
+    if (cause instanceof WorkerNativeProofValidationError && cause.diagnostic) {
+      Object.assign(cause.diagnostic, { packageBytes: 'credential-canary /private/package-path' });
+    }
+    Object.assign(backend, {
+      inspectMaterializationCapacity: () => {
+        throw cause;
+      },
+    });
+    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    // Fault only the guarded preview/inspector boundary; admission and refusal stay production-owned.
+    Object.assign(executor, {
+      previewAgentEnvironmentPackage: () => {
+        if (scenario === 'typed-preview') throw cause;
+        return {};
+      },
+    });
+    const appLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const input = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: 'as_capacity_cause',
+        requestId: 'request_capacity_cause',
+        turn,
+        turnInput: turn.input,
+        workspaceCwd: null,
+        workspaceRoots: [],
+      };
+      let refusal: unknown;
+      try {
+        (
+          executor as unknown as {
+            requireMaterializationCapacity(id: string, preparation: typeof input): void;
+          }
+        ).requireMaterializationCapacity(input.freshAgentSessionId, input);
+      } catch (error) {
+        refusal = error;
+      }
+      if (scenario === 'typed-preview') expect(refusal).toBe(cause);
+      else {
+        expect(refusal).toMatchObject({ code: 'recovery_required', status: 409, cause });
+        expect(Object.keys(refusal as Error)).not.toContain('cause');
+        expect(JSON.stringify(refusal)).not.toContain('secret-error-name');
+        expect((refusal as Error).message).toBe(
+          'The worker backend materialization capacity cannot be safely inspected.'
+        );
+      }
+      expect(backend.calls).toEqual([]);
+      expect(store.listThreadAgentSessions('ws_demo', 'th_demo')).toEqual([]);
+      expect(appLog).toHaveBeenCalledTimes(1);
+      const log = JSON.parse(appLog.mock.calls[0]![0] as string);
+      expect(log).toEqual({
+        event: 'worker.admission.capacity-inspection-failed',
+        errorCode: 'recovery_required',
+        requestId: input.requestId,
+        workspaceId: turn.workspaceId,
+        threadId: turn.threadId,
+        agentId: input.agentSetup.manifest.id,
+        agentSessionId: input.freshAgentSessionId,
+        ...(scenario === 'native-proof'
+          ? {
+              proofAgentSessionId: 'as_original_proof',
+              packageSnapshotId: 'snapshot_original_proof',
+              leaseId: 'lease_original_proof',
+              originPhysicalEpoch: 'a'.repeat(64),
+              attachmentPhysicalEpoch: 'b'.repeat(64),
+            }
+          : {}),
+        errorClass:
+          scenario === 'native-proof'
+            ? 'WorkerNativeProofValidationError'
+            : scenario === 'typed-preview'
+              ? 'TurnStartValidationError'
+              : 'Error',
+        message:
+          scenario === 'native-proof'
+            ? 'Retained native-session proof disagrees with its original binding and package provenance.'
+            : 'Worker backend materialization capacity inspection failed.',
+        failedCheck:
+          scenario === 'native-proof'
+            ? 'package-binding-lineage'
+            : 'materialization-capacity-inspection',
+      });
+      expect(JSON.stringify(log)).not.toMatch(
+        /credential-canary|package-path|received|secret-error-name/
+      );
+    } finally {
+      appLog.mockRestore();
+    }
+  });
+
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
     const store = createDemoStore();
     const turn = createAssignedTurn(store, 'ws_demo', 'th_demo', 'Reuse current continuity');

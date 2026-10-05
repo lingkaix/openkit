@@ -3916,7 +3916,14 @@ describe('minimal scheduler reconnect contract', () => {
     });
     const fixture = prepareReconnectLease(coreDb, suffix);
     const leaseId = `lease_${suffix}`;
-    const runtimeTargetId = 'runtime-target-test';
+    const runtimeTargetId = requireSchedulerSessionLease(coreDb, leaseId).targetId;
+    // The real backend restoration must join the same target selected by the original admission.
+    coreDb.sqlite
+      .prepare('UPDATE nanohost_runtime_targets SET target_id = ? WHERE target_id = ?')
+      .run(runtimeTargetId, 'runtime-target-test');
+    coreDb.sqlite
+      .prepare('UPDATE worker_backend_sessions SET runtime_target_id = ? WHERE lease_id = ?')
+      .run(runtimeTargetId, leaseId);
     let cleanupRegistrations = 0;
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {

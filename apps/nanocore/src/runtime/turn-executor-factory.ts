@@ -108,6 +108,7 @@ import {
   validateWorkerArtifactPath,
   type WorkerArtifactCapture,
   WorkerGovernanceCapacityUnavailableError,
+  WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -992,15 +993,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (this.sessions.has(environmentPackage.snapshotId)) {
       return;
     }
-    const expectedSandboxKey = nanoHostSandboxCompatibilityKey(environmentPackage);
-    const expectedHarnessKey = nanoHostHarnessCompatibilityKey(environmentPackage);
+    const provenance = this.requireDurableAgentSessionProvenance(environmentPackage, leaseId);
+    const expectedSandboxKey = provenance.sandboxCompatibilityKey;
+    const expectedHarnessKey = provenance.harnessCompatibilityKey;
+    const expectedSessionKey = provenance.agentSessionCompatibilityKey;
     const adapterId = nanoHostAdapterId(environmentPackage);
-    const expectedSessionKey = nanoHostAgentSessionCompatibilityKey(environmentPackage);
-    const identity = this.planSession(environmentPackage);
-    const durableSession = this.findDurableBackendSession(identity);
-    if (!durableSession || durableSession.leaseId !== leaseId) {
-      throw new Error('NanoHost restart backend anchor is missing or incompatible.');
-    }
+    const durableSession = provenance.anchor;
+    const identity = this.durableBackendSessionIdentity(durableSession);
     const sharedHarness = this.restoreSharedHarness(
       expectedSandboxKey,
       expectedHarnessKey,
@@ -1077,6 +1076,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public planSession(
     environmentPackage: AgentEnvironmentPackagePreview
   ): WorkerGovernanceBackendSessionIdentity {
+    const restored = this.sessions.get(environmentPackage.snapshotId);
+    if (restored) return restored.identity;
     const target = this.coreDb.sqlite
       .prepare(
         `SELECT target_id AS targetId, deployment_id AS deploymentId
@@ -3307,7 +3308,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             const priorSession = {
               ...session,
               environmentPackage: prior,
-              identity: this.planSession(prior),
+              identity: this.durableBackendSessionIdentity(
+                this.requireDurableAgentSessionProvenance(prior, previous.leaseId).anchor
+              ),
               leaseId: previous.leaseId,
             };
             const records = await this.collectWorkspaceSnapshot(priorSession, 'turn-end');
@@ -3717,6 +3720,155 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return session;
   }
 
+  /** Projects an already-validated original backend identity without reminting package-derived names. */
+  private durableBackendSessionIdentity(
+    anchor: WorkerBackendSessionRecord
+  ): WorkerGovernanceBackendSessionIdentity {
+    return {
+      agentSessionId: anchor.agentSessionId,
+      backendKind: 'openshell',
+      backendSessionId: anchor.backendSessionId,
+      deploymentId: anchor.deploymentId,
+      packageSnapshotId: anchor.packageSnapshotId,
+      runtimeTargetId: anchor.runtimeTargetId,
+      stagingDirectoryRef: anchor.stagingDirectoryRef,
+      transientProviderInstanceId: anchor.transientProviderInstanceId,
+    };
+  }
+
+  /** Validates original admitted keys against verified retained JSON and exact package, lease and binding provenance. */
+  private requireDurableAgentSessionProvenance(
+    environmentPackage: AgentEnvironmentPackage,
+    leaseId: string
+  ) {
+    const anchor = getWorkerBackendSession(this.coreDb, leaseId);
+    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    let retainedSnapshot: AgentEnvironmentPackage;
+    let normalizedSnapshot: AgentEnvironmentPackage;
+    try {
+      const record = requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        environmentPackage.scope.workspaceId,
+        environmentPackage.snapshotId
+      );
+      retainedSnapshot = record.retainedSnapshot;
+      normalizedSnapshot = record.snapshot;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    const attachment = this.coreDb.sqlite
+      .prepare(
+        `SELECT b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+              b.agent_session_compatibility_key AS agentSessionCompatibilityKey,
+              b.workspace_id AS workspaceId, b.thread_id AS threadId,
+              b.native_handle_state AS nativeHandleState, b.native_handle_digest AS nativeHandleDigest,
+              h.harness_instance_id AS harnessInstanceId, h.harness_binding_ref AS harnessBindingRef,
+              h.harness_compatibility_key AS harnessCompatibilityKey,
+              s.sandbox_compatibility_key AS sandboxCompatibilityKey,
+              s.sandbox_binding_ref AS sandboxBindingRef, s.runtime_target_id AS runtimeTargetId,
+              s.origin_physical_epoch AS originPhysicalEpoch,
+              t.deployment_id AS deploymentId
+       FROM agent_session_runtime_bindings b
+       JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+       JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+       JOIN nanohost_runtime_targets t ON t.target_id = s.runtime_target_id
+       WHERE b.agent_session_id = ?`
+      )
+      .get(environmentPackage.scope.agentSessionId) as
+      | {
+          agentSessionRuntimeBindingId: string;
+          agentSessionCompatibilityKey: string;
+          workspaceId: string;
+          threadId: string;
+          nativeHandleState: string;
+          nativeHandleDigest: string | null;
+          harnessInstanceId: string;
+          harnessBindingRef: string;
+          harnessCompatibilityKey: string;
+          sandboxCompatibilityKey: string;
+          sandboxBindingRef: string;
+          runtimeTargetId: string;
+          originPhysicalEpoch: string;
+          deploymentId: string;
+        }
+      | undefined;
+    const scope = environmentPackage.scope;
+    const lease = this.coreDb.sqlite
+      .prepare(
+        `SELECT workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId,
+              agent_session_id AS agentSessionId, package_snapshot_id AS packageSnapshotId,
+              sandbox_binding_ref AS sandboxBindingRef, target_id AS targetId
+       FROM scheduler_session_leases WHERE lease_id = ?`
+      )
+      .get(leaseId) as
+      | {
+          workspaceId: string;
+          threadId: string;
+          turnId: string;
+          agentSessionId: string;
+          packageSnapshotId: string;
+          sandboxBindingRef: string;
+          targetId: string;
+        }
+      | undefined;
+    const admission = lease
+      ? requireSchedulerSessionLeaseAdmissionContext(this.coreDb, leaseId)
+      : undefined;
+    if (
+      !anchor ||
+      !attachment ||
+      !lease ||
+      !admission ||
+      !isDeepStrictEqual(environmentPackage, normalizedSnapshot) ||
+      attachment.harnessCompatibilityKey !== nanoHostHarnessCompatibilityKey(retainedSnapshot) ||
+      attachment.agentSessionCompatibilityKey !==
+        nanoHostAgentSessionCompatibilityKey(retainedSnapshot) ||
+      attachment.sandboxCompatibilityKey !== nanoHostSandboxCompatibilityKey(retainedSnapshot) ||
+      !isDeepStrictEqual(scope.triggerActor, admission.triggerActor) ||
+      scope.requestId !== admission.requestId ||
+      this.requireLeaseId(environmentPackage.snapshotId) !== leaseId ||
+      anchor.workspaceId !== scope.workspaceId ||
+      anchor.threadId !== scope.threadId ||
+      anchor.turnId !== scope.turnId ||
+      anchor.agentSessionId !== scope.agentSessionId ||
+      anchor.packageSnapshotId !== environmentPackage.snapshotId ||
+      lease.workspaceId !== scope.workspaceId ||
+      lease.threadId !== scope.threadId ||
+      lease.turnId !== scope.turnId ||
+      lease.agentSessionId !== scope.agentSessionId ||
+      lease.packageSnapshotId !== environmentPackage.snapshotId ||
+      lease.sandboxBindingRef !== anchor.sandboxBindingRef ||
+      lease.targetId !== anchor.runtimeTargetId ||
+      attachment.workspaceId !== scope.workspaceId ||
+      attachment.threadId !== scope.threadId ||
+      attachment.runtimeTargetId !== anchor.runtimeTargetId ||
+      attachment.deploymentId !== anchor.deploymentId ||
+      attachment.originPhysicalEpoch !== anchor.originPhysicalEpoch ||
+      anchor.backendKind !== 'openshell' ||
+      !sessionMatchesRuntimeImage(anchor, environmentPackage.runtime.image) ||
+      anchor.backendSessionId !==
+        `${nanoHostSandboxId(attachment.sandboxCompatibilityKey)}-${createHash('sha256').update(environmentPackage.snapshotId).digest('hex').slice(0, 16)}` ||
+      anchor.stagingDirectoryRef !==
+        `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}` ||
+      anchor.transientProviderInstanceId !== null
+    ) {
+      throw new WorkerNativeProofValidationError('package-binding-lineage', {
+        proofAgentSessionId: scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        leaseId,
+        originPhysicalEpoch:
+          anchor && /^[0-9a-f]{64}$/.test(anchor.originPhysicalEpoch)
+            ? anchor.originPhysicalEpoch
+            : null,
+        attachmentPhysicalEpoch:
+          attachment && /^[0-9a-f]{64}$/.test(attachment.originPhysicalEpoch)
+            ? attachment.originPhysicalEpoch
+            : null,
+      });
+    }
+    return { ...attachment, anchor };
+  }
+
   /** Reads the immutable prior package and lease shared by proof handoff and local close. */
   private readDurableAgentSession(inspection: NanoHostAgentSessionContinuityInspection): {
     environmentPackage: AgentEnvironmentPackage;
@@ -3755,7 +3907,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /**
-   * Joins exact persisted binding proof and attachment through the existing Core recorder. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
+   * Joins accepted proof to original persisted identities and compatibility keys reproduced from digest-verified retained JSON before normalization. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
    */
   private handoffDurableAgentSessionProof(
     inspection: NanoHostAgentSessionContinuityInspection,
@@ -3768,52 +3920,31 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     if (liveSession) liveSession.acceptedProofUnrecorded = true;
     const { environmentPackage, leaseId } = this.readDurableAgentSession(inspection);
-    const identity = this.planSession(environmentPackage);
-    const anchor = this.findDurableBackendSession(identity);
-    const attachment = this.coreDb.sqlite
-      .prepare(
-        `SELECT s.sandbox_binding_ref AS sandboxBindingRef, s.runtime_target_id AS runtimeTargetId,
-                s.origin_physical_epoch AS originPhysicalEpoch
-         FROM agent_session_runtime_bindings b
-         JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
-         JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
-         WHERE b.agent_session_runtime_binding_id = ? AND b.agent_session_id = ?
-           AND h.harness_instance_id = ? AND h.harness_binding_ref = ?
-           AND h.harness_compatibility_key = ? AND b.native_handle_state = 'ready'
-           AND b.native_handle_digest = ? AND b.workspace_id = ? AND b.thread_id = ?
-           AND b.agent_session_compatibility_key = ? AND s.sandbox_compatibility_key = ?`
-      )
-      .get(
-        inspection.agentSessionRuntimeBindingId,
-        inspection.agentSessionId,
-        inspection.harnessInstanceId,
-        inspection.harnessBindingRef,
-        inspection.harnessCompatibilityKey,
-        digest,
-        environmentPackage.scope.workspaceId,
-        environmentPackage.scope.threadId,
-        nanoHostAgentSessionCompatibilityKey(environmentPackage),
-        nanoHostSandboxCompatibilityKey(environmentPackage)
-      ) as
-      | { sandboxBindingRef: string; runtimeTargetId: string; originPhysicalEpoch: string }
-      | undefined;
+    const attachment = this.requireDurableAgentSessionProvenance(environmentPackage, leaseId);
+    const diagnostic = {
+      proofAgentSessionId: environmentPackage.scope.agentSessionId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      leaseId,
+      originPhysicalEpoch: attachment.anchor.originPhysicalEpoch,
+      attachmentPhysicalEpoch: attachment.originPhysicalEpoch,
+    };
     if (
-      !anchor ||
-      anchor.leaseId !== leaseId ||
-      !attachment ||
-      environmentPackage.scope.agentSessionId !== inspection.agentSessionId ||
-      attachment.runtimeTargetId !== identity.runtimeTargetId ||
-      attachment.originPhysicalEpoch !== anchor.originPhysicalEpoch ||
-      inspection.harnessCompatibilityKey !== nanoHostHarnessCompatibilityKey(environmentPackage)
+      attachment.agentSessionRuntimeBindingId !== inspection.agentSessionRuntimeBindingId ||
+      attachment.harnessInstanceId !== inspection.harnessInstanceId ||
+      attachment.harnessBindingRef !== inspection.harnessBindingRef ||
+      attachment.harnessCompatibilityKey !== inspection.harnessCompatibilityKey ||
+      attachment.nativeHandleState !== 'ready' ||
+      attachment.nativeHandleDigest !== digest ||
+      environmentPackage.scope.agentSessionId !== inspection.agentSessionId
     ) {
-      throw new Error('NanoHost native proof does not match its durable package and attachment.');
+      throw new WorkerNativeProofValidationError('accepted-ready-binding', diagnostic);
     }
     // A fenced attachment still proves where accepted native bytes belong; only reuse needs attached state.
     const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
       sandboxBindingRef: attachment.sandboxBindingRef,
     });
     if (!storage || storage.runtimeTargetId !== attachment.runtimeTargetId) {
-      throw new Error('NanoHost native proof has no exact retained-storage association.');
+      throw new WorkerNativeProofValidationError('retained-storage-association', diagnostic);
     }
     const retainedStorage = {
       storageRef: storage.storageRef,
@@ -3832,7 +3963,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         packageWorkerStorageWorkSlotRef(liveSession.environmentPackage) !==
           retainedStorage.workSlotRef
       ) {
-        throw new Error('NanoHost live proof attachment disagrees with its durable binding.');
+        throw new WorkerNativeProofValidationError('live-storage-association', diagnostic);
       }
       liveSession.recordNativeHandleDigest = recorder;
       // The durable result may precede the volatile cache handoff; record exactly the inspected proof.

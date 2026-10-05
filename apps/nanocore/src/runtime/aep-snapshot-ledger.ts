@@ -27,6 +27,12 @@ export type AgentEnvironmentPackageSnapshotRecord = Omit<
   'snapshot'
 > & { readonly snapshot: AgentEnvironmentPackage };
 
+/** Ledger read with digest-verified original JSON for admitted-key verification, excluded from record serialization. */
+export type AgentEnvironmentPackageSnapshotReadRecord = AgentEnvironmentPackageSnapshotRecord & {
+  /** Known core has passed the current schema; ignored stored content remains for hashing only. */
+  readonly retainedSnapshot: AgentEnvironmentPackage;
+};
+
 /** Input for recording an AEP snapshot. */
 export interface RecordAgentEnvironmentPackageSnapshotInput {
   /** Full parsed V4 AEP snapshot. The helper stores only its redacted form. */
@@ -79,7 +85,7 @@ export function requireAgentEnvironmentPackageSnapshot(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
   snapshotId: string
-): AgentEnvironmentPackageSnapshotRecord {
+): AgentEnvironmentPackageSnapshotReadRecord {
   const record = listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId).find(
     (candidate) => candidate.snapshotId === snapshotId
   );
@@ -109,7 +115,7 @@ export function findNamedAgentEnvironmentPackageSnapshot(
   workspaceId: string,
   agentSessionId: string,
   snapshotId: string
-): AgentEnvironmentPackageSnapshotRecord | null {
+): AgentEnvironmentPackageSnapshotReadRecord | null {
   assertWorkspaceOwner(workspaceDb, workspaceId);
   const path = snapshotPath(workspaceDb, agentSessionId, snapshotId);
 
@@ -130,7 +136,7 @@ export function findNamedAgentEnvironmentPackageSnapshot(
 export function listExportableAgentEnvironmentPackageSnapshots(
   workspaceDb: WorkspaceDb,
   workspaceId: string
-): AgentEnvironmentPackageSnapshotRecord[] {
+): AgentEnvironmentPackageSnapshotReadRecord[] {
   assertWorkspaceOwner(workspaceDb, workspaceId);
   const root = agentSessionsRoot(workspaceDb);
 
@@ -141,7 +147,7 @@ export function listExportableAgentEnvironmentPackageSnapshots(
     throw new Error('Agent environment package session root must be a directory.');
   }
 
-  const records: AgentEnvironmentPackageSnapshotRecord[] = [];
+  const records: AgentEnvironmentPackageSnapshotReadRecord[] = [];
   for (const sessionEntry of readdirSync(root, { withFileTypes: true })) {
     if (sessionEntry.isSymbolicLink()) {
       throw new Error(`Agent environment package session path is symbolic: ${sessionEntry.name}`);
@@ -269,7 +275,7 @@ function readSnapshotRecord(
   path: string,
   agentSessionId: string,
   snapshotId: string
-): AgentEnvironmentPackageSnapshotRecord {
+): AgentEnvironmentPackageSnapshotReadRecord {
   if (!lstatSync(path).isFile()) {
     throw new Error(`Agent environment package snapshot is not a regular file: ${snapshotId}`);
   }
@@ -322,7 +328,7 @@ function requireMatchingSnapshotRecord(
 function validateSnapshotRecord(
   workspaceDb: WorkspaceDb,
   value: unknown
-): AgentEnvironmentPackageSnapshotRecord {
+): AgentEnvironmentPackageSnapshotReadRecord {
   const parsed = AgentEnvironmentPackageSnapshotRecordSchema.parse(value);
   // Retained identity covers the stored value; normalization may discard ignored extensions.
   if (parsed.contentDigest !== snapshotDigest(parsed.snapshot)) {
@@ -356,7 +362,11 @@ function validateSnapshotRecord(
     throw new Error(`Agent environment package snapshot lineage mismatch: ${record.snapshotId}`);
   }
 
-  return record;
+  // Keep original JSON out of ledger writes and public/export projections.
+  // It is available only to integrity checks; operational consumers continue to use the normalized snapshot.
+  return Object.defineProperty(record, 'retainedSnapshot', {
+    value: parsed.snapshot,
+  }) as AgentEnvironmentPackageSnapshotReadRecord;
 }
 
 /**

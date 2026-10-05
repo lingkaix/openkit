@@ -217,6 +217,12 @@ describe('AEP snapshot ledger', () => {
       );
 
       expect(read.contentDigest).toBe(retained.contentDigest);
+      expect(read.retainedSnapshot).toEqual(retained.snapshot);
+      expect(snapshotDigest(read.retainedSnapshot)).toBe(retained.contentDigest);
+      expect(JSON.parse(JSON.stringify(read))).not.toHaveProperty('retainedSnapshot');
+      expect(
+        listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')[0]!.snapshot
+      ).toEqual(read.snapshot);
       expect(read.snapshot.control.transcript).not.toHaveProperty('artifactsPath');
       expect(read.snapshot.control.transcript.itemsPath).toBe(
         environmentPackage.control.transcript.itemsPath

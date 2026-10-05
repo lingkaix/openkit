@@ -52,11 +52,15 @@ import {
   resolveAgentEnvironmentPackageMetadata as resolveMetadata,
   resolveAgentEnvironmentPackage as resolvePackage,
 } from './agent-environment.js';
-import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
+import {
+  createNanoHostEffectRequest,
+  stableNanoHostEffectJson,
+} from './nanohost-effect-identity.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
+  inspectNanoHostAgentSessionContinuity,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
@@ -92,6 +96,7 @@ import {
   type WorkerGovernanceBackend,
   type WorkerGovernanceBackendSessionIdentity,
   WorkerGovernanceCapacityUnavailableError,
+  WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -288,6 +293,7 @@ function bindNanoHostWorkerLineage(
       now: () => now,
       priorityClass: 'interactive',
       queueEntryId,
+      requestId: environmentPackage.scope.requestId,
       requestedAgentId: environmentPackage.agent.agentId,
       requiredPoolConstraints: [],
       serverAdminTokenId: input.serverAdminTokenId ?? null,
@@ -8779,6 +8785,10 @@ describe('createConfiguredTurnExecutor', () => {
     'cross-thread-handoff',
     'cross-thread-closed-handoff',
     'cross-thread-old-epoch-handoff',
+    'ignored-package-proof-handoff',
+    'ignored-package-restoration',
+    'known-package-proof-handoff',
+    'known-package-restoration',
   ] as const)('ordinary admission preserves native proof across eviction or incompatible replacement after restart: %s', async (scenario) => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
@@ -9107,6 +9117,276 @@ describe('createConfiguredTurnExecutor', () => {
             )
             .run();
           coreDb.sqlite.prepare("UPDATE worker_storage_bindings SET state = 'unknown'").run();
+        }
+        if (scenario.startsWith('ignored-package-') || scenario.startsWith('known-package-')) {
+          const snapshotPath = join(
+            coreDb.dataRoot,
+            'workspaces/workspace_resume/runtime/agent-sessions',
+            predecessor.id,
+            'aep-snapshots',
+            `${predecessor.environmentPackageSnapshotId}.json`
+          );
+          const retained = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+          retained.snapshot.control.transcript.artifactsPath = '/retired-transcript-artifacts';
+          retained.contentDigest = createHash('sha256')
+            .update(JSON.stringify(retained.snapshot))
+            .digest('hex');
+          writeFileSync(snapshotPath, JSON.stringify(retained));
+          // Reproduce the earlier release's admitted Harness identity over the stored package.
+          const aep = retained.snapshot;
+          const { openkit, ...extensions } = aep.extensions;
+          const {
+            turnInput: _turnInput,
+            sessionWorkspace: _sessionWorkspace,
+            workerStorage: _workerStorage,
+            ...staticOpenkit
+          } = openkit;
+          const historicalHarnessKey = createHash('sha256')
+            .update(
+              stableNanoHostEffectJson({
+                adapter: aep.control.adapter,
+                agentRuntime: { kind: aep.agent.runtimeKind, version: aep.agent.runtimeVersion },
+                control: { transcript: aep.control.transcript },
+                credentials: aep.credentials,
+                extensions: { ...extensions, openkit: staticOpenkit },
+                resources: aep.resources,
+                runtime: {
+                  binaries: aep.runtime.binaries,
+                  command: { ...aep.runtime.command, workingDirectory: 'worker-storage-worktree' },
+                  process: aep.runtime.process ?? null,
+                  session: aep.runtime.session ?? null,
+                },
+                supply: aep.supply,
+                vault: aep.vault,
+              })
+            )
+            .digest('hex');
+          const historicalSessionKey = deriveNanoHostAgentSessionCompatibilityKey({
+            adapterId: aep.control.adapter.targetRuntime,
+            adapterVersion: aep.agent.runtimeVersion,
+            harnessCompatibilityKey: historicalHarnessKey,
+            sessionCompatibilityKey:
+              aep.extensions.openkit.sessionWorkspace.compatibilityKey.digest,
+            threadId: aep.scope.threadId,
+          });
+          coreDb.sqlite
+            .prepare('UPDATE harness_instance_records SET harness_compatibility_key = ?')
+            .run(historicalHarnessKey);
+          coreDb.sqlite
+            .prepare(
+              'UPDATE agent_session_runtime_bindings SET agent_session_compatibility_key = ?'
+            )
+            .run(historicalSessionKey);
+          const packageDb = openWorkspaceDb(coreDb.dataRoot, predecessor.workspaceId);
+          let normalized: AgentEnvironmentPackage;
+          try {
+            normalized = requireAgentEnvironmentPackageSnapshot(
+              packageDb,
+              predecessor.workspaceId,
+              retained.snapshotId
+            ).snapshot;
+          } finally {
+            packageDb.sqlite.close();
+          }
+          expect(normalized.control.transcript).not.toHaveProperty('artifactsPath');
+          const lease = coreDb.sqlite
+            .prepare(
+              'SELECT lease_id AS leaseId FROM worker_backend_sessions WHERE agent_session_id = ?'
+            )
+            .get(predecessor.id) as { leaseId: string };
+          const internal = restoredBackend as WorkerGovernanceBackend & {
+            restoreSession(aep: AgentEnvironmentPackage, leaseId: string): void;
+            sessions: Map<string, unknown>;
+            sharedHarnesses: Map<string, unknown>;
+            recordNativeHandleDigest(
+              agentSessionId: string,
+              digest: string,
+              retainedStorage: {
+                storageRef: string;
+                workSlotRef: string;
+              }
+            ): void;
+          };
+          if (scenario.startsWith('known-package-')) {
+            const recorder = vi.spyOn(internal, 'recordNativeHandleDigest');
+            const effectsBefore = [...effects];
+            const bindingsBefore = coreDb.sqlite
+              .prepare('SELECT * FROM agent_session_runtime_bindings')
+              .all();
+            const harnessesBefore = coreDb.sqlite
+              .prepare('SELECT * FROM harness_instance_records')
+              .all();
+            const sandboxesBefore = coreDb.sqlite
+              .prepare('SELECT * FROM sandbox_runtime_records')
+              .all();
+            // A checksum supplied by the altered file cannot replace its original admitted keys.
+            retained.snapshot.runtime.command.stdout =
+              retained.snapshot.runtime.command.stdout === 'ignore' ? 'pipe' : 'ignore';
+            retained.contentDigest = createHash('sha256')
+              .update(JSON.stringify(retained.snapshot))
+              .digest('hex');
+            writeFileSync(snapshotPath, JSON.stringify(retained));
+            const alteredDb = openWorkspaceDb(coreDb.dataRoot, predecessor.workspaceId);
+            let altered: AgentEnvironmentPackage;
+            try {
+              altered = requireAgentEnvironmentPackageSnapshot(
+                alteredDb,
+                predecessor.workspaceId,
+                retained.snapshotId
+              ).snapshot;
+            } finally {
+              alteredDb.sqlite.close();
+            }
+            expect(altered.runtime.command.stdout).not.toBe(normalized.runtime.command.stdout);
+            expect(internal.sessions.size).toBe(0);
+            expect(internal.sharedHarnesses.size).toBe(0);
+            if (scenario === 'known-package-restoration') {
+              expect(() => internal.restoreSession(altered, lease.leaseId)).toThrow(
+                WorkerNativeProofValidationError
+              );
+            } else {
+              coreDb.sqlite
+                .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+                .run('f'.repeat(64));
+              expect(() => restoredBackend.inspectMaterializationCapacity!(altered)).toThrow(
+                WorkerNativeProofValidationError
+              );
+            }
+            expect(recorder).not.toHaveBeenCalled();
+            expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
+            expect(internal.sessions.size).toBe(0);
+            expect(internal.sharedHarnesses.size).toBe(0);
+            expect(effects).toEqual(effectsBefore);
+            expect(
+              coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()
+            ).toEqual(bindingsBefore);
+            expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').all()).toEqual(
+              harnessesBefore
+            );
+            expect(coreDb.sqlite.prepare('SELECT * FROM sandbox_runtime_records').all()).toEqual(
+              sandboxesBefore
+            );
+            return;
+          }
+          if (scenario === 'ignored-package-restoration') {
+            expect(() => internal.restoreSession(normalized, lease.leaseId)).not.toThrow();
+            const recorder = vi.fn();
+            restoredBackend.bindNativeHandleRecorder?.(normalized.snapshotId, recorder);
+            expect(recorder).toHaveBeenCalledExactlyOnceWith(digest, predecessor.retainedStorage);
+            return;
+          }
+          coreDb.sqlite
+            .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+            .run('f'.repeat(64));
+          const inspect = () => restoredBackend.inspectMaterializationCapacity!(normalized);
+          const effectsBefore = [...effects];
+          const acceptedInspection = inspectNanoHostAgentSessionContinuity(coreDb, {
+            agentSessionId: predecessor.id,
+            workspaceId: predecessor.workspaceId,
+            threadId: predecessor.threadId,
+            reuseAllowed: true,
+          });
+          if (!acceptedInspection) throw new Error('Expected the original ready binding.');
+          const handoff = () =>
+            (
+              restoredBackend as unknown as {
+                handoffDurableAgentSessionProof(
+                  inspection: NonNullable<typeof acceptedInspection>
+                ): void;
+              }
+            ).handoffDurableAgentSessionProof(acceptedInspection);
+          for (const [field, altered] of [
+            ['agent_session_runtime_binding_id', 'wrong-binding-identity'],
+            ['native_handle_digest', 'e'.repeat(64)],
+          ]) {
+            const original = coreDb.sqlite
+              .prepare(`SELECT ${field} AS value FROM agent_session_runtime_bindings`)
+              .get() as { value: string };
+            coreDb.sqlite
+              .prepare(`UPDATE agent_session_runtime_bindings SET ${field} = ?`)
+              .run(altered);
+            expect(handoff).toThrow();
+            expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
+            coreDb.sqlite
+              .prepare(`UPDATE agent_session_runtime_bindings SET ${field} = ?`)
+              .run(original.value);
+          }
+          // These corruptions retain the ignored field, so tolerance cannot mask failed authority checks.
+          for (const [table, field, altered] of [
+            ['worker_backend_sessions', 'thread_id', 'wrong-thread'],
+            ['worker_backend_sessions', 'origin_physical_epoch', 'e'.repeat(64)],
+            ['worker_backend_sessions', 'lease_id', 'wrong-lease'],
+            ['agent_session_runtime_bindings', 'thread_id', 'wrong-thread'],
+            ['agent_session_runtime_bindings', 'agent_session_compatibility_key', 'e'.repeat(64)],
+            ['worker_storage_bindings', 'current_sandbox_binding_ref', 'wrong-binding'],
+          ]) {
+            const original = coreDb.sqlite
+              .prepare(`SELECT ${field} AS value FROM ${table}`)
+              .get() as { value: string };
+            coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(altered);
+            expect(() => inspect()).toThrow();
+            expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
+            coreDb.sqlite.prepare(`UPDATE ${table} SET ${field} = ?`).run(original.value);
+          }
+          const originalBytes = readFileSync(snapshotPath, 'utf8');
+          retained.snapshot.scope.threadId = 'wrong-package-thread';
+          writeFileSync(snapshotPath, JSON.stringify(retained));
+          expect(() => inspect()).toThrow('digest mismatch');
+          retained.contentDigest = createHash('sha256')
+            .update(JSON.stringify(retained.snapshot))
+            .digest('hex');
+          writeFileSync(snapshotPath, JSON.stringify(retained));
+          expect(() => inspect()).toThrow('lineage mismatch');
+          writeFileSync(snapshotPath, originalBytes);
+          const changedScope = JSON.parse(originalBytes);
+          changedScope.threadId = 'wrong-package-thread';
+          changedScope.snapshot.scope.threadId = changedScope.threadId;
+          changedScope.contentDigest = createHash('sha256')
+            .update(JSON.stringify(changedScope.snapshot))
+            .digest('hex');
+          writeFileSync(snapshotPath, JSON.stringify(changedScope));
+          expect(() => inspect()).toThrow();
+          writeFileSync(snapshotPath, originalBytes);
+          for (const [field, value] of [
+            ['triggerActor', { kind: 'user', id: 'wrong-package-actor' }],
+            ['requestId', 'wrong-package-request'],
+          ]) {
+            const changedAdmission = JSON.parse(originalBytes);
+            changedAdmission.snapshot.scope[field as string] = value;
+            changedAdmission.contentDigest = createHash('sha256')
+              .update(JSON.stringify(changedAdmission.snapshot))
+              .digest('hex');
+            writeFileSync(snapshotPath, JSON.stringify(changedAdmission));
+            expect(() => inspect()).toThrow();
+            expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBeNull();
+            writeFileSync(snapshotPath, originalBytes);
+          }
+          expect(inspect()).toBe('available');
+          expect(readFileSync(snapshotPath, 'utf8')).toBe(originalBytes);
+          expect(effects).toEqual(effectsBefore);
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            nativeHandleDigest: digest,
+            retainedStorage: predecessor.retainedStorage,
+          });
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT harness_compatibility_key AS key FROM harness_instance_records')
+              .get()
+          ).toEqual({ key: historicalHarnessKey });
+          expect(
+            coreDb.sqlite
+              .prepare(
+                'SELECT agent_session_compatibility_key AS key FROM agent_session_runtime_bindings'
+              )
+              .get()
+          ).toEqual({ key: historicalSessionKey });
+          // Once Core has accepted a pair, a changed ready digest must not replace it.
+          coreDb.sqlite
+            .prepare('UPDATE agent_session_runtime_bindings SET native_handle_digest = ?')
+            .run('e'.repeat(64));
+          expect(() => inspect()).toThrow();
+          expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBe(digest);
+          return;
         }
         const crossThread = scenario.startsWith('cross-thread-');
         const imageReplacement = scenario.startsWith('image-');

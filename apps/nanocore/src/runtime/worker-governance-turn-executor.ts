@@ -132,6 +132,7 @@ import {
   type WorkerGovernanceEvidenceRecord,
   type WorkerGovernanceNativeResume,
   type WorkerGovernanceWorkspaceChangeRecord,
+  WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
@@ -1229,12 +1230,56 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       capacity = this.backend.inspectMaterializationCapacity(
         this.previewAgentEnvironmentPackage(agentSessionId, input)
       );
-    } catch {
-      throw new TurnStartValidationError(
+    } catch (cause) {
+      // Never stringify arbitrary exceptions: Zod issues, paths and native errors can contain secrets.
+      console.error(
+        JSON.stringify({
+          event: 'worker.admission.capacity-inspection-failed',
+          errorCode: 'recovery_required',
+          requestId: input.requestId,
+          workspaceId: input.turn.workspaceId,
+          threadId: input.turn.threadId,
+          agentId: input.agentSetup.manifest.id,
+          agentSessionId,
+          ...(cause instanceof WorkerNativeProofValidationError && cause.diagnostic
+            ? {
+                proofAgentSessionId: cause.diagnostic.proofAgentSessionId,
+                packageSnapshotId: cause.diagnostic.packageSnapshotId,
+                leaseId: cause.diagnostic.leaseId,
+                originPhysicalEpoch: cause.diagnostic.originPhysicalEpoch,
+                attachmentPhysicalEpoch: cause.diagnostic.attachmentPhysicalEpoch,
+              }
+            : {}),
+          errorClass:
+            cause instanceof WorkerNativeProofValidationError
+              ? 'WorkerNativeProofValidationError'
+              : cause instanceof TurnStartValidationError
+                ? 'TurnStartValidationError'
+                : cause instanceof TypeError
+                  ? 'TypeError'
+                  : cause instanceof SyntaxError
+                    ? 'SyntaxError'
+                    : cause instanceof Error
+                      ? 'Error'
+                      : 'UnknownError',
+          message:
+            cause instanceof WorkerNativeProofValidationError
+              ? 'Retained native-session proof disagrees with its original binding and package provenance.'
+              : 'Worker backend materialization capacity inspection failed.',
+          failedCheck:
+            cause instanceof WorkerNativeProofValidationError
+              ? cause.failedCheck
+              : 'materialization-capacity-inspection',
+        })
+      );
+      if (cause instanceof TurnStartValidationError) throw cause;
+      const failure = new TurnStartValidationError(
         'recovery_required',
         'The worker backend materialization capacity cannot be safely inspected.',
         409
       );
+      Object.defineProperty(failure, 'cause', { value: cause, configurable: true, writable: true });
+      throw failure;
     }
     if (capacity === 'capacity-saturated') {
       throw new WorkerGovernanceCapacityUnavailableError();

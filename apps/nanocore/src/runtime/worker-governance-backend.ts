@@ -88,6 +88,40 @@ export const WORKER_ARTIFACT_COLLECTION_INVALID = 'worker_artifact_collection_in
 /** Internal error code requiring restored-session cleanup before returning recovery_required. */
 export const WORKER_ARTIFACT_RECOVERY_REQUIRED = 'worker_artifact_recovery_required';
 
+/** Safe classification of a historical native-proof provenance refusal; carries no retained payload. */
+export class WorkerNativeProofValidationError extends Error {
+  /** Fixed authority check that refused the proof. */
+  public readonly failedCheck:
+    | 'package-binding-lineage'
+    | 'accepted-ready-binding'
+    | 'retained-storage-association'
+    | 'live-storage-association';
+
+  /** Only admitted record ids and well-formed physical Epochs may accompany operator diagnosis. */
+  public readonly diagnostic:
+    | {
+        readonly proofAgentSessionId: string;
+        readonly packageSnapshotId: string;
+        readonly leaseId: string;
+        readonly originPhysicalEpoch: string | null;
+        readonly attachmentPhysicalEpoch: string | null;
+      }
+    | undefined;
+
+  /** Names the failed historical check without exposing package or exception values. */
+  public constructor(
+    failedCheck: WorkerNativeProofValidationError['failedCheck'],
+    diagnostic?: WorkerNativeProofValidationError['diagnostic']
+  ) {
+    super(
+      'Retained native-session proof disagrees with its original binding and package provenance.'
+    );
+    this.name = 'WorkerNativeProofValidationError';
+    this.failedCheck = failedCheck;
+    this.diagnostic = diagnostic;
+  }
+}
+
 /** Deterministic physical backend identity planned without external effects. */
 export interface WorkerGovernanceBackendSessionIdentity {
   /** Data-root deployment that exclusively owns the gateway artifacts. */
