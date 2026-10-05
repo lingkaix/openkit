@@ -979,6 +979,20 @@ describe('Worker Harness loop', () => {
 });
 
 describe('Worker Harness resident AgentSessions', () => {
+  it('registers the bound adapter inference mapping with its loopback credentials', async () => {
+    const fake = fakeAdapter();
+    const mapping = { headers: [], bodyFields: [], map: () => undefined };
+    Object.assign(fake.adapter, { inferenceRuntimeHintMapping: mapping });
+    const f = harnessFixture({ adapter: fake });
+    expect(await f.open('as-mapping')).toMatchObject({ disposition: 'succeeded' });
+    expect(f.integration.loopbacks.get('as-mapping')).toMatchObject({
+      inferenceRuntimeHintMapping: mapping,
+    });
+    expect(await f.send('session.close', f.selector('as-mapping'))).toMatchObject({
+      disposition: 'succeeded',
+    });
+  });
+
   it('runs a further runtime through one static registry entry and the unchanged Harness', async () => {
     const fake = fakeAdapter();
     registryFixture.adapter = fake.adapter;

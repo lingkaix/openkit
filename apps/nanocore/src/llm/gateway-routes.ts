@@ -992,6 +992,7 @@ function sanitizeWorkerInferenceRequest(
     delete request.metadata;
   }
 
+  delete request.openkit_runtime_hint;
   delete request.client_metadata;
   delete request.promptCacheKey;
   delete request.prompt_cache_key;
@@ -1731,8 +1732,7 @@ export function registerWorkerInferenceRoutes({
       let runtimeHint: WorkerInferenceRuntimeHint | undefined;
       try {
         runtimeHint = readWorkerInferenceRuntimeHint(
-          c.req.raw.headers,
-          input,
+          input.openkit_runtime_hint,
           environmentPackage.control.adapter.targetRuntime
         );
       } catch {

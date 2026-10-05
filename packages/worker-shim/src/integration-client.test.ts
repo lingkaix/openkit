@@ -8,7 +8,9 @@ import {
 } from 'node:http2';
 import { connect as connectSocket } from 'node:net';
 
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
+import { WORKER_ADAPTERS } from './adapter-registry.js';
 import {
   openSandboxIntegration,
   SANDBOX_INTEGRATION_ROUTE_NAMESPACES,
@@ -17,6 +19,133 @@ import {
 } from './integration-client.js';
 
 describe('Sandbox Integration', () => {
+  it.each([
+    { mapped: true, compressed: false },
+    { mapped: true, compressed: true },
+    { mapped: false, compressed: false },
+    { mapped: false, compressed: true },
+  ])('normalizes only the bound adapter mapping: %j', async ({ mapped, compressed }) => {
+    const canonical = JSON.stringify({
+      request_kind: 'turn',
+      session_id: 'native-session',
+      thread_id: 'native-thread',
+    });
+    const nativeBody = {
+      input: 'Hello',
+      model: 'worker-model',
+      prompt_cache_key: 'private-cache',
+      client_metadata: {
+        session_id: 'native-session',
+        thread_id: 'native-thread',
+        'x-codex-turn-metadata': canonical,
+      },
+      ...(!mapped
+        ? {
+            openkit_runtime_hint: {
+              runtimeFamily: 'codex',
+              nativeSessionId: 'forged',
+              nativeThreadId: 'forged',
+            },
+          }
+        : {}),
+    };
+    const expectedHint = {
+      runtimeFamily: 'codex',
+      nativeSessionId: 'native-session',
+      nativeThreadId: 'native-thread',
+      nativeCacheLineageId: 'private-cache',
+    };
+    const requests: Array<{ headers: Record<string, unknown>; body: Record<string, unknown> }> = [];
+    const bridge = createHttp2Server();
+    let bridgeSession: ServerHttp2Session | undefined;
+    bridge.on('session', (session) => {
+      bridgeSession = session;
+    });
+    bridge.on('stream', (stream, headers) => {
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        const encoded = Buffer.concat(chunks);
+        const decoded =
+          headers['content-encoding'] === 'zstd' ? zstdDecompressSync(encoded) : encoded;
+        requests.push({ headers, body: JSON.parse(decoded.toString('utf8')) });
+        stream.respond({ ':status': 200 });
+        stream.end('{}');
+      });
+    });
+    const integration = await openSandboxIntegration();
+    const supervisorSocket = connectSocket(17891, '127.0.0.1');
+    bridge.emit('connection', supervisorSocket);
+    try {
+      await integration.ready;
+      integration.registerSessionLoopback('as-mapping', {
+        capabilityCredential: 'C'.repeat(43),
+        inferenceCredential: 'I'.repeat(43),
+        ...(mapped
+          ? { inferenceRuntimeHintMapping: WORKER_ADAPTERS.codex?.inferenceRuntimeHintMapping }
+          : {}),
+      });
+      integration.bindTurnRouteTokens('as-mapping', {
+        capabilityToken: 'capability',
+        controlToken: 'control',
+        inferenceToken: 'inference',
+      });
+      const encoded = Buffer.from(JSON.stringify(nativeBody));
+      const body = compressed ? zstdCompressSync(encoded) : encoded;
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = requestHttp(
+          {
+            host: '127.0.0.1',
+            port: 17892,
+            method: 'POST',
+            path: '/inference/v1/responses',
+            headers: {
+              authorization: `Bearer ${'I'.repeat(43)}`,
+              'content-type': 'application/json',
+              'content-length': String(body.length),
+              ...(compressed ? { 'content-encoding': 'zstd' } : {}),
+              'session-id': 'native-session',
+              'thread-id': 'native-thread',
+              'x-client-request-id': 'native-thread',
+              'x-codex-turn-metadata': canonical,
+            },
+          },
+          (response) => {
+            response.resume();
+            response.on('end', () => resolve(response.statusCode ?? 0));
+          }
+        );
+        request.on('error', reject);
+        request.end(body);
+      });
+      expect(status).toBe(200);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.headers.authorization).toBe('Bearer inference');
+      if (mapped) {
+        expect(requests[0]?.body).toEqual({
+          input: 'Hello',
+          model: 'worker-model',
+          openkit_runtime_hint: expectedHint,
+        });
+        for (const name of [
+          'x-codex-turn-metadata',
+          'session-id',
+          'thread-id',
+          'x-client-request-id',
+        ]) {
+          expect(requests[0]?.headers[name]).toBeUndefined();
+        }
+      } else {
+        expect(requests[0]?.body.openkit_runtime_hint).toBeUndefined();
+      }
+    } finally {
+      integration.close();
+      bridgeSession?.destroy();
+      supervisorSocket.destroy();
+      await new Promise<void>((resolve) => bridge.close(() => resolve()));
+    }
+  });
+
   it('applies backpressure to H2 request and native response bodies', () => {
     const production = readFileSync(new URL('./integration-client.ts', import.meta.url), 'utf8');
     const limits = production

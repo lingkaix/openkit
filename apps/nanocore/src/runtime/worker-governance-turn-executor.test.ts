@@ -3719,46 +3719,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
       parentNativeThreadId?: string,
       options: { body?: Record<string, unknown>; expectedStatus?: number } = {}
     ): Promise<Response> {
-      const turnMetadata = {
-        ...(parentNativeThreadId
-          ? { parent_thread_id: parentNativeThreadId, subagent_kind: 'thread_spawn' }
-          : {}),
-        request_kind: 'turn',
-        session_id: TURN_NATIVE_SESSION_ID,
-        thread_id: nativeThreadId,
-      };
-      const encodedMetadata = JSON.stringify(turnMetadata);
       const response = await app.request('/api/worker-inference/v1/responses', {
         body: JSON.stringify({
-          client_metadata: {
-            session_id: TURN_NATIVE_SESSION_ID,
-            thread_id: nativeThreadId,
-            ...(parentNativeThreadId
-              ? {
-                  'x-codex-parent-thread-id': parentNativeThreadId,
-                  'x-openai-subagent': 'collab_spawn',
-                }
-              : {}),
-            'x-codex-turn-metadata': encodedMetadata,
-          },
           input: 'Deterministic worker inference',
           model: 'openai/gpt-5.2',
-          prompt_cache_key: nativeCacheLineageId,
+          openkit_runtime_hint: {
+            runtimeFamily: 'codex',
+            nativeSessionId: TURN_NATIVE_SESSION_ID,
+            nativeThreadId,
+            nativeCacheLineageId,
+            ...(parentNativeThreadId ? { parentNativeThreadId, subagentKind: 'thread_spawn' } : {}),
+          },
           ...options.body,
         }),
         headers: {
           authorization: `Bearer ${workerInferenceToken}`,
           'content-type': 'application/json',
-          'session-id': TURN_NATIVE_SESSION_ID,
-          'thread-id': nativeThreadId,
-          'x-client-request-id': nativeThreadId,
-          ...(parentNativeThreadId
-            ? {
-                'x-codex-parent-thread-id': parentNativeThreadId,
-                'x-openai-subagent': 'collab_spawn',
-              }
-            : {}),
-          'x-codex-turn-metadata': encodedMetadata,
         },
         method: 'POST',
       });

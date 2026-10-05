@@ -166,6 +166,9 @@ export class CodexAppServer {
   private nextId = 1;
   private outbound: Promise<void> = Promise.resolve();
   private broken = false;
+  /** RPC unavailability does not discard buffered stdout behind process exit. */
+  private stdoutBroken = false;
+  private stdoutEnded = false;
 
   /**
    * @param child Supervised App Server process with piped stdio.
@@ -182,7 +185,9 @@ export class CodexAppServer {
   ) {
     child.stdout.on('data', (chunk: Buffer) => this.onStdout(chunk));
     child.stdout.on('end', () => this.endStdout());
-    child.stdout.on('close', () => this.endStdout());
+    child.stdout.on('close', () => {
+      if (!this.stdoutEnded) this.fail('Codex app-server stdout closed before EOF.');
+    });
     child.stdout.on('error', () => this.fail('Codex app-server stdout failed.'));
     child.stderr.on('end', () => this.endStderr());
     child.stderr.on('close', () => this.endStderr());
@@ -192,7 +197,7 @@ export class CodexAppServer {
     });
     child.stderr.on('data', (chunk: Buffer) => this.onStderr(chunk));
     child.stdin.on('error', () => this.fail('Codex app-server stdin failed.'));
-    child.on('exit', () => this.fail('Codex app-server exited.'));
+    child.on('exit', () => this.fail('Codex app-server exited.', true));
     child.on('error', () => this.fail('Codex app-server failed to start.'));
   }
 
@@ -214,6 +219,7 @@ export class CodexAppServer {
     params: unknown,
     timeoutMs = this.controlTimeoutMs
   ): Promise<unknown> {
+    if (timeoutMs <= 0) throw new Error('Codex app-server control deadline expired.');
     if (this.broken) throw new Error('Codex app-server stream is unusable.');
     const id = this.nextId++;
     const abort = new AbortController();
@@ -246,9 +252,10 @@ export class CodexAppServer {
   }
 
   /** Bounded handshake notification, including any outbound backpressure. */
-  async notify(method: string): Promise<void> {
+  async notify(method: string, timeoutMs = this.controlTimeoutMs): Promise<void> {
+    if (timeoutMs <= 0) throw new Error('Codex app-server control deadline expired.');
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), this.controlTimeoutMs);
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
     try {
       await this.send({ method }, abort.signal);
     } finally {
@@ -259,7 +266,9 @@ export class CodexAppServer {
 
   /** Flushes the decoder once; EOF is loss of terminal evidence even at a frame boundary. */
   private endStdout(): void {
-    if (this.broken) return;
+    if (this.stdoutEnded) return;
+    this.stdoutEnded = true;
+    if (this.stdoutBroken) return;
     try {
       this.buffer += this.decoder.decode();
       this.fail(
@@ -273,7 +282,7 @@ export class CodexAppServer {
   }
 
   private onStdout(chunk: Buffer): void {
-    if (this.broken) return;
+    if (this.stdoutBroken || this.stdoutEnded) return;
     let text: string;
     try {
       text = this.decoder.decode(chunk, { stream: true });
@@ -299,7 +308,7 @@ export class CodexAppServer {
           return;
         }
       }
-      if (this.broken) return;
+      if (this.stdoutBroken) return;
       newline = this.buffer.indexOf('\n');
     }
   }
@@ -435,11 +444,14 @@ export class CodexAppServer {
     });
   }
 
-  private fail(reason: string): void {
-    if (this.broken) return;
+  /** Closes RPCs independently of the stdout tail, whose later failures must still invalidate close. */
+  private fail(reason: string, preserveStdout = false): void {
+    const alreadyBroken = this.broken;
+    if (alreadyBroken && this.stdoutBroken) return;
+    if (!preserveStdout) this.stdoutBroken = true;
     this.broken = true;
     this.rejectPending(reason);
-    this.onBroken(reason);
+    if (!alreadyBroken || !preserveStdout) this.onBroken(reason);
   }
 
   private rejectPending(reason: string): void {

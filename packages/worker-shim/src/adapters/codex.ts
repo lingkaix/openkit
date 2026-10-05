@@ -7,6 +7,7 @@ import {
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
+  WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
   WorkerResidentOpenInput,
@@ -15,6 +16,7 @@ import type {
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
 import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
@@ -26,9 +28,15 @@ import {
   codexTurnStatuses,
   redactDiagnostic,
 } from './codex-app-server.js';
+import { codexInferenceRuntimeHintMapping } from './codex-inference-runtime-hint.js';
+import {
+  type CodexCloseTerminal,
+  readCodexCloseRollout,
+  requireCodexCloseHistory,
+} from './codex-retaining-close.js';
 
 /** Wait after SIGTERM, and again after SIGKILL, before an exit is treated as unproved. */
-const CODEX_STOP_GRACE_MS = 2_000;
+const CODEX_STOP_GRACE_MS = LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs / 2;
 /** Complete setup control budget; the following bounded stop keeps the total below ten seconds. */
 const CODEX_SETUP_TIMEOUT_MS = 5_000;
 /** Filesystem inspection and correlated interrupt-terminal deadlines. */
@@ -299,6 +307,20 @@ class CodexResidentSession implements WorkerResidentSession {
   private closePromise: Promise<void> | null = null;
   private invalidation: Promise<WorkerAdapterResult> | null = null;
   private terminalSeen = false;
+  private lastTerminal: CodexCloseTerminal | null = null;
+  private processExited = false;
+  private terminalProofEvaluated = false;
+  private processExitEvaluated = false;
+  private pipesDrainEvaluated = false;
+  private closeProofEvaluated = false;
+  /** Releases the current Turn's observational wait; it never owns native stop. */
+  private cancelCaptureFinalization: (() => void) | null = null;
+  private stdoutEnded = false;
+  private stderrEnded = false;
+  private pipeFailure = false;
+  private persistencePreservingClose = false;
+  private orderlyStop = false;
+  private closeEvidenceLost = false;
   /** True while an intentional stop is in progress, so that exit is not a host failure. */
   private suppressExit = false;
   /** A stop did not observe process exit. Close must fail so the Harness fences. */
@@ -346,12 +368,31 @@ class CodexResidentSession implements WorkerResidentSession {
       child,
       this.secrets,
       (method, params) => this.onNotification(method, params),
-      () => {
+      (reason) => {
+        if (
+          this.closing &&
+          (reason === 'Codex app-server exited.' || reason === 'Codex app-server stdout ended.')
+        )
+          return;
+        this.closeEvidenceLost = true;
         void this.invalidateTurn('malformed-result').catch(() => undefined);
       },
       launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS
     );
+    child.stdout.once('end', () => {
+      this.stdoutEnded = true;
+    });
+    child.stderr.once('end', () => {
+      this.stderrEnded = true;
+    });
+    child.stdout.once('error', () => {
+      this.pipeFailure = true;
+    });
+    child.stderr.once('error', () => {
+      this.pipeFailure = true;
+    });
     child.on('exit', (code, signal) => {
+      this.processExited = true;
       this.recordLifecycleFact?.({ label: 'host_exit', code, signal });
       this.phase = 'absent';
       this.child = null;
@@ -362,6 +403,22 @@ class CodexResidentSession implements WorkerResidentSession {
 
   childState(): 'absent' | 'running' | 'stopping' | 'unknown' {
     return this.phase;
+  }
+
+  /** Reports independently observed native facts, without inferring drain or close from exit. */
+  nativeEvidence(): WorkerNativeEvidence {
+    return {
+      ...(this.terminalProofEvaluated ? { nativeTerminal: this.lastTerminal !== null } : {}),
+      ...(this.processExited || this.processExitEvaluated
+        ? { processExited: this.processExited }
+        : {}),
+      ...(this.pipeFailure || (this.stdoutEnded && this.stderrEnded) || this.pipesDrainEvaluated
+        ? { pipesDrained: this.stdoutEnded && this.stderrEnded && !this.pipeFailure }
+        : {}),
+      ...(this.closeProofEvaluated
+        ? { persistencePreservingClose: this.persistencePreservingClose }
+        : {}),
+    };
   }
 
   /**
@@ -393,48 +450,109 @@ class CodexResidentSession implements WorkerResidentSession {
     return { state: 'ready', reference: new TextEncoder().encode(this.threadId) };
   }
 
-  /**
-   * Shares the complete close result, including failure. This pin has no qualified native
-   * drain/flush operation; stopping a host with a loaded conversation cannot certify flush.
-   */
+  /** Fences admission and memoizes the complete qualified close result, including refusal. */
   close(): Promise<void> {
     this.closing = true;
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
   }
 
-  /** Attempts cleanup while preserving the unqualified native flush obligation. */
+  /** Qualifies only an idle paginated read barrier with unchanged retained context and orderly host absence. */
   private async closeOnce(): Promise<void> {
+    const deadline = new LifecycleDeadline(
+      this.launch.stopGraceMs === undefined
+        ? LIFECYCLE_DEFAULTS.nativeStopMs
+        : this.stopGraceMs * 2,
+      this.stopGraceMs * 2
+    );
     const requiresFlush = this.threadId !== null || this.active;
-    const stopped = await this.stopProcess();
+    this.closeProofEvaluated = requiresFlush;
+    let retained: Buffer | undefined;
+    try {
+      if (
+        this.threadId &&
+        this.rolloutPath &&
+        this.lastTerminal &&
+        !this.active &&
+        !this.unusable &&
+        this.processIsLive()
+      ) {
+        const history = await this.rpc.request(
+          'thread/read',
+          {
+            threadId: this.threadId,
+            includeTurns: true,
+          },
+          deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+        );
+        retained = await controlDeadline(
+          readCodexCloseRollout(this.rolloutPath, this.threadId),
+          deadline.workRemainingMs()
+        );
+        requireCodexCloseHistory(history, retained, this.threadId, this.lastTerminal);
+      }
+    } catch {
+      retained = undefined;
+    }
+    const stopped = await this.stopProcess(deadline, retained !== undefined);
     this.itemText.clear();
     this.earlyTerminal = null;
     if (!stopped || this.exitUnproved) {
       this.noteExitUnproved();
       throw new Error('Codex close did not confirm the process exited.');
     }
-    if (requiresFlush)
-      throw new Error(
-        'Codex close has no proved native drain/persistence flush boundary for this pin.'
-      );
+    if (!requiresFlush) return;
+    if (
+      retained &&
+      this.orderlyStop &&
+      !this.closeEvidenceLost &&
+      this.nativeEvidence().pipesDrained
+    ) {
+      try {
+        const after = await controlDeadline(
+          readCodexCloseRollout(this.rolloutPath!, this.threadId!),
+          deadline.remainingMs()
+        );
+        if (after.equals(retained)) {
+          this.persistencePreservingClose = true;
+          return;
+        }
+      } catch {
+        // A missing, torn, changed or timed-out retained prefix is not qualified close.
+      }
+    }
+    throw new Error(
+      'Codex close has no proved native drain/persistence flush boundary for this path.'
+    );
   }
 
   /**
    * Handshake only for a new conversation. Resume proves the exact id before the handle is ready.
    * A failed resume leaves no new thread.
    */
-  async establish(resumeThreadId: string | null): Promise<void> {
-    await this.rpc.request('initialize', {
-      clientInfo: { name: 'openkit-worker', title: 'OpenKit', version: CODEX_ADAPTER_VERSION },
-    });
-    await this.rpc.notify('initialized');
+  async establish(resumeThreadId: string | null, deadline: LifecycleDeadline): Promise<void> {
+    await this.rpc.request(
+      'initialize',
+      {
+        clientInfo: { name: 'openkit-worker', title: 'OpenKit', version: CODEX_ADAPTER_VERSION },
+      },
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+    );
+    await this.rpc.notify(
+      'initialized',
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+    );
     let cwd = this.open.stateRoot;
     if (resumeThreadId) {
       // Metadata-only read proves the exact directory without loading a conversation or MCP clients.
-      const metadata = (await this.rpc.request('thread/read', {
-        threadId: resumeThreadId,
-        includeTurns: false,
-      })) as ThreadBody;
+      const metadata = (await this.rpc.request(
+        'thread/read',
+        {
+          threadId: resumeThreadId,
+          includeTurns: false,
+        },
+        deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+      )) as ThreadBody;
       if (
         metadata?.thread?.id !== resumeThreadId ||
         typeof metadata.thread.cwd !== 'string' ||
@@ -444,24 +562,33 @@ class CodexResidentSession implements WorkerResidentSession {
       }
       cwd = metadata.thread.cwd;
     }
-    const idleMcpServerIds = Object.keys(await this.readEffectiveMcpServers(cwd));
+    const idleMcpServerIds = Object.keys(await this.readEffectiveMcpServers(cwd, deadline));
     if (!resumeThreadId) return;
-    const resumed = (await this.rpc.request('thread/resume', {
-      approvalPolicy: CODEX_APPROVAL_POLICY,
-      sandbox: CODEX_SANDBOX,
-      modelProvider: CODEX_PROVIDER_ID,
-      config: sessionConfig(this.open, [], idleMcpServerIds),
-      threadId: resumeThreadId,
-      cwd,
-    })) as ThreadBody;
+    const resumed = (await this.rpc.request(
+      'thread/resume',
+      {
+        approvalPolicy: CODEX_APPROVAL_POLICY,
+        sandbox: CODEX_SANDBOX,
+        modelProvider: CODEX_PROVIDER_ID,
+        config: sessionConfig(this.open, [], idleMcpServerIds),
+        threadId: resumeThreadId,
+        cwd,
+      },
+      deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+    )) as ThreadBody;
     this.rememberThread(resumed, resumeThreadId);
   }
 
   /** Reads and validates effective MCP entries without activating clients. */
   private async readEffectiveMcpServers(
-    cwd: string
+    cwd: string,
+    deadline?: LifecycleDeadline
   ): Promise<Record<string, Record<string, unknown>>> {
-    const effective = (await this.rpc.request('config/read', { includeLayers: false, cwd })) as {
+    const effective = (await this.rpc.request(
+      'config/read',
+      { includeLayers: false, cwd },
+      deadline?.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+    )) as {
       config?: { mcp_servers?: Record<string, unknown> };
     };
     if (
@@ -520,25 +647,28 @@ class CodexResidentSession implements WorkerResidentSession {
     this.boundRoutes = routeSet;
     this.active = true;
     this.terminalSeen = false;
+    this.terminalProofEvaluated = false;
+    this.lastTerminal = null;
     this.rpc.permissionRecords.length = 0;
     let capture: CodexRuntimeCapture | null = null;
     let submitted = false;
-    const native = { outstanding: false };
+    const native = {
+      outstanding: false,
+      deadline: new LifecycleDeadline(this.launch.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS),
+    };
     try {
       const setup = async (): Promise<TurnBody> => {
         await this.bindSupply(input, native);
         const threadId = this.threadId;
         if (!threadId) throw new Error('Codex binding has no thread.');
-        if (input.runtimeProvenance || input.runtimeCapture.captureCoverage.value === 'on') {
-          capture = await CodexRuntimeCapture.create(
-            input.runtimeCapture,
-            this.open.stateRoot,
-            CODEX_ADAPTER_VERSION
-          );
-          await capture.writeStdout(
-            Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: threadId })}\n`)
-          );
-        }
+        capture = await CodexRuntimeCapture.create(
+          input.runtimeCapture,
+          this.open.stateRoot,
+          CODEX_ADAPTER_VERSION
+        );
+        await capture.writeStdout(
+          Buffer.from(`${JSON.stringify({ type: 'thread.started', thread_id: threadId })}\n`)
+        );
         submitted = true;
         this.acceptingTurn = true;
         return (await this.nativeRequest(
@@ -554,13 +684,9 @@ class CodexResidentSession implements WorkerResidentSession {
           native
         )) as TurnBody;
       };
-      const started = await controlDeadline(
-        setup(),
-        this.launch.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS,
-        () => {
-          this.unusable = true;
-        }
-      );
+      const started = await controlDeadline(setup(), native.deadline.remainingMs(), () => {
+        this.unusable = true;
+      });
       const threadId = this.threadId!;
       const turnId = started.turn?.id;
       const status = started.turn?.status;
@@ -584,27 +710,33 @@ class CodexResidentSession implements WorkerResidentSession {
         throw new Error('Codex item identity did not match the accepted Turn.');
       assistantTexts(started.turn);
       this.currentTurnId = turnId;
-      const settled = this.finishTurn(turnId, status, started.turn, capture);
+      const settled = this.finishTurn(turnId, status, started.turn, capture, input.turnInput);
       return {
         settled,
-        interrupt: async () => {
+        interrupt: async (
+          deadline = new LifecycleDeadline(LIFECYCLE_DEFAULTS.nativeStopMs, this.stopGraceMs * 2)
+        ) => {
           if (this.unusable || this.phase !== 'running') {
-            if (!(await this.stopProcess()))
+            if (!(await this.stopProcess(deadline)))
               throw new Error('Codex interrupt stop remains unproved.');
             return;
           }
           try {
             await controlDeadline(
               (async () => {
-                const result = await this.rpc.request('turn/interrupt', { threadId, turnId });
+                const result = await this.rpc.request(
+                  'turn/interrupt',
+                  { threadId, turnId },
+                  deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+                );
                 if (!result || typeof result !== 'object' || Array.isArray(result))
                   throw new Error('Codex interrupt result is malformed.');
                 await settled;
               })(),
-              this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS
+              deadline.workRemainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
             );
           } catch {
-            await this.invalidateTurn('interrupt-unproved');
+            await this.invalidateTurn('interrupt-unproved', deadline);
           }
         },
       };
@@ -614,8 +746,8 @@ class CodexResidentSession implements WorkerResidentSession {
       this.currentTurnId = null;
       this.itemText.clear();
       this.active = false;
-      // No Turn was admitted: this reader owns no open handles or publishable final capture.
-      // Native cleanup must not wait behind observational collection.
+      // Stop collector scheduling immediately; a stalled observation sink must not delay native cleanup.
+      void (capture as CodexRuntimeCapture | null)?.invalidate().catch(() => undefined);
       if (!this.unusable && !this.closing && !native.outstanding && !submitted) throw error;
       return this.abandonUnaccepted(error);
     }
@@ -630,14 +762,17 @@ class CodexResidentSession implements WorkerResidentSession {
    */
   private async bindSupply(
     input: WorkerResidentTurnInput,
-    native: { outstanding: boolean }
+    native: { outstanding: boolean; deadline: LifecycleDeadline }
   ): Promise<void> {
     const key = `${input.workingDirectory}\n${[...input.mcpServerIds].sort().join('\n')}`;
     if (this.boundSupply !== null && this.boundSupply !== key) {
       throw new Error('Codex rejected a supply change; this binding does not re-list tools.');
     }
     if (this.boundSupply === null) {
-      const authoredServers = await this.readEffectiveMcpServers(input.workingDirectory);
+      const authoredServers = await this.readEffectiveMcpServers(
+        input.workingDirectory,
+        native.deadline
+      );
       const collisions = input.mcpServerIds.filter((id) => Object.hasOwn(authoredServers, id));
       const collision = collisions.find((id) => {
         const server = authoredServers[id]!;
@@ -682,7 +817,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private async startNativeThread(
     input: WorkerResidentTurnInput,
     config: Record<string, unknown>,
-    native: { outstanding: boolean }
+    native: { outstanding: boolean; deadline: LifecycleDeadline }
   ): Promise<void> {
     const started = (await this.nativeRequest(
       'thread/start',
@@ -704,7 +839,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private async applyResumedSupply(
     input: WorkerResidentTurnInput,
     config: Record<string, unknown>,
-    native: { outstanding: boolean }
+    native: { outstanding: boolean; deadline: LifecycleDeadline }
   ): Promise<void> {
     const threadId = this.threadId;
     if (!threadId) throw new Error('Codex binding has no thread.');
@@ -733,7 +868,7 @@ class CodexResidentSession implements WorkerResidentSession {
   /** Projects the complete current native Skill roots, including removal of all old roots. */
   private async setSkillRoots(
     skills: readonly { readonly id: string; readonly targetPath: string }[],
-    native: { outstanding: boolean }
+    native: { outstanding: boolean; deadline: LifecycleDeadline }
   ): Promise<void> {
     await this.nativeRequest(
       'skills/extraRoots/set',
@@ -749,11 +884,15 @@ class CodexResidentSession implements WorkerResidentSession {
   private async nativeRequest(
     method: string,
     params: unknown,
-    native: { outstanding: boolean }
+    native: { outstanding: boolean; deadline: LifecycleDeadline }
   ): Promise<unknown> {
     if (this.closing || this.unusable) throw new Error('Codex binding is closing or unusable.');
     native.outstanding = true;
-    const result = await this.rpc.request(method, params);
+    const result = await this.rpc.request(
+      method,
+      params,
+      native.deadline.remainingMs(this.launch.controlTimeoutMs ?? CODEX_RPC_TIMEOUT_MS)
+    );
     native.outstanding = false;
     return result;
   }
@@ -783,7 +922,8 @@ class CodexResidentSession implements WorkerResidentSession {
     turnId: string,
     status: string,
     turn: unknown,
-    capture: CodexRuntimeCapture | null
+    capture: CodexRuntimeCapture | null,
+    input: string
   ): Promise<WorkerAdapterResult> {
     if (status !== 'inProgress' && this.terminalSeen)
       void this.invalidateTurn('duplicate-terminal').catch(() => undefined);
@@ -795,23 +935,56 @@ class CodexResidentSession implements WorkerResidentSession {
           })
         : Promise.resolve(this.earlyTerminal ?? { status, texts: assistantTexts(turn) });
     this.earlyTerminal = null;
-    const settled = completion.then(async (outcome) => {
-      let result = normalizeCodexAssistant(outcome.status, outcome.texts);
-      await capture?.finalize().catch(() => undefined);
-      if (this.invalidation) result = await this.invalidation;
-      this.turnWaiters.delete(turnId);
-      this.itemText.delete(turnId);
-      this.currentTurnId = null;
-      this.active = false;
-      return this.withDiagnostics(result);
+    let collectionIncomplete = false;
+    let releaseCollection!: () => void;
+    const collectionCancelled = new Promise<void>((resolve) => {
+      releaseCollection = resolve;
     });
+    const cancelCollection = () => {
+      collectionIncomplete = true;
+      // invalidate stops scheduling immediately and preserves accepted observations; its queue may still be stalled.
+      void capture?.invalidate().catch(() => undefined);
+      releaseCollection();
+    };
+    this.cancelCaptureFinalization = cancelCollection;
+    const settled = completion
+      .then(async (outcome) => {
+        this.terminalProofEvaluated = true;
+        if (
+          this.terminalSeen &&
+          KNOWN_TURN_STATUSES.has(outcome.status) &&
+          outcome.status !== 'inProgress'
+        )
+          this.lastTerminal = { id: turnId, input, status: outcome.status, texts: outcome.texts };
+        let result = normalizeCodexAssistant(outcome.status, outcome.texts);
+        await Promise.race([
+          capture?.finalize().catch(() => {
+            collectionIncomplete = true;
+          }),
+          collectionCancelled,
+        ]);
+        if (this.invalidation) result = await this.invalidation;
+        this.turnWaiters.delete(turnId);
+        this.itemText.delete(turnId);
+        this.currentTurnId = null;
+        this.active = false;
+        return this.withDiagnostics(result, collectionIncomplete);
+      })
+      .finally(() => {
+        if (this.cancelCaptureFinalization === cancelCollection)
+          this.cancelCaptureFinalization = null;
+      });
     settled.catch(() => undefined);
     return settled;
   }
 
   /** Adds bounded native diagnostics, including setup warnings on completed results. */
-  private withDiagnostics(result: WorkerAdapterResult): WorkerAdapterResult {
+  private withDiagnostics(
+    result: WorkerAdapterResult,
+    collectionIncomplete = false
+  ): WorkerAdapterResult {
     const diagnostics: Record<string, string> = { reasoningEffort: 'unknown' };
+    if (collectionIncomplete) diagnostics.runtimeCapture = 'incomplete';
     if (this.reasoningEffortDelivery)
       diagnostics.reasoningEffortDelivery = this.reasoningEffortDelivery;
     if (this.nativeConfigurationWarning)
@@ -824,12 +997,23 @@ class CodexResidentSession implements WorkerResidentSession {
         .join(',')
         .slice(0, 1024);
     }
-    return { ...result, diagnostics };
+    return { ...result, diagnostics, nativeEvidence: this.nativeEvidence() };
   }
 
   private onNotification(method: string, params: unknown): void {
     if (this.active || this.acceptingTurn) this.recordLifecycleFact?.({ label: 'native_event' });
-    if (this.unusable || this.closing) return;
+    if (this.unusable) return;
+    if (this.closing) {
+      if (
+        method === 'error' ||
+        method === 'turn/started' ||
+        method === 'turn/completed' ||
+        method.startsWith('item/') ||
+        method.includes('compaction')
+      )
+        this.closeEvidenceLost = true;
+      return;
+    }
     if (method !== 'item/completed' && method !== 'turn/completed') return;
     if (!params || typeof params !== 'object' || Array.isArray(params)) {
       void this.invalidateTurn('malformed-result').catch(() => undefined);
@@ -922,21 +1106,28 @@ class CodexResidentSession implements WorkerResidentSession {
   }
 
   /** A malformed consumed native event stops this binding before settling its active Turn. */
-  private invalidateTurn(status: string): Promise<WorkerAdapterResult> {
+  private invalidateTurn(
+    status: string,
+    deadline?: LifecycleDeadline
+  ): Promise<WorkerAdapterResult> {
     this.unusable = true;
-    if (!this.invalidation) {
-      this.invalidation = this.stopProcess().then((stopped) => {
-        if (!stopped) {
-          this.noteExitUnproved();
-          const error = new Error('Codex native settlement stop remains unproved.');
-          for (const waiter of this.turnWaiters.values()) waiter.reject(error);
-          throw error;
-        }
-        this.failWaiters(status);
-        return { assistantText: null, status: 'failed' as const, stopReason: status };
-      });
-      this.invalidation.catch(() => undefined);
+    this.cancelCaptureFinalization?.();
+    if (this.invalidation) {
+      return deadline
+        ? controlDeadline(this.invalidation, deadline.remainingMs())
+        : this.invalidation;
     }
+    this.invalidation = this.stopProcess(deadline).then((stopped) => {
+      if (!stopped) {
+        this.noteExitUnproved();
+        const error = new Error('Codex native settlement stop remains unproved.');
+        for (const waiter of this.turnWaiters.values()) waiter.reject(error);
+        throw error;
+      }
+      this.failWaiters(status);
+      return { assistantText: null, status: 'failed' as const, stopReason: status };
+    });
+    this.invalidation.catch(() => undefined);
     return this.invalidation;
   }
 
@@ -968,7 +1159,7 @@ class CodexResidentSession implements WorkerResidentSession {
   /** Returns the unproved-stop Turn and remembers that close must not report success. */
   private surfaceLive(error: unknown): WorkerResidentTurn {
     this.noteExitUnproved();
-    return surfaceUnprovedCodexTurn(error, () => this.stopProcess());
+    return surfaceUnprovedCodexTurn(error, (deadline) => this.stopProcess(deadline));
   }
 
   private noteExitUnproved(): void {
@@ -987,14 +1178,26 @@ class CodexResidentSession implements WorkerResidentSession {
    * SIGTERM, then SIGKILL. True only when no process remains. A missed exit is false.
    * One in-flight stop is shared so a fence interrupt and close observe the same result.
    */
-  private stopProcess(): Promise<boolean> {
-    this.stopInFlight ??= this.stopProcessOnce().finally(() => {
-      this.stopInFlight = null;
+  private stopProcess(
+    deadline = new LifecycleDeadline(this.stopGraceMs * 2),
+    orderly = false
+  ): Promise<boolean> {
+    let work: Promise<boolean>;
+    if (this.stopInFlight) {
+      work = controlDeadline(this.stopInFlight, deadline.remainingMs()).catch(() => false);
+    } else {
+      this.stopInFlight = this.stopProcessOnce(deadline, orderly).finally(() => {
+        this.stopInFlight = null;
+      });
+      work = this.stopInFlight;
+    }
+    return work.then((stopped) => {
+      this.processExitEvaluated = true;
+      return stopped;
     });
-    return this.stopInFlight;
   }
 
-  private async stopProcessOnce(): Promise<boolean> {
+  private async stopProcessOnce(deadline: LifecycleDeadline, orderly: boolean): Promise<boolean> {
     const child = this.child;
     if (!child || typeof child.pid !== 'number' || childHasExited(child)) {
       this.child = null;
@@ -1008,7 +1211,17 @@ class CodexResidentSession implements WorkerResidentSession {
     } catch {
       // stdin may already be closed.
     }
-    const stopped = await confirmCodexChildStopped(child, this.stopGraceMs);
+    this.orderlyStop = orderly && (await waitCodexChildExit(child, deadline.workRemainingMs()));
+    const stopped =
+      this.orderlyStop || (await confirmCodexChildStopped(child, this.stopGraceMs, deadline));
+    if (stopped && orderly) {
+      await Promise.all([
+        waitCodexPipeEnd(child.stdout, deadline),
+        waitCodexPipeEnd(child.stderr, deadline),
+      ]);
+      this.pipesDrainEvaluated = true;
+    }
+    this.orderlyStop &&= child.exitCode === 0 && child.signalCode === null;
     this.suppressExit = false;
     if (stopped || childHasExited(child)) {
       this.child = null;
@@ -1060,31 +1273,58 @@ export interface CodexStoppableChild {
  *
  * @param child Process to stop.
  * @param graceMs Bound for each signal. Production uses two seconds.
+ * @param deadline Remaining enclosing cleanup budget; signal waits never restart it.
  * @returns Whether the process is gone.
  */
 export async function confirmCodexChildStopped(
   child: CodexStoppableChild,
-  graceMs = CODEX_STOP_GRACE_MS
+  graceMs = CODEX_STOP_GRACE_MS,
+  deadline = new LifecycleDeadline(graceMs * 2)
 ): Promise<boolean> {
   if (childHasExited(child)) return true;
+  if (!signalChild(child, 'SIGTERM')) return childHasExited(child);
+  if (await waitCodexChildExit(child, deadline.remainingMs(graceMs))) return true;
+  signalChild(child, 'SIGKILL');
+  return waitCodexChildExit(child, deadline.remainingMs(graceMs));
+}
+
+/** Observes process exit under the enclosing monotonic budget, releasing its listener on expiry. */
+async function waitCodexChildExit(child: CodexStoppableChild, ms: number): Promise<boolean> {
+  if (childHasExited(child)) return true;
+  if (ms <= 0) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let killTimer: ReturnType<typeof setTimeout> | undefined;
   let onExit: () => void = () => undefined;
   try {
     return await new Promise<boolean>((resolve) => {
       onExit = () => resolve(childHasExited(child));
       child.once('exit', onExit);
-      if (!signalChild(child, 'SIGTERM')) {
-        resolve(childHasExited(child));
-        return;
-      }
-      killTimer = setTimeout(() => signalChild(child, 'SIGKILL'), graceMs);
-      timer = setTimeout(() => resolve(childHasExited(child)), graceMs * 2);
+      timer = setTimeout(() => resolve(childHasExited(child)), ms);
     });
   } finally {
     clearTimeout(timer);
-    clearTimeout(killTimer);
     child.off('exit', onExit);
+  }
+}
+
+/** Observes readable EOF independently of the child's exit; close alone does not prove drain. */
+async function waitCodexPipeEnd(
+  pipe: ChildProcessWithoutNullStreams['stdout'],
+  deadline: LifecycleDeadline
+): Promise<void> {
+  if (pipe.readableEnded || pipe.destroyed) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onEnd: () => void = () => undefined;
+  try {
+    await new Promise<void>((resolve) => {
+      onEnd = resolve;
+      pipe.once('end', onEnd);
+      pipe.once('close', onEnd);
+      timer = setTimeout(resolve, deadline.remainingMs());
+    });
+  } finally {
+    clearTimeout(timer);
+    pipe.off('end', onEnd);
+    pipe.off('close', onEnd);
   }
 }
 
@@ -1099,13 +1339,13 @@ export async function confirmCodexChildStopped(
  */
 export function surfaceUnprovedCodexTurn(
   error: unknown,
-  confirmStopped: () => Promise<boolean>
+  confirmStopped: (deadline?: LifecycleDeadline) => Promise<boolean>
 ): WorkerResidentTurn {
   const settled = Promise.reject(error);
   settled.catch(() => undefined);
   return {
-    interrupt: async () => {
-      if (await confirmStopped()) return;
+    interrupt: async (deadline) => {
+      if (await confirmStopped(deadline)) return;
       throw new Error('Codex interrupt stop remains unproved.');
     },
     settled,
@@ -1171,11 +1411,9 @@ export async function openCodexResidentSession(
     launch?.stopGraceMs ?? CODEX_STOP_GRACE_MS,
     launch
   );
+  const deadline = new LifecycleDeadline(launch?.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS);
   try {
-    await controlDeadline(
-      session.establish(resumeThreadId),
-      launch?.setupTimeoutMs ?? CODEX_SETUP_TIMEOUT_MS
-    );
+    await controlDeadline(session.establish(resumeThreadId, deadline), deadline.remainingMs());
   } catch (error) {
     await session.failOpen(error, resumeThreadId, secrets);
   }
@@ -1184,6 +1422,7 @@ export async function openCodexResidentSession(
 
 /** Resident Codex App Server v2 adapter. One process per binding; close does not delete `CODEX_HOME`. */
 export const codexResidentAdapter: WorkerResidentAdapter = {
+  inferenceRuntimeHintMapping: codexInferenceRuntimeHintMapping,
   openSession(input) {
     return openCodexResidentSession(input);
   },
@@ -1193,5 +1432,8 @@ export const codexResidentAdapter: WorkerResidentAdapter = {
 export function createCodexResidentAdapter(options: {
   readonly binaryPath: string;
 }): WorkerResidentAdapter {
-  return { openSession: (input) => openCodexResidentSession(input, options) };
+  return {
+    inferenceRuntimeHintMapping: codexInferenceRuntimeHintMapping,
+    openSession: (input) => openCodexResidentSession(input, options),
+  };
 }

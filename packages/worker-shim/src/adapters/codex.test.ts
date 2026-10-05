@@ -26,7 +26,9 @@ import type {
   WorkerResidentSession,
   WorkerResidentTurnInput,
 } from '../adapter-registry.js';
+import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
+import { LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeCaptureInput } from '../runtime-capture.js';
 import { runResidentTurn } from '../turn.js';
 import {
@@ -80,6 +82,412 @@ afterEach(async () => {
 });
 
 describe('Codex App Server adapter', () => {
+  it.each([
+    'context-event',
+    'mid-frame',
+    'mid-utf8',
+  ])('R1 refuses retaining close after exit before buffered %s and EOF', async (tail) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const path = join(roots.state, 'rollout.jsonl');
+    const frames = [
+      {
+        ordinal: 0,
+        type: 'session_meta',
+        payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.160.0' },
+      },
+      { ordinal: 1, type: 'turn_context', payload: { turn_id: 'controlled-turn' } },
+      {
+        ordinal: 2,
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'prompt' }],
+          internal_chat_message_metadata_passthrough: {
+            turn_id: 'controlled-turn',
+            content_item_kinds: ['user.text'],
+          },
+        },
+      },
+      {
+        ordinal: 3,
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'controlled-turn', last_agent_message: null },
+      },
+    ];
+    await writeFile(path, `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
+    const child = controlledPeer(path, {
+      turn: { id: 'controlled-turn', status: 'completed', items: [] },
+    });
+    const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+    sessions.push(session);
+    await (await session.startTurn(turnInput(roots, [], 'prompt'))).settled;
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const original = rpc.request.bind(rpc);
+    vi.spyOn(rpc, 'request').mockImplementation((method, params, timeout) =>
+      method === 'thread/read'
+        ? Promise.resolve({
+            thread: {
+              id: NATIVE_THREAD,
+              historyMode: 'paginated',
+              turns: [
+                {
+                  id: 'controlled-turn',
+                  status: 'completed',
+                  items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
+                },
+              ],
+            },
+          })
+        : original(method, params, timeout)
+    );
+    child.stdin.on('finish', () => {
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      child.stdout.write(
+        tail === 'context-event'
+          ? `${JSON.stringify({ method: 'item/completed', params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item: { type: 'agentMessage', text: 'late context' } } })}\n`
+          : tail === 'mid-frame'
+            ? '{"method":'
+            : Buffer.from([0xe2, 0x82])
+      );
+      child.stdout.end();
+      child.stderr.end();
+    });
+    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: false,
+    });
+    expect(await readFile(path, 'utf8')).toBe(
+      `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`
+    );
+  });
+
+  it('R3 settles capture-off interruption when actual structural finalization stalls', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer(undefined, {
+      turn: { id: 'controlled-turn', status: 'completed', items: [] },
+    });
+    child.kill = vi.fn(() => {
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      child.stdout.end();
+      child.stderr.end();
+      return true;
+    }) as ChildProcessWithoutNullStreams['kill'];
+    const session = await openCodexResidentSession(openInput(roots), {
+      spawnProcess: () => child,
+      stopGraceMs: 10,
+    });
+    sessions.push(session);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const finalization = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const accepted: unknown[] = [];
+    const input = turnInput(roots, []);
+    const turn = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        emit: async (record, body) => {
+          expect(body).toBeUndefined();
+          if (record.fact.kind === 'coverage' && record.fact.reason === 'source-missing') {
+            entered();
+            await held;
+          }
+          accepted.push(record);
+        },
+      },
+    });
+    const observed = turn.settled.then((result) => result);
+    try {
+      await finalization;
+      const prior = [...accepted];
+      expect(prior.length).toBeGreaterThan(0);
+      await turn.interrupt(new LifecycleDeadline(40, 20));
+      const result = await Promise.race([observed, delay(60).then(() => 'pending')]);
+      expect(result).toMatchObject({
+        status: 'failed',
+        diagnostics: { runtimeCapture: 'incomplete' },
+        nativeEvidence: { nativeTerminal: true, processExited: true },
+      });
+      expect(accepted.slice(0, prior.length)).toEqual(prior);
+      expect((session as unknown as { active: boolean }).active).toBe(false);
+    } finally {
+      release();
+      await observed;
+    }
+  });
+
+  it('R4 bounds stop and invalidation joins without creating another signal owner', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer();
+    const session = await openCodexResidentSession(openInput(roots), {
+      spawnProcess: () => child,
+      stopGraceMs: 40,
+    });
+    sessions.push(session);
+    const signals = vi.spyOn(child, 'kill');
+    const privateSession = session as unknown as {
+      stopProcess(deadline: LifecycleDeadline): Promise<boolean>;
+      invalidateTurn(reason: string, deadline: LifecycleDeadline): Promise<unknown>;
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const owner = privateSession
+      .invalidateTurn('malformed-result', new LifecycleDeadline(80))
+      .catch(() => undefined);
+    let stop: boolean | 'pending' = 'pending';
+    let invalidation = 'pending';
+    try {
+      await vi.advanceTimersByTimeAsync(5);
+      const deadline = new LifecycleDeadline(10);
+      const joiningStop = privateSession.stopProcess(deadline).then((result) => {
+        stop = result;
+      });
+      const joiningInvalidation = privateSession
+        .invalidateTurn('interrupt-unproved', deadline)
+        .then(
+          () => {
+            invalidation = 'resolved';
+          },
+          () => {
+            invalidation = 'unproved';
+          }
+        );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(stop).toBe(false);
+      expect(invalidation).toBe('unproved');
+      await vi.advanceTimersByTimeAsync(65);
+      await Promise.all([owner, joiningStop, joiningInvalidation]);
+      expect(signals.mock.calls.map(([signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally {
+      await vi.advanceTimersByTimeAsync(100);
+      await owner;
+      vi.useRealTimers();
+    }
+  });
+
+  it('R5 omits unobserved facts and records an evaluated close refusal', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer();
+    const session = await openCodexResidentSession(openInput(roots), {
+      spawnProcess: () => child,
+      stopGraceMs: 10,
+    });
+    sessions.push(session);
+    expect(session.nativeEvidence?.()).toEqual({});
+    const turn = await session.startTurn(turnInput(roots, []));
+    child.stdout.write(terminalFrame());
+    expect((await turn.settled).nativeEvidence).toEqual({ nativeTerminal: true });
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    expect(session.nativeEvidence?.()).toEqual({ nativeTerminal: true, processExited: true });
+    child.stdout.end();
+    child.stderr.end();
+    await expect.poll(() => session.nativeEvidence?.().pipesDrained).toBe(true);
+    expect(session.nativeEvidence?.()).not.toHaveProperty('persistencePreservingClose');
+    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    expect(session.nativeEvidence?.()).toMatchObject({ persistencePreservingClose: false });
+  });
+
+  it('uses the interrupt work budget and reserves the signal tail', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const child = controlledPeer();
+    const session = await openCodexResidentSession(openInput(roots), {
+      spawnProcess: () => child,
+      stopGraceMs: 10,
+      controlTimeoutMs: 100,
+    });
+    sessions.push(session);
+    const turn = await session.startTurn(turnInput(roots, []));
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const calls = vi.spyOn(rpc, 'request');
+    child.kill = vi.fn((signal) => {
+      if (signal === 'SIGKILL') {
+        child.signalCode = 'SIGKILL';
+        child.emit('exit', null, 'SIGKILL');
+        child.stdout.end();
+        child.stderr.end();
+      }
+      return true;
+    }) as ChildProcessWithoutNullStreams['kill'];
+    await turn.interrupt(new LifecycleDeadline(40, 20));
+    const interrupt = calls.mock.calls.find(([method]) => method === 'turn/interrupt');
+    expect(interrupt?.[2]).toBeLessThanOrEqual(20);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(await turn.settled).toMatchObject({
+      status: 'failed',
+      nativeEvidence: { nativeTerminal: false, processExited: true },
+    });
+  });
+
+  it.each([
+    'barrier-failure',
+    'legacy',
+    'sibling',
+    'missing-terminal',
+    'torn',
+    'post-barrier-context',
+  ])('refuses an unqualified native retaining close: %s', async (mode) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const session = await testAdapter.openSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
+      })
+    );
+    sessions.push(session);
+    await (await session.startTurn(turnInput(roots, []))).settled;
+    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
+    const request = rpc.request.bind(rpc);
+    vi.spyOn(rpc, 'request').mockImplementation(async (method, params, timeout) => {
+      if (method !== 'thread/read') return request(method, params, timeout);
+      if (mode === 'barrier-failure') throw new Error('Injected persistence refusal');
+      const history = (await request(method, params, timeout)) as {
+        thread: { id: string; path: string; historyMode: string };
+      };
+      if (mode === 'legacy') history.thread.historyMode = 'legacy';
+      if (mode === 'sibling') history.thread.id = 'sibling';
+      if (mode === 'missing-terminal' || mode === 'torn' || mode === 'post-barrier-context') {
+        const original = await readFile(history.thread.path, 'utf8');
+        const frames = original
+          .trimEnd()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        if (mode === 'missing-terminal') {
+          frames.pop();
+          await writeFile(
+            history.thread.path,
+            frames.map((frame) => JSON.stringify(frame)).join('\n') + '\n'
+          );
+        } else if (mode === 'torn') await writeFile(history.thread.path, original.slice(0, -3));
+        else
+          await writeFile(
+            history.thread.path,
+            original +
+              JSON.stringify({
+                ordinal: frames.length,
+                type: 'turn_context',
+                payload: { turn_id: 'next-context' },
+              }) +
+              '\n'
+          );
+      }
+      return history;
+    });
+    const first = session.close();
+    await expect(first).rejects.toThrow(/drain\/persistence/);
+    expect(session.close()).toBe(first);
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      persistencePreservingClose: false,
+    });
+  }, 60_000);
+
+  it('refuses retaining close when orderly EOF shutdown needs signal escalation', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    let child: ChildProcessWithoutNullStreams | undefined;
+    const session = await openCodexResidentSession(
+      openInput(roots, {
+        inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+        capabilityBaseUrl: 'http://127.0.0.1:9',
+      }),
+      {
+        binaryPath: vendorBinary,
+        spawnProcess: (binary, args, options) => {
+          child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+          return child;
+        },
+      }
+    );
+    sessions.push(session);
+    await (await session.startTurn(turnInput(roots, []))).settled;
+    if (!child) throw new Error('Missing native child');
+    // Withhold EOF after the real persistence barrier; signals prove exit, never orderly drain.
+    vi.spyOn(child.stdin, 'end').mockImplementation(() => child!.stdin);
+    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      persistencePreservingClose: false,
+    });
+  }, 60_000);
+
+  it.each([
+    'native evidence',
+    'structural off',
+    'retaining close',
+  ])('qualifies idle paginated %s and preserves exact successor context', async (proof) => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const inference = await responsesServer();
+    const open = openInput(roots, {
+      inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
+      capabilityBaseUrl: 'http://127.0.0.1:9',
+    });
+    const session = await testAdapter.openSession(open);
+    sessions.push(session);
+    const observations: unknown[] = [];
+    const bodies: Uint8Array[] = [];
+    const input = turnInput(roots, [], 'Remember the word cedar.');
+    const result = await (
+      await session.startTurn({
+        ...input,
+        runtimeCapture: {
+          ...input.runtimeCapture,
+          emit: async (record, body) => {
+            observations.push(record);
+            if (body) bodies.push(body);
+          },
+        },
+      })
+    ).settled;
+    const handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+    if (handle.state !== 'ready') throw new Error('Missing exact handle');
+    if (proof === 'native evidence') {
+      expect(result.nativeEvidence).toEqual({ nativeTerminal: true });
+      return;
+    }
+    if (proof === 'structural off') {
+      expect(observations.length).toBeGreaterThan(0);
+      expect(JSON.stringify(observations)).toContain('child-metadata');
+      expect(bodies).toEqual([]);
+      return;
+    }
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
+    await rm(roots.control, { recursive: true, force: true });
+    await mkdir(roots.control, { recursive: true });
+    const successor = await testAdapter.openSession({ ...open, resumeReference: handle.reference });
+    sessions.push(successor);
+    const next = await (
+      await successor.startTurn(turnInput(roots, [], 'What word did I ask you to remember?'))
+    ).settled;
+    expect(next.status).toBe('completed');
+    expect(inference.bodies.at(-1)).toContain('cedar');
+    expect(inference.bodies.at(-1)).toContain('alpha-answer');
+  }, 60_000);
+
   it.each([
     false,
     true,
@@ -263,7 +671,12 @@ describe('Codex App Server adapter', () => {
       expect(await session.nativeHandle()).toEqual({ state: 'pending' });
       expect(countRollouts(await walk(roots.state))).toBe(0);
     } else {
-      await expect(execution).resolves.toEqual({ status: 'completed' });
+      await expect(execution).resolves.toEqual({
+        status: 'completed',
+        nativeEvidence: {
+          nativeTerminal: true,
+        },
+      });
       expect(started).toBe(true);
       expect(startupFailures).toEqual([]);
       expect(finalStatuses).toEqual([
@@ -790,7 +1203,7 @@ describe('Codex App Server adapter', () => {
       'completed'
     );
     const reference = await readyReferenceOf(first);
-    await expect(first.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(first.close()).resolves.toBeUndefined();
     const homeConfig =
       source === 'trusted project'
         ? `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n`
@@ -905,7 +1318,7 @@ describe('Codex App Server adapter', () => {
       'completed'
     );
     const reference = await readyReferenceOf(first);
-    await expect(first.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(first.close()).resolves.toBeUndefined();
     const authored = `[mcp_servers.alpha]\nurl = "http://127.0.0.1:${gateway.port}/capabilities/mcp/alpha"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer authored-local-credential"\n`;
     await writeFile(join(roots.state, 'config.toml'), authored);
     gateway.idle = true;
@@ -930,7 +1343,7 @@ describe('Codex App Server adapter', () => {
     expect(inference.bodies.at(-1)).not.toContain('mcp__alpha');
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(authored);
     // Scan retained bytes after host exit so shell snapshot renames cannot invalidate the scan.
-    await expect(successor.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(successor.close()).resolves.toBeUndefined();
     expect(successor.childState()).toBe('absent');
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
   }, 30_000);
@@ -1085,7 +1498,7 @@ Authorization = "Bearer retained-capability-auth"
     expect(await readFile(join(roots.state, 'auth.json'), 'utf8')).toBe(auth);
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
     const reference = await readyReferenceOf(session);
-    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(session.close()).resolves.toBeUndefined();
     const beforeResume = mcp.requestCount;
     const successor = await testAdapter.openSession(
       openInput(roots, {
@@ -1102,7 +1515,7 @@ Authorization = "Bearer retained-capability-auth"
       (await (await successor.startTurn(turnInput(roots, ['alpha'], 'Say other.'))).settled).status
     ).toBe('completed');
     expect(mcp.requestCount).toBeGreaterThan(beforeResume);
-    await expect(successor.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(successor.close()).resolves.toBeUndefined();
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
   }, 30_000);
 
@@ -1156,7 +1569,7 @@ Authorization = "Bearer retained-capability-auth"
     sessions.push(seed);
     await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
     const reference = await readyReferenceOf(seed);
-    await expect(seed.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(seed.close()).resolves.toBeUndefined();
     // The effective project layer replaces a stale home Gateway identity with an ordinary local MCP.
     const authored = `[projects.${JSON.stringify(roots.work)}]\ntrust_level = "trusted"\n[mcp_servers.alpha]\nurl = "http://127.0.0.1:${gateway.port}/capabilities/mcp/alpha"\n`;
     const project = `[mcp_servers.alpha]\nurl = "http://${hostname}:${gateway.port}/capabilities/mcp/alpha"\n[mcp_servers.alpha.http_headers]\nAuthorization = "Bearer local-mcp-auth"\n`;
@@ -1214,7 +1627,7 @@ Authorization = "Bearer retained-capability-auth"
     sessions.push(seed);
     await (await seed.startTurn(turnInput(roots, [], 'Say other.'))).settled;
     const reference = await readyReferenceOf(seed);
-    await expect(seed.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(seed.close()).resolves.toBeUndefined();
     const localScript = join(roots.work, 'local-mcp.cjs');
     const marker = join(roots.work, 'local-called.json');
     const launched = join(roots.work, 'local-launched');
@@ -1257,7 +1670,10 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(await filesContaining(roots.state, [INFERENCE_SECRET, CAPABILITY_SECRET])).toEqual([]);
     if (crossTransport && gateway) {
       const exact = await readyReferenceOf(session);
-      await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+      // Tool-call history is outside the established whole-history text projection.
+      await expect(session.close()).rejects.toThrow(/flush boundary/);
+      expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
+      expect(session.childState()).toBe('absent');
       await rm(launched);
       const successor = await testAdapter.openSession(
         openInput(roots, {
@@ -1478,6 +1894,8 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     sessions.push(session);
     expect(session.childState()).toBe('unknown');
     expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    // Failed open can time out joining its original stop; finish that owner before testing a fresh retry.
+    await (session as unknown as { stopInFlight: Promise<boolean> | null }).stopInFlight;
     const turn = await session.startTurn(turnInput(roots, []));
     await expect(turn.settled).rejects.toThrow(/unavailable/);
     const interrupt = turn.interrupt().then(
@@ -1700,7 +2118,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const otherResult = await (await other.startTurn(turnInput(otherRoots, [], 'Say other.')))
       .settled;
     expect(otherResult.assistantText).toBe('alpha-answer');
-    await expect(other.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(other.close()).resolves.toBeUndefined();
     expect(other.childState()).toBe('absent');
     expect(session.childState()).toBe('running');
 
@@ -1737,7 +2155,9 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     ).rejects.toThrow(/route/);
     expect(inference.bodies).toHaveLength(beforeLaterDirect);
 
-    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    // The earlier interrupted Turn is outside the established completed-history projection.
+    await expect(session.close()).rejects.toThrow(/flush boundary/);
+    expect(session.nativeEvidence?.().persistencePreservingClose).toBe(false);
     expect(session.childState()).toBe('absent');
     const retained = await walk(roots.state);
     expect(retained.some((name) => name.includes('rollout-'))).toBe(true);
@@ -1787,7 +2207,10 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const rolloutCount = (await walk(roots.state)).filter((name) =>
       name.includes('rollout-')
     ).length;
-    await expect(successor.close()).rejects.toThrow(/drain\/persistence/);
+    // Exact resume preserves the earlier interrupted history; it does not qualify that history for close.
+    await expect(successor.close()).rejects.toThrow(/flush boundary/);
+    expect(successor.nativeEvidence?.().persistencePreservingClose).toBe(false);
+    expect(successor.childState()).toBe('absent');
     expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(
       'model_provider = "retained-bad"\n# retained user configuration marker\n'
     );
@@ -1979,7 +2402,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     expect(JSON.stringify(cleared)).toContain('CODEX_LOCAL_SKILL_MARKER');
     expect(await readFile(join(localDir, 'SKILL.md'), 'utf8')).toBe(localBytes);
     expect(await readFile(join(skillDir, 'SKILL.md'), 'utf8')).toContain('CODEX_SKILL_MARKER_r2');
-    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+    await expect(session.close()).resolves.toBeUndefined();
     const emptySession = await testAdapter.openSession(
       openInput(roots, {
         inferenceBaseUrl: `http://127.0.0.1:${inference.port}/inference/v1`,
@@ -2271,6 +2694,20 @@ describe('round 4 failure boundaries', () => {
     expect(await Promise.race([observed, delay(60).then(() => 'pending')])).toBe('rejected');
   });
 
+  it('reports native terminal, process exit and pipe EOF independently', async () => {
+    const { child, session, roots } = await fixture();
+    const turn = await session.startTurn(turnInput(roots, []));
+    child.stdout.write(terminalFrame());
+    expect((await turn.settled).nativeEvidence).toEqual({ nativeTerminal: true });
+    child.signalCode = 'SIGKILL';
+    child.emit('exit', null, 'SIGKILL');
+    expect(session.nativeEvidence?.()).toEqual({ nativeTerminal: true, processExited: true });
+    child.stdout.end();
+    child.stderr.end();
+    await expect.poll(() => session.nativeEvidence?.().pipesDrained).toBe(true);
+    await expect(session.close()).rejects.toThrow(/drain\/persistence/);
+  });
+
   it('memoizes failed close after later process exit', async () => {
     const { child, session } = await fixture();
     const a = session.close();
@@ -2340,38 +2777,44 @@ describe('round 4 failure boundaries', () => {
   });
 
   it('bounds setup and native cleanup without waiting for an unadmitted capture', async () => {
-    const roots = await tempRoots();
-    closers.push(async () => rm(roots.base, { recursive: true, force: true }));
-    const child = controlledPeer();
-    const session = await openCodexResidentSession(openInput(roots), {
-      spawnProcess: () => child,
-      // The peer never exits; cleanup remains unproved when setup expires.
-      stopGraceMs: 5,
-      setupTimeoutMs: 10,
-      controlTimeoutMs: 20,
-    });
-    let release: (() => void) | undefined;
-    const captureWait = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const input = turnInput(roots, [], 'capture deadline', []);
-    const starting = session.startTurn({
-      ...input,
-      runtimeCapture: { ...input.runtimeCapture, emit: () => captureWait },
-    });
-    const observed = starting.then(
-      (turn) =>
-        turn.settled.then(
-          () => 'resolved',
-          () => 'rejected'
-        ),
-      () => 'rejected'
-    );
-    expect(await Promise.race([observed, delay(100).then(() => 'pending')])).toBe('rejected');
-    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
-    release!();
-    await delay(5);
-    expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    const cancelled = vi.spyOn(CodexRuntimeCapture.prototype, 'invalidate');
+    try {
+      const roots = await tempRoots();
+      closers.push(async () => rm(roots.base, { recursive: true, force: true }));
+      const child = controlledPeer();
+      const session = await openCodexResidentSession(openInput(roots), {
+        spawnProcess: () => child,
+        // The peer never exits; cleanup remains unproved when setup expires.
+        stopGraceMs: 5,
+        setupTimeoutMs: 10,
+        controlTimeoutMs: 20,
+      });
+      let release: (() => void) | undefined;
+      const captureWait = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const input = turnInput(roots, [], 'capture deadline', []);
+      const starting = session.startTurn({
+        ...input,
+        runtimeCapture: { ...input.runtimeCapture, emit: () => captureWait },
+      });
+      const observed = starting.then(
+        (turn) =>
+          turn.settled.then(
+            () => 'resolved',
+            () => 'rejected'
+          ),
+        () => 'rejected'
+      );
+      expect(await Promise.race([observed, delay(100).then(() => 'pending')])).toBe('rejected');
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+      release!();
+      await delay(5);
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+      expect(cancelled).toHaveBeenCalledOnce();
+    } finally {
+      cancelled.mockRestore();
+    }
   });
 
   it('returns unknown when exit races inspection and when inspection expires', async () => {
@@ -2608,6 +3051,24 @@ describe('round 4 failure boundaries', () => {
     const turn = await session.startTurn(turnInput(roots, []));
     await expect(turn.settled).rejects.toThrow();
     expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+  });
+
+  it.each([
+    'request',
+    'notify',
+  ])('admits no native write after the control budget expires: %s', async (operation) => {
+    const child = controlledPeer();
+    const rpc = new CodexAppServer(
+      child,
+      [],
+      () => undefined,
+      () => undefined
+    );
+    const writes = vi.fn();
+    child.stdin.on('data', writes);
+    if (operation === 'request') await expect(rpc.request('config/read', {}, 0)).rejects.toThrow();
+    else await expect(rpc.notify('initialized', 0)).rejects.toThrow();
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it('bounds the complete backpressured send and cleans listeners', async () => {

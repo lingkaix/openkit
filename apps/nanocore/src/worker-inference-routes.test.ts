@@ -1,4 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { request as requestHttp } from 'node:http';
+import { createServer as createHttp2Server, type ServerHttp2Session } from 'node:http2';
+import { connect as connectSocket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -8,6 +11,8 @@ import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-sch
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-registry.js';
+import { openSandboxIntegration } from '../../../packages/worker-shim/src/integration-client.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
@@ -869,7 +874,155 @@ describe('worker inference routes', () => {
   it.each([
     false,
     true,
-  ])('consumes canonical Codex runtime hints with provenance required=%s', async (required) => {
+  ])('maps native Codex metadata through Integration and Core with mapping=%s', async (mapped) => {
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, mapped);
+    const canonical = JSON.stringify({
+      request_kind: 'turn',
+      session_id: 'native-session',
+      thread_id: 'native-thread',
+    });
+    const native = {
+      input: 'Hello through Integration',
+      model: WORKER_LOGICAL_MODEL_ID,
+      client_metadata: {
+        session_id: 'native-session',
+        thread_id: 'native-thread',
+        'x-codex-turn-metadata': canonical,
+      },
+      prompt_cache_key: 'private-cache',
+      ...(!mapped
+        ? {
+            openkit_runtime_hint: {
+              runtimeFamily: 'codex',
+              nativeSessionId: 'forged-session',
+              nativeThreadId: 'forged-thread',
+            },
+          }
+        : {}),
+    };
+    const bridge = createHttp2Server();
+    let bridgeSession: ServerHttp2Session | undefined;
+    const coreRequests: Array<{ headers: Record<string, unknown>; body: Record<string, unknown> }> =
+      [];
+    bridge.on('session', (session) => {
+      bridgeSession = session;
+    });
+    bridge.on('stream', (stream, headers) => {
+      const chunks: Buffer[] = [];
+      stream.on('error', () => undefined);
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        void (async () => {
+          const body = Buffer.concat(chunks);
+          coreRequests.push({ headers, body: JSON.parse(body.toString('utf8')) });
+          const forwarded = new Headers();
+          for (const [key, value] of Object.entries(headers)) {
+            if (!key.startsWith(':') && typeof value === 'string') forwarded.set(key, value);
+          }
+          const response = await fixture.app.request('/api/worker-inference/v1/responses', {
+            method: 'POST',
+            headers: forwarded,
+            body,
+          });
+          stream.respond({
+            ':status': response.status,
+            'content-type': response.headers.get('content-type') ?? 'application/json',
+          });
+          stream.end(await response.text());
+        })().catch(() => {
+          if (!stream.destroyed) {
+            stream.respond({ ':status': 500 });
+            stream.end();
+          }
+        });
+      });
+    });
+    const integration = await openSandboxIntegration();
+    const socket = connectSocket(17891, '127.0.0.1');
+    bridge.emit('connection', socket);
+    try {
+      await integration.ready;
+      integration.registerSessionLoopback('as-core-mapping', {
+        capabilityCredential: 'C'.repeat(43),
+        inferenceCredential: 'I'.repeat(43),
+        ...(mapped
+          ? { inferenceRuntimeHintMapping: WORKER_ADAPTERS.codex?.inferenceRuntimeHintMapping }
+          : {}),
+      });
+      integration.bindTurnRouteTokens('as-core-mapping', {
+        capabilityToken: 'capability',
+        controlToken: 'control',
+        inferenceToken: fixture.token,
+      });
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = requestHttp(
+          {
+            host: '127.0.0.1',
+            port: 17892,
+            method: 'POST',
+            path: '/inference/v1/responses',
+            headers: {
+              authorization: `Bearer ${'I'.repeat(43)}`,
+              'content-type': 'application/json',
+              'session-id': 'native-session',
+              'thread-id': 'native-thread',
+              'x-client-request-id': 'native-thread',
+              'x-codex-turn-metadata': canonical,
+            },
+          },
+          (response) => {
+            response.resume();
+            response.on('end', () => resolve(response.statusCode ?? 0));
+          }
+        );
+        request.on('error', reject);
+        request.end(JSON.stringify(native));
+      });
+      expect(status).toBe(200);
+      expect(coreRequests).toHaveLength(1);
+      expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+      const upstream = fixture.dispatcher.responseCalls[0]?.request;
+      expect(upstream).toMatchObject({
+        input: native.input,
+        model: WORKER_PROVIDER_MODEL,
+        store: false,
+      });
+      expect(upstream).not.toHaveProperty('openkit_runtime_hint');
+      expect(upstream).not.toHaveProperty('client_metadata');
+      if (mapped) {
+        expect(coreRequests[0]?.body.openkit_runtime_hint).toEqual({
+          runtimeFamily: 'codex',
+          nativeSessionId: 'native-session',
+          nativeThreadId: 'native-thread',
+          nativeCacheLineageId: 'private-cache',
+        });
+        expect(coreRequests[0]?.headers['x-codex-turn-metadata']).toBeUndefined();
+        expect(coreRequests[0]?.body).not.toHaveProperty('client_metadata');
+        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toMatch(
+          /^rto_[a-f0-9]{24}$/
+        );
+        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toMatch(
+          /^rcl_[a-f0-9]{24}$/
+        );
+      } else {
+        expect(coreRequests[0]?.body).not.toHaveProperty('openkit_runtime_hint');
+        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeOriginRef).toBeNull();
+        expect(readWorkerInferenceCapabilityCalls(fixture)[0]?.runtimeCacheLineageRef).toBeNull();
+      }
+      expect(JSON.stringify(upstream)).not.toContain('private-cache');
+      expect(JSON.stringify(upstream)).not.toContain('native-thread');
+    } finally {
+      integration.close();
+      bridgeSession?.destroy();
+      socket.destroy();
+      await new Promise<void>((resolve) => bridge.close(() => resolve()));
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('consumes normalized runtime hints with provenance required=%s', async (required) => {
     const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, required);
     const turnMetadata = {
       parent_thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e04',
@@ -879,31 +1032,19 @@ describe('worker inference routes', () => {
       thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e02',
       turn_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e03',
     };
-    const encodedMetadata = JSON.stringify(turnMetadata);
-    const response = await postWorkerResponses(
-      fixture,
-      {
-        client_metadata: {
-          session_id: turnMetadata.session_id,
-          thread_id: turnMetadata.thread_id,
-          turn_id: turnMetadata.turn_id,
-          'x-codex-parent-thread-id': turnMetadata.parent_thread_id,
-          'x-codex-turn-metadata': encodedMetadata,
-          'x-openai-subagent': 'collab_spawn',
-        },
-        input: 'Hello from a Codex child',
-        model: WORKER_LOGICAL_MODEL_ID,
-        prompt_cache_key: 'private-runtime-cache-lineage',
+    const response = await postWorkerResponses(fixture, {
+      input: 'Hello from a Codex child',
+      model: WORKER_LOGICAL_MODEL_ID,
+      openkit_runtime_hint: {
+        nativeCacheLineageId: 'private-runtime-cache-lineage',
+        nativeSessionId: turnMetadata.session_id,
+        nativeThreadId: turnMetadata.thread_id,
+        nativeTurnId: turnMetadata.turn_id,
+        parentNativeThreadId: turnMetadata.parent_thread_id,
+        runtimeFamily: 'codex',
+        subagentKind: 'thread_spawn',
       },
-      {
-        'session-id': turnMetadata.session_id,
-        'thread-id': turnMetadata.thread_id,
-        'x-client-request-id': turnMetadata.thread_id,
-        'x-codex-parent-thread-id': turnMetadata.parent_thread_id,
-        'x-codex-turn-metadata': encodedMetadata,
-        'x-openai-subagent': 'collab_spawn',
-      }
-    );
+    });
 
     expect(response.status).toBe(200);
     expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
@@ -958,56 +1099,54 @@ describe('worker inference routes', () => {
     expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([]);
   });
 
-  it('rejects conflicting canonical Codex runtime hints before provider dispatch', async () => {
+  it.each([
+    null,
+    {},
+    { nativeSessionId: 'private-id', nativeThreadId: '', runtimeFamily: 'codex' },
+  ])('rejects malformed normalized hints before provider dispatch: %j', async (hint) => {
     const fixture = createWorkerInferenceRouteFixture();
-    const turnMetadata = {
+    const response = await postWorkerResponses(fixture, {
+      input: 'Hello',
+      model: WORKER_LOGICAL_MODEL_ID,
+      openkit_runtime_hint: hint,
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: 'worker_inference_invalid_request',
+        message: 'Worker inference request is invalid.',
+      },
+    });
+    expect(fixture.dispatcher.responseCalls).toEqual([]);
+    expect(readWorkerInferenceCapabilityCalls(fixture)).toEqual([]);
+  });
+
+  it('does not parse retired native metadata at Core', async () => {
+    const fixture = createWorkerInferenceRouteFixture(true, undefined, true, true, true);
+    const native = JSON.stringify({
       request_kind: 'turn',
-      session_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e01',
-      thread_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e02',
-      turn_id: '018f2f55-7f6d-7d95-a4d0-5f4b6f2b5e03',
-    };
-    const encodedMetadata = JSON.stringify(turnMetadata);
+      session_id: 'session',
+      thread_id: 'thread',
+    });
     const response = await postWorkerResponses(
       fixture,
       {
-        client_metadata: {
-          session_id: turnMetadata.session_id,
-          thread_id: turnMetadata.thread_id,
-          turn_id: turnMetadata.turn_id,
-          'x-codex-turn-metadata': encodedMetadata,
-        },
         input: 'Hello',
         model: WORKER_LOGICAL_MODEL_ID,
+        client_metadata: {
+          session_id: 'session',
+          thread_id: 'thread',
+          'x-codex-turn-metadata': native,
+        },
       },
       {
-        'session-id': turnMetadata.session_id,
-        'thread-id': turnMetadata.thread_id,
-        'x-client-request-id': 'spoofed-runtime-thread',
-        'x-codex-turn-metadata': encodedMetadata,
+        'session-id': 'session',
+        'thread-id': 'thread',
+        'x-client-request-id': 'thread',
+        'x-codex-turn-metadata': native,
       }
     );
-
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'worker_inference_invalid_request' },
-    });
-    expect(fixture.dispatcher.responseCalls).toEqual([]);
-  });
-
-  it('rejects present malformed canonical Codex metadata before provider dispatch', async () => {
-    const fixture = createWorkerInferenceRouteFixture();
-    const response = await postWorkerResponses(fixture, {
-      client_metadata: {
-        'x-codex-turn-metadata': { thread_id: 'nested-object' },
-      },
-      input: 'Hello',
-      model: WORKER_LOGICAL_MODEL_ID,
-    });
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'worker_inference_invalid_request' },
-    });
     expect(fixture.dispatcher.responseCalls).toEqual([]);
   });
 

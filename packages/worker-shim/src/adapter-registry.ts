@@ -184,8 +184,29 @@ export interface WorkerResidentSession {
   startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn>;
 }
 
+/** Adapter-owned, pinned projection into Core's existing WorkerInferenceRuntimeHint contract. */
+export interface WorkerInferenceRuntimeHintMapping {
+  /** Native headers consumed by this mapping and removed before the Core hop. */
+  readonly headers: readonly string[];
+  /** Native body fields consumed by this mapping and removed before the Core hop. */
+  readonly bodyFields: readonly string[];
+  /**
+   * Validates native projections and returns an ephemeral normalized hint without authority.
+   *
+   * @param headers Native inference request headers, before upstream credential substitution.
+   * @param request Decoded native inference body.
+   * @returns Core-contract hint, or undefined when native metadata is absent.
+   */
+  map(
+    headers: Headers,
+    request: Record<string, unknown>
+  ): Readonly<Record<string, unknown>> | undefined;
+}
+
 /** Worker-side adapter for one resident native runtime. */
 export interface WorkerResidentAdapter {
+  /** Pinned native inference mapping, bound once at session registration. */
+  readonly inferenceRuntimeHintMapping?: WorkerInferenceRuntimeHintMapping;
   /**
    * Opens one resident binding, new or by resume. Rejection guarantees that no native binding or
    * effect remains live; otherwise cleanup ownership must remain with the Harness and admission

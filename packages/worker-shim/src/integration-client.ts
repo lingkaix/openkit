@@ -14,6 +14,9 @@ import {
 } from 'node:http2';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
+import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
+
+import type { WorkerInferenceRuntimeHintMapping } from './adapter-registry.js';
 import type { WorkerControlFetch } from './control-client.js';
 
 const INTEGRATION_READY_TIMEOUT_MS = 10_000;
@@ -82,6 +85,8 @@ interface BoundTurnRoutes {
 interface LoopbackSession {
   readonly capabilityCredential: string;
   readonly inferenceCredential: string;
+  /** Mapping owned by the adapter bound at session registration. */
+  readonly inferenceRuntimeHintMapping?: WorkerInferenceRuntimeHintMapping;
   /** In-flight native requests attributed to the bound Turn. */
   readonly inflight: Set<AbortController>;
   turn: BoundTurnRoutes | null;
@@ -168,7 +173,11 @@ export class SandboxIntegrationClient {
    */
   public registerSessionLoopback(
     agentSessionId: string,
-    credentials: { readonly capabilityCredential: string; readonly inferenceCredential: string }
+    credentials: {
+      readonly capabilityCredential: string;
+      readonly inferenceCredential: string;
+      readonly inferenceRuntimeHintMapping?: WorkerInferenceRuntimeHintMapping;
+    }
   ): void {
     const { capabilityCredential, inferenceCredential } = credentials;
     if (
@@ -193,6 +202,9 @@ export class SandboxIntegrationClient {
     this.loopbackSessions.set(agentSessionId, {
       capabilityCredential,
       inferenceCredential,
+      ...(credentials.inferenceRuntimeHintMapping
+        ? { inferenceRuntimeHintMapping: credentials.inferenceRuntimeHintMapping }
+        : {}),
       inflight: new Set(),
       turn: null,
     });
@@ -433,9 +445,6 @@ export class SandboxIntegrationClient {
       rejectNativeRequest(request, response, 403);
       return;
     }
-    headers.authorization = `Bearer ${
-      family === 'inference' ? turn.inferenceToken : turn.capabilityToken
-    }`;
     const maxBytes = family === 'inference' ? INFERENCE_MAX_BYTES : CAPABILITY_MAX_BYTES;
     const declaredLength = Number(request.headers['content-length'] ?? 0);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
@@ -462,8 +471,17 @@ export class SandboxIntegrationClient {
     request.once('aborted', cancel);
     response.once('close', cancelIfIncomplete);
     try {
-      const body = await collectNativeRequest(request, maxBytes);
+      let body = await collectNativeRequest(request, maxBytes);
+      if (family === 'inference') {
+        try {
+          body = await normalizeNativeInference(body, headers, session.inferenceRuntimeHintMapping);
+        } catch (error) {
+          sendNativeError(response, error instanceof RangeError ? 413 : 400);
+          return;
+        }
+      }
       abort.signal.throwIfAborted();
+      headers.authorization = `Bearer ${family === 'inference' ? turn.inferenceToken : turn.capabilityToken}`;
       const upstream = await this.request(path, {
         body,
         headers,
@@ -853,4 +871,67 @@ function waitForHttp2Drain(
     stream.once('error', failed);
     signal?.addEventListener('abort', aborted, { once: true });
   });
+}
+
+/**
+ * Applies only the registered adapter's mapping and removes native fields before Core.
+ * The carriage field belongs to Integration: an unmapped runtime cannot supply one itself.
+ * Unmapped opaque bodies retain their transport behavior; Core owns representation admission.
+ *
+ * @param body Bounded encoded native body.
+ * @param headers Native headers, mutated only when the body is rewritten or fields consumed.
+ * @param mapping The bound adapter's optional pinned mapping.
+ * @returns Bounded JSON with at most one first-party normalized hint field.
+ */
+async function normalizeNativeInference(
+  body: Buffer,
+  headers: Record<string, string>,
+  mapping: WorkerInferenceRuntimeHintMapping | undefined
+): Promise<Buffer> {
+  let request: Record<string, unknown>;
+  try {
+    const encoding = (headers['content-encoding'] ?? 'identity').trim().toLowerCase();
+    let decoded = body;
+    if (encoding === 'zstd') {
+      decoded = await new Promise<Buffer>((resolve, reject) => {
+        zstdDecompress(
+          body,
+          {
+            maxOutputLength: INFERENCE_MAX_BYTES,
+            params: { [zlibConstants.ZSTD_d_windowLogMax]: 24 },
+          },
+          (error, result) => (error ? reject(error) : resolve(result))
+        );
+      });
+    } else if (encoding !== 'identity') {
+      throw new Error('Unsupported native inference encoding.');
+    }
+    const parsed: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(decoded));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Invalid native inference body.');
+    }
+    request = parsed as Record<string, unknown>;
+  } catch (error) {
+    if (!mapping) return body;
+    if ((error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new RangeError('Native inference body exceeds its limit.');
+    }
+    throw error;
+  }
+  const suppliedCarriage = Object.hasOwn(request, 'openkit_runtime_hint');
+  delete request.openkit_runtime_hint;
+  if (!mapping && !suppliedCarriage) return body;
+  if (mapping) {
+    const hint = mapping.map(new Headers(headers), request);
+    for (const name of mapping.headers) delete headers[name];
+    for (const name of mapping.bodyFields) delete request[name];
+    if (hint !== undefined) request.openkit_runtime_hint = hint;
+  }
+  const normalized = Buffer.from(JSON.stringify(request));
+  if (normalized.length > INFERENCE_MAX_BYTES) {
+    throw new RangeError('Native inference body exceeds its limit.');
+  }
+  delete headers['content-length'];
+  delete headers['content-encoding'];
+  return normalized;
 }

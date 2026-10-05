@@ -288,6 +288,9 @@ export class WorkerHarness {
         this.integration.registerSessionLoopback(body.agentSessionId, {
           capabilityCredential: body.capabilityLoopbackCredential,
           inferenceCredential: body.inferenceLoopbackCredential,
+          ...(adapter.inferenceRuntimeHintMapping
+            ? { inferenceRuntimeHintMapping: adapter.inferenceRuntimeHintMapping }
+            : {}),
         });
         loopbackRegistered = true;
       } catch {
