@@ -21,7 +21,6 @@ import type { TurnStartRuntimeContext } from './runtime/types.js';
 import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
-import { isTerminalWorkerTurnStage } from './runtime/worker-stage.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
 import * as schedulerOwners from './scheduler-records.js';
 import {
@@ -120,8 +119,14 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
  * The conversation.submit route already reaches this executor. Holding completion lets the test observe whether that route accepts the durable Worker tuple before Worker closeout.
  */
 class HoldingTurnExecutor extends CompletingTurnExecutor {
+  /** Uses the fixture-owned data root to inspect committed admission bytes. */
+  public constructor(private readonly checkpointDataRoot: string) {
+    super();
+  }
   /** Number of actual executor entries, including unresolved launches. */
   public launches = 0;
+  /** Checkpoint observed at executor entry, before completion or response delivery. */
+  public checkpointAtLaunch: ReturnType<typeof getWorkerCheckpoint> = null;
   /** Exact request bytes received by the held executor before completion. */
   public readonly inputs: string[] = [];
   /** Controlled closeout failure after canonical completion. */
@@ -147,6 +152,18 @@ class HoldingTurnExecutor extends CompletingTurnExecutor {
     input: string,
     context: TurnStartRuntimeContext = { requestId: null, workspaceRoots: [] }
   ): Promise<void> {
+    const launchedTurn = store.getTurnById(turnId);
+    const checkpointDb = openWorkspaceDb(this.checkpointDataRoot, launchedTurn.workspaceId);
+    try {
+      this.checkpointAtLaunch = getWorkerCheckpoint(
+        checkpointDb,
+        launchedTurn.workspaceId,
+        launchedTurn.threadId,
+        turnId
+      );
+    } finally {
+      checkpointDb.sqlite.close();
+    }
     this.launches += 1;
     this.inputs.push(input);
     this.launched.resolve();
@@ -282,7 +299,7 @@ function expectedArtifactReferenceItem(input: {
  *
  * `HoldingTurnExecutor.finished` resolves before checkpoint, lease, and Workspace DB cleanup.
  *
- * @param input Durable lineage for the accepted Worker Turn.
+ * @param input Durable lineage and checkpoint outcome; successful closeout is the default, while execution exceptions preserve the admitted state.
  */
 async function waitForSelectedWorkerLoopCloseout(input: {
   readonly coreDb: ReturnType<typeof openCoreDb>;
@@ -290,6 +307,7 @@ async function waitForSelectedWorkerLoopCloseout(input: {
   readonly threadId: string;
   readonly turnId: string;
   readonly workspaceId: string;
+  readonly checkpointOutcome?: 'completed' | 'preserved';
 }): Promise<void> {
   await vi.waitFor(() => {
     const leases = listSchedulerSessionLeasesForTurn(input.coreDb, {
@@ -308,7 +326,12 @@ async function waitForSelectedWorkerLoopCloseout(input: {
         input.turnId
       );
       expect(checkpoint).not.toBeNull();
-      expect(isTerminalWorkerTurnStage(checkpoint!.stage)).toBe(true);
+      expect(checkpoint!.workerSessionId).toBe(leases[0]!.agentSessionId);
+      expect(checkpoint).toMatchObject(
+        input.checkpointOutcome === 'preserved'
+          ? { stage: 'running_worker', stopReason: null }
+          : { stage: 'completed', stopReason: 'completed' }
+      );
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -322,7 +345,7 @@ describe('Assistant pending input', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const executor = new CompletingTurnExecutor();
+    const executor = new HoldingTurnExecutor(coreDb.dataRoot);
     const setup = createTestAgentSetup();
     const app = createApp({
       coreDb,
@@ -374,6 +397,17 @@ describe('Assistant pending input', () => {
         )
       );
       expect(response.status, await response.clone().text()).toBe(200);
+      await executor.launched.promise;
+      const lease = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_demo',
+        statuses: ['admitted'],
+      })[0]!;
+      expect(executor.checkpointAtLaunch).toMatchObject({
+        stage: 'running_worker',
+        workerSessionId: listSchedulerSessionLeasesForTurn(coreDb, lease)[0]!.agentSessionId,
+        stopReason: null,
+      });
+      executor.completion.resolve();
       for (
         let i = 0;
         i < 1000 &&
@@ -403,6 +437,8 @@ describe('Assistant pending input', () => {
         store.listCommandRequests().filter((receipt) => receipt.command === 'task.start')
       ).toHaveLength(0);
     } finally {
+      executor.completion.resolve();
+      await executor.finished.promise;
       coreDb.sqlite.close();
     }
   });
@@ -667,7 +703,7 @@ describe('conversation.submit worker acceptance wait', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor();
+    const executor = new HoldingTurnExecutor(coreDb.dataRoot);
     const workerSetup = createTestAgentSetup();
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
@@ -733,6 +769,15 @@ describe('conversation.submit worker acceptance wait', () => {
       expect(acceptedBeforeRelease).toBe(true);
       expect(closedBeforeRelease).toBe(false);
 
+      expect(executor.checkpointAtLaunch).toMatchObject({
+        stage: 'running_worker',
+        workerSessionId: listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: workerTurn!.threadId,
+          turnId: workerTurn!.id,
+        })[0]!.agentSessionId,
+        stopReason: null,
+      });
       const response = await pending;
       expect(response.status, await response.clone().text()).toBe(202);
       const accepted = SubmitConversationResponseSchema.parse(await response.json());
@@ -907,7 +952,7 @@ describe('conversation.submit worker acceptance wait', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor();
+    const executor = new HoldingTurnExecutor(coreDb.dataRoot);
     const workerSetup = createTestAgentSetup();
     const app = createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
@@ -969,6 +1014,7 @@ describe('conversation.submit worker acceptance wait', () => {
       }
       executor.completion.reject(new Error('private executor detail'));
       await waitForSelectedWorkerLoopCloseout({
+        checkpointOutcome: 'preserved',
         coreDb,
         dataRoot,
         workspaceId: 'ws_demo',
@@ -986,8 +1032,8 @@ describe('conversation.submit worker acceptance wait', () => {
       try {
         expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', current.threadId, turnId)).toMatchObject(
           {
-            stage: 'failed',
-            stopReason: 'error',
+            stage: 'running_worker',
+            stopReason: null,
             requestId,
           }
         );
@@ -1010,6 +1056,7 @@ describe('conversation.submit worker acceptance wait', () => {
       await pending.catch(() => undefined);
       if (accepted)
         await waitForSelectedWorkerLoopCloseout({
+          checkpointOutcome: 'preserved',
           coreDb,
           dataRoot,
           workspaceId: 'ws_demo',
@@ -1543,7 +1590,7 @@ describe('Task durable admission response', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor();
+    const executor = new HoldingTurnExecutor(coreDb.dataRoot);
     executor.failCloseout = entry === 'closeout-failure';
     const setup = createTestAgentSetup();
     const app = createAppWithWorkspaceAuthority({
@@ -1641,6 +1688,15 @@ describe('Task durable admission response', () => {
         workspaceId: 'ws_demo',
         statuses: ['queued', 'admitted', 'denied', 'cancelled', 'expired'],
       })[0]!.turnId;
+      expect(executor.checkpointAtLaunch).toMatchObject({
+        stage: 'running_worker',
+        workerSessionId: listSchedulerSessionLeasesForTurn(coreDb, {
+          workspaceId: 'ws_demo',
+          threadId: store.getTurnById(turnId).threadId,
+          turnId,
+        })[0]!.agentSessionId,
+        stopReason: null,
+      });
       let completionObserved = false;
       void executor.finished.promise.then(() => {
         completionObserved = true;
@@ -1825,7 +1881,9 @@ describe('Task durable admission response', () => {
       try {
         const checkpoint = getWorkerCheckpoint(workspaceDb, 'ws_demo', 'th_demo', turnId);
         if (entry === 'closeout-failure' || entry === 'assistant')
-          expect(checkpoint?.stage).toBe(entry === 'closeout-failure' ? 'failed' : 'completed');
+          expect(checkpoint?.stage).toBe(
+            entry === 'closeout-failure' ? 'running_worker' : 'completed'
+          );
         else expect(checkpoint).toBeNull();
       } finally {
         workspaceDb.sqlite.close();
@@ -1890,7 +1948,7 @@ describe('Task terminal replay closeout ownership', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = createDemoStore({ dataRoot });
-    const executor = new HoldingTurnExecutor();
+    const executor = new HoldingTurnExecutor(coreDb.dataRoot);
     const setup = createTestAgentSetup();
     const app = createAppWithWorkspaceAuthority({
       coreDb,

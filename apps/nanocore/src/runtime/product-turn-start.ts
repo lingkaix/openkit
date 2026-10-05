@@ -55,11 +55,11 @@ interface StartProductTurnInput {
   /** Whether to cancel deferred, denied, or unattributed shared-acquisition outcomes; own dispatch failures always cancel a still-queued admission. */
   readonly cancelDeferredAdmission?: boolean;
   /**
-   * Optional callback once this admission's Turn and resolved setup are durable.
+   * Optional callback once this admission's Turn and resolved setup are durable, carrying the exact validated lease AgentSession before executor entry.
    *
    * The dispatch loop invokes this only for this admission, including when joining another dispatcher; a late join observes the already-created Turn immediately.
    */
-  readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+  readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
 }
 
 /**
@@ -200,7 +200,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       configVersion: input.snapshot.version,
       ...(input.onTurnCreated
         ? {
-            onTurnCreated: (created) => {
+            onTurnCreated: (created, agentSessionId) => {
               if (
                 created.id !== turnId ||
                 created.workspaceId !== input.input.workspaceId ||
@@ -208,7 +208,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
               ) {
                 return;
               }
-              input.onTurnCreated?.(created);
+              input.onTurnCreated?.(created, agentSessionId);
             },
           }
         : {}),

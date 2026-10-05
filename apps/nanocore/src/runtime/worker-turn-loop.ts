@@ -1,16 +1,22 @@
-import type { ActorRef, StopReason } from '@openkit/protocol';
+import type { ActorRef, StopReason, TurnSchema } from '@openkit/protocol';
+import type { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 
 import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
+import type { FsStore } from '../lib/store.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
+import { listSchedulerSessionLeasesForTurn } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
+import { validateLiveProductTurnAdmission } from './product-turn-start.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
   createWorkerCheckpointContextDiagnostics,
   createWorkerCheckpointEvidenceDiagnostics,
+  getWorkerCheckpoint,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
   type WorkerCheckpointContextAssemblySummary,
@@ -53,13 +59,15 @@ export interface WorkerTurnLoopStartWorkerInput {
   readonly turnId: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
+  /** Binds the exact lease before acknowledging admission or entering execution. */
+  readonly onAdmitted: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
 }
 
 /**
  * Worker start effect result.
  */
 export interface WorkerTurnLoopStartWorkerResult {
-  /** Optional host worker session id. */
+  /** Exact admitted AgentSession returned after worker execution. */
   readonly workerSessionId?: string | null;
 }
 
@@ -78,7 +86,7 @@ export interface WorkerTurnLoopAwaitWorkerInput {
   readonly turnId: string;
   /** Prepared worker delegation payload. */
   readonly prepared: PreparedNextTurn;
-  /** Host worker session id returned by the start effect. */
+  /** AgentSession bound at durable worker admission. */
   readonly workerSessionId: string | null;
 }
 
@@ -107,6 +115,8 @@ export type WorkerTurnLoopAwaitWorkerEffect = (
  * Input used to execute one worker turn loop.
  */
 export interface RunWorkerTurnLoopInput {
+  /** Product store owning the exact Turn outcome. */
+  readonly store: FsStore;
   /** Core database owning current Workspace authority. */
   readonly coreDb: CoreDb;
   /** Immutable actor responsible for this worker effect. */
@@ -221,18 +231,68 @@ export async function runWorkerTurnLoop(
   let workerSessionId: string | null = null;
 
   try {
-    const started = await input.startWorker({ turnId: turn.turnId, prepared });
-    workerSessionId = started.workerSessionId ?? null;
-
-    updateWorkerCheckpoint(input.workspaceDb, {
-      authorityActor: input.triggerActor,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
+    const started = await input.startWorker({
       turnId: turn.turnId,
-      stage: 'running_worker',
-      workerSessionId,
-      ...(input.now ? { now: input.now } : {}),
+      prepared,
+      onAdmitted: (created, agentSessionId) => {
+        const checkpoint = getWorkerCheckpoint(
+          input.workspaceDb,
+          input.workspaceId,
+          input.threadId,
+          turn.turnId
+        );
+        const admission = validateLiveProductTurnAdmission({
+          coreDb: input.coreDb,
+          store: input.store,
+          actorId: input.triggerActor.id,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          turnId: turn.turnId,
+        });
+        if (
+          created.id !== turn.turnId ||
+          created.workspaceId !== input.workspaceId ||
+          created.threadId !== input.threadId ||
+          admission.lease.agentSessionId !== agentSessionId ||
+          admission.admission.turnInput !==
+            serializeStructuredWorkerDelegationRequest(prepared.delegationRequest) ||
+          !checkpoint ||
+          checkpoint.requestId !== input.requestId ||
+          checkpoint.requestInputHash !== input.requestInputHash ||
+          checkpoint.goalId !== (input.goalId ?? null) ||
+          checkpoint.taskId !== (input.taskId ?? null) ||
+          checkpoint.iteration !== 0 ||
+          checkpoint.contextDigest !== prepared.contextPackageDigest ||
+          checkpoint.stage !== 'preparing' ||
+          checkpoint.workerSessionId !== null ||
+          checkpoint.stopReason !== null
+        ) {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Worker checkpoint admission lineage requires recovery.',
+            409
+          );
+        }
+        updateWorkerCheckpoint(input.workspaceDb, {
+          authorityActor: input.triggerActor,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          turnId: turn.turnId,
+          stage: 'running_worker',
+          workerSessionId: agentSessionId,
+          ...(input.now ? { now: input.now } : {}),
+        });
+        workerSessionId = agentSessionId;
+      },
     });
+    if (!workerSessionId || started.workerSessionId !== workerSessionId) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Worker completion contradicts its checkpoint admission binding.',
+        409
+      );
+    }
 
     const worker = await input.awaitWorker({
       turnId: turn.turnId,
@@ -275,7 +335,29 @@ export async function runWorkerTurnLoop(
       contextAssembly,
     };
   } catch (error) {
-    if (error instanceof TurnStartValidationError && error.code === 'recovery_required') {
+    // An exception cannot decide an already admitted or partially persisted worker outcome.
+    // Preserve its owner tuple, including restart-cleanup interruption and completed closeout.
+    const checkpoint = getWorkerCheckpoint(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      turn.turnId
+    );
+    if (
+      (error instanceof TurnStartValidationError && error.code === 'recovery_required') ||
+      !checkpoint ||
+      checkpoint.stage !== 'preparing' ||
+      checkpoint.workerSessionId !== null ||
+      checkpoint.stopReason !== null ||
+      input.store
+        .listThreadTurns(input.workspaceId, input.threadId)
+        .some((candidate) => candidate.id === turn.turnId) ||
+      listSchedulerSessionLeasesForTurn(input.coreDb, {
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        turnId: turn.turnId,
+      }).length > 0
+    ) {
       throw error;
     }
     updateWorkerCheckpoint(input.workspaceDb, {
@@ -285,7 +367,6 @@ export async function runWorkerTurnLoop(
       turnId: turn.turnId,
       stage: 'failed',
       stopReason: 'error',
-      ...(workerSessionId ? { workerSessionId } : {}),
       diagnosticsSummary: publishedErrorMessage(
         error,
         error instanceof Error ? undefined : String(error)

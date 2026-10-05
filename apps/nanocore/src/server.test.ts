@@ -5951,7 +5951,10 @@ describe('nanocore server', () => {
     }
   });
 
-  it('keeps a failed Task checkpoint fail-closed when its product Turn is interrupted', async () => {
+  it.each([
+    'interrupted',
+    'running',
+  ] as const)('keeps a failed Task checkpoint fail-closed with distinct %s product Turn diagnostics', async (status) => {
     const coreDb = createCoreDb();
     const store = createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_task_interrupted_boot';
@@ -5966,7 +5969,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, { status: 'interrupted' });
+    store.updateTurn(turn.id, { status });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_demo');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -5988,7 +5991,10 @@ describe('nanocore server', () => {
         })
       ).rejects.toMatchObject({
         code: 'recovery_required',
-        message: 'The boot Task checkpoint still has a live product Turn.',
+        message:
+          status === 'interrupted'
+            ? 'The boot Task checkpoint has a terminal interrupted Turn with unresolved checkpoint recovery.'
+            : 'The boot Task checkpoint still has a live product Turn.',
       });
       expect(getWorkerCheckpoint(workspaceDb, 'ws_demo', threadId, turn.id)).toEqual(checkpoint);
     } finally {

@@ -1267,12 +1267,9 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
 /**
  * Clears one terminal Task checkpoint that no longer has a matching scheduler lease.
  *
- * A live or contradictory owner tuple stays fail-closed. Cancelled admissions and
- * turn-start failures persist a failed checkpoint before a lease exists; boot must
- * reclaim those rows so scheduler checkpoint recovery is not degraded by leftovers
- * that have no live worker. A null-session checkpoint whose only lease is `failed`
- * with `turn-start-failed` and `needs-evidence` is cleared without re-importing
- * runtime provenance. That skip does not apply to any other lease tuple.
+ * A live, interrupted, missing-Turn, or contradictory owner tuple stays fail-closed.
+ * Only an already collectable terminal Turn permits checkpoint cleanup here.
+ * A null-session checkpoint whose sole lease proves a failed start skips runtime provenance; every other lease tuple keeps that check.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
  * @param leases Scheduler leases for the checkpoint Turn, which are already not an exact match.
@@ -1316,7 +1313,12 @@ async function clearStaleDirectTaskCheckpointWithoutExactLease(
   } catch {
     throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
-  // Interrupted Turns stay fail-closed here because restart recovery may still own them.
+  // Interrupted Turns are sealed terminals whose checkpoint recovery may still have an owner.
+  if (turn.status === 'interrupted') {
+    throw directTaskModeRecoveryError(
+      'The boot Task checkpoint has a terminal interrupted Turn with unresolved checkpoint recovery.'
+    );
+  }
   if (!isCheckpointCollectableTurnStatus(turn.status)) {
     throw directTaskModeRecoveryError('The boot Task checkpoint still has a live product Turn.');
   }
@@ -1862,7 +1864,7 @@ export function createConversationService({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
   readonly workerCoordinatorCandidates: (
@@ -2888,6 +2890,7 @@ export function createConversationService({
         const workerLoop = (async () => {
           try {
             await runWorkerTurnLoop({
+              store,
               coreDb: coreDb!,
               triggerActor,
               requestActor: actor,
@@ -2938,7 +2941,7 @@ export function createConversationService({
                 };
               },
               reserveTurn: () => ({ turnId: reservedTurnId }),
-              startWorker: async ({ turnId, prepared }) => {
+              startWorker: async ({ turnId, prepared, onAdmitted }) => {
                 const workerStorageChoice = directTaskWorkerStorageChoice(
                   chatInput.workerStorageChoice
                 );
@@ -2958,10 +2961,8 @@ export function createConversationService({
                   requestedAgentId: agentId!,
                   reservedTurnId: turnId,
                   ...(workerStorageChoice ? { workerStorageChoice } : {}),
-                  onTurnCreated: (created) => {
-                    if (created.id !== turnId) {
-                      return;
-                    }
+                  onTurnCreated: (created, agentSessionId) => {
+                    onAdmitted(created, agentSessionId);
                     const createdAt = created.startedAt ?? new Date().toISOString();
                     for (const artifact of artifacts) {
                       store.createItem({
@@ -3218,6 +3219,7 @@ export function createConversationService({
           execute: async (admit) => {
             try {
               await runWorkerTurnLoop({
+                store,
                 coreDb,
                 triggerActor,
                 requestActor: actor,
@@ -3233,7 +3235,7 @@ export function createConversationService({
                   knowledgeSelectionInput: null,
                 }),
                 reserveTurn: () => ({ turnId: reservedTurnId }),
-                startWorker: async ({ turnId, prepared }) => {
+                startWorker: async ({ turnId, prepared, onAdmitted }) => {
                   const turn = await startModeWorkerTurn({
                     triggerActor,
                     requestActor: actor,
@@ -3244,11 +3246,8 @@ export function createConversationService({
                     requestId: chatInput.requestId,
                     requestedAgentId: taskDecision.worker.agentId,
                     reservedTurnId: turnId,
-                    onTurnCreated: (created) => {
-                      if (created.id !== turnId)
-                        throw directTaskModeRecoveryError(
-                          'The Assistant Task admitted another Turn.'
-                        );
+                    onTurnCreated: (created, agentSessionId) => {
+                      onAdmitted(created, agentSessionId);
                       validateLiveTaskAdmission({
                         coreDb,
                         store,
@@ -3750,6 +3749,7 @@ export function createConversationService({
           };
           try {
             await runWorkerTurnLoop({
+              store,
               coreDb,
               triggerActor: turn.triggerActor,
               workspaceDb: taskDb,
@@ -3764,7 +3764,7 @@ export function createConversationService({
                 knowledgeSelectionInput: null,
               }),
               reserveTurn: () => ({ turnId: taskTurnId }),
-              startWorker: async ({ turnId: reservedTurnId, prepared }) => {
+              startWorker: async ({ turnId: reservedTurnId, prepared, onAdmitted }) => {
                 const worker = await startModeWorkerTurn({
                   store,
                   triggerActor: turn.triggerActor,
@@ -3774,6 +3774,7 @@ export function createConversationService({
                   requestId,
                   requestedAgentId: delegation.taskDecision!.worker.agentId,
                   reservedTurnId,
+                  onTurnCreated: onAdmitted,
                 });
                 return { workerSessionId: worker.agentSessionId ?? null };
               },
@@ -3941,7 +3942,7 @@ export function createTaskStartOperation({
     readonly requestedAgentId: string;
     readonly reservedTurnId?: string | undefined;
     readonly workerStorageChoice?: SchedulerWorkerStorageChoice;
-    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+    readonly onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,
@@ -4111,6 +4112,7 @@ export function createTaskStartOperation({
       const observed = observeTurnAdmission({
         execute: async (admit) => {
           await runWorkerTurnLoop({
+            store,
             coreDb,
             triggerActor,
             requestActor: actor,
@@ -4163,7 +4165,7 @@ export function createTaskStartOperation({
               };
             },
             reserveTurn: () => ({ turnId: reservedTurnId }),
-            startWorker: async ({ turnId, prepared }) => {
+            startWorker: async ({ turnId, prepared, onAdmitted }) => {
               const turn = await startModeWorkerTurn({
                 triggerActor,
                 requestActor: actor,
@@ -4176,9 +4178,8 @@ export function createTaskStartOperation({
                 requestedAgentId: taskDecision.worker.agentId,
                 reservedTurnId: turnId,
                 ...(workerStorageChoice ? { workerStorageChoice } : {}),
-                onTurnCreated: (created) => {
-                  if (created.id !== turnId)
-                    throw directTaskModeRecoveryError('The Task admitted another Turn.');
+                onTurnCreated: (created, agentSessionId) => {
+                  onAdmitted(created, agentSessionId);
                   validateLiveTaskAdmission({
                     coreDb,
                     store,

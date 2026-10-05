@@ -103,11 +103,11 @@ export interface RunSchedulerDispatchLoopInput {
     readonly catalog: WorkspaceMcpServerCatalog;
   }[];
   /**
-   * Optional callback once Turn and resolved setup are durable; the owning dispatcher invokes it before executor start, and a late join observes the already-created Turn immediately.
+   * Optional callback once Turn and resolved setup are durable, carrying the validated lease AgentSession; the owning dispatcher invokes it before executor start, and a late join observes that same binding immediately.
    *
    * Product callers must filter this to the exact requested admission Turn.
    */
-  onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+  onTurnCreated?: (turn: z.infer<typeof TurnSchema>, agentSessionId: string) => void;
   /** Reports the admission owning subsequent failures, or null during shared acquisition. */
   onDispatchAttribution?: (queueEntryId: string | null) => void;
 }
@@ -152,7 +152,7 @@ type SchedulerPreparationOutcome =
 interface SchedulerPreparationClaim {
   readonly outcome: Promise<SchedulerPreparationOutcome>;
   readonly turnCreatedListeners: Set<NonNullable<RunSchedulerDispatchLoopInput['onTurnCreated']>>;
-  createdTurn?: z.infer<typeof TurnSchema>;
+  createdTurn?: { turn: z.infer<typeof TurnSchema>; agentSessionId: string };
 }
 
 /** Non-durable preparation ownership shared by all dispatch paths for one data root. */
@@ -185,7 +185,8 @@ async function waitForSchedulerPreparation(
 ): Promise<SchedulerDispatchLoopResult> {
   input.onDispatchAttribution?.(input.callerQueueEntryId ?? null);
   if (input.onTurnCreated) {
-    if (claim.createdTurn) input.onTurnCreated(claim.createdTurn);
+    if (claim.createdTurn)
+      input.onTurnCreated(claim.createdTurn.turn, claim.createdTurn.agentSessionId);
     else claim.turnCreatedListeners.add(input.onTurnCreated);
   }
   const outcome = await claim.outcome;
@@ -261,10 +262,10 @@ export async function runSchedulerDispatchLoop(
             attributedQueueEntryId = queueEntryId;
             input.onDispatchAttribution?.(queueEntryId);
           },
-          onTurnCreated: (turn) => {
-            claim.createdTurn = turn;
-            input.onTurnCreated?.(turn);
-            for (const listener of claim.turnCreatedListeners) listener(turn);
+          onTurnCreated: (turn, agentSessionId) => {
+            claim.createdTurn = { turn, agentSessionId };
+            input.onTurnCreated?.(turn, agentSessionId);
+            for (const listener of claim.turnCreatedListeners) listener(turn, agentSessionId);
             claim.turnCreatedListeners.clear();
           },
         },
@@ -497,7 +498,12 @@ async function dispatchSchedulerAdmission(
           ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
           ...(input.configVersion !== undefined ? { configVersion: input.configVersion } : {}),
           ...(input.dependencies ? { dependencies: input.dependencies } : {}),
-          ...(input.onTurnCreated ? { onTurnCreated: input.onTurnCreated } : {}),
+          ...(input.onTurnCreated
+            ? {
+                onTurnCreated: (turn: z.infer<typeof TurnSchema>) =>
+                  input.onTurnCreated!(turn, dispatch.lease.agentSessionId),
+              }
+            : {}),
         });
         startedTurns.push({ dispatch, handle });
       } finally {

@@ -10,6 +10,7 @@ import {
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import type { FsStore } from '../lib/store.js';
+import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { goalActor, readGoalView } from './goal-owner.js';
@@ -20,7 +21,7 @@ import {
   runIdempotentCommand,
 } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { clearWorkerCheckpoint } from './worker-checkpoints.js';
+import { getWorkerCheckpoint } from './worker-checkpoints.js';
 import { runWorkerTurnLoop } from './worker-turn-loop.js';
 
 /** Ordinary Task worker starter supplied by existing product Turn assembly. */
@@ -35,7 +36,7 @@ export type TaskWorkerStarter = (input: {
   requestedAgentId: string;
   reservedTurnId: string;
   /** Called only after the ordinary scheduler has admitted and persisted this exact Task Turn. */
-  onTurnCreated: (turn: ReturnType<FsStore['createTurn']>) => void;
+  onTurnCreated: (turn: ReturnType<FsStore['createTurn']>, agentSessionId: string) => void;
 }) => Promise<ReturnType<FsStore['createTurn']>>;
 /** Task inputs contain current read citations, never a second per-Task proposal. */
 const CoordinatorTaskInputSchema = z
@@ -123,6 +124,7 @@ export function createCoordinatorTaskTool(options: {
             });
             const workerDb = options.openWorkspace(goal.workspaceId);
             const workerLoop = runWorkerTurnLoop({
+              store: options.store,
               coreDb: options.coreDb!,
               triggerActor: { kind: 'user', id: actor.userId },
               requestActor: actor,
@@ -157,7 +159,7 @@ export function createCoordinatorTaskTool(options: {
                 );
                 return { turnId };
               },
-              startWorker: async () => {
+              startWorker: async ({ onAdmitted }) => {
                 const ended = await options.startWorker({
                   store: options.store,
                   triggerActor: { kind: 'user', id: actor.userId },
@@ -168,7 +170,10 @@ export function createCoordinatorTaskTool(options: {
                   requestId,
                   requestedAgentId: input.agentId,
                   reservedTurnId: turnId,
-                  onTurnCreated: resolveAccepted,
+                  onTurnCreated: (created, agentSessionId) => {
+                    onAdmitted(created, agentSessionId);
+                    resolveAccepted(created);
+                  },
                 });
                 return { workerSessionId: ended.agentSessionId ?? null };
               },
@@ -189,6 +194,22 @@ export function createCoordinatorTaskTool(options: {
               },
             });
             void workerLoop
+              .then(async () => {
+                // Reuse ordinary Task closeout, including its required durable receipt predicate.
+                const checkpoint = getWorkerCheckpoint(
+                  workerDb,
+                  goal.workspaceId,
+                  threadId,
+                  turnId
+                );
+                if (checkpoint)
+                  await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                    coreDb: options.coreDb!,
+                    store: options.store,
+                    workspaceDb: workerDb,
+                    checkpoint,
+                  });
+              })
               .catch((error) => {
                 rejectAccepted(error);
                 const ended = options.store
@@ -205,7 +226,6 @@ export function createCoordinatorTaskTool(options: {
                   });
               })
               .finally(() => {
-                clearWorkerCheckpoint(workerDb, goal.workspaceId, threadId, turnId);
                 workerDb.sqlite.close();
               });
             return await accepted;

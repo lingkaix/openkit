@@ -5,19 +5,28 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
+import { ProviderRegistry } from '../providers/registry.js';
+import { completeSchedulerLeaseForTerminalTurn } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { TurnStartValidationError } from './orchestrator.js';
+import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
 import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
 
 it.each([
   'admitted',
+  'interrupted',
   'read-denied',
   'refused',
   'recovery-required-refusal',
@@ -47,19 +56,111 @@ it.each([
           'Capacity inspection refused before admission.',
           409
         );
-      const turn = store.createTurn(
-        input.workspaceId,
-        input.threadId,
-        input.prompt,
-        input.triggerActor,
-        undefined,
-        { turnId: input.reservedTurnId, startedAt: '2026-10-01T00:00:00.000Z' }
-      );
-      input.onTurnCreated(turn);
-      return store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
+      const manifest = createTestAgentSetup().manifest;
+      let result: ReturnType<FsStore['createTurn']> | undefined;
+      await startProductTurn({
+        coreDb,
+        store,
+        triggerActor: input.triggerActor,
+        requestActor: input.requestActor,
+        snapshot: createInMemoryRuntimeConfigSnapshot({
+          agentManifests: [manifest],
+          dataRoot: null,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Fixture',
+              kind: 'local',
+              defaultModel: 'openai/gpt-5.2',
+              models: ['openai/gpt-5.2'],
+              modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+            },
+          ]),
+        }),
+        schedulerEpoch: 1,
+        workerPlacement: 'local',
+        providerCredentialResolver: () => null,
+        reservedTurnId: input.reservedTurnId,
+        input: {
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: input.requestId,
+          input: input.prompt,
+          agentId: manifest.id,
+        },
+        onTurnCreated: (created, agentSessionId) => {
+          input.onTurnCreated(created, agentSessionId);
+          const checkpoint = listThreadWorkerCheckpoints(db, ws.id, input.threadId)[0]!;
+          expect(checkpoint).toMatchObject({
+            stage: 'running_worker',
+            workerSessionId: agentSessionId,
+            stopReason: null,
+          });
+        },
+        turnExecutor: {
+          capabilities: {},
+          eventFamilies: [],
+          prepareAgentSessionForTurn: async () => ({
+            agentSessionId: 'as_goal_fixture',
+            currentAgentSession: null,
+            replacementRequired: false,
+            sessionCompatibilityKey: 'sha256:fixture',
+          }),
+          startTurn: async (
+            _store: FsStore,
+            turnId: string,
+            _prompt: string,
+            context: { agentSessionId: string }
+          ) => {
+            const turn = store.getTurnById(turnId);
+            const at = turn.startedAt!;
+            store.createAgentSession({
+              id: context.agentSessionId,
+              agentId: manifest.id,
+              workspaceId: ws.id,
+              threadId: input.threadId,
+              status: outcome === 'interrupted' ? 'interrupted' : 'idle',
+              message: null,
+              createdAt: at,
+              updatedAt: at,
+            });
+            store.createItem({
+              id: `it_user_${turnId}`,
+              workspaceId: ws.id,
+              threadId: input.threadId,
+              turnId,
+              type: 'user-message',
+              status: 'completed',
+              text: input.prompt,
+              actor: input.triggerActor,
+              createdAt: at,
+              completedAt: at,
+            });
+            result = store.updateTurn(turnId, {
+              agentSessionId: context.agentSessionId,
+              status: outcome === 'interrupted' ? 'interrupted' : 'completed',
+              completedAt: at,
+            });
+            if (outcome === 'interrupted')
+              throw new TurnStartValidationError(
+                'workspace_access_denied',
+                'Workspace access denied.',
+                403
+              );
+            store.emitTurnEvent(turnId, {
+              event: 'turn.completed',
+              requestId: input.requestId,
+              workspaceId: ws.id,
+              threadId: input.threadId,
+              turnId,
+              data: { type: 'turn-completed', stopReason: 'completed', turn: result },
+            });
+          },
+        } as never,
       });
+      completeSchedulerLeaseForTerminalTurn(coreDb, result!);
+      return result!;
     }
   );
   try {
@@ -236,7 +337,12 @@ it.each([
         .run(retainedBytes, task.threadId);
       expect(readGoalView(store, db, goal.goalId).tasks).toEqual(linked.tasks);
       const checkpoints = listThreadWorkerCheckpoints(db, ws.id, task.threadId);
-      expect(checkpoints).toEqual([]);
+      expect(checkpoints).toMatchObject([
+        {
+          stage: outcome === 'recovery-required-refusal' ? 'preparing' : 'failed',
+          workerSessionId: null,
+        },
+      ]);
       // Reopening the owners must preserve the attempted citation without inventing admission or retry.
       const reopened = openWorkspaceDb(root, ws.id);
       try {
@@ -255,7 +361,15 @@ it.each([
     expect(linked.tasks).toMatchObject([
       { cardId: card.cardId, cardRevision: 0, planVersionId: plan.planVersionId, missing: false },
     ]);
-    expect(linked.tasks[0]!.turns).toMatchObject([{ status: 'completed' }]);
+    expect(linked.tasks[0]!.turns).toMatchObject([
+      { status: outcome === 'interrupted' ? 'interrupted' : 'completed' },
+    ]);
+    const checkpoints = listThreadWorkerCheckpoints(db, ws.id, linked.tasks[0]!.threadId);
+    if (outcome === 'interrupted')
+      expect(checkpoints).toMatchObject([
+        { stage: 'running_worker', stopReason: null, workerSessionId: 'as_goal_fixture' },
+      ]);
+    else expect(checkpoints).toEqual([]);
     const admittedTurn = store.listThreadTurns(ws.id, linked.tasks[0]!.threadId)[0]!;
     expect(linked.tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
     expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({
