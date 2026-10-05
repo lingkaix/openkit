@@ -29,7 +29,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{RwLock, Semaphore, watch};
 
 use crate::credential_slots::{
     CredentialSelectionContext, CredentialSlot, SelectedCredential, SlotPairPaths,
@@ -39,7 +39,7 @@ use crate::epoch_coordinator::RuntimeEffectKind;
 use crate::sandbox_bridge::{
     CONNECTION_RECEIVE_WINDOW_BYTES, INFERENCE_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
     PER_STREAM_RECEIVE_WINDOW_BYTES, RetainedExportResult, RouteFamily,
-    WORKER_CONTROL_IN_FLIGHT_BYTES,
+    WORKER_CONTROL_IN_FLIGHT_BYTES, route_stream_limit,
 };
 
 /// Per-request capability collection bound, independent of the aggregate DATA reservation.
@@ -69,6 +69,8 @@ struct OuterRouteTarget {
     authority: String,
     predecessor_fenced: watch::Sender<bool>,
     sender: h2::client::SendRequest<Bytes>,
+    /// Outgoing route permits shared by every nested bridge on this physical session.
+    route_permits: [Arc<Semaphore>; 3],
 }
 
 impl OuterRouteProjection {
@@ -90,6 +92,12 @@ impl OuterRouteProjection {
             authority: authority.trim_end_matches('/').to_string(),
             predecessor_fenced,
             sender,
+            route_permits: [
+                RouteFamily::WorkerControl,
+                RouteFamily::Inference,
+                RouteFamily::Capabilities,
+            ]
+            .map(|family| Arc::new(Semaphore::new(route_stream_limit(family)))),
         });
     }
 
@@ -97,9 +105,8 @@ impl OuterRouteProjection {
     ///
     /// # Errors
     ///
-    /// Rejects a non-POST request, an oversized body, outer
-    /// connection failure, or response delivery failure. The returned boolean is
-    /// true only for an exact credential-free Harness poll accepted with empty `204`.
+    /// Rejects a non-POST request, an oversized body, outer connection failure, cancellation, exhausted outer family capacity, or response delivery failure.
+    /// The returned boolean is true only for an exact credential-free Harness poll accepted with empty `204`.
     pub async fn forward(
         &self,
         family: RouteFamily,
@@ -141,6 +148,15 @@ impl OuterRouteProjection {
             send_nested_status(&mut respond, StatusCode::BAD_REQUEST)?;
             return Err("sandbox Harness route supplied a forbidden header");
         }
+        let family_index = match family {
+            RouteFamily::WorkerControl => 0,
+            RouteFamily::Inference => 1,
+            RouteFamily::Capabilities => 2,
+        };
+        let Ok(_outer_permit) = target.route_permits[family_index].try_acquire() else {
+            send_nested_status(&mut respond, StatusCode::TOO_MANY_REQUESTS)?;
+            return Err("outer route family saturated");
+        };
         let body_limit = match family {
             RouteFamily::WorkerControl => WORKER_CONTROL_IN_FLIGHT_BYTES,
             RouteFamily::Inference => INFERENCE_IN_FLIGHT_BYTES,
@@ -183,21 +199,27 @@ impl OuterRouteProjection {
                 Err("outer route predecessor fenced")
             }
             result = async move {
-                let mut ready = target
-                    .sender
-                    .clone()
-                    .ready()
-                    .await
-                    .map_err(|_| "outer route connection closed")?;
-                let (outer_response, mut outer_body) = ready
-                    .send_request(outer_request, body.is_empty())
-                    .map_err(|_| "outer route send failed")?;
-                if !body.is_empty() {
-                    send_h2_bytes(&mut outer_body, body.freeze(), true).await?;
-                }
-                let outer_response = outer_response
-                    .await
-                    .map_err(|_| "outer route response failed")?;
+                // Observe cancellation through SendResponse until headers, then through the returned SendStream; h2 forbids polling SendResponse after send_response.
+                // Retain the request handle through response relay so cancellation drops both outer stream halves and h2 sends CANCEL.
+                let (outer_response, _outer_body) = tokio::select! {
+                    biased;
+                    _ = std::future::poll_fn(|cx| respond.poll_reset(cx)) => {
+                        return Err("nested route cancelled");
+                    }
+                    result = async move {
+                        let mut ready = target.sender.clone().ready().await
+                            .map_err(|_| "outer route connection closed")?;
+                        let (outer_response, mut outer_body) = ready
+                            .send_request(outer_request, body.is_empty())
+                            .map_err(|_| "outer route send failed")?;
+                        if !body.is_empty() {
+                            send_h2_bytes(&mut outer_body, body.freeze(), true).await?;
+                        }
+                        let outer_response = outer_response.await
+                            .map_err(|_| "outer route response failed")?;
+                        Ok::<_, &'static str>((outer_response, outer_body))
+                    } => result?,
+                };
                 let accepted_initial_harness_poll =
                     initial_harness_poll && outer_response.status() == StatusCode::NO_CONTENT;
                 let (response_parts, mut response_body) = outer_response.into_parts();
@@ -212,7 +234,15 @@ impl OuterRouteProjection {
                     .send_response(response, false)
                     .map_err(|_| "nested route response failed")?;
                 let mut response_bytes = 0;
-                while let Some(chunk) = response_body.data().await {
+                loop {
+                    let chunk = tokio::select! {
+                        biased;
+                        _ = std::future::poll_fn(|cx| nested_output.poll_reset(cx)) => {
+                            return Err("nested route cancelled");
+                        }
+                        chunk = response_body.data() => chunk,
+                    };
+                    let Some(chunk) = chunk else { break; };
                     let chunk = chunk.map_err(|_| "outer route response failed")?;
                     response_bytes += chunk.len();
                     send_h2_bytes(&mut nested_output, chunk.clone(), false).await?;
@@ -1254,6 +1284,7 @@ where
     let file_data = 1_u32;
     let control_readiness = 1_u32;
     debug_assert_eq!(file_data + control_readiness, 2);
+    // The client setting limits remote-initiated streams; OuterRouteTarget's shared permits enforce the outgoing route partition, leaving the two existing serialized effect reservations.
     builder
         .initial_connection_window_size(CONNECTION_RECEIVE_WINDOW_BYTES as u32)
         .initial_window_size(PER_STREAM_RECEIVE_WINDOW_BYTES as u32)
@@ -3413,6 +3444,101 @@ mod tests {
         })
         .await
         .expect("capability collection bound must settle");
+    }
+
+    /// The outer family ceilings belong to the physical session even when independent nested connections forward into it.
+    #[tokio::test]
+    async fn outer_route_family_limits_apply_across_nested_connections() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let projection = OuterRouteProjection::new();
+            let (outer_client_io, outer_server_io) = tokio::io::duplex(256 * 1024);
+            let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+            let outer_server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(outer_server_io).await.unwrap();
+                while let Some(incoming) = connection.accept().await {
+                    let (request, mut respond) = incoming.unwrap();
+                    let seen_tx = seen_tx.clone();
+                    tokio::spawn(async move {
+                        if request.uri().path().ends_with("/fresh") {
+                            respond.send_response(Response::builder().status(StatusCode::NO_CONTENT).body(()).unwrap(), true).unwrap();
+                        } else {
+                            seen_tx.send(request.uri().path().to_string()).unwrap();
+                            let _ = std::future::poll_fn(|cx| respond.poll_reset(cx)).await;
+                        }
+                    });
+                }
+            });
+            let (outer_sender, outer_connection) = h2::client::handshake(outer_client_io).await.unwrap();
+            let outer_driver = tokio::spawn(outer_connection);
+            projection.bind("http://core.test", outer_sender).await;
+            let mut clients = Vec::new();
+            let mut tasks = Vec::new();
+            let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+            for _ in 0..2 {
+                let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+                let projection = projection.clone();
+                let done_tx = done_tx.clone();
+                tasks.push(tokio::spawn(async move {
+                    let mut connection = h2::server::handshake(server_io).await.unwrap();
+                    while let Some(incoming) = connection.accept().await {
+                        let (request, respond) = incoming.unwrap();
+                        let projection = projection.clone();
+                        let done_tx = done_tx.clone();
+                        tokio::spawn(async move {
+                            let family = crate::sandbox_bridge::route_family(request.uri().path()).unwrap();
+                            let result = projection.forward(family, request, respond, "binding").await;
+                            done_tx.send(result).unwrap();
+                        });
+                    }
+                }));
+                let (client, connection) = h2::client::handshake(client_io).await.unwrap();
+                tasks.push(tokio::spawn(async move { let _ = connection.await; }));
+                clients.push(client);
+            }
+            for (prefix, limit) in [("inference", 8), ("capabilities", 4), ("worker-control", 4)] {
+                let mut held = Vec::new();
+                for index in 0..limit {
+                    let path = format!("/{prefix}/held/{index}");
+                    let request = Request::builder().method(Method::POST).uri(&path).body(()).unwrap();
+                    let (response, output) = clients[index % 2].send_request(request, true).unwrap();
+                    held.push((response, output));
+                    assert_eq!(seen_rx.recv().await, Some(path));
+                }
+                let request = Request::builder().method(Method::POST).uri(format!("/{prefix}/overflow")).body(()).unwrap();
+                let (overflow, _) = clients[1].send_request(request, true).unwrap();
+                // Race the real outer observation with the response so the base's missing admission fails directly rather than timing out.
+                tokio::select! {
+                    response = overflow => assert_eq!(response.unwrap().status(), StatusCode::TOO_MANY_REQUESTS),
+                    arrival = seen_rx.recv() => panic!("outer family overflow reached semantic dispatch: {arrival:?}"),
+                }
+                assert!(done_rx.recv().await.unwrap().is_err());
+                if prefix != "worker-control" {
+                    let request = Request::builder().method(Method::POST).uri("/worker-control/fresh").body(()).unwrap();
+                    let (fresh, _) = clients[0].send_request(request, true).unwrap();
+                    let response = fresh.await.unwrap();
+                    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+                    let mut body = response.into_body();
+                    while let Some(chunk) = body.data().await {
+                        assert!(chunk.unwrap().is_empty(), "204 must carry no response bytes");
+                    }
+                    assert_eq!(done_rx.recv().await, Some(Ok(false)));
+                }
+                for (_, output) in &mut held { output.send_reset(h2::Reason::CANCEL); }
+                for _ in 0..limit { assert!(done_rx.recv().await.unwrap().is_err()); }
+                let request = Request::builder().method(Method::POST).uri(format!("/{prefix}/fresh")).body(()).unwrap();
+                let (fresh, _) = clients[1].send_request(request, true).unwrap();
+                let response = fresh.await.unwrap();
+                assert_eq!(response.status(), StatusCode::NO_CONTENT);
+                let mut body = response.into_body();
+                while let Some(chunk) = body.data().await {
+                    assert!(chunk.unwrap().is_empty(), "204 must carry no response bytes");
+                }
+                assert_eq!(done_rx.recv().await, Some(Ok(false)));
+            }
+            for task in tasks { task.abort(); }
+            outer_driver.abort();
+            outer_server.abort();
+        }).await.expect("outer family reservation regression must settle");
     }
 
     #[tokio::test]

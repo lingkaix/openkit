@@ -1035,6 +1035,159 @@ mod tests {
         assert!(route_family("/gateway/forward").is_err());
     }
 
+    /// Real bridge admission must recover all four control slots when the nested peer cancels a stalled outer exchange.
+    #[tokio::test]
+    async fn cancelled_nested_control_releases_forwarding_and_family_permits() {
+        for relay_started in [false, true] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let projection = crate::nanocore_session::OuterRouteProjection::new();
+                let (outer_client_io, outer_server_io) = tokio::io::duplex(256 * 1024);
+                let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+                let (reset_tx, mut reset_rx) = mpsc::unbounded_channel();
+                let outer_server = tokio::spawn(async move {
+                    let mut connection = h2::server::handshake(outer_server_io).await.unwrap();
+                    while let Some(incoming) = connection.accept().await {
+                        let (request, mut respond) = incoming.unwrap();
+                        let seen_tx = seen_tx.clone();
+                        let reset_tx = reset_tx.clone();
+                        tokio::spawn(async move {
+                            let fresh = request.uri().path() == "/worker-control/fresh";
+                            let mut body = request.into_body();
+                            let mut request_bytes = Vec::new();
+                            while let Some(chunk) = body.data().await {
+                                let chunk = chunk.unwrap();
+                                request_bytes.extend_from_slice(&chunk);
+                                body.flow_control().release_capacity(chunk.len()).unwrap();
+                            }
+                            assert_eq!(request_bytes, b"control request");
+                            if fresh {
+                                let mut output = respond.send_response(
+                                    Response::builder().status(StatusCode::OK)
+                                        .header("x-forwarded", "complete").body(()).unwrap(), false,
+                                ).unwrap();
+                                output.send_data(bytes::Bytes::from_static(b"complete response"), true).unwrap();
+                            } else if relay_started {
+                                let mut output = respond.send_response(
+                                    Response::builder().status(StatusCode::OK).body(()).unwrap(), false,
+                                ).unwrap();
+                                output.send_data(bytes::Bytes::from_static(b"partial response"), false).unwrap();
+                                seen_tx.send(()).unwrap();
+                                let reset = std::future::poll_fn(|cx| output.poll_reset(cx)).await;
+                                reset_tx.send(reset).unwrap();
+                            } else {
+                                seen_tx.send(()).unwrap();
+                                let reset = std::future::poll_fn(|cx| respond.poll_reset(cx)).await;
+                                reset_tx.send(reset).unwrap();
+                            }
+                        });
+                    }
+                });
+                let (outer_sender, outer_connection) = h2::client::handshake(outer_client_io).await.unwrap();
+                let outer_driver = tokio::spawn(outer_connection);
+                projection.bind("http://core.test", outer_sender).await;
+
+                // Reuse the stock-frame adapter and in-memory H2 facilities from the admission regression below.
+                let (inbound_tx, inbound_rx) = mpsc::channel(16);
+                let (outbound_tx, mut outbound_rx) = mpsc::channel::<TcpForwardFrame>(16);
+                let (client_io, wire_io) = tokio::io::duplex(256 * 1024);
+                let (mut wire_read, mut wire_write) = tokio::io::split(wire_io);
+                let inbound_pump = tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 64 * 1024];
+                    loop {
+                        let count = wire_read.read(&mut buffer).await.unwrap();
+                        if count == 0 { break; }
+                        inbound_tx.send(Ok(TcpForwardFrame {
+                            payload: Some(tcp_forward_frame::Payload::Data(buffer[..count].to_vec())),
+                        })).await.unwrap();
+                    }
+                });
+                let outbound_pump = tokio::spawn(async move {
+                    while let Some(frame) = outbound_rx.recv().await {
+                        if let Some(tcp_forward_frame::Payload::Data(data)) = frame.payload {
+                            wire_write.write_all(&data).await.unwrap();
+                        }
+                    }
+                });
+                let (done_tx, mut done_rx) = mpsc::unbounded_channel();
+                let server = tokio::spawn(async move {
+                    let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
+                    serve_sandbox_http2(&mut stream, move |family, request, respond| {
+                        let projection = projection.clone();
+                        let done_tx = done_tx.clone();
+                        async move {
+                            let result = projection.forward(family, request, respond, "binding").await;
+                            done_tx.send(result).unwrap();
+                        }
+                    }).await
+                });
+                let (mut client, connection) = h2::client::handshake(client_io).await.unwrap();
+                let client_driver = tokio::spawn(connection);
+                let mut held_responses = Vec::new();
+                let mut held_bodies = Vec::new();
+                for index in 0..4 {
+                    let request = Request::builder().method(Method::POST)
+                        .uri(format!("http://sandbox-integration:80/worker-control/stalled/{index}"))
+                        .body(()).unwrap();
+                    let (response, mut output) = client.send_request(request, false).unwrap();
+                    output.send_data(bytes::Bytes::from_static(b"control request"), true).unwrap();
+                    seen_rx.recv().await.unwrap();
+                    let response_body = if relay_started {
+                        let response = response.await.unwrap();
+                        assert_eq!(response.status(), StatusCode::OK);
+                        let mut body = response.into_body();
+                        let chunk = body.data().await.unwrap().unwrap();
+                        assert_eq!(chunk, b"partial response"[..]);
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                        Some(body)
+                    } else {
+                        // Retain the pending response so only the explicit client reset cancels it.
+                        held_responses.push(response);
+                        None
+                    };
+                    output.send_reset(h2::Reason::CANCEL);
+                    if let Some(body) = response_body { held_bodies.push(body); }
+                }
+                // A bounded wait lets the real H2 cancellation traverse both connections; on the base it expires with all four handlers still holding permits.
+                let released = tokio::time::timeout(Duration::from_millis(100), async {
+                    let mut resets = Vec::new();
+                    let mut completions = Vec::new();
+                    for _ in 0..4 {
+                        resets.push(reset_rx.recv().await.unwrap());
+                        completions.push(done_rx.recv().await.unwrap());
+                    }
+                    (resets, completions)
+                }).await;
+                let request = Request::builder().method(Method::POST)
+                    .uri("http://sandbox-integration:80/worker-control/fresh").body(()).unwrap();
+                let (fresh, mut output) = client.send_request(request, false).unwrap();
+                output.send_data(bytes::Bytes::from_static(b"control request"), true).unwrap();
+                let fresh = fresh.await.unwrap();
+                assert_eq!(fresh.status(), StatusCode::OK, "fifth control request must be admitted after four cancellations; relay_started={relay_started}");
+                assert_eq!(fresh.headers()["x-forwarded"], "complete");
+                let mut body = fresh.into_body();
+                let mut response_bytes = Vec::new();
+                while let Some(chunk) = body.data().await {
+                    let chunk = chunk.unwrap();
+                    response_bytes.extend_from_slice(&chunk);
+                    body.flow_control().release_capacity(chunk.len()).unwrap();
+                }
+                assert_eq!(response_bytes, b"complete response");
+                let (resets, completions) = released.expect("outer exchanges and forwarding tasks must end promptly");
+                for reset in resets { assert_eq!(reset.unwrap(), h2::Reason::CANCEL); }
+                for completion in completions { assert!(completion.is_err()); }
+                assert_eq!(done_rx.recv().await, Some(Ok(false)));
+                drop(held_responses);
+                drop(held_bodies);
+                client_driver.abort();
+                server.abort();
+                inbound_pump.abort();
+                outbound_pump.abort();
+                outer_driver.abort();
+                outer_server.abort();
+            }).await.expect("cancelled forwarding regression must settle");
+        }
+    }
+
     #[tokio::test]
     async fn wp4_fixed_node_h2_reserves_worker_control_under_inference_saturation() {
         tokio::time::timeout(Duration::from_secs(5), async {
