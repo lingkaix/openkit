@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: 2026-08-29
-updated: "2026-10-02"
+updated: "2026-10-05"
 ---
 # Release Management
 
@@ -38,6 +38,8 @@ updated: "2026-10-02"
 - `docs/specs/20260721-worker_execution_environment_images.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - `docs/specs/20260909-deployment_host_requirements.md`
+- `docs/specs/20260909-persistent_deployment_acceptance.md`
+- `docs/specs/20260529-l6_story_acceptance.md`
 
 ## Summary
 
@@ -119,6 +121,40 @@ Other images and the GitHub Release retain the visibility configured for their o
 Before publication, the release change record MUST state the observed repository and package visibility and whether the release is private, controlled, or public.
 
 Changing repository or package visibility is a separate explicitly authorized external effect.
+
+### Release Exit Criterion
+
+Release readiness requires consecutive complete acceptance rounds on a fixed scenario set with zero new product defects. The current default is two clean rounds, protecting repeatability after defects stop emerging rather than relying on elapsed time or operator confidence. [The release exit decision](../decisions/20261005-release_exit_criterion.md) records the ruling and its reason. This criterion applies to the first release, including its release candidates, and does not replace other applicable release blockers or deciding checks.
+
+#### Scenario Set And Authority
+
+The fixed scenario set is the engineer-approved selection of user intents, runtime coverage, expected observable outcomes, and deciding public records for the release. The first-release checklist is a procedural projection in the [Release Cookbook](../cookbooks/release.md#first-release-scenario-set). The release record freezes that checklist's revision and the non-secret scenario inputs before the first counted round. Only the engineer may change the set or the required clean-round count; a change starts a new count. Operators may vary attempt-owned names and equivalent fixtures without changing coverage or outcome criteria.
+
+This specification owns the readiness rule. The existing release change record retains the frozen set, candidate identity, ordered round evidence, defect references, classifications, and count. Product records remain authoritative for product results; the release record is evidence, not a new product entity, durable lifecycle, execution service, or automatic repair mechanism. [Persistent Deployment Acceptance](20260909-persistent_deployment_acceptance.md) owns attribution and evidence collection, and [L6 Story Acceptance](20260529-l6_story_acceptance.md) owns adjudication and admission when a selected scenario uses that layer.
+
+#### Round And Classification
+
+One round executes every scenario against one exact candidate source commit on the authorized persistent deployment. That commit is deployed in each round through the product's supported installation or update path for an exact commit. Both clean rounds MUST use the same source commit and frozen scenario revision. Record the exact deployed artifact identities for the components exercised in each round; a version label alone is insufficient. Rebuilding the same commit through that supported path between rounds does not reset the count. Publication MUST be from that same commit. Published bytes are rebuilt from the tested commit and are not claimed to be byte-identical to the tested deployment; the tag workflow's existing exact-digest smoke and asset verification verify the published bytes.
+
+Each scenario retains its observed outcome and deciding public records under Persistent Deployment Acceptance. Classify adverse observations as follows; classification never rewrites a product result or an L6 verdict.
+
+| Classification | Meaning and round treatment |
+| --- | --- |
+| New product defect | An observed violation of an OpenKit-owned contract that was not already recorded before the round began, including a new regression or distinct failure of a known area. Record the defect and reset the count even if the round is incomplete. |
+| Known and already recorded defect | The same defect is linked to a record that predates the round. Retain the observed failure and its existing blocker or disposition; recording a newly discovered defect during the round does not make it known for that round. |
+| Accepted external behaviour | The difference lies outside OpenKit's system boundary under the [accepted external-behaviour decision](../decisions/20261002-external_provider_behavior_accepted.md). Retain the observed difference and evidence of that boundary; OpenKit service stability, data correctness, and product logic remain fully owned. |
+| Environment or tool failure | An external prerequisite or execution instrument failed independently of the product and prevents judgment of the scenario. Preserve the failure and available evidence; the scenario and round are incomplete. |
+| Inconclusive | Required execution or deciding evidence is missing, conflicting, partial, or cannot establish whether an effect occurred. The scenario and round are incomplete; an unexecuted or skipped scenario is also incomplete. |
+
+A round is complete only when every scenario executed and its product outcome can be decided from retained evidence. A complete round is clean for this criterion only when it contains zero new product defects. A known defect or accepted external difference is not a successful workflow claim and does not waive another owner's required pass, unresolved release blocker, or reserved engineer decision. Unknown causation cannot be assigned to accepted external behaviour merely to obtain a clean round.
+
+#### Count, Retry, And Readiness
+
+Start the count at zero after freezing the set and candidate. A complete clean round increments it. Any new product defect, any change of the candidate source commit, or any change to the scenario set resets it to zero. An incomplete round breaks the consecutive clean sequence and contributes no clean round. Relevant configuration changes or operator repairs end the evidence attribution window under Persistent Deployment Acceptance; begin a fresh sequence rather than carrying a count across that boundary. The supported deployment of the same exact commit for the next round begins that round's attribution window and does not by itself reset the count.
+
+Retain failed and incomplete round evidence. Retry missing execution as a new round on the current candidate and set, without replacing the earlier outcome. Complete retained observations may be re-adjudicated after an evidence-tool correction under Persistent Deployment Acceptance; missing observations cannot be reconstructed into a clean result. Restarting an acceptance client restores the count only from retained, ordered, exact-candidate evidence. Missing, stale, or conflicting evidence leaves readiness unproved; model memory and a producer summary are insufficient.
+
+The criterion is met when the release record proves the required consecutive complete clean rounds for the unchanged set and candidate, with every observed defect classified and linked. A later candidate-commit or scenario-set change invalidates that readiness claim and restarts the count. This is a manually selected release-readiness check; real-provider and real-worker execution retains explicit opt-in authorization and stays outside automatic tag CI. Publication authorization still follows Publication Authorization below; this criterion never authorizes publication by itself.
 
 ### Publication Authorization
 

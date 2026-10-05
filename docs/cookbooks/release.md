@@ -82,7 +82,7 @@ done
 
 The tag workflow remains authoritative for both declared platforms because it smokes the exact pushed digest for `linux/amd64` and `linux/arm64` before promotion.
 
-8. Run L4 Web e2e or an admitted L6 story only when the release decision requires that additional confidence.
+8. Run L4 Web e2e when the release decision requires that additional confidence. Run any selected L6 story under its admission and adjudication contract; the first-release rounds below remain a separate manual readiness requirement.
 
 ```bash
 pnpm test:e2e:web
@@ -101,6 +101,70 @@ git status --short
 git merge-base --is-ancestor HEAD origin/main
 pnpm release:preflight -- --tag "${OPENKIT_RELEASE_TAG}"
 ```
+
+10. Freeze the exact release candidate and scenario revision in the release change record, then run the [first-release scenario set](#first-release-scenario-set) through the [persistent live acceptance recipe](persistent-live-acceptance.md). Apply the [Release Exit Criterion](../specs/20260829-release_management.md#release-exit-criterion) to the retained ordered rounds before seeking publication authorization. Verify that publication selects the same source commit that passed both rounds; a change of candidate commit requires a fresh sequence. The tag workflow rebuilds published artifacts from that tested commit and verifies their exact digests and assets; it does not claim byte identity with the tested deployment.
+
+## First-Release Scenario Set
+
+This checklist projects the release owner's fixed-set rule; it creates no product contracts or story runner. Freeze its revision under the engineer-approved first-release scope before counting rounds. Record the exact candidate source commit and, per round, the App, Web, NanoHost and Worker artifact identities, retained component attribution, protected configuration identities without secret values, and the approved deployment target. Run the same source commit through every scenario in each round. The sixteen runtime cases plus deployment, Chat, Task, Goal and external-Agent cases make twenty-one scenario outcomes per round.
+
+Declare a read-only GitHub issue with independently checkable title and state, a separate small issue authorized for an acceptance branch and pull request, and attempt-owned Workspace, Thread, filename and marker inputs. Keep the selected issue and output criteria fixed across counted rounds; vary only equivalent fixtures or attempt-owned names as the owner permits. Do not reuse unrelated user work or broaden credentials to repair a prerequisite. Scenario selection authorizes no live deployment, Provider consumption, GitHub write or approval resolution; obtain the existing effect-specific authority before execution.
+
+Use public reads for the deciding product results and retain the returned ids and coverage. A terminal Turn alone does not prove its promised output. Inspect complete required Items, Artifacts, capability-call evidence and Pending Requests; note pagination and missing evidence. Use operator evidence for deployment byte identity and diagnostics only, without turning private database or host writes into a product success oracle. Installation qualification, destructive recovery and NanoHost containment remain separate proofs under their owners.
+
+### Deployment Through The Product Path
+
+Install or update the exact candidate source commit on the persistent deployment through the supported [product deployment procedure](../../skills/openkit-ops/references/nanocore-deployment-modes.en.md) and the exact-commit path of the [App update procedure](../specs/20260910-app_update_delivery.md), as applicable, during each round's coordinated maintenance window. Preserve the retained Data Root and protected configuration. For the second round deploy the same exact source commit through that supported path; rebuilding it between rounds does not reset the count. Retain each round's install/update result and receipt, exact deployed artifact identities and any unchanged-component attribution. Publication later rebuilds artifacts from this same source commit; the tag workflow verifies those published bytes without claiming they are byte-identical to either tested deployment.
+
+Expected outcome: the selected bytes serve the public health endpoint and Web entry, authenticated App diagnostics show their readiness, retained Workspace records remain readable, and the public NanoHost runtime-target read shows readiness before Worker admission. Proof: public health response, rendered Web entry, authenticated diagnostics, Workspace read and runtime-target record, together with the supported procedure's install/update receipt and exact artifact identities. This persistent-deployment observation does not claim fresh-install or cold-start qualification.
+
+### Codex, Pi, OpenCode V2 And DeepSeek
+
+Execute every row below separately for each of Codex, Pi, OpenCode V2 and DeepSeek using its configured real Worker path. That is four scenarios per runtime, not permission to substitute one runtime's pass for another's. Use a fresh Workspace-visible Thread for each runtime, retain its selected Agent and model/configuration identity, and execute sequential Turns on that same Thread after the preceding Turn is terminal. Accepted external behaviour retains its own classification under the release owner rather than becoming a fabricated successful output.
+
+| Scenario for each runtime | Expected observable outcome | Public record that proves it |
+| --- | --- | --- |
+| Plain reply | A bounded request returns the declared marker as an assistant reply and the Turn ends normally. | The exact Turn read and its completed assistant-message Item on the named Thread. |
+| GitHub issue read through Gateway MCP | The Worker reads the designated issue through the Gateway-mediated GitHub MCP and reports its independently checked title and state without modifying GitHub. | The Turn and reply Item, completed GitHub read tool/capability-call evidence, and the GitHub issue's public read record. |
+| Workspace file write | Ask the Worker to write the declared marker to an attempt-owned file in its authorized writable output root, read it back, and report the matching filename and contents. | Required but currently unavailable: the exact terminal Turn and completed assistant Item, plus a Worker-produced public file record with matching Turn origin, filename and actual content bytes. The bytes must match the declared marker; neither SSH nor the assistant's assertion is file proof. |
+| Follow-up Turn on the same Thread | Ask a new Turn to read the earlier file again and report the same filename and contents. The preceding Thread history remains readable. | The same Thread id, distinct terminal Turn ids, retained earlier Items and the requested follow-up assistant output prove conversation continuity. File proof remains unavailable: actual bytes collected from the follow-up Turn must be publicly readable with that Turn's origin and match the earlier file, filename and declared marker. An assistant assertion alone is not file-content proof. |
+
+Worker-produced public file evidence is an unresolved prerequisite of this scenario set. The current shared Artifact importer and `artifact.read` can preserve and expose declared file bytes, but no supported Worker-facing declaration producer is connected to them; per-Turn Workspace collection retains candidate bytes without publishing a Workspace Sync Review or public file/diff read for these rows. The [Worker Control Protocol](../specs/20260703-worker_control_protocol.md) and [Workspace Synchronization](../specs/20260703-workspace_synchronization.md) own the respective handoff boundaries. Both file rows for all four runtimes cannot yet complete, and no round can be clean until this prerequisite is resolved. Keep all eight cases in the fixed set; do not substitute operator import, an assistant-reported marker, a test-authored declaration or an invented submission procedure.
+
+### Chat-Mode Exchange
+
+Submit one simple question through the supported Chat surface and inspect the reply. Expected outcome: an ordinary assistant exchange returns a meaningful answer on the addressed Thread without delegating worker work. Proof: the conversation result, exact Turn and assistant-message Item, and the Thread's mode and lineage. [Chat Mode](../specs/20260704-chat_mode_assistant.md) owns that boundary.
+
+### Task-Mode Issue To Open Pull Request
+
+Start an explicit bounded Task for the designated GitHub issue through the supported product surface. Ask for the small issue fix and an opened pull request on its acceptance branch. The Worker uses the Gateway-mediated GitHub MCP; do not use the retired NanoCore host Git publication path. Allow issue and repository reads without write approval. Resolve Pending Requests only for the authorized branch writes, including branch creation and file commit or push to that branch, and pull-request creation for this issue and repository. Refuse merge, default-branch writes, unrelated repositories and other effects. Inspect each exact request before deciding; do not install a blanket write grant.
+
+Expected outcome: the bounded Task produces the meaningful fix, pauses its governed external writes for the matching Pending Request decisions, and reaches a completed result with an open pull request against the declared base. Answered requests are delivered on later Turns of the same Task Thread under [Pending Requests](../specs/20260930-pending_requests.md); no step resumes a paused worker or invents an automatic Task loop. Proof: [Task Mode](../specs/20260704-task_mode_worker_delegation.md) Thread and Turn records, initiating and completion Items, GitHub capability-call evidence, exact Pending Request intents and granting actors plus recorded execution outcomes, and a fresh GitHub read of the branch, actual changed-file diff and open pull request. Inspect any produced diff Artifact as additional output evidence. An admission response, a granted approval, or a URL in the reply alone does not prove the pull request exists.
+
+### Goal At The Shipped Scope
+
+Create a small Goal with one bounded contribution, such as an acceptance note Artifact based on the designated issue, through the current [Goal operations](../specs/20261002-goal.md). Observe its intent, work-intent card and proposed immutable Plan version. The responsible person approves that exact version through its Pending Request. Observe activation and the Coordinator's admission of an ordinary Task linked to the current card revision and approved Plan. Inspect the Task's actual output. When the Coordinator calls accept completion with the exact candidate and evidence, the responsible person decides its Pending Request; observe consumption and the terminal completion disposition.
+
+Expected outcome: no worker starts from creation or Plan approval alone, the approved Plan authorizes the linked Task without a second per-Task approval, and worker completion leaves the Goal open until the human completion grant is consumed. Proof: public Goal read with intent, card, immutable proposed/active Plan identity and digest, linked Task Thread and terminal Turns, readable output Artifact, Plan and completion Pending Requests with exact intents and deciding actors, and the final Goal disposition naming the accepted candidate. Effect-specific approvals remain separate when the chosen Task needs them. Do not add pause/resume, a recipe graph, Sandbox pin, automatic worker retry, Knowledge publication or a deferred evaluation loop to this scenario.
+
+### External Agent Through Remote MCP
+
+Start a fresh external MCP-capable Agent outside the source checkout with its protected scenario credential configured through the existing owner. Give it a persona and a single user goal, such as locating the designated shared Thread and explaining its latest completed result. Keep the checklist, assertions, expected answer and operator SSH tools outside the Actor's context. Let it discover the product through remote MCP rather than supplying an operation sequence.
+
+Expected outcome: the external Agent uses the served `guide`, discovers the relevant operation with `search`, invokes it with `call`, and returns an answer grounded in the designated public record on the same deployment. Proof: retained redacted public MCP guide/search/call responses, served build identity and client/version, the exact Workspace/Thread/Turn or Artifact record it read, and independent recomputation of its deciding fact. Apply [Persistent Deployment Acceptance](../specs/20260909-persistent_deployment_acceptance.md) and, when run as L6, its admitted story and independent Judge rules; a spot check by the operator alone does not prove the external-Agent flow. An Actor that does not exercise a required surface leaves that observation incomplete.
+
+### Record And Classify Every Round
+
+Record the following in the existing release change record or its ordinary retained evidence, with no new execution database:
+
+- Round order, UTC start/end and attribution window, frozen checklist revision, exact source commit and deployed component identities, install/update receipt and non-secret configuration identity.
+- Every scenario's declared input, selected runtime/model, Workspace/Thread/Turn ids, expected and observed result, public evidence references, full required read coverage, classification and defect reference. Count executed, incomplete, successful, new-defect, known-defect and accepted-external outcomes separately; do not conflate a clean round with every workflow passing.
+- HTTP 502 response count and connection-reset count in that round's window, including explicit zeroes when covered. Keep client-visible occurrences and available proxy/App diagnostic coverage separate, correlate overlapping observations instead of counting log lines twice, and retain timestamp, route, safe cause and request correlation when available. Missing coverage is unavailable, not zero.
+- Worker failure count by runtime and Task/Goal scenario, counted by distinct Turn, with each Turn's published failure code and cause retained verbatim after redaction, associated public records and classification. A failed Turn without a published cause has unavailable cause evidence; do not replace it with an inferred Provider failure.
+- References to defect records that predate the round, new defect records, accepted external differences and their boundary evidence, environment/tool failures, missing observations, cleanup outcomes and unresolved release blockers.
+- The round's completeness, clean-round count and any reset with its reason, derived under the release owner. Preserve earlier outcomes when retrying; stop when the required consecutive clean rounds on the same candidate are proved and all other release obligations are satisfied.
+
+Optional telemetry remains diagnostic under Persistent Deployment Acceptance; its absence is recorded separately from public product outcomes. A 502, reset or Worker failure is an observation requiring attribution, not automatic permission to classify it as external. When required product evidence cannot be obtained, classify the scenario as incomplete. The release owner decides readiness, while the existing exact-tag publication authorization remains a separate engineer decision.
 
 ## Publication Authorization
 
