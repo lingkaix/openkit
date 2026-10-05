@@ -1,19 +1,35 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "version": "0.0.99",
   "source": {
     "commit": "8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032"
   },
   "gateway": {
-    "archive": {
-      "name": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
-      "target": "linux/arm64",
-      "sha256": "3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09"
-    },
-    "executable": {
-      "name": "openshell-gateway",
-      "derivedFrom": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
-      "sha256": "35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571"
+    "targets": {
+      "linux/amd64": {
+        "archive": {
+          "name": "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
+          "target": "linux/amd64",
+          "sha256": "640d204dc3c6bc28bffa1f3d870897fc23bbc5ec0151a6c642083e958455cb49"
+        },
+        "executable": {
+          "name": "openshell-gateway",
+          "derivedFrom": "openshell-gateway-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "05bd6c982dd72b73364b91ab694487c026bc56d0cd869f4289b44cc392a5c2ba"
+        }
+      },
+      "linux/arm64": {
+        "archive": {
+          "name": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
+          "target": "linux/arm64",
+          "sha256": "3a5d3092ae34356beb0ff2a920f9a87af4233c7a1086a53cd9429d48358f5c09"
+        },
+        "executable": {
+          "name": "openshell-gateway",
+          "derivedFrom": "openshell-gateway-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "35c1e1be9c8766de2bfd457e54918d6b2019c16da815ec4c45ce9ebb45aaa571"
+        }
+      }
     }
   },
   "supervisor": {

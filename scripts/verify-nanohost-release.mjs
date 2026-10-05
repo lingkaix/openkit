@@ -7,7 +7,7 @@ import { basename, isAbsolute, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-import { assertAarch64Elf, elfLibcRequirements } from './lib/nanohost-elf.mjs';
+import { assertNanoHostElf, elfLibcRequirements, NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
 import {
   assertOpenShellSdkRevision,
   parseNanoHostHostManifest,
@@ -44,9 +44,10 @@ export function verifyNanoHostRelease(input) {
   }
   if (existsSync(destdir)) throw new Error(`DESTDIR must not exist: ${destdir}`);
   const archiveName = basename(archive);
-  const match = /^openkit-nanohost-(v\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?)-linux-arm64\.tar\.gz$/.exec(
-    archiveName
-  );
+  const match =
+    /^openkit-nanohost-(v\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?)-linux-(amd64|arm64)\.tar\.gz$/.exec(
+      archiveName
+    );
   if (!match) throw new Error(`NanoHost archive name is invalid: ${archiveName}`);
   const release = parseOpenShellRelease(
     readFileSync(join(repoRoot, 'apps/nanohost/openshell/release.json'), 'utf8')
@@ -56,8 +57,10 @@ export function verifyNanoHostRelease(input) {
     readFileSync(join(repoRoot, 'apps/nanohost/Cargo.toml'), 'utf8'),
     readFileSync(join(repoRoot, 'apps/nanohost/Cargo.lock'), 'utf8')
   );
-  const archiveRelease = release.gateway.archive;
-  const gatewayRelease = release.gateway.executable;
+  const target = `linux/${match[2]}`;
+  const platform = NANOHOST_TARGETS[target];
+  const archiveRelease = release.gateway.targets[target].archive;
+  const gatewayRelease = release.gateway.targets[target].executable;
   const licenseRelease = release.redistribution.license;
   const noticesRelease = release.redistribution.notices;
   const outer = parseChecksums(readFileSync(checksumFile, 'utf8'));
@@ -138,8 +141,8 @@ export function verifyNanoHostRelease(input) {
     if (
       manifest.schemaVersion !== 2 ||
       manifest.tag !== match[1] ||
-      manifest.target !== 'linux/arm64' ||
-      manifest.architecture !== 'arm64' ||
+      manifest.target !== target ||
+      manifest.architecture !== platform.architecture ||
       manifest.profileId !== hostManifest.profileId ||
       manifest.profileDigest !== createHash('sha256').update(profileBytes).digest('hex') ||
       !/^[0-9a-f]{40}$/.test(manifest.productCommit) ||
@@ -192,9 +195,14 @@ export function verifyNanoHostRelease(input) {
         throw new Error(`NanoHost bundle ${member} differs from the checkout bytes.`);
       }
     }
-    assertAarch64Elf(readFileSync(join(root, 'nanohost')), 'NanoHost release member nanohost');
-    assertAarch64Elf(
+    assertNanoHostElf(
+      readFileSync(join(root, 'nanohost')),
+      target,
+      'NanoHost release member nanohost'
+    );
+    assertNanoHostElf(
       readFileSync(join(root, 'openshell-gateway')),
+      target,
       'NanoHost release member openshell-gateway'
     );
     if (

@@ -1,5 +1,23 @@
-/** Rejects anything except a loadable little-endian ELF64 AArch64 executable. */
-export function assertAarch64Elf(bytes, label) {
+/** Projects the NanoHost distribution owner's two targets and upstream Gateway archive names. */
+export const NANOHOST_TARGETS = Object.freeze({
+  'linux/amd64': Object.freeze({
+    architecture: 'amd64',
+    machine: 62,
+    elfName: 'x86-64',
+    gatewayArchive: 'openshell-gateway-x86_64-unknown-linux-gnu.tar.gz',
+  }),
+  'linux/arm64': Object.freeze({
+    architecture: 'arm64',
+    machine: 183,
+    elfName: 'AArch64',
+    gatewayArchive: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
+  }),
+});
+
+/** Rejects anything except the selected target's loadable little-endian ELF64 executable. */
+export function assertNanoHostElf(bytes, target, label) {
+  const platform = Object.hasOwn(NANOHOST_TARGETS, target) ? NANOHOST_TARGETS[target] : undefined;
+  if (!platform) throw new Error(`Unsupported NanoHost target: ${target}`);
   if (
     bytes.length < 64 ||
     !bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
@@ -7,12 +25,14 @@ export function assertAarch64Elf(bytes, label) {
     bytes[5] !== 1 ||
     bytes[6] !== 1 ||
     ![2, 3].includes(bytes.readUInt16LE(16)) ||
-    bytes.readUInt16LE(18) !== 183 ||
+    bytes.readUInt16LE(18) !== platform.machine ||
     bytes.readUInt32LE(20) !== 1 ||
     bytes.readUInt16LE(52) !== 64 ||
     !hasExecutableLoadSegment(bytes)
   ) {
-    throw new Error(`${label} must be a loadable ELF64 AArch64 ET_EXEC or ET_DYN executable.`);
+    throw new Error(
+      `${label} must be a loadable ELF64 ${platform.elfName} ET_EXEC or ET_DYN executable.`
+    );
   }
 }
 

@@ -256,20 +256,21 @@ for (const [field, mutate] of [
   [
     'archive name',
     (release) => {
-      release.gateway.archive.name = 'other-gateway.tar.gz';
-      release.gateway.executable.derivedFrom = release.gateway.archive.name;
+      release.gateway.targets['linux/arm64'].archive.name = 'other-gateway.tar.gz';
+      release.gateway.targets['linux/arm64'].executable.derivedFrom =
+        release.gateway.targets['linux/arm64'].archive.name;
     },
   ],
   [
     'executable name',
     (release) => {
-      release.gateway.executable.name = 'other-gateway';
+      release.gateway.targets['linux/arm64'].executable.name = 'other-gateway';
     },
   ],
   [
     'archive derivation',
     (release) => {
-      release.gateway.executable.derivedFrom = 'other-gateway.tar.gz';
+      release.gateway.targets['linux/arm64'].executable.derivedFrom = 'other-gateway.tar.gz';
     },
   ],
   [
@@ -567,22 +568,29 @@ function makeOpenShellRelease(options = {}) {
   const commit = options.nanoHostSourceCommit ?? '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
   const version = options.nanoHostOpenShellVersion ?? '0.0.99';
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version,
     source: { commit },
     gateway: {
-      archive: {
-        name:
-          options.nanoHostGatewayArchiveName ??
-          'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        target: options.nanoHostGatewayTarget ?? 'linux/arm64',
-        sha256: checksum,
-      },
-      executable: {
-        name: 'openshell-gateway',
-        derivedFrom: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        sha256: checksum,
-      },
+      targets: Object.fromEntries(
+        ['amd64', 'arm64'].map((architecture) => {
+          const target = `linux/${architecture}`;
+          const name = `openshell-gateway-${architecture === 'amd64' ? 'x86_64' : 'aarch64'}-unknown-linux-gnu.tar.gz`;
+          return [
+            target,
+            {
+              archive: {
+                name:
+                  architecture === 'arm64' ? (options.nanoHostGatewayArchiveName ?? name) : name,
+                target:
+                  architecture === 'arm64' ? (options.nanoHostGatewayTarget ?? target) : target,
+                sha256: checksum,
+              },
+              executable: { name: 'openshell-gateway', derivedFrom: name, sha256: checksum },
+            },
+          ];
+        })
+      ),
     },
     supervisor: {
       repository: 'ghcr.io/nvidia/openshell/supervisor',
@@ -681,3 +689,34 @@ test('release preflight rejects retired leaf ids and singular runtime metadata',
     assert.throws(() => validateReleasePreflight({ repoRoot, tag: 'v0.0.1' }), /retired/);
   }
 });
+
+for (const target of ['linux/amd64', 'linux/arm64']) {
+  test(`release preflight requires exact Gateway identities for ${target}`, () => {
+    const repoRoot = makeReleaseFixture();
+    assert.doesNotThrow(() => validateReleasePreflight({ repoRoot, tag: 'v0.1.0-rc.1' }));
+    const path = join(repoRoot, 'apps/nanohost/openshell/release.json');
+    const release = JSON.parse(readFileSync(path, 'utf8'));
+    for (const mutate of [
+      (pin) => {
+        delete pin.gateway.targets[target];
+      },
+      (pin) => {
+        pin.gateway.targets[target].archive.sha256 = 'COORDINATOR-PROBE-NEEDED';
+      },
+      (pin) => {
+        pin.gateway.targets[target].executable.sha256 = 'COORDINATOR-PROBE-NEEDED';
+      },
+      (pin) => {
+        pin.gateway.targets[target].archive.target = 'linux/other';
+      },
+    ]) {
+      const invalid = structuredClone(release);
+      mutate(invalid);
+      writeJson(path, invalid);
+      assert.throws(
+        () => validateReleasePreflight({ repoRoot, tag: 'v0.1.0-rc.1' }),
+        /OpenShell release/
+      );
+    }
+  });
+}

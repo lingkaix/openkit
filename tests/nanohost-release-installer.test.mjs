@@ -133,6 +133,23 @@ if (process.platform === 'linux') {
   });
 }
 
+if (process.platform === 'linux') {
+  test('NanoHost installer stages the x86-64 payload without host or service effects', () => {
+    const fixture = makeBundle({ architecture: 'amd64' });
+    const stage = join(fixture.root, 'amd64-stage');
+    const marker = join(fixture.root, 'systemctl-called');
+    const result = runInstaller(fixture.bundle, stage, marker);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /staged-only/);
+    for (const name of ['nanohost', 'openshell-gateway']) {
+      const staged = readFileSync(join(stage, 'usr/lib/openkit', name));
+      assert.equal(staged.readUInt16LE(18), 62);
+      assert.deepEqual(staged, readFileSync(join(fixture.bundle, name)));
+    }
+    assert.equal(existsSync(marker), false);
+  });
+}
+
 function makeBundle(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-installer-'));
   const bundle = join(root, 'bundle');
@@ -144,7 +161,7 @@ function makeBundle(options = {}) {
   copyFileSync(installerSource, join(bundle, 'install.sh'));
   chmodSync(join(bundle, 'install.sh'), 0o755);
   writeElf(join(bundle, 'nanohost'), options);
-  writeElf(join(bundle, 'openshell-gateway'));
+  writeElf(join(bundle, 'openshell-gateway'), { architecture: options.architecture });
   writeFileSync(
     join(bundle, 'openkit-nanohost.service'),
     '[Service]\nExecStart=/usr/lib/openkit/nanohost\n'
@@ -165,7 +182,7 @@ function makeBundle(options = {}) {
           .update(readFileSync(join(bundle, 'host-manifest.json')))
           .digest('hex'),
         productCommit: 'a'.repeat(40),
-        architecture: 'arm64',
+        architecture: options.architecture ?? 'arm64',
         files: [
           'MANIFEST.json',
           'SHA256SUMS',
@@ -185,7 +202,7 @@ function makeBundle(options = {}) {
           ])
         ),
         tag: 'v0.1.0-rc.1',
-        target: 'linux/arm64',
+        target: `linux/${options.architecture ?? 'arm64'}`,
         destinations: {
           nanohost: '/usr/lib/openkit/nanohost',
           'openshell-gateway': '/usr/lib/openkit/openshell-gateway',
@@ -267,7 +284,7 @@ function writeElf(path, options = {}) {
   const base = options.virtualAddress ?? (options.type === 3 ? 0n : 0x400000n);
   bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1], 0);
   bytes.writeUInt16LE(options.type ?? 2, 16);
-  bytes.writeUInt16LE(183, 18);
+  bytes.writeUInt16LE(options.architecture === 'amd64' ? 62 : 183, 18);
   bytes.writeUInt32LE(1, 20);
   bytes.writeBigUInt64LE(options.entry ?? base + 120n, 24);
   bytes.writeBigUInt64LE(64n, 32);

@@ -4,9 +4,11 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 ## Release Inputs And Verification
 
-`release-preflight.mjs` validates the selected release inputs and the schema-version-2 NanoHost capability profile. `package-release-assets.mjs` reads checkout-owned inputs from the selected Git revision and produces the controlled release archives. NanoHost packaging remains arm64-only; it bundles exact `host-manifest.json` bytes, profile id and digest, product commit, and libc symbol-version requirements derived from both ELF executables. `verify-nanohost-release.mjs` checks the archive tree, checksums, checkout-owned bytes, provenance, ELF and derived requirements, then performs a contained staging install.
+`release-preflight.mjs` validates the selected release inputs and the schema-version-2 NanoHost capability profile. `package-release-assets.mjs` reads checkout-owned inputs from the selected Git revision and produces the controlled release archives. NanoHost packaging selects `linux/amd64` and `linux/arm64` from the distribution table in `lib/nanohost-elf.mjs`; it bundles exact `host-manifest.json` bytes, profile id and digest, product commit, and libc symbol-version requirements derived from both ELF executables. `verify-nanohost-release.mjs` checks the archive tree, checksums, checkout-owned bytes, provenance, ELF and derived requirements, then performs a contained staging install.
 
-Run `pnpm release:preflight -- --tag <tag>` and `pnpm release:package -- --tag <tag>` through the release cookbook. Publication and real-host qualification remain separate authorized effects owned by the release and NanoHost specifications.
+Run `pnpm release:preflight -- --tag <tag>` and `pnpm release:package -- --tag <tag>` through the release cookbook. Release and pre-release tag CI runs target-native real-host qualification before publication under the release and NanoHost specifications; pull-request and manual gates do not run it.
+
+For a complete NanoHost release, supply `--nanohost-amd64-binary`, `--nanohost-arm64-binary`, `--openshell-amd64-gateway-archive`, `--openshell-arm64-gateway-archive`, `--openshell-license`, and `--openshell-notices` to the existing packager. Gateway archive and extracted executable identities come from `gateway.targets["linux/<architecture>"]` in the schema-version-2 OpenShell release pin. The shared checksum covers the operations Skill and both NanoHost archives.
 
 ## NanoHost Static Checks
 

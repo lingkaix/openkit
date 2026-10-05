@@ -165,7 +165,11 @@ test('release workflow publishes and independently verifies the portable release
 
   assert.equal(preflight.needs, 'test-image');
   assert.deepEqual(preflight.permissions, { contents: 'read', packages: 'read' });
-  assert.deepEqual(githubRelease.needs, ['package-release-assets', 'publish-container-images']);
+  assert.deepEqual(githubRelease.needs, [
+    'package-release-assets',
+    'qualify-nanohost',
+    'publish-container-images',
+  ]);
   assert.deepEqual(githubRelease.permissions, { contents: 'write' });
   assert.ok(step(githubRelease, 'Create immutable GitHub Release'));
   assert.deepEqual(verify.needs, ['test-image', 'github-release', 'publish-container-images']);
@@ -214,7 +218,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.match(portableCommands, /verifyOperationsSkillArchive/);
   assert.doesNotMatch(portableCommands, /openkit-skill-/);
   assert.match(portableCommands, /skills\/openkit-ops\/scripts\/openkit/);
-  assert.match(portableCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(portableCommands, /openkit-nanohost-.*-linux-(?:arm64|\$\{architecture\})\.tar\.gz/);
   assert.match(portableCommands, /openkit-ops-skill-.*\.tar\.gz/);
   assert.match(portableCommands, /sha256sum -c SHA256SUMS/);
   const releaseStep = portable.steps.find(
@@ -232,16 +236,18 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     /github\.com\/NVIDIA\/OpenShell\/releases\/download/u.test(candidate.run ?? '')
   );
   assert.ok(releaseConsumer, 'Portable packaging must download the parsed OpenShell coordinates');
-  const releaseCoordinate = releaseConsumer.run
+  const releaseCoordinates = releaseConsumer.run
     .split('\n')
-    .find((line) => line.includes('github.com/NVIDIA/OpenShell/releases/download'));
+    .filter((line) => line.includes('github.com/NVIDIA/OpenShell/releases/download'));
   const sourceCoordinate = releaseConsumer.run
     .split('\n')
     .find((line) => line.includes('raw.githubusercontent.com/NVIDIA/OpenShell'));
-  assert.ok(releaseCoordinate, 'Missing OpenShell release download coordinate');
+  assert.equal(releaseCoordinates.length, 2, 'Both target Gateway archives must be downloaded');
   assert.ok(sourceCoordinate, 'Missing OpenShell source download coordinate');
-  assert.match(releaseCoordinate, outputReference(releaseStep, releaseConsumer, 'tag'));
-  assert.match(releaseCoordinate, outputReference(releaseStep, releaseConsumer, 'archive'));
+  for (const [index, output] of ['amd64_archive', 'archive'].entries()) {
+    assert.match(releaseCoordinates[index], outputReference(releaseStep, releaseConsumer, 'tag'));
+    assert.match(releaseCoordinates[index], outputReference(releaseStep, releaseConsumer, output));
+  }
   assert.match(sourceCoordinate, outputReference(releaseStep, releaseConsumer, 'commit'));
 
   const releaseCommands = workflow.jobs['github-release'].steps
@@ -250,7 +256,7 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .join('\n');
   assert.doesNotMatch(releaseCommands, /openkit-skill-.*\.tar\.gz/);
   assert.match(releaseCommands, /openkit-ops-skill-.*\.tar\.gz/);
-  assert.match(releaseCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(releaseCommands, /openkit-nanohost-.*-linux-(?:arm64|\$\{architecture\})\.tar\.gz/);
   assert.match(releaseCommands, /portable-assets\/SHA256SUMS/);
 
   const verificationCommands = workflow.jobs['verify-release'].steps
@@ -261,7 +267,10 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
   assert.match(verificationCommands, /verifyOperationsSkillArchive/);
   assert.doesNotMatch(verificationCommands, /openkit-skill-/);
   assert.match(verificationCommands, /skills\/openkit-ops\/scripts\/openkit/);
-  assert.match(verificationCommands, /openkit-nanohost-.*-linux-arm64\.tar\.gz/);
+  assert.match(
+    verificationCommands,
+    /openkit-nanohost-.*-linux-(?:arm64|\$\{architecture\})\.tar\.gz/
+  );
 });
 
 test('release workflow runs the fixed-path NanoHost installer gate in one host job', () => {
@@ -356,4 +365,43 @@ test('release image metadata emits the plural catalog runtime label', () => {
   assert.equal(identity.env.WORKER_RUNTIMES, actionExpression('matrix.runtimes'));
   assert.match(identity.run, /org\.openkit\.worker\.runtimes=/);
   assert.doesNotMatch(identity.run, /org\.openkit\.worker\.runtime=/);
+});
+
+test('release qualification runs both exact archives natively before publication', () => {
+  const qualification = workflow.jobs['qualify-nanohost'];
+  assert.ok(qualification, 'missing release-time NanoHost qualification');
+  assert.equal(
+    qualification.if,
+    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+  );
+  assert.equal(qualification.container, undefined);
+  assert.equal(qualification.needs, 'package-release-assets');
+  assert.deepEqual(qualification.permissions, { contents: 'read' });
+  assert.deepEqual(qualification.strategy.matrix.include, [
+    { runner: 'ubuntu-24.04', architecture: 'amd64' },
+    { runner: 'ubuntu-24.04-arm', architecture: 'arm64' },
+  ]);
+  assert.equal(qualification['runs-on'], actionExpression('matrix.runner'));
+  for (const architecture of ['amd64', 'arm64']) {
+    const native = workflow.jobs[`build-nanohost-${architecture}`];
+    assert.ok(native);
+    assert.equal(native['runs-on'], architecture === 'amd64' ? 'ubuntu-24.04' : 'ubuntu-24.04-arm');
+    assert.equal(native.if, qualification.if);
+    assert.ok(
+      workflow.jobs['package-release-assets'].needs.includes(`build-nanohost-${architecture}`)
+    );
+  }
+  for (const publisher of ['github-release', 'publish-container-images']) {
+    assert.ok(workflow.jobs[publisher].needs.includes('qualify-nanohost'));
+  }
+  const download = step(qualification, 'Download exact NanoHost archive and checksum');
+  assert.equal(download.with.name, `nanohost-release-${actionExpression('matrix.architecture')}`);
+  const commands = qualification.steps.map((entry) => entry.run ?? '').join('\n');
+  assert.match(commands, /verify-nanohost-release\.mjs/);
+  assert.match(commands, /install\.sh" --check-host/);
+  assert.match(commands, /requirements-met/);
+  assert.match(commands, /install\.sh" --check/);
+  assert.match(commands, /ImageVersion/);
+  assert.match(commands, /dpkg-query/);
+  assert.doesNotMatch(commands, /systemctl|docker run|host:nanohost|worker.*job/);
 });

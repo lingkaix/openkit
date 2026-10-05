@@ -320,194 +320,197 @@ process.stdout.write('verified\\n');
   }
 });
 
-test('release packager and shared verifier prove the reproducible NanoHost arm64 asset', () => {
-  const fixture = makeNanoHostReleaseFixture();
-  const firstOutput = join(fixture.repoRoot, 'dist', 'first');
-  const secondOutput = join(fixture.repoRoot, 'dist', 'second');
-  const input = {
-    binaryPath: fixture.nanohostPath,
-    gatewayArchivePath: fixture.gatewayArchivePath,
-    openshellLicensePath: fixture.openshellLicensePath,
-    openshellNoticesPath: fixture.openshellNoticesPath,
-  };
+for (const architecture of ['amd64', 'arm64']) {
+  test(`release packager and shared verifier prove the reproducible NanoHost ${architecture} asset`, () => {
+    const fixture = makeNanoHostReleaseFixture(architecture);
+    const firstOutput = join(fixture.repoRoot, 'dist', 'first');
+    const secondOutput = join(fixture.repoRoot, 'dist', 'second');
+    const input = {
+      target: fixture.target,
+      binaryPath: fixture.nanohostPath,
+      gatewayArchivePath: fixture.gatewayArchivePath,
+      openshellLicensePath: fixture.openshellLicensePath,
+      openshellNoticesPath: fixture.openshellNoticesPath,
+    };
 
-  packageReleaseAssets({
-    nanohost: input,
-    outputDir: firstOutput,
-    ref: 'HEAD',
-    repoRoot: fixture.repoRoot,
-    tag: 'v0.1.0-rc.1',
-  });
-  packageReleaseAssets({
-    nanohost: input,
-    outputDir: secondOutput,
-    ref: 'HEAD',
-    repoRoot: fixture.repoRoot,
-    tag: 'v0.1.0-rc.1',
-  });
+    packageReleaseAssets({
+      nanohost: [input],
+      outputDir: firstOutput,
+      ref: 'HEAD',
+      repoRoot: fixture.repoRoot,
+      tag: 'v0.1.0-rc.1',
+    });
+    packageReleaseAssets({
+      nanohost: [input],
+      outputDir: secondOutput,
+      ref: 'HEAD',
+      repoRoot: fixture.repoRoot,
+      tag: 'v0.1.0-rc.1',
+    });
 
-  const archiveName = 'openkit-nanohost-v0.1.0-rc.1-linux-arm64.tar.gz';
-  const firstArchive = join(firstOutput, archiveName);
-  const secondArchive = join(secondOutput, archiveName);
-  assert.deepEqual(readFileSync(firstArchive), readFileSync(secondArchive));
-  assert.deepEqual(
-    [...readFileSync(firstArchive).subarray(0, 10)],
-    [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03]
-  );
+    const archiveName = `openkit-nanohost-v0.1.0-rc.1-linux-${architecture}.tar.gz`;
+    const firstArchive = join(firstOutput, archiveName);
+    const secondArchive = join(secondOutput, archiveName);
+    assert.deepEqual(readFileSync(firstArchive), readFileSync(secondArchive));
+    assert.deepEqual(
+      [...readFileSync(firstArchive).subarray(0, 10)],
+      [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03]
+    );
 
-  const listed = spawnSync('tar', ['-tzf', firstArchive], { encoding: 'utf8' });
-  assert.equal(listed.status, 0, listed.stderr);
-  const prefix = 'openkit-nanohost-v0.1.0-rc.1-linux-arm64';
-  assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
-    `${prefix}/`,
-    `${prefix}/MANIFEST.json`,
-    `${prefix}/SHA256SUMS`,
-    `${prefix}/host-manifest.json`,
-    `${prefix}/install.sh`,
-    `${prefix}/licenses/`,
-    `${prefix}/licenses/openkit-LICENSE`,
-    `${prefix}/licenses/openshell-LICENSE`,
-    `${prefix}/licenses/openshell-THIRD-PARTY-NOTICES`,
-    `${prefix}/nanohost`,
-    `${prefix}/openkit-nanohost.service`,
-    `${prefix}/openshell-gateway`,
-  ]);
-  const portableChecksums = readFileSync(join(firstOutput, 'SHA256SUMS'), 'utf8')
-    .trim()
-    .split('\n');
-  assert.deepEqual(
-    portableChecksums.map((line) => line.slice(66)).sort(),
-    [archiveName, 'openkit-ops-skill-v0.1.0-rc.1.tar.gz'].sort()
-  );
+    const listed = spawnSync('tar', ['-tzf', firstArchive], { encoding: 'utf8' });
+    assert.equal(listed.status, 0, listed.stderr);
+    const prefix = `openkit-nanohost-v0.1.0-rc.1-linux-${architecture}`;
+    assert.deepEqual(listed.stdout.trim().split('\n').sort(), [
+      `${prefix}/`,
+      `${prefix}/MANIFEST.json`,
+      `${prefix}/SHA256SUMS`,
+      `${prefix}/host-manifest.json`,
+      `${prefix}/install.sh`,
+      `${prefix}/licenses/`,
+      `${prefix}/licenses/openkit-LICENSE`,
+      `${prefix}/licenses/openshell-LICENSE`,
+      `${prefix}/licenses/openshell-THIRD-PARTY-NOTICES`,
+      `${prefix}/nanohost`,
+      `${prefix}/openkit-nanohost.service`,
+      `${prefix}/openshell-gateway`,
+    ]);
+    const portableChecksums = readFileSync(join(firstOutput, 'SHA256SUMS'), 'utf8')
+      .trim()
+      .split('\n');
+    assert.deepEqual(
+      portableChecksums.map((line) => line.slice(66)).sort(),
+      [archiveName, 'openkit-ops-skill-v0.1.0-rc.1.tar.gz'].sort()
+    );
 
-  const verifier = join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs');
-  assert.ok(existsSync(verifier), 'shared NanoHost release verifier must exist');
-  const stagingRoot = join(fixture.repoRoot, 'verified-stage');
-  const verified = spawnSync(
-    process.execPath,
-    [
-      verifier,
-      '--archive',
-      firstArchive,
-      '--checksum-file',
-      join(firstOutput, 'SHA256SUMS'),
-      '--destdir',
-      stagingRoot,
-      '--repo-root',
-      fixture.repoRoot,
-    ],
-    { encoding: 'utf8' }
-  );
-  assert.equal(verified.status, 0, verified.stderr);
-  assert.match(verified.stdout, /staged-only/);
+    const verifier = join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs');
+    assert.ok(existsSync(verifier), 'shared NanoHost release verifier must exist');
+    const stagingRoot = join(fixture.repoRoot, 'verified-stage');
+    const verified = spawnSync(
+      process.execPath,
+      [
+        verifier,
+        '--archive',
+        firstArchive,
+        '--checksum-file',
+        join(firstOutput, 'SHA256SUMS'),
+        '--destdir',
+        stagingRoot,
+        '--repo-root',
+        fixture.repoRoot,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.match(verified.stdout, /staged-only/);
 
-  const cargoTomlPath = join(fixture.repoRoot, 'apps', 'nanohost', 'Cargo.toml');
-  const cargoToml = readFileSync(cargoTomlPath, 'utf8');
-  writeFileSync(cargoTomlPath, cargoToml.replace(/[a-f0-9]{40}/u, '1'.repeat(40)));
-  const driftedRoot = join(fixture.repoRoot, 'drifted-stage');
-  const drifted = spawnSync(
-    process.execPath,
-    [
-      verifier,
-      '--archive',
-      firstArchive,
-      '--checksum-file',
-      join(firstOutput, 'SHA256SUMS'),
-      '--destdir',
-      driftedRoot,
-      '--repo-root',
-      fixture.repoRoot,
-    ],
-    { encoding: 'utf8' }
-  );
-  assert.notEqual(drifted.status, 0);
-  assert.match(drifted.stderr, /Cargo SDK revision and lockfile/);
-  assert.equal(
-    existsSync(driftedRoot),
-    false,
-    'SDK revision drift must fail before staging writes'
-  );
-  writeFileSync(cargoTomlPath, cargoToml);
+    const cargoTomlPath = join(fixture.repoRoot, 'apps', 'nanohost', 'Cargo.toml');
+    const cargoToml = readFileSync(cargoTomlPath, 'utf8');
+    writeFileSync(cargoTomlPath, cargoToml.replace(/[a-f0-9]{40}/u, '1'.repeat(40)));
+    const driftedRoot = join(fixture.repoRoot, 'drifted-stage');
+    const drifted = spawnSync(
+      process.execPath,
+      [
+        verifier,
+        '--archive',
+        firstArchive,
+        '--checksum-file',
+        join(firstOutput, 'SHA256SUMS'),
+        '--destdir',
+        driftedRoot,
+        '--repo-root',
+        fixture.repoRoot,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.notEqual(drifted.status, 0);
+    assert.match(drifted.stderr, /Cargo SDK revision and lockfile/);
+    assert.equal(
+      existsSync(driftedRoot),
+      false,
+      'SDK revision drift must fail before staging writes'
+    );
+    writeFileSync(cargoTomlPath, cargoToml);
 
-  const corruptOutput = join(fixture.repoRoot, 'dist', 'corrupt');
-  mkdirSync(corruptOutput);
-  const corruptArchive = join(corruptOutput, archiveName);
-  copyFileSync(firstArchive, corruptArchive);
-  copyFileSync(join(firstOutput, 'SHA256SUMS'), join(corruptOutput, 'SHA256SUMS'));
-  const corruptBytes = Buffer.from(readFileSync(firstArchive));
-  corruptBytes[Math.floor(corruptBytes.length / 2)] ^= 0xff;
-  writeFileSync(corruptArchive, corruptBytes);
-  const rejectedRoot = join(fixture.repoRoot, 'rejected-stage');
-  const rejected = spawnSync(
-    process.execPath,
-    [
-      verifier,
-      '--archive',
-      corruptArchive,
-      '--checksum-file',
-      join(corruptOutput, 'SHA256SUMS'),
-      '--destdir',
-      rejectedRoot,
-      '--repo-root',
-      fixture.repoRoot,
-    ],
-    { encoding: 'utf8' }
-  );
-  assert.notEqual(rejected.status, 0);
-  assert.equal(existsSync(rejectedRoot), false, 'corruption must fail before staging writes');
+    const corruptOutput = join(fixture.repoRoot, 'dist', 'corrupt');
+    mkdirSync(corruptOutput);
+    const corruptArchive = join(corruptOutput, archiveName);
+    copyFileSync(firstArchive, corruptArchive);
+    copyFileSync(join(firstOutput, 'SHA256SUMS'), join(corruptOutput, 'SHA256SUMS'));
+    const corruptBytes = Buffer.from(readFileSync(firstArchive));
+    corruptBytes[Math.floor(corruptBytes.length / 2)] ^= 0xff;
+    writeFileSync(corruptArchive, corruptBytes);
+    const rejectedRoot = join(fixture.repoRoot, 'rejected-stage');
+    const rejected = spawnSync(
+      process.execPath,
+      [
+        verifier,
+        '--archive',
+        corruptArchive,
+        '--checksum-file',
+        join(corruptOutput, 'SHA256SUMS'),
+        '--destdir',
+        rejectedRoot,
+        '--repo-root',
+        fixture.repoRoot,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.equal(existsSync(rejectedRoot), false, 'corruption must fail before staging writes');
 
-  const substitutedOutput = join(fixture.repoRoot, 'dist', 'release-substituted');
-  mkdirSync(substitutedOutput);
-  const substitutedArchive = join(substitutedOutput, archiveName);
-  substituteBundleReleaseIdentity(firstArchive, substitutedArchive, prefix);
-  const substitutedDigest = createHash('sha256')
-    .update(readFileSync(substitutedArchive))
-    .digest('hex');
-  writeFileSync(
-    join(substitutedOutput, 'SHA256SUMS'),
-    readFileSync(join(firstOutput, 'SHA256SUMS'), 'utf8').replace(
-      new RegExp(`[a-f0-9]{64}  ${archiveName.replaceAll('.', '\\.')}\\n`, 'u'),
-      `${substitutedDigest}  ${archiveName}\n`
-    )
-  );
-  const substitutedRoot = join(fixture.repoRoot, 'release-substituted-stage');
-  const substituted = spawnSync(
-    process.execPath,
-    [
-      verifier,
-      '--archive',
-      substitutedArchive,
-      '--checksum-file',
+    const substitutedOutput = join(fixture.repoRoot, 'dist', 'release-substituted');
+    mkdirSync(substitutedOutput);
+    const substitutedArchive = join(substitutedOutput, archiveName);
+    substituteBundleReleaseIdentity(firstArchive, substitutedArchive, prefix);
+    const substitutedDigest = createHash('sha256')
+      .update(readFileSync(substitutedArchive))
+      .digest('hex');
+    writeFileSync(
       join(substitutedOutput, 'SHA256SUMS'),
-      '--destdir',
-      substitutedRoot,
-      '--repo-root',
-      fixture.repoRoot,
-    ],
-    { encoding: 'utf8' }
-  );
-  assert.notEqual(substituted.status, 0);
-  assert.match(substituted.stderr, /OpenShell release/i);
-  assert.equal(
-    existsSync(substitutedRoot),
-    false,
-    'a self-consistent substituted release identity must fail before staging writes'
-  );
+      readFileSync(join(firstOutput, 'SHA256SUMS'), 'utf8').replace(
+        new RegExp(`[a-f0-9]{64}  ${archiveName.replaceAll('.', '\\.')}\\n`, 'u'),
+        `${substitutedDigest}  ${archiveName}\n`
+      )
+    );
+    const substitutedRoot = join(fixture.repoRoot, 'release-substituted-stage');
+    const substituted = spawnSync(
+      process.execPath,
+      [
+        verifier,
+        '--archive',
+        substitutedArchive,
+        '--checksum-file',
+        join(substitutedOutput, 'SHA256SUMS'),
+        '--destdir',
+        substitutedRoot,
+        '--repo-root',
+        fixture.repoRoot,
+      ],
+      { encoding: 'utf8' }
+    );
+    assert.notEqual(substituted.status, 0);
+    assert.match(substituted.stderr, /OpenShell release/i);
+    assert.equal(
+      existsSync(substitutedRoot),
+      false,
+      'a self-consistent substituted release identity must fail before staging writes'
+    );
 
-  const wrongArchitecture = join(fixture.repoRoot, 'wrong-architecture');
-  writeElf(wrongArchitecture, 62);
-  assert.throws(
-    () =>
-      packageReleaseAssets({
-        nanohost: { ...input, binaryPath: wrongArchitecture },
-        outputDir: join(fixture.repoRoot, 'dist', 'wrong-architecture'),
-        ref: 'HEAD',
-        repoRoot: fixture.repoRoot,
-        tag: 'v0.1.0-rc.1',
-      }),
-    /AArch64|arm64/
-  );
-});
+    const wrongArchitecture = join(fixture.repoRoot, 'wrong-architecture');
+    writeElf(wrongArchitecture, architecture === 'amd64' ? 183 : 62);
+    assert.throws(
+      () =>
+        packageReleaseAssets({
+          nanohost: [{ ...input, binaryPath: wrongArchitecture }],
+          outputDir: join(fixture.repoRoot, 'dist', 'wrong-architecture'),
+          ref: 'HEAD',
+          repoRoot: fixture.repoRoot,
+          tag: 'v0.1.0-rc.1',
+        }),
+      /ELF64/
+    );
+  });
+}
 
 test('NanoHost ELF checks accept a load segment ending exactly at the signed address ceiling', () => {
   const fixture = makeNanoHostReleaseFixture();
@@ -521,7 +524,7 @@ test('NanoHost ELF checks accept a load segment ending exactly at the signed add
 
   const outputDir = join(fixture.repoRoot, 'dist', 'signed-address-endpoint');
   packageReleaseAssets({
-    nanohost: nanoHostInput(fixture),
+    nanohost: [nanoHostInput(fixture)],
     outputDir,
     ref: 'HEAD',
     repoRoot: fixture.repoRoot,
@@ -678,7 +681,7 @@ test('NanoHost packager rejects incomplete and non-loadable ELF64 AArch64 execut
     assert.throws(
       () =>
         packageReleaseAssets({
-          nanohost: { ...input, binaryPath: malformed },
+          nanohost: [{ ...input, binaryPath: malformed }],
           outputDir: join(fixture.repoRoot, 'dist', `malformed-${label.replaceAll(' ', '-')}`),
           ref: 'HEAD',
           repoRoot: fixture.repoRoot,
@@ -807,6 +810,7 @@ test('shared NanoHost verifier rejects substituted checkout-owned bytes', () => 
 
 function nanoHostInput(fixture) {
   return {
+    target: fixture.target,
     binaryPath: fixture.nanohostPath,
     gatewayArchivePath: fixture.gatewayArchivePath,
     openshellLicensePath: fixture.openshellLicensePath,
@@ -814,17 +818,17 @@ function nanoHostInput(fixture) {
   };
 }
 
-function packageNanoHostFixture() {
-  const fixture = makeNanoHostReleaseFixture();
+function packageNanoHostFixture(architecture = 'arm64') {
+  const fixture = makeNanoHostReleaseFixture(architecture);
   const outputDir = join(fixture.repoRoot, 'dist', 'release');
   packageReleaseAssets({
-    nanohost: nanoHostInput(fixture),
+    nanohost: [nanoHostInput(fixture)],
     outputDir,
     ref: 'HEAD',
     repoRoot: fixture.repoRoot,
     tag: 'v0.1.0-rc.1',
   });
-  const archiveName = 'openkit-nanohost-v0.1.0-rc.1-linux-arm64.tar.gz';
+  const archiveName = `openkit-nanohost-v0.1.0-rc.1-linux-${architecture}.tar.gz`;
   return {
     archive: join(outputDir, archiveName),
     archiveName,
@@ -833,7 +837,7 @@ function packageNanoHostFixture() {
   };
 }
 
-function makeNanoHostReleaseFixture() {
+function makeNanoHostReleaseFixture(architecture = 'arm64') {
   const repoRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-release-'));
   mkdirSync(join(repoRoot, 'skills', 'openkit-ops', 'scripts'), { recursive: true });
   mkdirSync(join(repoRoot, 'apps', 'nanohost', 'deploy'), { recursive: true });
@@ -861,42 +865,44 @@ function makeNanoHostReleaseFixture() {
     join(repoRoot, 'apps/nanohost/deploy/host-manifest.json')
   );
 
-  const nanohostPath = join(repoRoot, 'nanohost-input');
-  const gatewayPath = join(repoRoot, 'openshell-gateway');
-  writeElf(nanohostPath, 183, { type: 3 });
-  writeElf(gatewayPath, 183);
-  const gatewayArchivePath = join(repoRoot, 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz');
-  const archived = spawnSync(
-    'tar',
-    ['-czf', gatewayArchivePath, '-C', repoRoot, 'openshell-gateway'],
-    {
-      encoding: 'utf8',
-    }
-  );
-  assert.equal(archived.status, 0, archived.stderr);
+  const targetInputs = {};
+  const gatewayPins = {};
+  const checksum = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+  for (const arch of ['amd64', 'arm64']) {
+    const machine = arch === 'amd64' ? 62 : 183;
+    const binaryPath = join(repoRoot, `nanohost-input-${arch}`);
+    const gatewayRoot = join(repoRoot, `gateway-input-${arch}`);
+    mkdirSync(gatewayRoot);
+    const gatewayPath = join(gatewayRoot, 'openshell-gateway');
+    writeElf(binaryPath, machine, { type: 3 });
+    writeElf(gatewayPath, machine);
+    const name = `openshell-gateway-${arch === 'amd64' ? 'x86_64' : 'aarch64'}-unknown-linux-gnu.tar.gz`;
+    const gatewayArchivePath = join(repoRoot, name);
+    const archived = spawnSync(
+      'tar',
+      ['-czf', gatewayArchivePath, '-C', gatewayRoot, 'openshell-gateway'],
+      { encoding: 'utf8' }
+    );
+    assert.equal(archived.status, 0, archived.stderr);
+    const target = `linux/${arch}`;
+    targetInputs[target] = { target, binaryPath, gatewayArchivePath };
+    gatewayPins[target] = {
+      archive: { name, target, sha256: checksum(gatewayArchivePath) },
+      executable: { name: 'openshell-gateway', derivedFrom: name, sha256: checksum(gatewayPath) },
+    };
+  }
+  const { binaryPath: nanohostPath, gatewayArchivePath } = targetInputs[`linux/${architecture}`];
 
   const openshellLicensePath = join(repoRoot, 'openshell-LICENSE-input');
   const openshellNoticesPath = join(repoRoot, 'openshell-THIRD-PARTY-NOTICES-input');
   writeFileSync(openshellLicensePath, 'OpenShell license fixture\n');
   writeFileSync(openshellNoticesPath, 'OpenShell notices fixture\n');
-  const checksum = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
   const commit = '8c7dd148a9e6360c9d5b2830e339a0dc4b3f3032';
   const release = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version: '0.0.99',
     source: { commit },
-    gateway: {
-      archive: {
-        name: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        target: 'linux/arm64',
-        sha256: checksum(gatewayArchivePath),
-      },
-      executable: {
-        name: 'openshell-gateway',
-        derivedFrom: 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz',
-        sha256: checksum(gatewayPath),
-      },
-    },
+    gateway: { targets: gatewayPins },
     supervisor: {
       repository: 'ghcr.io/nvidia/openshell/supervisor',
       platformDigests: {
@@ -936,6 +942,8 @@ function makeNanoHostReleaseFixture() {
   git(repoRoot, ['add', '.']);
   git(repoRoot, ['commit', '-qm', 'fixture']);
   return {
+    target: `linux/${architecture}`,
+    targetInputs,
     gatewayArchivePath,
     nanohostPath,
     openshellLicensePath,
@@ -1268,5 +1276,68 @@ for (const mutation of ['missing', 'mode', 'corrupt', 'empty']) {
       rmSync(root, { recursive: true, force: true });
       rmSync(extracted, { recursive: true, force: true });
     }
+  });
+}
+
+test('release packager emits both reproducible NanoHost targets in one checksum file', () => {
+  const fixture = makeNanoHostReleaseFixture();
+  const nanohost = Object.values(fixture.targetInputs).map((input) => ({
+    ...input,
+    openshellLicensePath: fixture.openshellLicensePath,
+    openshellNoticesPath: fixture.openshellNoticesPath,
+  }));
+  const input = { repoRoot: fixture.repoRoot, ref: 'HEAD', tag: 'v0.1.0-rc.1', nanohost };
+  const first = packageReleaseAssets({ ...input, outputDir: join(fixture.repoRoot, 'first') });
+  const second = packageReleaseAssets({ ...input, outputDir: join(fixture.repoRoot, 'second') });
+  assert.equal(first.nanohostArchivePaths.length, 2);
+  assert.deepEqual(readFileSync(first.checksumPath), readFileSync(second.checksumPath));
+  for (const [index, architecture] of ['amd64', 'arm64'].entries()) {
+    assert.deepEqual(
+      readFileSync(first.nanohostArchivePaths[index]),
+      readFileSync(second.nanohostArchivePaths[index])
+    );
+    const name = `openkit-nanohost-v0.1.0-rc.1-linux-${architecture}.tar.gz`;
+    assert.ok(readFileSync(first.checksumPath, 'utf8').includes(`  ${name}\n`));
+  }
+  for (const invalid of [[{ ...nanohost[0], target: 'linux/other' }], [nanohost[0], nanohost[0]]]) {
+    assert.throws(
+      () =>
+        packageReleaseAssets({
+          ...input,
+          nanohost: invalid,
+          outputDir: join(fixture.repoRoot, 'invalid'),
+        }),
+      /Unsupported or duplicate NanoHost target/
+    );
+  }
+});
+
+for (const architecture of ['amd64', 'arm64']) {
+  test(`shared NanoHost verifier rejects the other ELF machine in a ${architecture} archive`, () => {
+    const packaged = packageNanoHostFixture(architecture);
+    const mutationDir = join(packaged.fixture.repoRoot, 'dist', 'wrong-elf-target');
+    mkdirSync(mutationDir);
+    const archive = join(mutationDir, packaged.archiveName);
+    rewriteArchive(packaged.archive, archive, packaged.prefix, {
+      mutateRoot(root) {
+        const path = join(root, 'nanohost');
+        writeFileSync(
+          path,
+          withUInt16(readFileSync(path), 18, architecture === 'amd64' ? 183 : 62)
+        );
+        refreshInnerChecksums(root);
+      },
+    });
+    const stage = join(packaged.fixture.repoRoot, 'wrong-elf-stage');
+    const rejected = runVerifierWithFreshChecksum(
+      join(process.cwd(), 'scripts/verify-nanohost-release.mjs'),
+      archive,
+      packaged.archiveName,
+      packaged.fixture.repoRoot,
+      stage
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /ELF64/);
+    assert.equal(existsSync(stage), false, 'target mismatch must fail before staging writes');
   });
 }

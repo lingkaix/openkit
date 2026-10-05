@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { assertAarch64Elf, elfLibcRequirements } from './lib/nanohost-elf.mjs';
+import { assertNanoHostElf, elfLibcRequirements, NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
 import {
   assertOpenShellSdkRevision,
   parseNanoHostHostManifest,
@@ -24,7 +24,6 @@ import {
 } from './release-preflight.mjs';
 import { listInlineMarkdownLinkTargets } from './validate-doc-model.mjs';
 
-const NANOHOST_TARGET = 'linux/arm64';
 const NANOHOST_FILES = [
   'MANIFEST.json',
   'SHA256SUMS',
@@ -47,8 +46,8 @@ const INNER_CHECKSUM_FILES = NANOHOST_FILES.filter((name) => name !== 'SHA256SUM
  * @param {string} input.tag Product release tag.
  * @param {string} [input.ref] Git revision to archive.
  * @param {string} input.outputDir Destination directory.
- * @param {object} [input.nanohost] NanoHost packaging input.
- * @returns {{ opsArchivePath: string, checksumPath: string, nanohostArchivePath?: string }} Produced assets.
+ * @param {{target: string, binaryPath: string, gatewayArchivePath: string, openshellLicensePath: string, openshellNoticesPath: string}[]} [input.nanohost] Target-selected NanoHost packaging inputs.
+ * @returns {{ opsArchivePath: string, checksumPath: string, nanohostArchivePaths: string[] }} Produced assets.
  */
 export function packageReleaseAssets(input) {
   parseVersionTag(input.tag);
@@ -65,16 +64,16 @@ export function packageReleaseAssets(input) {
   ]);
 
   const checksums = [[ops.archiveName, sha256File(ops.archivePath)]];
-  let nanohostArchivePath;
-  if (input.nanohost) {
-    nanohostArchivePath = packageNanoHost({
-      ...input.nanohost,
-      outputDir,
-      ref,
-      repoRoot,
-      tag: input.tag,
-    });
-    checksums.push([basename(nanohostArchivePath), sha256File(nanohostArchivePath)]);
+  const nanohostArchivePaths = [];
+  const targets = new Set();
+  for (const nanohost of input.nanohost ?? []) {
+    if (!Object.hasOwn(NANOHOST_TARGETS, nanohost.target) || targets.has(nanohost.target)) {
+      throw new Error(`Unsupported or duplicate NanoHost target: ${nanohost.target}`);
+    }
+    targets.add(nanohost.target);
+    const archivePath = packageNanoHost({ ...nanohost, outputDir, ref, repoRoot, tag: input.tag });
+    nanohostArchivePaths.push(archivePath);
+    checksums.push([basename(archivePath), sha256File(archivePath)]);
   }
   const checksumPath = resolve(outputDir, 'SHA256SUMS');
   writeFileSync(
@@ -84,7 +83,7 @@ export function packageReleaseAssets(input) {
   return {
     opsArchivePath: ops.archivePath,
     checksumPath,
-    nanohostArchivePath,
+    nanohostArchivePaths,
   };
 }
 
@@ -201,7 +200,7 @@ function listMarkdownFiles(directory) {
   return paths;
 }
 
-/** Packages the exact reproducible linux/arm64 NanoHost distribution. */
+/** Packages one exact reproducible target-selected NanoHost distribution. */
 function packageNanoHost(input) {
   const release = parseOpenShellRelease(
     gitFile(input.repoRoot, input.ref, 'apps/nanohost/openshell/release.json').toString('utf8')
@@ -211,8 +210,9 @@ function packageNanoHost(input) {
     gitFile(input.repoRoot, input.ref, 'apps/nanohost/Cargo.toml').toString('utf8'),
     gitFile(input.repoRoot, input.ref, 'apps/nanohost/Cargo.lock').toString('utf8')
   );
-  const archiveRelease = release.gateway.archive;
-  const gatewayRelease = release.gateway.executable;
+  const platform = NANOHOST_TARGETS[input.target];
+  const archiveRelease = release.gateway.targets[input.target].archive;
+  const gatewayRelease = release.gateway.targets[input.target].executable;
   const licenseRelease = release.redistribution.license;
   const noticesRelease = release.redistribution.notices;
   const profileBytes = gitFile(
@@ -229,7 +229,7 @@ function packageNanoHost(input) {
   assertChecksum(input.gatewayArchivePath, archiveRelease.sha256, 'OpenShell Gateway archive');
   assertChecksum(input.openshellLicensePath, licenseRelease.sha256, 'OpenShell license');
   assertChecksum(input.openshellNoticesPath, noticesRelease.sha256, 'OpenShell notices');
-  assertAarch64Elf(readFileSync(input.binaryPath), 'NanoHost binary');
+  assertNanoHostElf(readFileSync(input.binaryPath), input.target, 'NanoHost binary');
 
   const gatewayList = run('tar', ['-tzf', resolve(input.gatewayArchivePath)], {
     encoding: 'utf8',
@@ -247,9 +247,9 @@ function packageNanoHost(input) {
     { encoding: null, maxBuffer: 512 * 1024 * 1024, message: 'Unable to extract OpenShell Gateway' }
   ).stdout;
   assertDigest(gatewayBytes, gatewayRelease.sha256, 'OpenShell Gateway');
-  assertAarch64Elf(gatewayBytes, 'OpenShell Gateway');
+  assertNanoHostElf(gatewayBytes, input.target, 'OpenShell Gateway');
 
-  const prefix = `openkit-nanohost-${input.tag}-linux-arm64`;
+  const prefix = `openkit-nanohost-${input.tag}-linux-${platform.architecture}`;
   const archivePath = join(input.outputDir, `${prefix}.tar.gz`);
   const temporary = mkdtempSync(join(tmpdir(), 'openkit-nanohost-package-'));
   try {
@@ -290,8 +290,8 @@ function packageNanoHost(input) {
       schemaVersion: 2,
       tag: input.tag,
       productCommit,
-      target: NANOHOST_TARGET,
-      architecture: 'arm64',
+      target: input.target,
+      architecture: platform.architecture,
       profileId: hostManifest.profileId,
       profileDigest: createHash('sha256').update(profileBytes).digest('hex'),
       libcRequirements: {
@@ -415,8 +415,10 @@ function parseArgs(argv) {
     'ref',
     'repo-root',
     'output-dir',
-    'nanohost-binary',
-    'openshell-gateway-archive',
+    'nanohost-amd64-binary',
+    'nanohost-arm64-binary',
+    'openshell-amd64-gateway-archive',
+    'openshell-arm64-gateway-archive',
     'openshell-license',
     'openshell-notices',
   ]);
@@ -439,24 +441,31 @@ function parseArgs(argv) {
 /** Runs the portable release packager CLI. */
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const nanohostKeys = [
-    'nanohost-binary',
-    'openshell-gateway-archive',
-    'openshell-license',
-    'openshell-notices',
-  ];
-  const nanohost = nanohostKeys.some((key) => args[key])
-    ? {
-        binaryPath: args['nanohost-binary'],
-        gatewayArchivePath: args['openshell-gateway-archive'],
-        openshellLicensePath: args['openshell-license'],
-        openshellNoticesPath: args['openshell-notices'],
-      }
-    : undefined;
-  if (nanohost && Object.values(nanohost).some((value) => !value)) {
-    throw new Error(
-      'NanoHost packaging requires the binary, Gateway archive, license, and notices.'
-    );
+  const nanohost = [];
+  for (const [target, { architecture }] of Object.entries(NANOHOST_TARGETS)) {
+    const binaryPath = args[`nanohost-${architecture}-binary`];
+    const gatewayArchivePath = args[`openshell-${architecture}-gateway-archive`];
+    if (!binaryPath && !gatewayArchivePath) continue;
+    if (
+      !binaryPath ||
+      !gatewayArchivePath ||
+      !args['openshell-license'] ||
+      !args['openshell-notices']
+    ) {
+      throw new Error(
+        `NanoHost ${target} packaging requires the binary, Gateway archive, license, and notices.`
+      );
+    }
+    nanohost.push({
+      target,
+      binaryPath,
+      gatewayArchivePath,
+      openshellLicensePath: args['openshell-license'],
+      openshellNoticesPath: args['openshell-notices'],
+    });
+  }
+  if (!nanohost.length && (args['openshell-license'] || args['openshell-notices'])) {
+    throw new Error('OpenShell redistribution inputs require a NanoHost target.');
   }
   const result = packageReleaseAssets({
     nanohost,
@@ -466,8 +475,8 @@ function main() {
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
   });
   console.log(`Release operations Skill archive: ${result.opsArchivePath}`);
-  if (result.nanohostArchivePath)
-    console.log(`Release NanoHost archive: ${result.nanohostArchivePath}`);
+  for (const archivePath of result.nanohostArchivePaths)
+    console.log(`Release NanoHost archive: ${archivePath}`);
   console.log(`Release checksum: ${result.checksumPath}`);
 }
 

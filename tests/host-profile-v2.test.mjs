@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { assertAarch64Elf, elfLibcRequirements } from '../scripts/lib/nanohost-elf.mjs';
+import { assertNanoHostElf, elfLibcRequirements } from '../scripts/lib/nanohost-elf.mjs';
 import { parseNanoHostHostManifest } from '../scripts/release-preflight.mjs';
 import { writeHostProfileFixture } from './support/host/fixture-runner.mjs';
 
@@ -454,7 +454,7 @@ test('packaging and the bundled checker derive identical libc needs from both ta
     bytes.writeUInt32LE(index + 1 < names.length ? 16 : 0, 540 + index * 16);
     nameOffset += names[index].length + 1;
   }
-  assertAarch64Elf(bytes, 'fixture');
+  assertNanoHostElf(bytes, 'linux/arm64', 'fixture');
   const expected = { interpreter: '/lib/ld-test.so', symbols: names.sort(), maximumGlibc: '2.38' };
   assert.deepEqual(elfLibcRequirements(bytes), expected);
   const installer = readFileSync('apps/nanohost/deploy/install.sh', 'utf8');
@@ -469,6 +469,16 @@ test('packaging and the bundled checker derive identical libc needs from both ta
       ['amd64', 62],
     ]) {
       bytes.writeUInt16LE(machine, 18);
+      assert.doesNotThrow(() => assertNanoHostElf(bytes, `linux/${architecture}`, 'fixture'));
+      assert.throws(
+        () =>
+          assertNanoHostElf(
+            bytes,
+            `linux/${architecture === 'amd64' ? 'arm64' : 'amd64'}`,
+            'fixture'
+          ),
+        /ELF64/
+      );
       const path = join(root, architecture);
       writeFileSync(path, bytes);
       const parsed = spawnSync(

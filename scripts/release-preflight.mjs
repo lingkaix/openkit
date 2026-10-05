@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
 
 /**
  * Validates release identity, portable inputs, image manifest, and optional main-branch ancestry.
@@ -87,8 +88,22 @@ export function parseOpenShellRelease(source) {
     typeof value === 'object' &&
     !Array.isArray(value) &&
     Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
-  const archive = release?.gateway?.archive;
-  const executable = release?.gateway?.executable;
+  const targets = release?.gateway?.targets;
+  const validGateway = (target, pin) => {
+    const archive = pin?.archive;
+    const executable = pin?.executable;
+    return (
+      exactKeys(pin, ['archive', 'executable']) &&
+      exactKeys(archive, ['name', 'target', 'sha256']) &&
+      archive.name === NANOHOST_TARGETS[target].gatewayArchive &&
+      archive.target === target &&
+      sha256(archive.sha256) &&
+      exactKeys(executable, ['name', 'derivedFrom', 'sha256']) &&
+      executable.name === 'openshell-gateway' &&
+      executable.derivedFrom === archive.name &&
+      sha256(executable.sha256)
+    );
+  };
   const license = release?.redistribution?.license;
   const notices = release?.redistribution?.notices;
   const platformDigests = release?.supervisor?.platformDigests;
@@ -101,21 +116,15 @@ export function parseOpenShellRelease(source) {
       'supervisor',
       'redistribution',
     ]) ||
-    release.schemaVersion !== 1 ||
+    release.schemaVersion !== 2 ||
     typeof release.version !== 'string' ||
     !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(release.version) ||
     !exactKeys(release.source, ['commit']) ||
     typeof release.source.commit !== 'string' ||
     !/^[a-f0-9]{40}$/u.test(release.source.commit) ||
-    !exactKeys(release.gateway, ['archive', 'executable']) ||
-    !exactKeys(archive, ['name', 'target', 'sha256']) ||
-    archive.name !== 'openshell-gateway-aarch64-unknown-linux-gnu.tar.gz' ||
-    archive.target !== 'linux/arm64' ||
-    !sha256(archive.sha256) ||
-    !exactKeys(executable, ['name', 'derivedFrom', 'sha256']) ||
-    executable.name !== 'openshell-gateway' ||
-    executable.derivedFrom !== archive.name ||
-    !sha256(executable.sha256) ||
+    !exactKeys(release.gateway, ['targets']) ||
+    !exactKeys(targets, Object.keys(NANOHOST_TARGETS)) ||
+    Object.keys(NANOHOST_TARGETS).some((target) => !validGateway(target, targets[target])) ||
     !exactKeys(release.supervisor, ['repository', 'platformDigests']) ||
     release.supervisor.repository !== 'ghcr.io/nvidia/openshell/supervisor' ||
     !exactKeys(platformDigests, ['linux/amd64', 'linux/arm64']) ||

@@ -464,6 +464,40 @@ jobs:
           OPENKIT_TEST_APP_IMAGE_RECOVERY: "1"
         run: bash scripts/test-env.sh host node --test scripts/docker/app-admin-recovery-smoke.test.mjs
 
+  build-nanohost-amd64:
+    name: Build NanoHost natively on amd64
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs:
+      - release-preflight
+      - nanohost-installer
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up the pinned NanoHost toolchain
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3.6.3
+        with:
+          working_directory: apps/nanohost
+          install_args: rust
+
+      - name: Build and inspect the pinned NanoHost binary
+        run: |
+          cd apps/nanohost
+          cargo build --locked --release
+          ./target/release/nanohost --version
+          mkdir -p ../../nanohost-native
+          cp target/release/nanohost ../../nanohost-native/nanohost
+
+      - name: Upload native NanoHost binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanohost-native-amd64
+          path: nanohost-native/nanohost
+          if-no-files-found: error
+
   build-nanohost-arm64:
     name: Build NanoHost natively on arm64
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
@@ -508,6 +542,7 @@ jobs:
       - nano-core-e2e
       - smoke
       - workspace-portability-target
+      - build-nanohost-amd64
       - build-nanohost-arm64
     runs-on: ubuntu-latest
     permissions:
@@ -523,11 +558,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Download native NanoHost binary
+      - name: Download native NanoHost amd64 binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nanohost-native-amd64
+          path: nanohost-native/amd64
+
+      - name: Download native NanoHost arm64 binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: nanohost-native-arm64
-          path: nanohost-native
+          path: nanohost-native/arm64
 
       - name: Resolve accepted OpenShell inputs
         id: openshell
@@ -540,16 +581,20 @@ jobs:
           );
           process.stdout.write(`tag=v${release.version}\n`);
           process.stdout.write(`commit=${release.source.commit}\n`);
-          process.stdout.write(`archive=${release.gateway.archive.name}\n`);
+          process.stdout.write(`archive=${release.gateway.targets['linux/arm64'].archive.name}\n`);
+          process.stdout.write(`amd64_archive=${release.gateway.targets['linux/amd64'].archive.name}\n`);
           NODE
 
       - name: Package and verify portable release assets
         env:
+          OPENSHELL_AMD64_ARCHIVE: ${{ steps.openshell.outputs.amd64_archive }}
           OPENSHELL_ARCHIVE: ${{ steps.openshell.outputs.archive }}
           OPENSHELL_COMMIT: ${{ steps.openshell.outputs.commit }}
           OPENSHELL_TAG: ${{ steps.openshell.outputs.tag }}
         run: |
           mkdir -p nanohost-input
+          curl --fail --location --output "nanohost-input/${OPENSHELL_AMD64_ARCHIVE}" \
+            "https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_AMD64_ARCHIVE}"
           curl --fail --location --output "nanohost-input/${OPENSHELL_ARCHIVE}" \
             "https://github.com/NVIDIA/OpenShell/releases/download/${OPENSHELL_TAG}/${OPENSHELL_ARCHIVE}"
           curl --fail --location --output nanohost-input/openshell-LICENSE \
@@ -558,8 +603,10 @@ jobs:
             "https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_COMMIT}/THIRD-PARTY-NOTICES"
           node scripts/package-release-assets.mjs \
             --tag "${GITHUB_REF_NAME}" \
-            --nanohost-binary nanohost-native/nanohost \
-            --openshell-gateway-archive "nanohost-input/${OPENSHELL_ARCHIVE}" \
+            --nanohost-amd64-binary nanohost-native/amd64/nanohost \
+            --nanohost-arm64-binary nanohost-native/arm64/nanohost \
+            --openshell-amd64-gateway-archive "nanohost-input/${OPENSHELL_AMD64_ARCHIVE}" \
+            --openshell-arm64-gateway-archive "nanohost-input/${OPENSHELL_ARCHIVE}" \
             --openshell-license nanohost-input/openshell-LICENSE \
             --openshell-notices nanohost-input/openshell-THIRD-PARTY-NOTICES
           cd dist/release
@@ -576,11 +623,13 @@ jobs:
           });
           NODE
           verification_parent="$(mktemp -d)"
-          node ../../scripts/verify-nanohost-release.mjs \
-            --archive "openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
-            --checksum-file SHA256SUMS \
-            --destdir "${verification_parent}/stage" \
-            --repo-root ../..
+          for architecture in amd64 arm64; do
+            node ../../scripts/verify-nanohost-release.mjs \
+              --archive "openkit-nanohost-${GITHUB_REF_NAME}-linux-${architecture}.tar.gz" \
+              --checksum-file SHA256SUMS \
+              --destdir "${verification_parent}/${architecture}" \
+              --repo-root ../..
+          done
 
       - name: Upload portable release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -588,6 +637,195 @@ jobs:
           name: release-portable-assets
           path: dist/release/
           if-no-files-found: error
+
+      - name: Upload exact NanoHost amd64 qualification inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanohost-release-amd64
+          path: |
+            dist/release/openkit-nanohost-${{ github.ref_name }}-linux-amd64.tar.gz
+            dist/release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Upload exact NanoHost arm64 qualification inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanohost-release-arm64
+          path: |
+            dist/release/openkit-nanohost-${{ github.ref_name }}-linux-arm64.tar.gz
+            dist/release/SHA256SUMS
+          if-no-files-found: error
+
+  qualify-nanohost:
+    name: Qualify NanoHost on ${{ matrix.architecture }}
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: package-release-assets
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            architecture: amd64
+          - runner: ubuntu-24.04-arm
+            architecture: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Download exact NanoHost archive and checksum
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: nanohost-release-${{ matrix.architecture }}
+          path: nanohost-release
+
+      - name: Verify the exact target archive
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          verification_parent="$(mktemp -d)"
+          node scripts/verify-nanohost-release.mjs \
+            --archive "nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}.tar.gz" \
+            --checksum-file nanohost-release/SHA256SUMS \
+            --destdir "${verification_parent}/stage" \
+            --repo-root .
+          tar -xzf "nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}.tar.gz" -C nanohost-release
+
+      - name: Provision missing declared inspection prerequisites
+        run: |
+          # Preparation precedes measured checks; the installer never repairs a failed observation.
+          node --input-type=module <<'NODE' > prerequisite-packages.tsv
+          import { readFileSync } from 'node:fs';
+          import { parseNanoHostHostManifest } from './scripts/release-preflight.mjs';
+          const profile = parseNanoHostHostManifest(readFileSync('apps/nanohost/deploy/host-manifest.json', 'utf8'));
+          const packages = {
+            '/usr/bin/containerd': 'containerd.io',
+            '/usr/bin/dockerd': 'docker-ce',
+            '/usr/bin/docker': 'docker-ce-cli',
+            '/usr/bin/git': 'git',
+            '/usr/bin/slirp4netns': 'slirp4netns',
+          };
+          for (const requirement of profile.requirements) {
+            if (requirement.probe === 'executable') {
+              const path = requirement.predicate.path;
+              if (!packages[path]) throw new Error(`No hosted prerequisite package for ${path}`);
+              console.log(`${path}\t${packages[path]}`);
+            }
+          }
+          // Python is the owner's bootstrap prerequisite, outside the profile's probe entries.
+          console.log('/usr/bin/python3\tpython3');
+          console.log('/usr/bin/systemd-analyze\tsystemd');
+          console.log('/run/systemd/resolve/resolv.conf\tsystemd-resolved');
+          NODE
+          [ -n "${ImageOS:-}" ] && [ -n "${ImageVersion:-}" ]
+          missing=()
+          while IFS=$'\t' read -r path package; do
+            if [ ! -e "${path}" ] && [ ! -L "${path}" ]; then missing+=("${package}"); fi
+          done < prerequisite-packages.tsv
+          {
+            echo "### NanoHost qualification image"
+            echo "ImageOS=${ImageOS:-unknown} ImageVersion=${ImageVersion:-unknown}"
+            echo "### Installed prerequisite package versions"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            dpkg-query -W -f='${binary:Package}=${Version}\n' | sort > packages-before.txt
+            sudo apt-get update
+            set +e
+            sudo apt-get install -y "${missing[@]}"
+            provision_status=$?
+            set -e
+            dpkg-query -W -f='${binary:Package}=${Version}\n' | sort > packages-after.txt
+            comm -13 packages-before.txt packages-after.txt >> "${GITHUB_STEP_SUMMARY}"
+            [ "${provision_status}" -eq 0 ]
+          else
+            echo "No missing prerequisite packages." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          echo "### Observed prerequisite package versions" >> "${GITHUB_STEP_SUMMARY}"
+          cut -f2 prerequisite-packages.tsv | sort -u | while IFS= read -r package; do
+            dpkg-query -W -f='${Package}=${Version}\n' "${package}"
+          done >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Check real host and no-write installation disposition
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}"
+          # Snapshot all fixed live and reserved paths, including inode, mode, and bytes.
+          snapshot() {
+            sudo /usr/bin/python3 -I -B - <<'PY_SNAPSHOT'
+          import hashlib, json, os, stat
+          paths = ['/usr/lib/openkit/nanohost', '/usr/lib/openkit/openshell-gateway', '/etc/systemd/system/openkit-nanohost.service', '/usr/lib/openkit/.nanohost.openkit-install', '/usr/lib/openkit/.openshell-gateway.openkit-install', '/etc/systemd/system/.openkit-nanohost.service.openkit-install']
+          result = []
+          for path in paths:
+              try:
+                  info = os.lstat(path)
+              except FileNotFoundError:
+                  result.append([path, 'absent'])
+                  continue
+              digest = None
+              if stat.S_ISREG(info.st_mode):
+                  with open(path, 'rb') as source:
+                      digest = hashlib.sha256(source.read()).hexdigest()
+              result.append([path, info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, digest, os.readlink(path) if stat.S_ISLNK(info.st_mode) else None])
+          print(json.dumps(result, separators=(',', ':')))
+          PY_SNAPSHOT
+          }
+          snapshot > nanohost-release/live-before.json
+          set +e
+          sudo sh "${bundle}/install.sh" --check-host > nanohost-release/check-host.json
+          host_status=$?
+          sudo sh "${bundle}/install.sh" --check > nanohost-release/check-install.txt
+          disposition_status=$?
+          set -e
+          snapshot > nanohost-release/live-after.json
+          cmp nanohost-release/live-before.json nanohost-release/live-after.json
+          cat nanohost-release/check-host.json nanohost-release/check-install.txt >> "${GITHUB_STEP_SUMMARY}"
+          [ "${host_status}" -eq 0 ]
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const result = JSON.parse(readFileSync('nanohost-release/check-host.json', 'utf8'));
+          assert.equal(result.hardVerdict, 'requirements-met');
+          assert.equal(result.productCommit, process.env.GITHUB_SHA);
+          const manifest = JSON.parse(readFileSync(`nanohost-release/openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-${process.env.ARCHITECTURE}/MANIFEST.json`, 'utf8'));
+          assert.equal(result.profileDigest, manifest.profileDigest);
+          const checksum = readFileSync('nanohost-release/SHA256SUMS', 'utf8').split('\n').find((line) => line.endsWith(`  openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-${process.env.ARCHITECTURE}.tar.gz`));
+          assert.equal(result.archiveSha256, checksum?.slice(0, 64));
+          NODE
+          [ "${disposition_status}" -eq 0 ]
+          grep -Fx 'host-prerequisites=pass' nanohost-release/check-install.txt
+          grep -Fx 'destination=installable' nanohost-release/check-install.txt
+
+      - name: Stage the qualified archive without service effects
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          bundle="${GITHUB_WORKSPACE}/nanohost-release/openkit-nanohost-${GITHUB_REF_NAME}-linux-${ARCHITECTURE}"
+          staging_parent="$(mktemp -d)"
+          DESTDIR="${staging_parent}/stage" sh "${bundle}/install.sh" > nanohost-release/staging.txt
+          grep -Fx 'staged-only' nanohost-release/staging.txt
+          for binary in nanohost openshell-gateway; do
+            cmp "${bundle}/${binary}" "${staging_parent}/stage/usr/lib/openkit/${binary}"
+            [ "$(stat -c '%a' "${staging_parent}/stage/usr/lib/openkit/${binary}")" = 755 ]
+          done
+          cmp "${bundle}/openkit-nanohost.service" "${staging_parent}/stage/etc/systemd/system/openkit-nanohost.service"
+          [ "$(stat -c '%a' "${staging_parent}/stage/etc/systemd/system/openkit-nanohost.service")" = 644 ]
+          cat nanohost-release/staging.txt >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain NanoHost qualification observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanohost-qualification-${{ matrix.architecture }}
+          path: |
+            nanohost-release/staging.txt
+            nanohost-release/check-host.json
+            nanohost-release/check-install.txt
+            nanohost-release/live-before.json
+            nanohost-release/live-after.json
+          if-no-files-found: warn
 
   container-image-matrix:
     name: Container image release matrix
@@ -682,6 +920,7 @@ jobs:
       - smoke
       - workspace-portability-target
       - container-image-matrix
+      - qualify-nanohost
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -923,6 +1162,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
       - package-release-assets
+      - qualify-nanohost
       - publish-container-images
     runs-on: ubuntu-latest
     permissions:
@@ -955,7 +1195,7 @@ jobs:
             echo "- Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Repository visibility at publication: \`${visibility}\`"
             echo "- Portable asset checksum-file SHA-256: \`${checksum}\`"
-            echo "- NanoHost target: \`linux/arm64\`"
+            echo "- NanoHost targets: \`linux/amd64\`, \`linux/arm64\`"
             echo ""
             echo "## Images"
             echo ""
@@ -969,6 +1209,7 @@ jobs:
             echo "- Every release image platform passed smoke before tag promotion."
             echo "- Public worker-common anonymous exact-digest inspection passed."
             echo "- The Skill and NanoHost archives and their shared checksum passed local verification."
+            echo "- Both NanoHost targets passed fresh hosted requirement, no-write disposition, and contained staging qualification."
             echo ""
             echo "## Manual Gates"
             echo ""
@@ -976,7 +1217,7 @@ jobs:
             echo ""
             echo "## Current Limitation"
             echo ""
-            echo "- linux/arm64 archive is installable; R001 exact-product no-host-reboot runtime gate remains open."
+            echo "- linux/amd64 and linux/arm64 archives are installable; R001 exact-product no-host-reboot runtime gate remains open."
           } > release-notes.md
 
       - name: Create immutable GitHub Release
@@ -997,6 +1238,7 @@ jobs:
           fi
           gh release create "${GITHUB_REF_NAME}" \
             "portable-assets/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" \
+            "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
             portable-assets/SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" \
@@ -1076,6 +1318,7 @@ jobs:
           const expected = [
             'SHA256SUMS',
             `openkit-ops-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
+            `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-amd64.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-arm64.tar.gz`,
           ].sort();
           if (release.tagName !== process.env.GITHUB_REF_NAME || release.isDraft || release.isPrerelease !== expectedPrerelease) {
@@ -1091,7 +1334,7 @@ jobs:
             `Portable asset checksum-file SHA-256: \`${process.env.CHECKSUM}\``,
             '## Automatic Gates',
             '## Manual Gates',
-            'linux/arm64 archive is installable; R001 exact-product no-host-reboot runtime gate remains open',
+            'linux/amd64 and linux/arm64 archives are installable; R001 exact-product no-host-reboot runtime gate remains open',
           ];
           for (const name of fs.readdirSync('release-records').filter((name) => name.endsWith('.json'))) {
             required.push(JSON.parse(fs.readFileSync(path.join('release-records', name), 'utf8')).digest);
@@ -1118,11 +1361,13 @@ jobs:
             "${TEST_IMAGE}" \
             node "/release/${ops_prefix}/skills/openkit-ops/scripts/openkit" ops search workspace
           verification_parent="$(mktemp -d)"
-          node scripts/verify-nanohost-release.mjs \
-            --archive "release-download/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
-            --checksum-file release-download/SHA256SUMS \
-            --destdir "${verification_parent}/stage" \
-            --repo-root .
+          for architecture in amd64 arm64; do
+            node scripts/verify-nanohost-release.mjs \
+              --archive "release-download/openkit-nanohost-${GITHUB_REF_NAME}-linux-${architecture}.tar.gz" \
+              --checksum-file release-download/SHA256SUMS \
+              --destdir "${verification_parent}/${architecture}" \
+              --repo-root .
+          done
 
       - name: Verify public worker base without registry credentials
         run: |

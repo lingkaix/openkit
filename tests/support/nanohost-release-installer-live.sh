@@ -6,6 +6,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 INSTALLER="${REPO_ROOT}/apps/nanohost/deploy/install.sh"
 BWRAP="$(command -v bwrap || true)"
 FAILURES=0
+FIXTURE_ARCH=arm64
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -61,7 +62,11 @@ write_elf() {
   dd if=/dev/zero of="$path" bs=132 count=1 status=none
   printf '\177ELF\002\001\001' | dd of="$path" conv=notrunc status=none
   printf '\002\000' | dd of="$path" bs=1 seek=16 conv=notrunc status=none
-  printf '\267\000\001\000\000\000' | dd of="$path" bs=1 seek=18 conv=notrunc status=none
+  if [[ "$FIXTURE_ARCH" == amd64 ]]; then
+    printf '\076\000\001\000\000\000' | dd of="$path" bs=1 seek=18 conv=notrunc status=none
+  else
+    printf '\267\000\001\000\000\000' | dd of="$path" bs=1 seek=18 conv=notrunc status=none
+  fi
   printf '\170\000\100\000\000\000\000\000' | dd of="$path" bs=1 seek=24 conv=notrunc status=none
   printf '\100\000\000\000\000\000\000\000' | dd of="$path" bs=1 seek=32 conv=notrunc status=none
   printf '\100\000' | dd of="$path" bs=1 seek=52 conv=notrunc status=none
@@ -77,13 +82,13 @@ write_elf() {
 }
 
 write_bundle_manifest() {
-  python3 -I -B - "$BUNDLE" <<'PY_MANIFEST'
+  python3 -I -B - "$BUNDLE" "$FIXTURE_ARCH" <<'PY_MANIFEST'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1])
 profile_bytes=(root/'host-manifest.json').read_bytes()
 profile=json.loads(profile_bytes)
 files=['MANIFEST.json','SHA256SUMS','host-manifest.json','install.sh','licenses/openkit-LICENSE','licenses/openshell-LICENSE','licenses/openshell-THIRD-PARTY-NOTICES','nanohost','openkit-nanohost.service','openshell-gateway']
-manifest={'schemaVersion':2,'tag':'v0.1.0-rc.1','productCommit':'a'*40,'target':'linux/arm64','architecture':'arm64','profileId':profile['profileId'],'profileDigest':hashlib.sha256(profile_bytes).hexdigest(),'files':files,'libcRequirements':{name:{'interpreter':None,'symbols':[],'maximumGlibc':None} for name in ('nanohost','openshell-gateway')}}
+manifest={'schemaVersion':2,'tag':'v0.1.0-rc.1','productCommit':'a'*40,'target':'linux/'+sys.argv[2],'architecture':sys.argv[2],'profileId':profile['profileId'],'profileDigest':hashlib.sha256(profile_bytes).hexdigest(),'files':files,'libcRequirements':{name:{'interpreter':None,'symbols':[],'maximumGlibc':None} for name in ('nanohost','openshell-gateway')}}
 (root/'MANIFEST.json').write_text(json.dumps(manifest))
 PY_MANIFEST
 }
@@ -104,7 +109,7 @@ refresh_bundle_checksums() {
     cd "$BUNDLE"
     for member in "${members[@]}"; do sha256sum "$member"; done >SHA256SUMS
   )
-  tar -czf "$CASE_ROOT/openkit-nanohost-v0.1.0-rc.1-linux-arm64.tar.gz" --transform='s|^bundle/|openkit-nanohost-v0.1.0-rc.1-linux-arm64/|' -C "$CASE_ROOT" "${members[@]/#/bundle/}" bundle/SHA256SUMS
+  tar -czf "$CASE_ROOT/openkit-nanohost-v0.1.0-rc.1-linux-${FIXTURE_ARCH}.tar.gz" --transform="s|^bundle/|openkit-nanohost-v0.1.0-rc.1-linux-${FIXTURE_ARCH}/|" -C "$CASE_ROOT" "${members[@]/#/bundle/}" bundle/SHA256SUMS
 }
 
 new_case() {
@@ -133,7 +138,9 @@ new_case() {
   printf '#!/bin/sh\nprintf "Docker version 28.0.4, build abc1234\\n"\n' >"$STUBS/docker"
   printf '#!/bin/sh\nprintf "git version 2.55.0\\n"\n' >"$STUBS/git"
   printf '#!/bin/sh\nprintf "slirp4netns fixture version\\ncommit: fixture\\nlibslirp: fixture\\n"\n' >"$STUBS/slirp4netns"
-  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo aarch64;; -r) echo 6.8.33-fixture;; esac\n' >"$STUBS/uname"
+  local machine=aarch64
+  if [[ "$FIXTURE_ARCH" == amd64 ]]; then machine=x86_64; fi
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo %s;; -r) echo 6.8.33-fixture;; esac\n' "$machine" >"$STUBS/uname"
   printf '#!/bin/sh\nexit 0\n' >"$STUBS/systemd-analyze"
   printf 'systemd\n' >"$STUBS/pid1"
   chmod 0755 "$STUBS/systemd-analyze"
@@ -287,7 +294,9 @@ PY_RESULT
 
 test_other_host_prerequisites_and_ancestors() {
   new_case
-  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n' >"$STUBS/uname"
+  local wrong_machine=x86_64
+  if [[ "$FIXTURE_ARCH" == amd64 ]]; then wrong_machine=aarch64; fi
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo %s;; esac\n' "$wrong_machine" >"$STUBS/uname"
   chmod 0755 "$STUBS/uname"
   run_case wrong-architecture '' --check
   [[ "$RESULT" -ne 0 ]] || fail 'installer accepted the wrong host architecture'
@@ -474,13 +483,16 @@ EOF
 }
 
 set -e
-test_four_dispositions
-test_capability_host_requirements
-test_other_host_prerequisites_and_ancestors
-test_live_completion_output
-test_partial_cleanup
-test_interrupted_resume_and_symlink_rejection
-test_live_signal_cleanup
-test_fixed_lock_serialization
-test_noncooperating_publication_race
+for FIXTURE_ARCH in amd64 arm64; do
+  printf 'Checking NanoHost %s fixture payload.\n' "$FIXTURE_ARCH"
+  test_four_dispositions
+  test_capability_host_requirements
+  test_other_host_prerequisites_and_ancestors
+  test_live_completion_output
+  test_partial_cleanup
+  test_interrupted_resume_and_symlink_rejection
+  test_live_signal_cleanup
+  test_fixed_lock_serialization
+  test_noncooperating_publication_race
+done
 finish
