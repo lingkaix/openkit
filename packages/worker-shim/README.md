@@ -1,5 +1,7 @@
 # Worker Shim
 
+Catalog Skill targets are imported independently of the adapter, then passed to its native Skill projection. The shared release-owned `WORKER_ADAPTER_SUPPLY_FORMS` table in `@openkit/worker-protocol` declares the filesystem Skill form for Codex, Pi, OpenCode and DeepSeek, qualified by their native managed-Skill tests in `src/adapters/`. NanoCore checks this table before Sandbox effects; Worker reports do not grant supply qualification. The declaration ships with the adapter code from the same commit, while exact admitted image-digest evidence stays in the AEP.
+
 `@openkit/worker-shim` provides the generic sandbox-local OpenKit worker supervisor. Its single zero-argument binary, `openkit-worker-shim`, runs the shared Harness used by NanoHost. The Harness executes the six private operations of [Worker Control Protocol](../../docs/specs/20260703-worker_control_protocol.md) (`session.open`, `session.inspect`, `turn.start`, `turn.interrupt`, `session.close`, `harness.drain`) for resident AgentSession bindings ([AgentSession](../../docs/core/agent-session.md)) and keeps one shared worker-control, transcript, workspace-publication, and lineage lifecycle for each Turn.
 
 ## Sandbox Integration

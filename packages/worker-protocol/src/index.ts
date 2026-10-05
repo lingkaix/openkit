@@ -1,4 +1,5 @@
 export { type GitFailureExplanation, GitFailureExplanationSchema } from '@openkit/protocol';
+export * from './adapter-supply.js';
 export * from './harness-control.js';
 export * from './native-environment.js';
 

@@ -19,7 +19,7 @@ import {
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
-import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { WORKER_ADAPTER_SUPPLY_FORMS, workerSessionInputPaths } from '@openkit/worker-protocol';
 import { ZodError, type z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { publishedErrorMessage } from '../api-errors.js';
@@ -1041,11 +1041,15 @@ function workspaceInputSource(
 }
 
 /**
- * Resolves requested Skill ids into catalog-approved AEP supply snapshots.
+ * Resolves catalog-approved Skill snapshots against release-owned adapter supply qualification.
  *
  * @param skillIds Worker Skill ids requested by the selected agent.
  * @param adapter Runtime adapter that will consume the supply.
+ * @param workspaceId Workspace owning the Skill catalog.
+ * @param dataRoot Core data root containing the catalog.
+ * @param agentSessionId Exact AgentSession identity owning the supply input paths.
  * @returns Catalog-resolved Skill supply entries.
+ * @throws DeterministicAgentPreparationError when the adapter has no declared filesystem Skill form.
  */
 function resolveWorkerSkillSupply(
   skillIds: string[],
@@ -1058,6 +1062,9 @@ function resolveWorkerSkillSupply(
   if (!dataRoot) {
     throw new Error('Workspace Skill catalog requires a data root.');
   }
+  const allowedRuntimeAdapters = Object.entries(WORKER_ADAPTER_SUPPLY_FORMS)
+    .filter(([, forms]) => forms.includes('skill-filesystem-copy'))
+    .map(([id]) => id);
   const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
   const { supplyRoot } = workerSessionInputPaths(agentSessionId);
   return skillIds.map((skillId) => {
@@ -1070,10 +1077,14 @@ function resolveWorkerSkillSupply(
     if (!entry || entry.availability !== 'available' || !digest || !version) {
       throw new Error(`Worker supply catalog entry not found: skill:${skillId}`);
     }
-    assertRuntimeAdapterAllowed(entry.id, adapter, ['codex']);
+    if (!allowedRuntimeAdapters.includes(adapter)) {
+      throw new DeterministicAgentPreparationError(
+        `Worker skill catalog entry is not allowed for ${adapter}: ${entry.id}`
+      );
+    }
     const targetPath = `${supplyRoot}/${entry.id}`;
     return {
-      allowedRuntimeAdapters: ['codex'],
+      allowedRuntimeAdapters,
       allowedWorkspaceScopes: ['workspace'],
       digestFormat: 'openkit-tree-v1' as const,
       id: entry.id,
@@ -1698,19 +1709,6 @@ function assertCredentialBackendMatchesReference(
     (inventory.userId ?? null) !== reference.userId
   ) {
     throw new Error('Vault reference requires inspection before worker credential injection.');
-  }
-}
-
-/**
- * Fails closed when a catalog entry is not allowed for the selected runtime adapter.
- */
-function assertRuntimeAdapterAllowed(
-  id: string,
-  adapter: string,
-  allowedRuntimeAdapters: string[]
-): void {
-  if (!allowedRuntimeAdapters.includes(adapter)) {
-    throw new Error(`Worker skill catalog entry is not allowed for ${adapter}: ${id}`);
   }
 }
 
