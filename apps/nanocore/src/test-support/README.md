@@ -12,6 +12,7 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 - Both app fixtures accept omitted options. Tests whose subject is file-backed configuration loading or reload supply an explicit `runtimeConfigManager` so synthetic Gateway and Provider defaults do not replace the authored initial snapshot.
 - `workspace-sync.ts` records deterministic trusted input and materialization lineage for review fixtures.
 - `mcp-stdio-stub.mjs` publishes a descendant-written PID, supervisor PID, and credential digest receipt so MCP process cleanup tests verify inherited credentials on supported POSIX hosts without external process-inspection tools. The server's parent is the gateway's detached supervisor and the inherited process-group leader.
+- Its initialization-hang mode keeps stdin open while withholding protocol replies; an unresolved top-level Promise alone makes Node exit rather than simulate a live unresponsive server.
 - `mcp-http-stub.ts` can hold its `delayed` tool response on a test-owned Promise; the test observes request ingress and releases the gate during cleanup to establish concurrency without a guessed delay.
 - `knowledge-operation.ts` projects explicit test selectors and supplied request bytes to definition-derived routes. It supplies no Workspace authority, request identity, data or admission default; malformed bodies stay malformed.
 - Fixtures must use production public paths where practical, stay deterministic, and avoid silently changing production defaults.

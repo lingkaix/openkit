@@ -12,6 +12,8 @@ if (process.env.OPENKIT_MCP_SERVER_PID_FILE) {
 }
 if (process.env.OPENKIT_MCP_IGNORE_STDIN_EXIT) setInterval(() => undefined, 1_000);
 if (process.env.OPENKIT_MCP_INIT_HANG) {
+  // Keep the transport live: an unresolved top-level await alone exits Node with code 13.
+  process.stdin.resume();
   await new Promise(() => undefined);
 }
 if (process.env.OPENKIT_MCP_DESCENDANT_PID_FILE) {

@@ -232,6 +232,7 @@ const fixtures = new Set<ProviderSubscriptionFixture>();
 const extraTemporaryRoots = new Set<string>();
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 
@@ -4981,6 +4982,9 @@ describe('subscription refresh inference ownership', () => {
       'auth_rejected',
       'quota_exhausted',
     ] as const)(`projects post-refresh ${subscriptionProviderId} %s from the actual bearer`, async (kind) => {
+      // Refresh attribution must finish within the unchanged deadline, independent of real Vault I/O speed.
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.setSystemTime(DEFAULT_TIME);
       const fixture = createFixture();
       const pair = accountPair('refresh', subscriptionProviderId);
       const handle = await createStoredPair(fixture, pair, 'refresh_r1', {

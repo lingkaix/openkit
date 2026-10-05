@@ -29,6 +29,7 @@ import {
 } from './config/runtime-config.js';
 import { retainWorkObservationBody } from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
@@ -429,7 +430,7 @@ describe('worker MCP routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    let store = createDemoStore();
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: 'user_local', workspaceId: 'ws_demo' });
     const timestamp = '2026-09-30T00:00:00.000Z';
     const physicalEpoch = 'e'.repeat(64);
@@ -565,6 +566,28 @@ describe('worker MCP routes', () => {
       summary: [],
       content: ['restricted-evidence-canary'],
     });
+    // Seed in memory and publish each complete Workspace once; the oracle still reads real persisted bytes.
+    const seeded = store;
+    store = new FsStore({ dataRoot });
+    for (const workspace of seeded.listWorkspaces()) {
+      const workspaceThreads = seeded.listThreads(workspace.id);
+      const workspaceTurns = workspaceThreads.flatMap((thread) =>
+        seeded.listThreadTurns(workspace.id, thread.id)
+      );
+      store.importWorkspaceSnapshot({
+        workspace,
+        threads: workspaceThreads,
+        turns: workspaceTurns,
+        knowledge: seeded.getWorkspaceResources(workspace.id).knowledge,
+        itemRevisions: workspaceTurns.flatMap((turn) => turn.items),
+        artifacts: [],
+        agentSessions: seeded.listWorkspaceAgentSessions(workspace.id),
+        turnEvents: workspaceTurns.map((turn) => [turn.id, seeded.getTurnEventsForExport(turn.id)]),
+        turnCaptureCoverage: new Map(
+          workspaceTurns.map((turn) => [turn.id, seeded.getTurnCaptureCoverage(turn.id)!])
+        ),
+      });
+    }
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);
     const rawEvidence = Buffer.from('restricted-raw-canary credential-canary');

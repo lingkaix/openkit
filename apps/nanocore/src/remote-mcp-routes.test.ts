@@ -831,52 +831,61 @@ describe('remote MCP App endpoint', () => {
   it('derives exactly four tools and per-operation annotations and bounded ranked search from all definitions', async () => {
     const f = await fixture();
     const token = f.token();
-    const listed = await (await f.message('tools/list', {}, token.secret)).json();
-    expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      'search',
-      'describe',
-      'guide',
-      'call',
-    ]);
-    expect(
-      listed.result.tools
-        .slice(0, 3)
-        .every((tool: { annotations: { readOnlyHint: boolean } }) => tool.annotations.readOnlyHint)
-    ).toBe(true);
-    expect(listed.result.tools[3].annotations.readOnlyHint).toBe(false);
-    for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(([, definition]) =>
-      operationMcpEligible(definition)
-    )) {
-      const result = await f.call('describe', { operation: id }, token.secret);
-      const data = JSON.parse(result.content[0].text);
-      expect(data.id).toBe(id);
-      expect(data.annotations.readOnlyHint).toBe(!definition.mutating);
-      expect(data.inputSchema.type).toBe('object');
-    }
-    const a = JSON.parse(
-      (await f.call('search', { query: 'kernel record create' }, token.secret)).content[0].text
-    );
-    const b = JSON.parse(
-      (await f.call('search', { query: 'create record kernel' }, token.secret)).content[0].text
-    );
-    expect(a).toEqual(b);
-    expect(a.items[0].id).toBe('kernel.records.create');
-    const additions = Object.fromEntries(
-      Array.from({ length: 30 }, (_, i) => [
-        `test.record.${i}`,
-        OPERATION_DEFINITIONS['kernel.records.create'],
-      ])
-    );
-    Object.assign(OPERATION_DEFINITIONS, additions);
+    // Metadata discovery keeps real Token and audit writes in one rolled-back fixture transaction.
+    f.coreDb.sqlite.exec('BEGIN');
     try {
-      const page = JSON.parse(
-        (await f.call('search', { query: 'record' }, token.secret)).content[0].text
+      const listed = await (await f.message('tools/list', {}, token.secret)).json();
+      expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+        'search',
+        'describe',
+        'guide',
+        'call',
+      ]);
+      expect(
+        listed.result.tools
+          .slice(0, 3)
+          .every(
+            (tool: { annotations: { readOnlyHint: boolean } }) => tool.annotations.readOnlyHint
+          )
+      ).toBe(true);
+      expect(listed.result.tools[3].annotations.readOnlyHint).toBe(false);
+      for (const [id, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
+        ([, definition]) => operationMcpEligible(definition)
+      )) {
+        const result = await f.call('describe', { operation: id }, token.secret);
+        const data = JSON.parse(result.content[0].text);
+        expect(data.id).toBe(id);
+        expect(data.annotations.readOnlyHint).toBe(!definition.mutating);
+        expect(data.inputSchema.type).toBe('object');
+      }
+      const a = JSON.parse(
+        (await f.call('search', { query: 'kernel record create' }, token.secret)).content[0].text
       );
-      expect(page.items.length).toBeLessThan(page.total);
-      expect(page.hasMore).toBe(true);
+      const b = JSON.parse(
+        (await f.call('search', { query: 'create record kernel' }, token.secret)).content[0].text
+      );
+      expect(a).toEqual(b);
+      expect(a.items[0].id).toBe('kernel.records.create');
+      const additions = Object.fromEntries(
+        Array.from({ length: 30 }, (_, i) => [
+          `test.record.${i}`,
+          OPERATION_DEFINITIONS['kernel.records.create'],
+        ])
+      );
+      Object.assign(OPERATION_DEFINITIONS, additions);
+      try {
+        const page = JSON.parse(
+          (await f.call('search', { query: 'record' }, token.secret)).content[0].text
+        );
+        expect(page.items.length).toBeLessThan(page.total);
+        expect(page.hasMore).toBe(true);
+      } finally {
+        for (const id of Object.keys(additions))
+          delete (OPERATION_DEFINITIONS as unknown as Record<string, unknown>)[id];
+      }
     } finally {
-      for (const id of Object.keys(additions))
-        delete (OPERATION_DEFINITIONS as unknown as Record<string, unknown>)[id];
+      f.coreDb.sqlite.exec('ROLLBACK');
+      f.coreDb.sqlite.close();
     }
   });
 
