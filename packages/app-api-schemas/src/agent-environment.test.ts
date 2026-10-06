@@ -33,13 +33,7 @@ describe('public native settings in AEP snapshots', () => {
         .snapshot.runtime.environment
     ).toEqual(environment);
   });
-  it('retains credential rejection outside the validated public namespace', () => {
-    expect(
-      AgentEnvironmentPackageSnapshotRecordSchema.safeParse({
-        ...record,
-        snapshot: { runtime: { environment }, token: 'ghp_private-shaped' },
-      }).success
-    ).toBe(false);
+  it('retains native-environment validation', () => {
     expect(
       AgentEnvironmentPackageSnapshotRecordSchema.safeParse({
         ...record,
@@ -47,4 +41,22 @@ describe('public native settings in AEP snapshots', () => {
       }).success
     ).toBe(false);
   });
+});
+
+it('preserves matching ordinary strings everywhere in AEP record and list envelopes', () => {
+  const ordinary = {
+    ...record,
+    agentId: 'ghp_public-fixture-agent',
+    snapshot: {
+      runtime: { environment },
+      extensions: {
+        fixture: { note: 'ghp_public-test-fixture', nested: ['sk-public-test-fixture'] },
+      },
+      note: 'okt_public-test-fixture',
+    },
+  };
+  expect(AgentEnvironmentPackageSnapshotRecordSchema.parse(ordinary)).toEqual(ordinary);
+  expect(
+    ListAgentEnvironmentPackageSnapshotsResponseSchema.parse({ items: [ordinary] }).items
+  ).toEqual([ordinary]);
 });

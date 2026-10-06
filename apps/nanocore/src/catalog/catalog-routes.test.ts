@@ -75,7 +75,7 @@ describe('resource catalog operations', () => {
       expect(response.headers.get('content-type')).toContain('application/json');
       expect(ApiErrorSchema.parse(await response.json())).toMatchObject({
         code: 'catalog_read_failed',
-        message: 'The retained record could not be read.',
+        message: 'The record could not be processed.',
       });
     } finally {
       f.coreDb.sqlite.close();

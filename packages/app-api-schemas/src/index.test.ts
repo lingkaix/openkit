@@ -3402,12 +3402,12 @@ describe('app api schemas', () => {
       ListAgentEnvironmentPackageSnapshotsResponseSchema.parse({ items: [record] }).items[0]
         ?.snapshotId
     ).toBe('aepsnap_1');
-    expect(() =>
+    expect(
       GetAgentEnvironmentPackageSnapshotResponseSchema.parse({
         ...record,
-        snapshot: { ...snapshot, secret: 'sk-demo' },
-      })
-    ).toThrow();
+        snapshot: { ...snapshot, note: 'sk-public-fixture' },
+      }).snapshot.note
+    ).toBe('sk-public-fixture');
   });
 
   it('rejects removed app diagnostics compatibility fields', () => {

@@ -91,6 +91,7 @@ import {
   WORKSPACE_MUTATION_LATE_PUBLISHERS,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
+import * as snapshotLedger from './aep-snapshot-ledger.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -8479,6 +8480,74 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
 });
 
 describe('retained-record failure publication', () => {
+  it('terminalizes forced snapshot preparation failure with fixed text before backend effects', async () => {
+    const marker = 'ROW_SECRET_X9';
+    const fixture = createWorkerContextExecutorFixture('snapshot-preparation-failure');
+    fixture.coreDb.sqlite
+      .prepare(
+        "UPDATE scheduler_session_leases SET expires_at = '2099-01-01T00:00:00.000Z', heartbeat_deadline = '2099-01-01T00:00:00.000Z', startup_deadline = '2099-01-01T00:00:00.000Z'"
+      )
+      .run();
+    const backend = new FakeWorkerGovernanceBackend();
+    const original = snapshotLedger.recordAgentEnvironmentPackageSnapshot;
+    const recording = vi
+      .spyOn(snapshotLedger, 'recordAgentEnvironmentPackageSnapshot')
+      .mockImplementation((db, input) =>
+        original(db, {
+          ...input,
+          environmentPackage: { ...input.environmentPackage, schemaVersion: marker } as never,
+        })
+      );
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-18T01:00:06.000Z',
+    });
+    try {
+      const caught = await executor
+        .startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          agentSessionId: fixture.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+        .catch((error: unknown) => error);
+      expect(recording).toHaveBeenCalledOnce();
+      expect((caught as Error).constructor.name, (caught as Error).message).toBe(
+        'AgentEnvironmentSnapshotPreparationError'
+      );
+      expect(backend.calls).not.toContain('materialize');
+      expect(backend.calls).not.toContain('launch');
+      const turn = fixture.store.getTurnById(fixture.turn.id);
+      expect(turn).toMatchObject({
+        status: 'failed',
+        error: {
+          code: 'worker_governance_turn_failed',
+          message: 'The agent environment snapshot could not be prepared.',
+        },
+      });
+      const session = fixture.store.getAgentSession(fixture.agentSessionId);
+      expect(session.message).toBe('The agent environment snapshot could not be prepared.');
+      const terminal = fixture.store
+        .getTurnEvents(fixture.turn.id)
+        .find((event) => event.event === 'turn.completed');
+      expect(terminal).toMatchObject({
+        data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
+      });
+      for (const published of [turn, session, terminal, logged.mock.calls])
+        expect(JSON.stringify(published)).not.toContain(marker);
+    } finally {
+      recording.mockRestore();
+      logged.mockRestore();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
   it.each([
     ['healthy', false],
     ['syntax', false],
@@ -8561,14 +8630,14 @@ describe('retained-record failure publication', () => {
           status: 'failed',
           error: {
             code: 'worker_governance_turn_failed',
-            message: 'The retained record could not be read.',
+            message: 'The record could not be processed.',
           },
         });
         expect(JSON.parse(disk)).toMatchObject({ error: turn.error });
         const session = fixture.store.getAgentSession(fixture.agentSessionId);
         expect(session).toMatchObject({
           status: 'failed',
-          message: 'The retained record could not be read.',
+          message: 'The record could not be processed.',
         });
         const terminal = fixture.store
           .getTurnEvents(fixture.turn.id)

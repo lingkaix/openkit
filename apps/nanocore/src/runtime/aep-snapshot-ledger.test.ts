@@ -12,10 +12,16 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
+  GetAgentEnvironmentPackageSnapshotResponseSchema,
+  ListAgentEnvironmentPackageSnapshotsResponseSchema,
+} from '@openkit/app-api-schemas';
+import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
+import { publishedErrorMessage } from '../api-errors.js';
+import { OperationError } from '../operation-error.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -27,6 +33,18 @@ import {
   requireAgentEnvironmentPackageSnapshot,
   snapshotDigest,
 } from './aep-snapshot-ledger.js';
+import { createEnvironmentOperationImplementations } from './environment-operation-implementations.js';
+import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
+import {
+  answerPendingRequest,
+  claimOrRefuseGrant,
+  finishPendingExecution,
+  freezeReadyOutcomes,
+  frozenPendingOutcomeInput,
+  raisePendingRequest,
+  readPendingRequest,
+  releaseFrozenOutcomes,
+} from './pending-requests.js';
 
 /**
  * Creates one migrated workspace database for AEP snapshot ledger tests.
@@ -131,6 +149,358 @@ function snapshotPath(
 }
 
 describe('AEP snapshot ledger', () => {
+  it.each([
+    'outcome',
+    'user-message',
+  ] as const)('preserves ordinary %s input through storage and public projections', (kind) => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    const literal = 'ghp_public-test-fixture';
+    const input =
+      kind === 'outcome'
+        ? JSON.stringify({
+            triggerInput: 'Deliver frozen result',
+            pendingOutcomes: [
+              {
+                request: {
+                  call: {
+                    toolName: 'push_files',
+                    arguments: {
+                      files: [{ content: `expect(value).toBe("${literal}");\n`.repeat(3000) }],
+                    },
+                  },
+                },
+                result: { content: [{ type: 'text', text: 'Published fixture' }] },
+              },
+            ],
+          })
+        : `Explain this public test literal: ${literal}`;
+    environmentPackage.extensions.openkit = { turnInput: input, publicNote: literal };
+    try {
+      const record = recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      const path = snapshotPath(db, environmentPackage);
+      const stored = JSON.parse(readFileSync(path, 'utf8'));
+      expect(stored.snapshot.extensions.openkit.turnInput).toBe(input);
+      expect(snapshotDigest(stored.snapshot)).toBe(record.contentDigest);
+      const { dataRoot, workspaceId } = db;
+      db.sqlite.close();
+      const reopened = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const read = requireAgentEnvironmentPackageSnapshot(
+          reopened,
+          workspaceId,
+          environmentPackage.snapshotId
+        );
+        expect(read.snapshot.extensions.openkit).toEqual({ turnInput: input, publicNote: literal });
+        const operations = createEnvironmentOperationImplementations({
+          repositoryWorkspaceDb: () => openWorkspaceDb(dataRoot, workspaceId),
+        });
+        const publicRead = GetAgentEnvironmentPackageSnapshotResponseSchema.parse(
+          JSON.parse(
+            JSON.stringify(
+              operations['environment.snapshot-read']({
+                workspaceId,
+                snapshotId: environmentPackage.snapshotId,
+              })
+            )
+          )
+        );
+        const publicList = ListAgentEnvironmentPackageSnapshotsResponseSchema.parse(
+          operations['environment.snapshot-list']({ workspaceId })
+        );
+        for (const projected of [publicRead, publicList.items[0]!]) {
+          expect(projected.snapshot.extensions.openkit).toEqual({
+            turnInput: input,
+            publicNote: literal,
+          });
+          expect(projected.contentDigest).toBe(record.contentDigest);
+          expect(snapshotDigest(projected.snapshot)).toBe(record.contentDigest);
+        }
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
+
+  it('carries a large frozen captured call, answers and result exactly through AEP preparation', () => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    const now = '2026-07-06T00:00:01.000Z';
+    const actor = { kind: 'user' as const, id: 'user_local' };
+    const content = 'public fixture ghp_public-test-fixture "\\🙂'.repeat(3000);
+    const args = {
+      owner: 'fixture',
+      repo: 'fixture',
+      files: [{ path: 'fixture.test.ts', content }],
+    };
+    const result = {
+      content: [{ type: 'text', text: 'Published fixture without truncation' }],
+      isError: false,
+    };
+    const trigger = 'Independent trigger ghp_public-test-fixture';
+    try {
+      const common = {
+        workspaceId: 'ws_1',
+        threadId: 'th_1',
+        raisingTurnId: 'turn_raising',
+        requesterKind: 'worker' as const,
+        agentId: 'agent_codex_host',
+        responsibleUserId: 'user_local',
+        now,
+      };
+      raisePendingRequest(db.sqlite, {
+        ...common,
+        requestId: 'ap_large',
+        requestItemId: 'it_ap_large',
+        kind: 'approval',
+        approval: {
+          kind: 'permission',
+          title: 'Publish fixture',
+          description: 'One exact captured call',
+        },
+        call: {
+          serverId: 'github',
+          catalogRevision: 'sha256:fixture',
+          schemaSnapshotId: 'schema_fixture',
+          toolName: 'push_files',
+          canonicalArgumentsJson: JSON.stringify(args),
+          argumentsDigest: mcpToolArgumentsContentDigest(args),
+          packageDigest: null,
+          policyDecisionId: null,
+          authorizationContext: {
+            threadId: 'th_1',
+            turnId: 'turn_raising',
+            agentSessionId: null,
+            agentId: 'agent_codex_host',
+            responsibleUserId: 'user_local',
+            packageDigest: null,
+            policyDecisionId: null,
+          },
+        },
+      });
+      expect(
+        claimOrRefuseGrant(db.sqlite, 'ap_large', actor, now, () => ({ outcome: 'claim' })).applied
+      ).toBe('claimed');
+      expect(
+        finishPendingExecution(
+          db.sqlite,
+          'ap_large',
+          'approved-executed',
+          'fixture-result',
+          result,
+          now
+        )
+      ).not.toBeNull();
+      const questions = [
+        {
+          id: 'q',
+          header: 'Question',
+          question: 'Keep ghp_public-test-fixture exactly?',
+          options: [],
+        },
+      ];
+      const answers = { q: ['Yes ghp_public-test-fixture'] };
+      raisePendingRequest(db.sqlite, {
+        ...common,
+        requestId: 'uq_large',
+        requestItemId: 'it_uq_large',
+        kind: 'user-input',
+        questions,
+      });
+      answerPendingRequest(db.sqlite, 'uq_large', actor, answers, now);
+      const freeze = (turnId: string) =>
+        freezeReadyOutcomes(db.sqlite, {
+          workspaceId: 'ws_1',
+          threadId: 'th_1',
+          turnId,
+          executor: 'worker',
+          agentId: 'agent_codex_host',
+          cause: 'carried',
+          now,
+        });
+      expect(freeze('turn_1')).toHaveLength(2);
+      const input = frozenPendingOutcomeInput(db.sqlite, 'turn_1', trigger);
+      expect(input.length).toBeGreaterThan(90000);
+      const decoded = JSON.parse(input);
+      expect(decoded.triggerInput).toBe(trigger);
+      expect(decoded.pendingOutcomes[0]).toMatchObject({
+        requestId: 'ap_large',
+        requestItemId: 'it_ap_large',
+        publicationTurnId: 'turn_1',
+        request: { call: { serverId: 'github', toolName: 'push_files', arguments: args } },
+        resolution: 'granted',
+        disposition: 'approved-executed',
+        reason: 'fixture-result',
+        result,
+      });
+      expect(decoded.pendingOutcomes[1]).toMatchObject({ request: { questions }, answers });
+      environmentPackage.extensions.openkit = { turnInput: input };
+      const record = recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: now,
+      });
+      expect(record.snapshot.extensions.openkit).toEqual({ turnInput: input });
+      expect(
+        requireAgentEnvironmentPackageSnapshot(db, 'ws_1', record.snapshotId).snapshot.extensions
+          .openkit
+      ).toEqual({ turnInput: input });
+      const { dataRoot, workspaceId } = db;
+      db.sqlite.close();
+      const reopened = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        expect(frozenPendingOutcomeInput(reopened.sqlite, 'turn_1', trigger)).toBe(input);
+        releaseFrozenOutcomes(reopened.sqlite, 'turn_1', now);
+        expect(
+          freezeReadyOutcomes(reopened.sqlite, {
+            workspaceId,
+            threadId: 'th_1',
+            turnId: 'turn_retry',
+            executor: 'worker',
+            agentId: 'agent_codex_host',
+            cause: 'carried',
+            now,
+          })
+        ).toHaveLength(2);
+        expect(
+          JSON.parse(frozenPendingOutcomeInput(reopened.sqlite, 'turn_retry', trigger))
+        ).toEqual(decoded);
+        expect(readPendingRequest(reopened.sqlite, 'ap_large')?.publicationTurnId).toBe('turn_1');
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
+
+  it.each([
+    'credential-field',
+    'native-environment',
+  ] as const)('rejects forbidden %s during preparation without writing', (variant) => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    if (variant === 'credential-field')
+      environmentPackage.extensions.fixture = { password: 'synthetic-value' };
+    else
+      environmentPackage.runtime.environment = {
+        imageDigest: 'invalid-native-digest',
+        defaultsDigest: 'invalid-native-digest',
+        values: {},
+      };
+    try {
+      expect(() =>
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        })
+      ).toThrow('The agent environment snapshot could not be prepared.');
+      expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('preserves public snapshot read refusal code and fixed text for corrupt retained JSON', () => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    const operations = createEnvironmentOperationImplementations({
+      repositoryWorkspaceDb: () => openWorkspaceDb(db.dataRoot, 'ws_1'),
+    });
+    try {
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      writeFileSync(snapshotPath(db, environmentPackage), 'ROW_SECRET_X9');
+      for (const read of [
+        () =>
+          operations['environment.snapshot-read']({
+            workspaceId: 'ws_1',
+            snapshotId: environmentPackage.snapshotId,
+          }),
+        () => operations['environment.snapshot-list']({ workspaceId: 'ws_1' }),
+      ]) {
+        try {
+          read();
+          throw new Error('Expected corrupt retained read refusal.');
+        } catch (error) {
+          expect(error).toBeInstanceOf(OperationError);
+          expect(error).toMatchObject({
+            code: 'not_found',
+            status: 404,
+            message: 'The retained record could not be read.',
+          });
+          expect(JSON.stringify(error)).not.toContain('ROW_SECRET_X9');
+        }
+      }
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it.each([
+    'construction',
+    'record-validation',
+  ] as const)('publishes truthful fixed %s and retained-read messages through nested causes and aggregates', (phase) => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    const marker = 'ROW_SECRET_X9';
+    const caught = (operation: () => unknown): Error => {
+      try {
+        operation();
+      } catch (error) {
+        return error as Error;
+      }
+      throw new Error('Expected failure');
+    };
+    try {
+      const invalid = { ...environmentPackage, schemaVersion: marker } as never;
+      const preparation = caught(() =>
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: phase === 'construction' ? invalid : environmentPackage,
+          createdAt: phase === 'record-validation' ? '' : '2026-07-06T00:00:01.000Z',
+        })
+      );
+      expect(preparation.constructor.name).toBe('AgentEnvironmentSnapshotPreparationError');
+      expect(preparation.cause).toBeInstanceOf(Error);
+      expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      const path = snapshotPath(db, environmentPackage);
+      writeFileSync(path, marker);
+      const read = caught(() =>
+        requireAgentEnvironmentPackageSnapshot(db, 'ws_1', environmentPackage.snapshotId)
+      );
+      for (const [error, message] of [
+        [preparation, 'The agent environment snapshot could not be prepared.'],
+        [read, 'The retained record could not be read.'],
+      ] as const) {
+        for (const wrapped of [
+          error,
+          new Error(marker, { cause: error }),
+          new AggregateError(
+            [new SyntaxError(marker), new Error(marker, { cause: error })],
+            marker
+          ),
+          new AggregateError([error, new SyntaxError(marker)], marker),
+        ]) {
+          expect(publishedErrorMessage(wrapped)).toBe(message);
+          expect(publishedErrorMessage(wrapped)).not.toContain(marker);
+        }
+      }
+      expect(readFileSync(path, 'utf8')).toBe(marker);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('persists and reloads the redacted record from its canonical session path', () => {
     const workspaceDb = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();
@@ -532,18 +902,41 @@ describe('AEP snapshot ledger', () => {
         `${JSON.stringify(legacyRecord)}\n`
       );
 
+      for (const operation of [
+        () =>
+          requireAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            'ws_1',
+            environmentPackage.snapshotId
+          ),
+        () =>
+          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+            createdAt: '2026-07-06T00:00:02.000Z',
+            environmentPackage: legacyRecord.snapshot as never,
+          }),
+      ]) {
+        try {
+          operation();
+          throw new Error('Expected V1 rejection.');
+        } catch (error) {
+          expect((error as Error).cause).toMatchObject({
+            issues: expect.arrayContaining([expect.objectContaining({ path: ['schemaVersion'] })]),
+          });
+        }
+      }
+
       expect(() =>
         requireAgentEnvironmentPackageSnapshot(workspaceDb, 'ws_1', environmentPackage.snapshotId)
-      ).toThrow(/schemaVersion/);
+      ).toThrow('The retained record could not be read.');
       expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_1')).toThrow(
-        /schemaVersion/
+        'The retained record could not be read.'
       );
       expect(() =>
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-07-06T00:00:02.000Z',
           environmentPackage: legacyRecord.snapshot as never,
         })
-      ).toThrow(/schemaVersion/);
+      ).toThrow('The agent environment snapshot could not be prepared.');
       expect(() =>
         importAgentEnvironmentPackageSnapshots(workspaceDb, [legacyRecord as never])
       ).toThrow(/schemaVersion/);

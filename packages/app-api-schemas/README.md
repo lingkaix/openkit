@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+AEP snapshot record, list and read envelopes preserve ordinary strings everywhere, including credential-looking public fixtures. They validate public native-environment settings without a recursive content-pattern guard. The NanoCore ledger still owns package structural credential exclusions, private redaction, digest verification and lineage; this change does not alter other record families or the shared `raw-secrets.ts` helper.
+
 AEP snapshot records and consumed administration apply outcomes ignore descriptive envelope annotations; apply-outcome candidate references are descriptive, while proposed candidates and application requests remain exact. Snapshot readers preserve original digest-bound evidence separately from the public known-field view. See [Agent Environment Package](../../docs/specs/20260616-agent_environment_package.md) and [Chat Mode Assistant](../../docs/specs/20260704-chat_mode_assistant.md).
 
 Thread dashboard taskInputs carry only Item identity and objective from NanoCore-verified structured Worker requests. They add no durable task payload or runtime identity, and are shared by Web, remote MCP and the administrator CLI.

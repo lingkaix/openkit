@@ -459,7 +459,7 @@ it('bounds quoting worker errors in the loop checkpoint before rethrowing', asyn
     expect(checkpoint).toMatchObject({
       stage: 'failed',
       stopReason: 'error',
-      diagnosticsSummary: 'The retained record could not be read.',
+      diagnosticsSummary: 'The record could not be processed.',
     });
     expect(JSON.stringify(checkpoint)).not.toContain('ROW_SECRET_X9');
   } finally {

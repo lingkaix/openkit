@@ -1059,7 +1059,7 @@ it.each([
       : await f.mcp('sync.review-decide', input);
   expect(observed()).toEqual(before);
   const code = 'workspace_sync_review_failed';
-  const message = 'The retained record could not be read.';
+  const message = 'The record could not be processed.';
   if (result instanceof Response) {
     expect(result.status).toBe(404);
     expect(await result.json()).toEqual({ protocolVersion: '0.5.0', code, message });
@@ -1197,7 +1197,7 @@ it.each([
   const code = 'workspace_sync_review_failed';
   const message =
     subject === 'staging payload'
-      ? 'The retained record could not be read.'
+      ? 'The record could not be processed.'
       : `Workspace apply plan replay conflict: wap_${input.reviewId}`;
   if (result instanceof Response) {
     expect(result.status).toBe(404);

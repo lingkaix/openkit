@@ -29,7 +29,7 @@ it('walks cyclic causes and aggregate entries before reading the baked message',
       throw new Error('Must not read the aggregate message.');
     },
   });
-  expect(publishedErrorMessage(aggregate)).toBe('The retained record could not be read.');
+  expect(publishedErrorMessage(aggregate)).toBe('The record could not be processed.');
   const authored = new Error('Authored cyclic failure.');
   Object.defineProperty(authored, 'cause', { value: authored });
   expect(publishedErrorMessage(authored)).toBe(authored.message);
@@ -41,7 +41,7 @@ it('keeps each caller fallback for non-Error values', () => {
   );
   expect(publishedErrorMessage(null, 'null')).toBe('null');
   expect(publishedErrorMessage({ cause: new SyntaxError('ROW_SECRET_X9') }, 'unknown')).toBe(
-    'The retained record could not be read.'
+    'The record could not be processed.'
   );
 });
 
@@ -94,7 +94,7 @@ it.each([
   const body = await response.json();
   expect(body).toMatchObject({
     code: 'reader_failed',
-    message: 'The retained record could not be read.',
+    message: 'The record could not be processed.',
   });
   expect(JSON.stringify(body)).not.toContain(marker);
 });

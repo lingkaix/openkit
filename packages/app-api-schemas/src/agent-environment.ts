@@ -1,7 +1,6 @@
 import { NativeEnvironmentRecordSchema } from '@openkit/config-schema/native-environment';
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
 
 /** Product-safe redacted Agent Environment Package snapshot record. */
 export const AgentEnvironmentPackageSnapshotRecordSchema = z
@@ -32,21 +31,7 @@ export const AgentEnvironmentPackageSnapshotRecordSchema = z
         });
         return;
       }
-      // Validated public literals are never classified as credentials by string shape.
-      addRawSecretIssues(
-        {
-          ...value,
-          snapshot: {
-            ...value.snapshot,
-            runtime: { ...runtime, environment: { ...publicEnvironment.data, values: {} } },
-          },
-        },
-        ctx,
-        []
-      );
-      return;
     }
-    addRawSecretIssues(value, ctx, []);
   });
 
 /** App API response listing durable redacted AEP snapshots for one workspace. */

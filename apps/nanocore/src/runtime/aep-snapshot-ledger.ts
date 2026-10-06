@@ -21,6 +21,7 @@ import {
   RetainedAgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
+import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 
 /** Durable Workspace-owned AEP snapshot record with its validated known-field V4 view. */
@@ -34,6 +35,22 @@ export type AgentEnvironmentPackageSnapshotReadRecord = AgentEnvironmentPackageS
   /** Known core has passed the current schema; ignored stored content remains for integrity, same-identity storage and evidence export. */
   readonly retainedSnapshot: AgentEnvironmentPackage;
 };
+
+/** Local write-intent failure whose decoder cause stays private at publication. */
+export class AgentEnvironmentSnapshotPreparationError extends Error {
+  /** @param cause Private construction or validation failure. */
+  constructor(cause: unknown) {
+    super('The agent environment snapshot could not be prepared.', { cause });
+  }
+}
+
+/** Established retained-file decoding failure, separate from snapshot preparation. */
+export class AgentEnvironmentSnapshotReadError extends Error {
+  /** @param cause Private retained-file decoder failure. */
+  constructor(cause: unknown) {
+    super('The retained record could not be read.', { cause });
+  }
+}
 
 /** Input for recording an AEP snapshot. */
 export interface RecordAgentEnvironmentPackageSnapshotInput {
@@ -54,23 +71,28 @@ export function recordAgentEnvironmentPackageSnapshot(
   workspaceDb: WorkspaceDb,
   input: RecordAgentEnvironmentPackageSnapshotInput
 ): AgentEnvironmentPackageSnapshotRecord {
-  const snapshot = AgentEnvironmentPackageSchema.parse(
-    redactAgentEnvironmentPackageSnapshot(input.environmentPackage)
-  );
-  const record = validateSnapshotRecord(workspaceDb, {
-    snapshotId: snapshot.snapshotId,
-    workspaceId: snapshot.scope.workspaceId,
-    turnId: snapshot.scope.turnId,
-    threadId: snapshot.scope.threadId,
-    agentSessionId: snapshot.scope.agentSessionId,
-    agentId: snapshot.agent.agentId,
-    packageId: snapshot.packageId,
-    runtimeKind: snapshot.agent.runtimeKind,
-    backendKind: snapshot.backend.preferred,
-    contentDigest: snapshotDigest(snapshot),
-    snapshot,
-    createdAt: input.createdAt,
-  });
+  let record: AgentEnvironmentPackageSnapshotRecord;
+  try {
+    const snapshot = AgentEnvironmentPackageSchema.parse(
+      redactAgentEnvironmentPackageSnapshot(input.environmentPackage)
+    );
+    record = validateSnapshotRecord(workspaceDb, {
+      snapshotId: snapshot.snapshotId,
+      workspaceId: snapshot.scope.workspaceId,
+      turnId: snapshot.scope.turnId,
+      threadId: snapshot.scope.threadId,
+      agentSessionId: snapshot.scope.agentSessionId,
+      agentId: snapshot.agent.agentId,
+      packageId: snapshot.packageId,
+      runtimeKind: snapshot.agent.runtimeKind,
+      backendKind: snapshot.backend.preferred,
+      contentDigest: snapshotDigest(snapshot),
+      snapshot,
+      createdAt: input.createdAt,
+    });
+  } catch (cause) {
+    throw new AgentEnvironmentSnapshotPreparationError(cause);
+  }
 
   return writeSnapshotRecord(workspaceDb, record);
 }
@@ -285,7 +307,15 @@ function readSnapshotRecord(
   if (!lstatSync(path).isFile()) {
     throw new Error(`Agent environment package snapshot is not a regular file: ${snapshotId}`);
   }
-  const record = validateSnapshotRecord(workspaceDb, JSON.parse(readFileSync(path, 'utf8')));
+  let record: AgentEnvironmentPackageSnapshotReadRecord;
+  try {
+    record = validateSnapshotRecord(workspaceDb, JSON.parse(readFileSync(path, 'utf8')));
+  } catch (cause) {
+    if (cause instanceof SyntaxError || cause instanceof z.ZodError) {
+      throw new AgentEnvironmentSnapshotReadError(cause);
+    }
+    throw cause;
+  }
 
   if (record.agentSessionId !== agentSessionId || record.snapshotId !== snapshotId) {
     throw new Error(`Agent environment package snapshot path mismatch: ${snapshotId}`);

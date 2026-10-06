@@ -2,6 +2,10 @@ import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
+import {
+  AgentEnvironmentSnapshotPreparationError,
+  AgentEnvironmentSnapshotReadError,
+} from './runtime/aep-snapshot-ledger.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
@@ -21,6 +25,7 @@ export function asApiError(message: string, code = 'not_found', status = 404): R
 /**
  * Bounds decoder text before it enters protocol responses or durable failure projections.
  * Parser and schema errors can quote retained input, including through causes and cleanup aggregates whose own message already embeds the primary error.
+ * Trusted snapshot phases take precedence over nested decoders; unclassified decoding is phase-neutral.
  * Inspect the whole tree before choosing a message, and tolerate cyclic cause links without changing authored text.
  *
  * @param error Failure whose message is about to be published.
@@ -30,10 +35,19 @@ export function asApiError(message: string, code = 'not_found', status = 404): R
 export function publishedErrorMessage(error: unknown, fallback?: string): string {
   const pending: unknown[] = [error];
   const visited = new Set<unknown>();
+  let decoderFailed = false;
+  let retainedReadFailed = false;
   while (pending.length > 0) {
     const current = pending.pop();
+    if (current instanceof AgentEnvironmentSnapshotPreparationError) {
+      return 'The agent environment snapshot could not be prepared.';
+    }
+    if (current instanceof AgentEnvironmentSnapshotReadError) {
+      retainedReadFailed = true;
+      continue;
+    }
     if (current instanceof SyntaxError || current instanceof z.ZodError) {
-      return 'The retained record could not be read.';
+      decoderFailed = true;
     }
     if (typeof current !== 'object' || current === null || visited.has(current)) {
       continue;
@@ -46,6 +60,8 @@ export function publishedErrorMessage(error: unknown, fallback?: string): string
       pending.push(...current.errors);
     }
   }
+  if (retainedReadFailed) return 'The retained record could not be read.';
+  if (decoderFailed) return 'The record could not be processed.';
   return error instanceof Error ? error.message : (fallback ?? (error as Error)?.message);
 }
 

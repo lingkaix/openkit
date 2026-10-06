@@ -15,6 +15,7 @@ import type { OperationInvocationDependencies } from '../operation-composition.j
 import type { OperationImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { AgentEnvironmentSnapshotReadError } from './aep-snapshot-ledger.js';
 import { commandInputHash, IdempotencyKeyConflictError } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { updateWorkerCheckpoint } from './worker-checkpoints.js';
@@ -95,6 +96,7 @@ export function createRecoveryOperationImplementations(
           throw new OperationError(error.code, error.message, error.status, { cause: error });
         if (
           error instanceof StoreRecordNotFoundError ||
+          error instanceof AgentEnvironmentSnapshotReadError ||
           error instanceof SyntaxError ||
           error instanceof z.ZodError
         )

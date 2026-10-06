@@ -3,7 +3,10 @@ import { z } from 'zod';
 import type { FamilyImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
+import {
+  AgentEnvironmentSnapshotReadError,
+  listExportableAgentEnvironmentPackageSnapshots,
+} from './aep-snapshot-ledger.js';
 
 /** Reads the existing redacted snapshot ledger only after selected-Workspace admission. */
 export function createEnvironmentOperationImplementations(dependencies: {
@@ -43,7 +46,11 @@ export function createEnvironmentOperationImplementations(dependencies: {
 
 /** Preserves decoder redaction without treating unexpected exceptions as missing snapshots. */
 function snapshotFailure(error: unknown): never {
-  if (error instanceof SyntaxError || error instanceof z.ZodError)
+  if (
+    error instanceof AgentEnvironmentSnapshotReadError ||
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError
+  )
     throw new OperationError('not_found', 'The retained record could not be read.', 404, {
       cause: error,
     });
