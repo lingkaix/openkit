@@ -17,10 +17,9 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
-import { GatewayUnsupportedFeatureError } from './llm/gateway-converters.js';
 import { registerLlmGatewayRoutes } from './llm/gateway-routes.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
-import { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
 import { ProviderSubscriptionAccountError } from './llm/provider-subscription-accounts.js';
@@ -2992,34 +2991,27 @@ describe('OpenAI-compatible agent gateway', () => {
     });
   });
 
-  it('bridges Responses requests to chat completions for chat-only providers', async () => {
-    const seenRequests: Array<{
-      readonly messages: readonly unknown[];
-      readonly prompt_cache_key?: unknown;
-    }> = [];
-    const piAiClient = new PiAiGatewayClient();
-    vi.spyOn(piAiClient, 'createChatCompletion').mockImplementation(async (_provider, request) => {
-      seenRequests.push(request);
-      return {
-        id: 'chatcmpl_bridge',
-        object: 'chat.completion',
-        created: 1,
-        model: request.model,
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: 'Bridged response' },
-            finish_reason: 'stop',
-          },
-        ],
-      };
+  it('maps Responses requests directly to stock Context on chat-native providers', async () => {
+    const faux = fauxProvider({
+      provider: 'openrouter',
+      api: 'openai-completions',
+      models: [{ id: 'openai/gpt-5.1' }],
     });
-    const app = createApp({
-      ...createOllamaProviderOptions(),
-      llmPiAiClient: piAiClient,
-    });
-
-    const res = await app.request('/v1/responses', {
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      (context) => {
+        expect(context.messages).toMatchObject([
+          { role: 'system', content: 'Be brief.' },
+          { role: 'user', content: [{ type: 'text', text: 'Hello' }] },
+        ]);
+        return fauxAssistantMessage('Direct response');
+      },
+    ]);
+    const piAiClient = new PiAiGatewayClient({ models });
+    const call = vi.spyOn(piAiClient, 'createResponses');
+    const app = createApp({ ...createOllamaProviderOptions(), llmPiAiClient: piAiClient });
+    const response = await app.request('/v1/responses', {
       method: 'POST',
       body: JSON.stringify({
         model: 'openai/gpt-5.1',
@@ -3028,17 +3020,17 @@ describe('OpenAI-compatible agent gateway', () => {
       }),
       headers: { 'content-type': 'application/json' },
     });
-
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toMatchObject({
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
       object: 'response',
-      output: [{ content: [{ text: 'Bridged response' }] }],
+      output: [{ content: [{ text: 'Direct response' }] }],
     });
-    expect(seenRequests[0]?.messages).toEqual([
-      { role: 'system', content: 'Be brief.' },
-      { role: 'user', content: 'Hello' },
-    ]);
-    expect(seenRequests[0]?.prompt_cache_key).toMatch(/^openkit:responses:request:/);
+    expect(call.mock.calls[0]?.[1]).toMatchObject({
+      instructions: 'Be brief.',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hello' }] }],
+    });
+    expect(call.mock.calls[0]?.[1].prompt_cache_key).toMatch(/^openkit:responses:request:/);
+    expect(faux.state.callCount).toBe(1);
   });
 
   it('returns unsupported feature errors when Responses built-in tools target chat-only providers', async () => {

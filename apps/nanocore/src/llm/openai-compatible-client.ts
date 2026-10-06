@@ -6,6 +6,8 @@ export interface OpenAICompatibleChatMessage {
   readonly role: 'system' | 'developer' | 'user' | 'assistant' | 'tool';
   /** Message content as text or provider-compatible structured content. */
   readonly content: string | unknown[] | null;
+  /** Readable assistant reasoning; opaque provider signatures are not public Chat content. */
+  readonly reasoning_content?: string;
   /** Optional tool-call identifier for tool result messages. */
   readonly tool_call_id?: string;
 }

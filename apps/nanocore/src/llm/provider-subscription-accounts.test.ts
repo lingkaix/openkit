@@ -4933,10 +4933,7 @@ describe('subscription refresh inference ownership', () => {
       .mockResolvedValue(oauthCredential('fresh'));
     const inference = vi.fn(() => fauxAssistantMessage([fauxText('accepted')]));
     f.faux.setResponses([inference]);
-    const attempt = vi.spyOn(
-      PiAiGatewayClient.prototype,
-      subscriptionProviderId === 'openai-codex' ? 'createResponses' : 'createChatCompletion'
-    );
+    const attempt = vi.spyOn(PiAiGatewayClient.prototype, 'createChatCompletion');
     const response = await f.app.request('/api/worker-inference/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${f.token}` },

@@ -2,6 +2,7 @@ import {
   createModels,
   fauxAssistantMessage,
   fauxProvider,
+  fauxToolCall,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
@@ -869,50 +870,45 @@ describe('Responses-native Chat function round trip', () => {
     }
   });
 
-  it('releases function output with correlated success and converts its continuation through the actual dispatcher', async () => {
+  it('releases function output with correlated success and maps continuation through the actual dispatcher', async () => {
     const item = {
-      type: 'function_call',
-      id: 'fc_dispatch',
       call_id: 'call_dispatch',
+      id: 'fc_dispatch',
       name: 'lookup',
       arguments: '{"id":"one"}',
     };
-    const piAiClient = new PiAiGatewayClient();
-    const nativeStream = vi
-      .spyOn(piAiClient, 'createResponsesStream')
-      .mockImplementation(async (_provider, request, onUsage) => {
-        onUsage?.({ input_tokens: 4, output_tokens: 2, total_tokens: 6 });
-        return new ReadableStream({
-          start(controller) {
-            for (const frame of [
-              { type: 'response.created', response: { id: 'resp_dispatch_tool' } },
-              {
-                type: 'response.output_item.added',
-                output_index: 0,
-                item: { ...item, arguments: '' },
-              },
-              {
-                type: 'response.function_call_arguments.delta',
-                output_index: 0,
-                item_id: item.id,
-                delta: item.arguments,
-              },
-              { type: 'response.output_item.done', output_index: 0, item },
-              {
-                type: 'response.completed',
-                response: {
-                  id: 'resp_dispatch_tool',
-                  model: request.model,
-                  status: 'completed',
-                  output: [item],
-                },
-              },
-            ])
-              controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
-            controller.close();
+    const faux = fauxProvider({
+      provider: 'anthropic_primary',
+      api: 'openai-responses',
+      models: [{ id: 'faux-chat' }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall(item.name, { id: 'one' }, { id: `${item.call_id}|${item.id}` })],
+        { responseId: 'resp_dispatch_tool', stopReason: 'toolUse' }
+      ),
+      (context) => {
+        expect(context.messages.filter((message) => message.role !== 'system')).toMatchObject([
+          { role: 'user', content: 'Lookup one' },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'toolCall', id: item.call_id, name: item.name, arguments: { id: 'one' } },
+            ],
           },
-        });
-      });
+          {
+            role: 'toolResult',
+            toolCallId: item.call_id,
+            content: [{ type: 'text', text: 'one-result' }],
+          },
+        ]);
+        return fauxAssistantMessage('Found');
+      },
+    ]);
+    const piAiClient = new PiAiGatewayClient({ models });
+    const nativeStream = vi.spyOn(piAiClient, 'createChatCompletionStream');
     const provider = piProviderConfig({
       gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
     });
@@ -950,19 +946,14 @@ describe('Responses-native Chat function round trip', () => {
     });
     expect(calls.map((call) => call.function.arguments ?? '').join('')).toBe(item.arguments);
     expect(chunks.at(-1)).toMatchObject({
-      id: 'resp_dispatch_tool',
+      id: 'chatcmpl_resp_dispatch_tool',
       choices: [{ finish_reason: 'tool_calls' }],
     });
     expect(execution?.outputBegan).toBe(true);
     expect(states).toContain('output');
     expect(states.at(-1)).toBe('completed');
     expect(onUsage).toHaveBeenCalledOnce();
-    const nativeComplete = vi.spyOn(piAiClient, 'createResponses').mockResolvedValue({
-      id: 'resp_continued',
-      object: 'response',
-      status: 'completed',
-      output: [{ type: 'message', content: [{ type: 'output_text', text: 'Found' }] }],
-    });
+    const nativeComplete = vi.spyOn(piAiClient, 'createChatCompletion');
     const result = await dispatcher.createChatCompletion(provider, {
       model: 'faux-chat',
       messages: [
@@ -982,11 +973,8 @@ describe('Responses-native Chat function round trip', () => {
       ],
     });
     expect(result.choices[0]?.message.content).toBe('Found');
-    expect(nativeComplete.mock.calls[0]?.[1].input).toEqual([
-      { role: 'user', content: [{ type: 'input_text', text: 'Lookup one' }] },
-      { type: 'function_call', call_id: item.call_id, name: item.name, arguments: item.arguments },
-      { type: 'function_call_output', call_id: item.call_id, output: 'one-result' },
-    ]);
+    expect(nativeComplete).toHaveBeenCalledOnce();
+    expect(faux.state.callCount).toBe(2);
     expect(nativeStream).toHaveBeenCalledOnce();
   });
 

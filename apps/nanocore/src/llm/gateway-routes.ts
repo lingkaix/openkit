@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
 import {
   type AgentEnvironmentPackage,
-  resolveProviderSubscriptionFamily,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
 } from '@openkit/config-schema';
 import {
@@ -42,7 +41,6 @@ import { createWorkerRuntimeOriginRef } from '../runtime/worker-runtime-provenan
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
-import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import {
   executeGatewayPlan,
   type GatewayAttemptContext,
@@ -51,6 +49,7 @@ import {
   LogicalModelRoutesExhaustedError,
   planLogicalModel,
 } from './gateway-execution.js';
+import { GatewayUnsupportedFeatureError } from './pi-ai-client.js';
 import type { PiAiFailure, PiAiFailureKind } from './pi-ai-failure.js';
 
 export { LogicalModelRoutesExhaustedError } from './gateway-execution.js';
@@ -1929,27 +1928,11 @@ export function registerWorkerInferenceRoutes({
             }
 
             const responsesInput = input as z.infer<typeof GatewayResponsesRequestSchema>;
-            const tools = sanitized.tools;
-            const wrapCodexAdditionalTools =
-              resolveProviderSubscriptionFamily({
-                id: provider.id,
-                ...(provider.vendor ? { vendor: provider.vendor } : {}),
-              }) === 'openai-codex' &&
-              Array.isArray(tools) &&
-              tools.length > 0;
             const request: OpenAICompatibleResponsesRequest = {
               ...requestBody,
-              input: wrapCodexAdditionalTools
-                ? [
-                    { role: 'developer', tools, type: 'additional_tools' },
-                    ...(Array.isArray(responsesInput.input)
-                      ? responsesInput.input
-                      : [{ content: responsesInput.input, role: 'user' }]),
-                  ]
-                : responsesInput.input,
+              input: responsesInput.input,
               model: providerModel,
               stream: responsesInput.stream ?? false,
-              ...(wrapCodexAdditionalTools ? { tools: [] } : {}),
             };
             if (request.stream) {
               const stream = await llmGatewayDispatcher.createResponsesStream(

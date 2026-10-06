@@ -376,7 +376,7 @@ describe('Gateway model retention', () => {
     it.each([
       undefined,
       96,
-    ])(`retains sampling from the converted Pi request with capture off (stream=${streaming}, max_tokens=%s)`, async (maxTokens) => {
+    ])(`retains sampling from the admitted Chat request with capture off (stream=${streaming}, max_tokens=%s)`, async (maxTokens) => {
       const f = fixture('off');
       const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
       const models = createModels();
@@ -387,7 +387,7 @@ describe('Gateway model retention', () => {
       const piAiClient = new PiAiGatewayClient({ models });
       const adapterCall = vi.spyOn(
         piAiClient,
-        streaming ? 'createResponsesStream' : 'createResponses'
+        streaming ? 'createChatCompletionStream' : 'createChatCompletion'
       );
       const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
       const request = {
@@ -412,10 +412,9 @@ describe('Gateway model retention', () => {
       expect(adapterCall).toHaveBeenCalledOnce();
       expect(faux.state.callCount).toBe(1);
       const adapterRequest = adapterCall.mock.calls[0]![1];
-      expect(adapterRequest).not.toHaveProperty('max_completion_tokens');
-      expect(adapterRequest).not.toHaveProperty('reasoning_effort');
-      expect(adapterRequest.reasoning).toEqual({ effort: 'high' });
-      expect(adapterRequest.max_output_tokens).toBe(request.max_completion_tokens);
+      expect(adapterRequest).toMatchObject(request);
+      expect(adapterRequest).not.toHaveProperty('max_output_tokens');
+      expect(adapterRequest).not.toHaveProperty('reasoning');
       const rows = readWorkObservations(f.workspaceDb, f);
       const observation = rows.find((row) => row.payload.direction === 'request');
       expect(observation?.payload).toMatchObject({
@@ -425,10 +424,10 @@ describe('Gateway model retention', () => {
       });
       expect(observation?.payload.sampling).toEqual({
         temperature: adapterRequest.temperature,
-        ...(adapterRequest.max_output_tokens === undefined
+        ...(adapterRequest.max_completion_tokens === undefined
           ? {}
-          : { maxOutputTokens: adapterRequest.max_output_tokens }),
-        reasoningEffort: (adapterRequest.reasoning as { effort: string }).effort,
+          : { maxOutputTokens: adapterRequest.max_completion_tokens }),
+        reasoningEffort: adapterRequest.reasoning_effort,
       });
       expect(
         rows.some(
@@ -443,7 +442,7 @@ describe('Gateway model retention', () => {
     });
   }
 
-  it('retains converted bridge content with capture on while excluding private request carriers', async () => {
+  it('retains admitted Chat content with capture on while excluding private request carriers', async () => {
     const f = fixture();
     const faux = fauxProvider({ provider: provider.id, models: [{ id: 'capture-model' }] });
     const models = createModels();
@@ -452,7 +451,7 @@ describe('Gateway model retention', () => {
       fauxAssistantMessage([fauxThinking('PRIVATE_REASONING'), fauxText('answer')]),
     ]);
     const piAiClient = new PiAiGatewayClient({ models });
-    const adapterCall = vi.spyOn(piAiClient, 'createResponses');
+    const adapterCall = vi.spyOn(piAiClient, 'createChatCompletion');
     const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient });
     await dispatcher.createChatCompletion(
       {
@@ -480,17 +479,16 @@ describe('Gateway model retention', () => {
       (row) => row.payload.direction === 'request'
     );
     expect(observation?.payload.systemPromptDigest).toBe(
-      digestLlmSystemPrompt({ endpoint: 'responses', request: adapterRequest })
+      digestLlmSystemPrompt({ endpoint: 'chat_completions', request: adapterRequest })
     );
     expect(captured[0]).toEqual({
       model: adapterRequest.model,
-      stream: adapterRequest.stream,
-      instructions: adapterRequest.instructions,
-      input: adapterRequest.input,
-      max_output_tokens: adapterRequest.max_output_tokens,
-      reasoning: adapterRequest.reasoning,
+      messages: adapterRequest.messages,
+      max_tokens: 96,
+      max_completion_tokens: 8192,
+      reasoning_effort: 'high',
     });
-    expect(captured[0].instructions).toBe('  prompt 雪\n\t');
+    expect(captured[0].messages[0].content).toBe('  prompt 雪\n\t');
     expect(JSON.stringify(captured)).toContain(JSON.stringify('  input 雪\r\n').slice(1, -1));
     expect(JSON.stringify(captured)).not.toContain('PRIVATE_');
     expect(faux.state.callCount).toBe(1);

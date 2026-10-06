@@ -1,12 +1,6 @@
 import type { Models } from '@earendil-works/pi-ai';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
-  convertChatCompletionToResponsesRequest,
-  convertResponsesResponseToChatCompletionResponse,
-  convertResponsesStreamToChatCompletionStream,
-  GatewayUnsupportedFeatureError,
-} from './gateway-converters.js';
-import {
   type GatewayUsageEndpoint,
   type GatewayUsageRecordInput,
   GatewayUsageTracker,
@@ -20,7 +14,12 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './openai-compatible-client.js';
-import { assertCodexResponsesRequestAdmission, PiAiGatewayClient } from './pi-ai-client.js';
+import {
+  assertChatRequestAdmission,
+  assertResponsesRequestAdmission,
+  GatewayUnsupportedFeatureError,
+  PiAiGatewayClient,
+} from './pi-ai-client.js';
 import { PromptCacheKeyResolver, type PromptCacheKeyScope } from './prompt-cache-key.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
@@ -110,53 +109,39 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleChatCompletionResponse> {
     this.assertConfiguredModel(provider, request.model);
+    assertChatRequestAdmission(request, false);
     const capability = provider.gatewayCapabilities.chatCompletions;
-    const responsesRequest =
-      capability === 'bridged' && provider.gatewayCapabilities.responses === 'native'
-        ? convertChatCompletionToResponsesRequest(request)
-        : undefined;
-    const transport = this.captureTransport(provider, responsesRequest ?? request, context);
+    if (
+      capability === 'unsupported' ||
+      (capability === 'bridged' && provider.gatewayCapabilities.responses !== 'native')
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat completions');
+    }
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
-    const endpoint = context.usageEndpoint ?? 'chat_completions';
-
-    if (capability === 'native') {
-      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        request,
-        context.promptCacheScope
-      );
-      const response = await this.piAiClient.createChatCompletion(
-        provider,
-        keyedRequest,
-        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        transport,
-        models
-      );
-
-      return response;
-    }
-    if (responsesRequest) {
-      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        responsesRequest,
-        context.promptCacheScope
-      );
-      const response = await this.piAiClient.createResponses(
-        provider,
-        keyedRequest,
-        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        transport,
-        models
-      );
-
-      return convertResponsesResponseToChatCompletionResponse(response, request.model);
-    }
-
-    throw new GatewayUnsupportedFeatureError('chat completions');
+    const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
+      provider,
+      request,
+      context.promptCacheScope
+    );
+    return this.piAiClient.createChatCompletion(
+      provider,
+      keyedRequest,
+      (usage) =>
+        this.recordUsage(
+          provider,
+          request.model,
+          context.usageEndpoint ?? 'chat_completions',
+          usage,
+          context.onUsage
+        ),
+      transport,
+      models
+    );
   }
 
   /**
@@ -172,52 +157,39 @@ export class LLMGatewayProviderDispatcher {
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
     this.assertConfiguredModel(provider, request.model);
+    assertChatRequestAdmission(request, true);
     const capability = provider.gatewayCapabilities.chatCompletions;
-    const responsesRequest =
-      capability === 'bridged' && provider.gatewayCapabilities.responses === 'native'
-        ? convertChatCompletionToResponsesRequest({ ...request, stream: true })
-        : undefined;
-    const transport = this.captureTransport(provider, responsesRequest ?? request, context);
+    if (
+      capability === 'unsupported' ||
+      (capability === 'bridged' && provider.gatewayCapabilities.responses !== 'native')
+    ) {
+      throw new GatewayUnsupportedFeatureError('chat completions stream');
+    }
+    const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
       context.models
     );
-    const endpoint = context.usageEndpoint ?? 'chat_completions';
-
-    if (capability === 'native') {
-      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        request,
-        context.promptCacheScope
-      );
-      return this.piAiClient.createChatCompletionStream(
-        provider,
-        keyedRequest,
-        (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-        transport,
-        models
-      );
-    }
-    if (responsesRequest) {
-      const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
-        provider,
-        responsesRequest,
-        context.promptCacheScope
-      );
-      return convertResponsesStreamToChatCompletionStream(
-        await this.piAiClient.createResponsesStream(
+    const keyedRequest = this.promptCacheKeyResolver.withPromptCacheKey(
+      provider,
+      request,
+      context.promptCacheScope
+    );
+    return this.piAiClient.createChatCompletionStream(
+      provider,
+      keyedRequest,
+      (usage) =>
+        this.recordUsage(
           provider,
-          keyedRequest,
-          (usage) => this.recordUsage(provider, request.model, endpoint, usage, context.onUsage),
-          transport,
-          models
+          request.model,
+          context.usageEndpoint ?? 'chat_completions',
+          usage,
+          context.onUsage
         ),
-        request.model
-      );
-    }
-
-    throw new GatewayUnsupportedFeatureError('chat completions stream');
+      transport,
+      models
+    );
   }
 
   /**
@@ -232,9 +204,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<OpenAICompatibleResponsesResponse> {
-    if (provider.subscriptionProviderId === 'openai-codex') {
-      assertCodexResponsesRequestAdmission(request, false);
-    }
+    assertResponsesRequestAdmission(request, false);
     this.assertConfiguredModel(provider, request.model);
     const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
@@ -280,9 +250,7 @@ export class LLMGatewayProviderDispatcher {
     request: OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext = {}
   ): Promise<ReadableStream<Uint8Array>> {
-    if (provider.subscriptionProviderId === 'openai-codex') {
-      assertCodexResponsesRequestAdmission(request, true);
-    }
+    assertResponsesRequestAdmission(request, true);
     this.assertConfiguredModel(provider, request.model);
     const transport = this.captureTransport(provider, request, context);
     const models = await resolveGatewaySubscriptionModels(
@@ -332,7 +300,7 @@ export class LLMGatewayProviderDispatcher {
     }
   }
 
-  /** Captures the dispatcher-converted request before cache-key injection, Pi adaptation or provider access. */
+  /** Captures the admitted semantic request before cache-key injection, Pi adaptation or provider access. */
   private captureTransport(
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest | OpenAICompatibleResponsesRequest,

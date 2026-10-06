@@ -413,7 +413,7 @@ The intended pair is:
 - `apps/web` for the SPA
 - `apps/nanocore` for the real prototype HTTP + SSE backend
 
-The chat-native Responses bridge reuses pi-ai context and event projection for standard function tools, including the default `functions` namespace. It preserves complete function-call/result history and developer instructions; arbitrary namespaces, custom tools, deferred declarations and tool search remain unsupported on that bridge.
+Chat and Responses requests map directly to stock pi-ai Context and options, then project directly to the caller format. Cross-protocol Responses mappings preserve standard function tools, complete function-call/result history and developer instructions, with an exact request-local inverse for one-level namespaces. Native local custom, namespace and client search admission uses the resolved upstream API capability at the Pi boundary; deferred and non-function declarations remain unsupported across protocols. Chat projects readable non-redacted reasoning separately from answer text. Model capture retains the admitted caller-format request before stock mapping.
 
 Pre-native Harness startup errors expose a validated, value-free stage and reason in the existing Task error message, distinguishing workspace materialization from package, adapter, Integration, control-readiness and native-spawn failures.
 

@@ -10,8 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
-import { PiAiGatewayClient } from './pi-ai-client.js';
+import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from './pi-ai-client.js';
 
 /**
  * Chat-native bridged provider used as the worker-inference Responses test double.

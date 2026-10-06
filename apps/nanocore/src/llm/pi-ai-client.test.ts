@@ -25,12 +25,12 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import { GatewayUnsupportedFeatureError } from './gateway-converters.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
 import type { ResolvedLogicalModel } from './logical-models.js';
 import {
-  assertCodexResponsesRequestAdmission,
+  assertResponsesRequestAdmission,
   createDefaultPiAiGatewayModels,
+  GatewayUnsupportedFeatureError,
   PiAiGatewayClient,
   PiAiGatewayConfigurationError,
 } from './pi-ai-client.js';
@@ -222,7 +222,7 @@ describe('PiAiGatewayClient', () => {
 
   it('accepts the empty include list and null reasoning emitted by Codex', () => {
     expect(() =>
-      assertCodexResponsesRequestAdmission(
+      assertResponsesRequestAdmission(
         { include: [], input: [], model: 'reasoning', reasoning: null, stream: true },
         true
       )
@@ -1687,7 +1687,10 @@ describe('PiAiGatewayClient', () => {
     }).toMatchObject({
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Delegate this task.' }] }],
     });
-    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toEqual([]);
+    expect(seenContext ? getCurrentTools(seenContext.messages) : undefined).toMatchObject([
+      { name: 'exec', parameters: { properties: { input: { type: 'string' } } } },
+      { name: 'wait', constrainedSampling: false },
+    ]);
     expect(seenPayload).toEqual({
       input: [additionalTools, userInput],
       model: 'gpt-5.6-sol',
@@ -2512,10 +2515,9 @@ describe('PiAiGatewayClient', () => {
         ],
         model: 'stealth/ox-alpha',
         parallel_tool_calls: false,
-        reasoning: { effort: 'high', summary: 'auto' },
+        reasoning: { effort: 'high' },
         store: false,
         stream: true,
-        text: { verbosity: 'medium' },
         tool_choice: 'auto',
         tools: [],
       },
@@ -2542,10 +2544,8 @@ describe('PiAiGatewayClient', () => {
       reasoningEffort: 'high',
       toolChoice: 'auto',
     });
-    expect(seenPayload).toEqual({
-      model: 'stealth/ox-alpha',
-      parallel_tool_calls: false,
-    });
+    expect(seenOptions?.samplingParams).toEqual({ parallel_tool_calls: false });
+    expect(seenPayload).toBeUndefined();
     const events = body
       .split('\n')
       .filter((line) => line.startsWith('data: {'))

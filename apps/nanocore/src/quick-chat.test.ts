@@ -2549,7 +2549,7 @@ describe('quick chat app API', () => {
     });
   });
 
-  it('admits Codex-backed quick chat through the real Chat Completions bridge without internal metadata', async () => {
+  it('admits Codex-backed quick chat through direct stock mapping without internal metadata', async () => {
     const faux = fauxProvider({
       api: 'openai-codex-responses',
       provider: 'openai-codex',
@@ -2561,7 +2561,7 @@ describe('quick chat app API', () => {
     faux.setResponses([fauxAssistantMessage('Quick response')]);
     const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models: pairModels }));
     const piAiClient = new PiAiGatewayClient();
-    const createResponses = vi.spyOn(piAiClient, 'createResponses');
+    const createChatCompletion = vi.spyOn(piAiClient, 'createChatCompletion');
     const app = createAppWithWorkspaceAuthority({
       store: createDemoStore(),
       gatewayConfig: {
@@ -2631,8 +2631,8 @@ describe('quick chat app API', () => {
       accountSlotId: 'default',
       subscriptionProviderId: 'openai-codex',
     });
-    expect(createResponses.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
-    expect(createResponses.mock.calls[0]?.[1]?.prompt_cache_key).toMatch(
+    expect(createChatCompletion.mock.calls[0]?.[1]).not.toHaveProperty('metadata');
+    expect(createChatCompletion.mock.calls[0]?.[1]?.prompt_cache_key).toMatch(
       /^openkit:responses:[a-f0-9]{32}$/
     );
     expect(faux.state.callCount).toBe(1);

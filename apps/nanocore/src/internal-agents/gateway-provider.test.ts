@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -248,10 +249,115 @@ describe('internal Agent Gateway provider', () => {
   });
 
   it.each([
+    0, 1,
+  ])('completes the real internal Google request with %i ordinary functions', async (toolCount) => {
+    const stock = googleProvider();
+    const models = createModels();
+    models.setProvider(stock);
+    const model = models
+      .getModels()
+      .find((model) => model.provider === stock.id && model.id === 'gemini-3-flash-preview')!;
+    expect(model.api).toBe('google-generative-ai');
+    const googleLogicalModel: ResolvedLogicalModel = {
+      ...logicalModel,
+      modelFamilyId: 'gemini',
+      routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
+    };
+    const capture = captureBinding();
+    const payloads: Record<string, unknown>[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      payloads.push(JSON.parse(String(init?.body)));
+      return new Response(
+        `data: ${JSON.stringify({
+          candidates: [
+            { content: { role: 'model', parts: [{ text: 'answer' }] }, finishReason: 'STOP' },
+          ],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        })}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    });
+    try {
+      const response = await withTurnModelCapture(
+        { store: capture.store, turn: capture.turn },
+        async (admitted) => {
+          const provider = createInternalAgentGatewayProvider({
+            capture: admitted,
+            logicalModel: googleLogicalModel,
+            resolveLogicalModel: () => googleLogicalModel,
+            dispatcher: new LLMGatewayProviderDispatcher({
+              piAiClient: new PiAiGatewayClient({ models }),
+            }),
+            resolveGatewayProvider: () => ({
+              id: 'provider',
+              adapterId: stock.id,
+              apiKey: 'synthetic',
+              baseUrl: null,
+              models: [model.id],
+              requiresApiKey: true,
+              gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+              modelMetadata: { [model.id]: { tool_call: true, limit: { context: 1_000_000 } } },
+            }),
+            promptCacheScope: {
+              sessionId: 'internal-google',
+              workspaceId: capture.turn.workspaceId,
+            },
+            usageEndpoint: 'responses',
+          });
+          return provider({
+            ...request(),
+            model: {
+              logicalModelId: googleLogicalModel.id,
+              capabilities: googleLogicalModel.capabilities,
+              modelFamilyId: googleLogicalModel.modelFamilyId,
+            },
+            tools:
+              toolCount === 0
+                ? []
+                : [
+                    {
+                      name: 'lookup',
+                      description: 'Read status.',
+                      inputSchema: {
+                        type: 'object',
+                        properties: { key: { type: 'string' } },
+                        required: ['key'],
+                        additionalProperties: false,
+                      },
+                    },
+                  ],
+          });
+        }
+      );
+      expect(response.message).toEqual({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'answer' }],
+        truncated: false,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      if (toolCount === 0) {
+        expect(payloads[0]?.tools).toBeUndefined();
+      } else {
+        expect(payloads[0]?.tools).toMatchObject([{ functionDeclarations: [{ name: 'lookup' }] }]);
+        expect(payloads[0]?.toolConfig).toEqual({ functionCallingConfig: { mode: 'VALIDATED' } });
+      }
+    } catch (error) {
+      throw new Error(
+        `Internal Google request failed after ${fetchMock.mock.calls.length} fetches.`,
+        { cause: error }
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([
     'off',
     'on',
   ] as const)('passes the below-threshold request through real Gateway admission with capture %s', async (value) => {
     const faux = fauxProvider({
+      // Give the capture fixture a meaningful API identity matching its native Responses capability.
+      api: 'openai-responses',
       provider: 'provider',
       models: [{ id: 'model' }],
     });

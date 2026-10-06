@@ -5,7 +5,12 @@ import { connect as connectSocket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
-import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
+import {
+  createModels,
+  fauxAssistantMessage,
+  fauxProvider,
+  getCurrentTools,
+} from '@earendil-works/pi-ai';
 import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
@@ -21,10 +26,6 @@ import {
   listWorkspaceUsageRecords,
 } from './capability/usage-ledger.js';
 import { FsStore } from './lib/store.js';
-import {
-  convertResponsesRequestToChatCompletionRequest,
-  GatewayUnsupportedFeatureError,
-} from './llm/gateway-converters.js';
 import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
 import {
   type OpenAICompatibleChatCompletionRequest,
@@ -32,7 +33,7 @@ import {
   type OpenAICompatibleResponsesRequest,
   type OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
-import { PiAiGatewayClient } from './llm/pi-ai-client.js';
+import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { attachPiAiFailure } from './llm/pi-ai-failure.js';
 import {
   type LLMGatewayDispatchContext,
@@ -785,13 +786,13 @@ describe('worker inference routes', () => {
     expect(response.status).toBe(200);
     expect(fixture.dispatcher.responseCalls[0]?.request).toEqual(
       expect.objectContaining({
-        input: [{ role: 'developer', tools, type: 'additional_tools' }, ...input],
-        tools: [],
+        input,
+        tools,
       })
     );
   });
 
-  it('keeps worker function tools through generic Responses-to-Chat conversion', async () => {
+  it('keeps worker function tools through direct stock IR mapping', async () => {
     const fixture = createWorkerInferenceRouteFixture();
     const tool = {
       description: 'Return the provided text unchanged.',
@@ -818,19 +819,37 @@ describe('worker inference routes', () => {
       tools: [tool],
     });
     expect(JSON.stringify(routed?.input)).not.toContain('additional_tools');
-    const converted = convertResponsesRequestToChatCompletionRequest(
-      routed as OpenAICompatibleResponsesRequest
-    );
-    expect(converted.tools).toEqual([
-      {
-        type: 'function',
-        function: {
-          name: 'probe_echo',
-          description: 'Return the provided text unchanged.',
-          parameters: tool.parameters,
-        },
+    const faux = fauxProvider({
+      provider: 'worker_direct',
+      api: 'openai-completions',
+      models: [{ id: routed!.model }],
+    });
+    const models = createModels();
+    models.setProvider(faux.provider);
+    faux.setResponses([
+      (context) => {
+        expect(getCurrentTools(context.messages)).toEqual([
+          expect.objectContaining({
+            name: 'probe_echo',
+            description: tool.description,
+            parameters: tool.parameters,
+          }),
+        ]);
+        return fauxAssistantMessage('ok');
       },
     ]);
+    await new PiAiGatewayClient({ models }).createResponses(
+      {
+        id: 'worker_direct',
+        adapterId: 'worker_direct',
+        apiKey: 'explicit',
+        requiresApiKey: true,
+        models: [routed!.model],
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      } as ResolvedLLMProviderConfig,
+      routed!
+    );
+    expect(faux.state.callCount).toBe(1);
   });
 
   it('does not recover missing adapter authority from descriptive runtime kind', async () => {
