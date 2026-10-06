@@ -830,7 +830,10 @@ async function requestWithOutageBudget(
         method: 'POST',
         signal: requestSignal,
       });
+      // Collection may resolve despite a post-header abort. Do not inspect an abandoned body.
+      requestSignal.throwIfAborted();
       const text = await response.text();
+      requestSignal.throwIfAborted();
       if (!isRetryableHttpStatus(response.status)) {
         return { ok: response.ok, status: response.status, text: async () => text };
       }

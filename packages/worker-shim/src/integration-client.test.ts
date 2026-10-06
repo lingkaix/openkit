@@ -20,6 +20,59 @@ import {
 
 describe('Sandbox Integration', () => {
   it.each([
+    'complete',
+    'incomplete',
+  ] as const)('rejects a post-header abort with a %s Harness body', async (bodyState) => {
+    const bridge = createHttp2Server();
+    let bridgeSession: ServerHttp2Session | undefined;
+    bridge.on('session', (session) => {
+      bridgeSession = session;
+    });
+    const commandBody = '{"schemaVersion":2,"operation":"harness.drain"}';
+    bridge.on('stream', (stream) => {
+      stream.on('error', () => undefined);
+      stream.resume();
+      stream.once('end', () => {
+        stream.respond({ ':status': 200, 'content-length': Buffer.byteLength(commandBody) });
+        if (bodyState === 'complete') stream.end(commandBody);
+        else stream.write(commandBody.slice(0, 10));
+      });
+    });
+    const integration = await openSandboxIntegration();
+    const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+    const socket = connectSocket(Number(target.port), target.hostname);
+    socket.on('error', () => undefined);
+    bridge.emit('connection', socket);
+    const abort = new AbortController();
+    const request = integration.request.bind(integration);
+    const injected = vi.spyOn(integration, 'request').mockImplementation(async (...args) => {
+      const response = await request(...args);
+      // Headers have arrived; inject at actual complete-body EOF or before collecting the incomplete body.
+      if (bodyState === 'complete')
+        response.body.once('end', () => abort.abort(new Error('abandoned exchange')));
+      else abort.abort(new Error('abandoned exchange'));
+      return response;
+    });
+    try {
+      await integration.ready;
+      await expect(
+        integration.harnessControlFetch('/worker-control/harness/poll', {
+          body: '{"schemaVersion":2}',
+          headers: { 'content-type': 'application/json' },
+          method: 'POST',
+          signal: abort.signal,
+        })
+      ).rejects.toThrow();
+      expect(abort.signal.aborted).toBe(true);
+    } finally {
+      injected.mockRestore();
+      await integration.close();
+      bridgeSession?.destroy();
+      await new Promise<void>((resolve) => bridge.close(() => resolve()));
+    }
+  });
+
+  it.each([
     { mapped: true, compressed: false },
     { mapped: true, compressed: true },
     { mapped: false, compressed: false },

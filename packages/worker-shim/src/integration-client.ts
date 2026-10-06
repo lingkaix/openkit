@@ -162,7 +162,14 @@ export class SandboxIntegrationClient {
       throw new TypeError('Sandbox Integration rejected a non-private Harness route.');
     }
     const response = await this.request(path, init);
-    return collectBoundedResponse(response, WORKER_CONTROL_MAX_BYTES, 'Harness-control');
+    const collected = await collectBoundedResponse(
+      response,
+      WORKER_CONTROL_MAX_BYTES,
+      'Harness-control'
+    );
+    // A complete body can survive CANCEL after headers; abandonment still refuses its contents.
+    init.signal?.throwIfAborted();
+    return collected;
   }
 
   /**

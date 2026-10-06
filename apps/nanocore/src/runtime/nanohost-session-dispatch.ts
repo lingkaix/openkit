@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, open, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
@@ -1478,6 +1479,49 @@ export function registerNanoHostSessionSemanticRoutes(
   });
 }
 
+/** One native sampler; resets wait for observation, and a late maximum is carried once. */
+const HARNESS_RESPONSE_DELAY_RESOLUTION_MS = 10;
+const harnessResponseEventLoopDelay = monitorEventLoopDelay({
+  resolution: HARNESS_RESPONSE_DELAY_RESOLUTION_MS,
+});
+harnessResponseEventLoopDelay.enable();
+let harnessResponseDelayWindowStartedAt = performance.now();
+let harnessResponseDelayReportedMax = 0;
+let harnessResponseDelayCarryMax = 0;
+let harnessResponseDelayCarryStartedAt = harnessResponseDelayWindowStartedAt;
+let harnessResponseDelayResetPending = false;
+let harnessResponseDelayResetCount = 0;
+let harnessResponseDelayResetCheckedAt = harnessResponseDelayWindowStartedAt;
+
+/** Joins a post-response native sample without a timer; one unreferenced check is pending at most. */
+function resetHarnessResponseDelayAfterSample(): void {
+  const checkedAt = performance.now();
+  const count = harnessResponseEventLoopDelay.count;
+  const checkWasDelayed =
+    checkedAt - harnessResponseDelayResetCheckedAt > 2 * HARNESS_RESPONSE_DELAY_RESOLUTION_MS;
+  harnessResponseDelayResetCheckedAt = checkedAt;
+  if (checkWasDelayed) {
+    // Another callback may have blocked after sampling but before this check; join a fresh sample.
+    harnessResponseDelayResetCount = count;
+  }
+  if (count <= harnessResponseDelayResetCount) {
+    setImmediate(resetHarnessResponseDelayAfterSample).unref();
+    return;
+  }
+  const maximum = harnessResponseEventLoopDelay.max;
+  if (maximum > harnessResponseDelayReportedMax) {
+    // Preserve an observation that no terminal record has yet reported, even if the sink failed.
+    if (!harnessResponseDelayCarryMax) {
+      harnessResponseDelayCarryStartedAt = harnessResponseDelayWindowStartedAt;
+    }
+    harnessResponseDelayCarryMax = Math.max(harnessResponseDelayCarryMax, maximum);
+  }
+  harnessResponseEventLoopDelay.reset();
+  harnessResponseDelayWindowStartedAt = checkedAt;
+  harnessResponseDelayReportedMax = 0;
+  harnessResponseDelayResetPending = false;
+}
+
 /** Fences known incomplete delivery once; completed native writes remain evidence, never receipt. */
 function observeHarnessResponse(
   context: Context,
@@ -1504,6 +1548,23 @@ function observeHarnessResponse(
     outgoing.off('close', terminal);
     bindings?.incoming?.off('aborted', aborted);
     const observedAt = performance.now();
+    const sampledMaximum = harnessResponseEventLoopDelay.max;
+    const eventLoopDelayMaxMs = Math.round(
+      Math.max(sampledMaximum, harnessResponseDelayCarryMax) / 1_000_000
+    );
+    const windowStartedAt = harnessResponseDelayCarryMax
+      ? Math.min(harnessResponseDelayWindowStartedAt, harnessResponseDelayCarryStartedAt)
+      : harnessResponseDelayWindowStartedAt;
+    const eventLoopDelayWindowMs = Math.round(observedAt - windowStartedAt);
+    harnessResponseDelayCarryMax = 0;
+    harnessResponseDelayReportedMax = Math.max(harnessResponseDelayReportedMax, sampledMaximum);
+    // Resetting here erases a block whose native sampler callback is still pending.
+    if (!harnessResponseDelayResetPending) {
+      harnessResponseDelayResetCount = harnessResponseEventLoopDelay.count;
+      harnessResponseDelayResetCheckedAt = observedAt;
+      harnessResponseDelayResetPending = true;
+      setImmediate(resetHarnessResponseDelayAfterSample).unref();
+    }
     const resetCode = bindings?.incoming?.stream.rstCode ?? null;
     if (resetCode && !outgoing.writableFinished) onIncompleteDelivery();
     try {
@@ -1519,6 +1580,8 @@ function observeHarnessResponse(
           durationMs: Math.round(observedAt - started),
           pollToDispatchMs: Math.round(timing.committedAt - timing.receivedAt),
           pollToResponseMs: Math.round(observedAt - timing.receivedAt),
+          eventLoopDelayMaxMs,
+          eventLoopDelayWindowMs,
           at: new Date().toISOString(),
         })
       );

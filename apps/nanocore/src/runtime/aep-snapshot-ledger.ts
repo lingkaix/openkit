@@ -110,15 +110,48 @@ export function requireAgentEnvironmentPackageSnapshot(
   workspaceId: string,
   snapshotId: string
 ): AgentEnvironmentPackageSnapshotReadRecord {
-  const record = listExportableAgentEnvironmentPackageSnapshots(workspaceDb, workspaceId).find(
-    (candidate) => candidate.snapshotId === snapshotId
-  );
-
-  if (!record) {
+  assertWorkspaceOwner(workspaceDb, workspaceId);
+  assertPathSegment(snapshotId, 'snapshot id');
+  const root = agentSessionsRoot(workspaceDb);
+  let owner: { path: string; agentSessionId: string } | undefined;
+  if (existsSync(root)) {
+    if (!lstatSync(root).isDirectory()) {
+      throw new Error('Agent environment package session root must be a directory.');
+    }
+    // Snapshot ids are opaque retained data: locate the filename without decoding history.
+    for (const sessionEntry of readdirSync(root, { withFileTypes: true })) {
+      if (sessionEntry.isSymbolicLink()) {
+        throw new Error(`Agent environment package session path is symbolic: ${sessionEntry.name}`);
+      }
+      if (!sessionEntry.isDirectory()) continue;
+      const snapshotsRoot = join(root, sessionEntry.name, 'aep-snapshots');
+      if (!existsSync(snapshotsRoot)) continue;
+      if (!lstatSync(snapshotsRoot).isDirectory()) {
+        throw new Error(
+          `Agent environment package snapshot root must be a directory: ${sessionEntry.name}`
+        );
+      }
+      const filename = `${snapshotId}.json`;
+      // Filesystem case folding must not turn a different retained id into this record's owner.
+      if (!readdirSync(snapshotsRoot).includes(filename)) continue;
+      const path = join(snapshotsRoot, filename);
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (!entry) continue;
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Agent environment package snapshot path is symbolic: ${snapshotId}.json`);
+      }
+      if (!entry.isFile()) continue;
+      // Only an actual named record owns a session id; unrelated directory names are ignored.
+      assertPathSegment(sessionEntry.name, 'AgentSession id');
+      // Export refuses duplicate ids rather than choosing by createdAt; lookup stays fail-closed.
+      if (owner) throw new Error(`Duplicate agent environment package snapshot: ${snapshotId}`);
+      owner = { path, agentSessionId: sessionEntry.name };
+    }
+  }
+  if (!owner) {
     throw new Error(`Agent environment package snapshot not found: ${snapshotId}`);
   }
-
-  return record;
+  return readSnapshotRecord(workspaceDb, owner.path, owner.agentSessionId, snapshotId);
 }
 
 /**

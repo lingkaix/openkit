@@ -1,8 +1,10 @@
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { mkdtempSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { setImmediate as nextLoop } from 'node:timers/promises';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
@@ -27,6 +29,24 @@ import {
   createNanoHostSessionDispatch,
   registerNanoHostSessionSemanticRoutes,
 } from './nanohost-session-dispatch.js';
+
+// Use Node's real sampler and observe sample arrival rather than guessing a sleep duration.
+vi.mock('node:perf_hooks', async (original) => {
+  const actual = await original<typeof import('node:perf_hooks')>();
+  const histogram = actual.monitorEventLoopDelay({ resolution: 10 });
+  return { ...actual, monitorEventLoopDelay: () => histogram };
+});
+const delayHistogram = monitorEventLoopDelay({ resolution: 10 });
+delayHistogram.enable();
+
+/** Joins an actual sampler observation, with a bounded failure rather than a fixed sleep. */
+async function nextDelaySample(previousCount: number): Promise<void> {
+  const deadline = performance.now() + 2000;
+  while (delayHistogram.count <= previousCount) {
+    if (performance.now() >= deadline) throw new Error('Event-loop delay sampler did not run.');
+    await nextLoop();
+  }
+}
 
 const transport = vi.hoisted(() => ({ client: null as SandboxIntegrationClient | null }));
 vi.mock('../../../../packages/worker-shim/src/integration-client.js', async (original) => ({
@@ -54,11 +74,15 @@ describe('Harness delivery localization through real Core and shim owners', () =
     'timed-cancel-ended-command',
     'result-before-reset',
     'withhold-result',
+    'sampled-event-loop-block',
+    'sampled-event-loop-control',
+    'sampled-event-loop-before-sample',
   ] as const)('distinguishes %s without redelivery or invented result certainty', async (scenario) => {
     const shape =
       scenario === 'timed-cancel-ended-command' || scenario === 'result-before-reset'
         ? 'cancel-ended-command'
         : scenario;
+    const sampledDelay = scenario.startsWith('sampled-event-loop-');
     let coreClock = 100;
     const clock =
       scenario === 'timed-cancel-ended-command'
@@ -94,6 +118,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
     const pollCompleted = gate();
     const route = dispatch.route.bind(dispatch);
     let firstPoll = true;
+    let injectedDelayedSample = false;
     vi.spyOn(dispatch, 'route').mockImplementation(async (connection, request) => {
       await route(connection, request);
       if (request.path.endsWith('/poll') && knownCancellation && !injectedCancellation) {
@@ -122,10 +147,43 @@ describe('Harness delivery localization through real Core and shim owners', () =
           pollEntered.resolve();
           await releasePoll.promise;
         }
+        if (sampledDelay) {
+          await nextDelaySample(delayHistogram.count);
+          const beforeBlock = delayHistogram.count;
+          if (scenario === 'sampled-event-loop-block') {
+            const until = performance.now() + 1100;
+            while (performance.now() < until) {
+              /* Inject a synchronous Core block. */
+            }
+          }
+          // A response callback can precede the delayed sample. Join its count explicitly.
+          await nextDelaySample(beforeBlock);
+        }
         coreClock = 850;
       }
     });
     app.use('/worker-control/harness/poll', async (context, next) => {
+      if (scenario === 'sampled-event-loop-before-sample' && !injectedDelayedSample) {
+        injectedDelayedSample = true;
+        const bindings = context.env as {
+          outgoing: import('node:http2').Http2ServerResponse;
+        };
+        const response = bindings.outgoing;
+        const diagnosticResponse = Object.assign(new EventEmitter(), { writableFinished: true });
+        // Keep native H2 completion intact; inject only the observer's terminal binding.
+        bindings.outgoing = diagnosticResponse as import('node:http2').Http2ServerResponse;
+        const end = response.end.bind(response);
+        response.end = ((...args: Parameters<typeof response.end>) => {
+          const count = delayHistogram.count;
+          const until = performance.now() + 1125;
+          while (performance.now() < until) {
+            /* The response observer must run before Node can sample this block. */
+          }
+          expect(delayHistogram.count).toBe(count);
+          diagnosticResponse.emit('finish');
+          return end(...args);
+        }) as typeof response.end;
+      }
       pollIncoming = (context.env as { incoming: import('node:http2').Http2ServerRequest })
         .incoming;
       try {
@@ -164,7 +222,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
     const listener = getRequestListener(app.fetch);
     let admitted = false;
     let preDispatchCancelled = false;
-    let holdCommand = shape !== 'withhold-result';
+    let holdCommand = shape !== 'withhold-result' && !sampledDelay;
     let baselineListeners: { finish: number; close: number; aborted: number } | undefined;
     let failedResponse: import('node:http2').Http2ServerResponse | undefined;
     let failedRequest: import('node:http2').Http2ServerRequest | undefined;
@@ -363,6 +421,122 @@ describe('Harness delivery localization through real Core and shim owners', () =
           workspaceId: 'diag-workspace',
         },
       });
+      if (sampledDelay) {
+        expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
+          200
+        );
+        await vi.waitFor(() =>
+          expect(
+            log.mock.calls
+              .map(([line]) => JSON.parse(String(line)))
+              .some((line) => line.event === 'worker.harness.response')
+          ).toBe(true)
+        );
+        const first = log.mock.calls
+          .map(([line]) => JSON.parse(String(line)))
+          .find((line) => line.event === 'worker.harness.response');
+        expect(Number.isInteger(first.eventLoopDelayMaxMs)).toBe(true);
+        expect(Number.isInteger(first.eventLoopDelayWindowMs)).toBe(true);
+        if (scenario === 'sampled-event-loop-block') {
+          expect(first.eventLoopDelayMaxMs).toBeGreaterThan(1000);
+          expect(first.eventLoopDelayWindowMs).toBeGreaterThanOrEqual(1100);
+        } else {
+          expect(first.eventLoopDelayMaxMs).toBeLessThan(250);
+        }
+        // Settle and dispatch another operation: the old maximum must not survive the record.
+        expect(
+          (
+            await post(
+              '/worker-control/harness/result',
+              JSON.stringify({
+                schemaVersion: 2,
+                harnessInstanceId: dispatchedCommand!.harnessInstanceId,
+                operationId: dispatchedCommand!.operationId,
+                sequence: dispatchedCommand!.sequence,
+                disposition: 'succeeded',
+                body: { state: 'started', nativeHandleState: 'pending', nativeHandleDigest: null },
+              })
+            )
+          ).status
+        ).toBe(204);
+        queueNanoHostHarnessOperation(coreDb, {
+          harnessInstanceId: 'diag-harness',
+          operation: 'session.inspect',
+          timestamp: new Date().toISOString(),
+          body: {
+            agentSessionId: 'diag-session',
+            agentSessionRuntimeBindingId: 'diag-session-binding',
+          },
+        });
+        await nextDelaySample(delayHistogram.count);
+        expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
+          200
+        );
+        await vi.waitFor(() =>
+          expect(
+            log.mock.calls
+              .map(([line]) => JSON.parse(String(line)))
+              .filter((line) => line.event === 'worker.harness.response')
+          ).toHaveLength(2)
+        );
+        const second = log.mock.calls
+          .map(([line]) => JSON.parse(String(line)))
+          .filter((line) => line.event === 'worker.harness.response')[1];
+        if (scenario === 'sampled-event-loop-before-sample') {
+          expect(second.eventLoopDelayMaxMs).toBeGreaterThan(1000);
+          expect(second.eventLoopDelayWindowMs).toBeGreaterThanOrEqual(1125);
+          // An ordinary subsequent response must consume the carried maximum exactly once.
+          const command = dispatchedCommand!;
+          expect(
+            (
+              await post(
+                '/worker-control/harness/result',
+                JSON.stringify({
+                  schemaVersion: 2,
+                  harnessInstanceId: command.harnessInstanceId,
+                  operationId: command.operationId,
+                  sequence: command.sequence,
+                  disposition: 'succeeded',
+                  body: {
+                    childState: 'running',
+                    cleanupState: 'pending',
+                    nativeHandleDigest: null,
+                    nativeHandleState: 'pending',
+                    state: 'active',
+                  },
+                })
+              )
+            ).status
+          ).toBe(204);
+          queueNanoHostHarnessOperation(coreDb, {
+            harnessInstanceId: 'diag-harness',
+            operation: 'session.inspect',
+            timestamp: new Date().toISOString(),
+            body: {
+              agentSessionId: 'diag-session',
+              agentSessionRuntimeBindingId: 'diag-session-binding',
+            },
+          });
+          await nextDelaySample(delayHistogram.count);
+          expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
+            200
+          );
+          await vi.waitFor(() =>
+            expect(
+              log.mock.calls
+                .map(([line]) => JSON.parse(String(line)))
+                .filter((line) => line.event === 'worker.harness.response')
+            ).toHaveLength(3)
+          );
+          const third = log.mock.calls
+            .map(([line]) => JSON.parse(String(line)))
+            .filter((line) => line.event === 'worker.harness.response')[2];
+          expect(third.eventLoopDelayMaxMs).toBeLessThan(250);
+        } else {
+          expect(second.eventLoopDelayMaxMs).toBeLessThan(250);
+        }
+        return;
+      }
       if (knownCancellation) {
         expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
           204

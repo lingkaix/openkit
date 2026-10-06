@@ -792,7 +792,9 @@ describe('Worker Harness loop', () => {
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
 
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(/abort/i);
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
+      'fixture-complete'
+    );
     expect(loopFixture.events).toEqual(['listener', 'marker', 'poll', 'close']);
   });
 
@@ -812,7 +814,7 @@ describe('Worker Harness loop', () => {
     } as unknown as SandboxIntegrationClient;
     const run = runWorkerHarness({ signal: controller.signal });
     try {
-      await expect(run).rejects.toThrow(/abort/iu);
+      await expect(run).rejects.toThrow('cadence-complete');
       // Observe the poll-start sample before synchronous request preparation.
       const pollStarts = harnessControlFetch.mock.invocationCallOrder.map((invocationOrder) => {
         const sampleIndex = performanceNow.mock.invocationCallOrder.findLastIndex(
@@ -863,7 +865,9 @@ describe('Worker Harness loop', () => {
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
 
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(/abort/i);
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
+      'fixture-complete'
+    );
     expect(results).toEqual([
       {
         body: { activeTurns: 0, openSessions: 0, state: 'draining' },
@@ -890,6 +894,55 @@ describe('Worker Harness loop', () => {
         sequence: 1,
       },
     ]);
+  });
+
+  it.each([
+    'collected',
+    'text',
+  ] as const)('retries an abandoned %s command without parsing or handling it', async (phase) => {
+    const controller = new AbortController();
+    const handle = vi.spyOn(WorkerHarness.prototype, 'handle');
+    let requestSignal: AbortSignal;
+    /** Resolves on the actual exchange abort, even when the transport supplies a complete body. */
+    const abandoned = () =>
+      new Promise<void>((resolve) =>
+        requestSignal.addEventListener('abort', () => resolve(), { once: true })
+      );
+    const text = vi.fn(async () => {
+      if (phase === 'text') await abandoned();
+      return JSON.stringify({
+        ...command('harness.drain', 0, {}),
+        harnessInstanceId: 'harness-one',
+      });
+    });
+    const requests: Array<{
+      path: string;
+      body: string;
+      method: string;
+      headers: Record<string, string>;
+    }> = [];
+    loopFixture.client = {
+      ready: Promise.resolve(),
+      close: async () => undefined,
+      harnessControlFetch: async (path, init) => {
+        requests.push({ path, body: init.body, method: init.method, headers: init.headers });
+        if (requests.length !== 1) return { ok: false, status: 404, text: async () => '' };
+        requestSignal = init.signal!;
+        if (phase === 'collected') await abandoned();
+        return { ok: true, status: 200, text };
+      },
+    } as SandboxIntegrationClient;
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow();
+    expect(handle).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(requests[0]).toEqual({
+      path: '/worker-control/harness/poll',
+      body: '{"schemaVersion":2}',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    if (phase === 'collected') expect(text).not.toHaveBeenCalled();
   });
 
   it('retries a retryable poll and resends the identical result after a retryable refusal', async () => {
@@ -924,8 +977,10 @@ describe('Worker Harness loop', () => {
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
 
-    // The loop ends at its next iteration once the accepted result sets the stop signal.
-    await expect(runWorkerHarness({ signal: controller.signal })).resolves.toBeUndefined();
+    // Aborting during the second result response abandons that acknowledgment as well.
+    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
+      'fixture-complete'
+    );
     expect(polls).toHaveLength(3);
     expect(results).toHaveLength(2);
     expect(results[1]).toBe(results[0]);

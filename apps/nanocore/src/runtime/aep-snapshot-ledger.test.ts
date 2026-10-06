@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,7 +20,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { publishedErrorMessage } from '../api-errors.js';
 import { OperationError } from '../operation-error.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -45,6 +46,25 @@ import {
   readPendingRequest,
   releaseFrozenOutcomes,
 } from './pending-requests.js';
+
+// Model case-folded path resolution while preserving real directory spelling and record bytes.
+const caseFoldedSnapshotPaths = vi.hoisted(() => new Map<string, string>());
+vi.mock('node:fs', async (original) => {
+  const actual = await original<typeof import('node:fs')>();
+  return {
+    ...actual,
+    lstatSync: ((path, options) =>
+      actual.lstatSync(
+        caseFoldedSnapshotPaths.get(String(path)) ?? path,
+        options
+      )) as typeof actual.lstatSync,
+    readFileSync: ((path, options) =>
+      actual.readFileSync(
+        caseFoldedSnapshotPaths.get(String(path)) ?? path,
+        options
+      )) as typeof actual.readFileSync,
+  };
+});
 
 /**
  * Creates one migrated workspace database for AEP snapshot ledger tests.
@@ -149,6 +169,154 @@ function snapshotPath(
 }
 
 describe('AEP snapshot ledger', () => {
+  it('reads only the exact snapshot across many sessions and leaves export validation intact', () => {
+    const db = createWorkspaceDb();
+    const named = createEnvironmentPackage();
+    // Imported records may have opaque ids; a suffix is not an AgentSession locator.
+    named.snapshotId = 'opaque-snapshot';
+    try {
+      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage: named,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      for (let index = 0; index < 64; index += 1) {
+        const other = structuredClone(named);
+        other.scope.agentSessionId = `as_other_${index}`;
+        other.snapshotId = `other_snapshot_${index}`;
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: other,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        });
+        if (index === 63) writeFileSync(snapshotPath(db, other), '{malformed');
+      }
+      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toEqual(
+        expected
+      );
+      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'missing')).toThrow(
+        'Agent environment package snapshot not found: missing'
+      );
+      expect(() => listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toThrow(
+        'The retained record could not be read.'
+      );
+      writeFileSync(snapshotPath(db, named), '{malformed');
+      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toThrow(
+        'The retained record could not be read.'
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it.each([
+    'same-named-directory',
+    'unsafe-empty-session',
+  ] as const)('ignores an unrelated %s when selecting the exact regular record', (fixture) => {
+    const db = createWorkspaceDb();
+    const named = createEnvironmentPackage();
+    try {
+      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage: named,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      const otherRoot = join(
+        dirname(dirname(snapshotPath(db, named))),
+        '..',
+        fixture === 'unsafe-empty-session' ? 'as_unsafe\\session' : 'as_other',
+        'aep-snapshots'
+      );
+      mkdirSync(
+        fixture === 'same-named-directory'
+          ? join(otherRoot, `${named.snapshotId}.json`)
+          : otherRoot,
+        { recursive: true }
+      );
+      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toEqual(
+        expected
+      );
+      expect(listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toEqual([expected]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('keeps distinct case-variant ids under case-insensitive path resolution', () => {
+    const db = createWorkspaceDb();
+    try {
+      const upper = createEnvironmentPackage();
+      upper.snapshotId = 'Named';
+      upper.scope.agentSessionId = 'as_0';
+      const lower = structuredClone(upper);
+      lower.snapshotId = 'named';
+      lower.scope.agentSessionId = 'as_1';
+      const expected = [upper, lower].map((environmentPackage) =>
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        })
+      );
+      const upperPath = snapshotPath(db, upper);
+      const lowerPath = snapshotPath(db, lower);
+      const lowerAlias = join(dirname(upperPath), 'named.json');
+      const upperAlias = join(dirname(lowerPath), 'Named.json');
+      caseFoldedSnapshotPaths.set(lowerAlias, upperPath);
+      caseFoldedSnapshotPaths.set(upperAlias, lowerPath);
+      // Both alternate spellings resolve to real files, while readdir retains their actual names.
+      expect(lstatSync(lowerAlias).ino).toBe(lstatSync(upperPath).ino);
+      expect(lstatSync(upperAlias).ino).toBe(lstatSync(lowerPath).ino);
+      const listed = listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1');
+      expect(listed).toEqual(expect.arrayContaining(expected));
+      expect(listed).toHaveLength(2);
+      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'Named')).toEqual(expected[0]);
+      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'named')).toEqual(expected[1]);
+    } finally {
+      caseFoldedSnapshotPaths.clear();
+      db.sqlite.close();
+    }
+  });
+
+  it('reports a missing exact case variant under case-insensitive path resolution', () => {
+    const db = createWorkspaceDb();
+    try {
+      const named = createEnvironmentPackage();
+      named.snapshotId = 'named';
+      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage: named,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      const path = snapshotPath(db, named);
+      const alias = join(dirname(path), 'Named.json');
+      caseFoldedSnapshotPaths.set(alias, path);
+      expect(lstatSync(alias).ino).toBe(lstatSync(path).ino);
+      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'Named')).toThrow(
+        'Agent environment package snapshot not found: Named'
+      );
+      expect(requireAgentEnvironmentPackageSnapshot(db, 'ws_1', 'named')).toEqual(expected);
+      expect(listExportableAgentEnvironmentPackageSnapshots(db, 'ws_1')).toEqual([expected]);
+    } finally {
+      caseFoldedSnapshotPaths.clear();
+      db.sqlite.close();
+    }
+  });
+
+  it('refuses the exact id in two sessions before accepting either record', () => {
+    const db = createWorkspaceDb();
+    const named = createEnvironmentPackage();
+    try {
+      for (const sessionId of ['as_1', 'as_2']) {
+        named.scope.agentSessionId = sessionId;
+        recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: named,
+          createdAt: '2026-07-06T00:00:01.000Z',
+        });
+      }
+      expect(() => requireAgentEnvironmentPackageSnapshot(db, 'ws_1', named.snapshotId)).toThrow(
+        `Duplicate agent environment package snapshot: ${named.snapshotId}`
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it.each([
     'outcome',
     'user-message',
