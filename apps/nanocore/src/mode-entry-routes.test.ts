@@ -20,6 +20,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
 import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
 import * as schedulerOwners from './scheduler-records.js';
@@ -2096,4 +2097,120 @@ describe('Task terminal replay closeout ownership', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+it.each([
+  'direct',
+  'selected-conversation',
+] as const)('removes live cancelled preparation through %s while refusing same-request relaunch', async (entry) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cancelled-task-entry-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  const executor = new HoldingTurnExecutor(dataRoot);
+  const setup = createTestAgentSetup();
+  const app = createAppWithWorkspaceAuthority({
+    coreDb,
+    dataRoot,
+    store,
+    turnExecutor: executor,
+    agentManifests: [setup.manifest],
+    openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+  });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+  const prepare = vi
+    .spyOn(executor, 'prepareAgentSessionForTurn')
+    .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+  const command = entry === 'direct' ? 'task.start' : 'conversation.submit';
+  const submit = (requestId: string) =>
+    app.request(
+      ...operationRequest(
+        command,
+        { workspaceId: 'ws_demo', threadId: 'th_demo' },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            requestId,
+            input: 'Implement a focused change and run its tests.',
+            ...(entry === 'selected-conversation'
+              ? { targetRef: 'new-task-worker', artifactRefs: [] }
+              : {}),
+          }),
+        }
+      )
+    );
+  try {
+    const requestId = '0190f4c8-0000-7000-8000-000000000999';
+    const refused = await submit(requestId);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'scheduler_admission_deferred' });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(executor.startContexts).toEqual([]);
+    const admissions = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+      workspaceId: 'ws_demo',
+      statuses: ['cancelled'],
+    });
+    expect(admissions).toHaveLength(1);
+    const admission = admissions[0]!;
+    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      expect(getWorkerCheckpoint(db, 'ws_demo', admission.threadId, admission.turnId)).toBeNull();
+      expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM runtime_evidence').get()).toEqual({
+        count: 0,
+      });
+    } finally {
+      db.sqlite.close();
+    }
+    expect(store.listCommandRequests().filter((r) => r.command === 'task.start')).toEqual([]);
+    const replay = await submit(requestId);
+    expect(replay.status, await replay.clone().text()).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: 'recovery_required' });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(executor.startContexts).toEqual([]);
+    expect(
+      listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId: 'ws_demo',
+        statuses: ['queued', 'admitted', 'cancelled'],
+      })
+    ).toEqual(admissions);
+    prepare.mockRestore();
+    const fresh = await submit('0190f4c8-0000-7000-8000-000000001000');
+    executor.completion.resolve();
+    await executor.finished.promise;
+    expect(fresh.status, await fresh.clone().text()).toBe(202);
+    const response = await fresh.json();
+    if (entry === 'selected-conversation')
+      await waitForSelectedWorkerLoopCloseout({
+        coreDb,
+        dataRoot,
+        workspaceId: 'ws_demo',
+        threadId: response.turn.threadId,
+        turnId: response.turn.id,
+      });
+    else
+      await vi.waitFor(() => {
+        const db = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          expect(
+            getWorkerCheckpoint(db, 'ws_demo', response.turn.threadId, response.turn.id)
+          ).toBeNull();
+          expect(
+            listSchedulerSessionLeasesForTurn(coreDb, {
+              workspaceId: 'ws_demo',
+              threadId: response.turn.threadId,
+              turnId: response.turn.id,
+            })[0]!.status
+          ).toBe('released');
+        } finally {
+          db.sqlite.close();
+        }
+      });
+    expect(executor.startContexts).toHaveLength(1);
+  } finally {
+    prepare.mockRestore();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

@@ -2940,6 +2940,7 @@ export function createConversationService({
                   knowledgeSelectionInput,
                 };
               },
+              reservedTurnId,
               reserveTurn: () => ({ turnId: reservedTurnId }),
               startWorker: async ({ turnId, prepared, onAdmitted }) => {
                 const workerStorageChoice = directTaskWorkerStorageChoice(
@@ -3234,6 +3235,7 @@ export function createConversationService({
                   contextPackageDigest: commandInputHash(workerRequest),
                   knowledgeSelectionInput: null,
                 }),
+                reservedTurnId,
                 reserveTurn: () => ({ turnId: reservedTurnId }),
                 startWorker: async ({ turnId, prepared, onAdmitted }) => {
                   const turn = await startModeWorkerTurn({
@@ -3763,6 +3765,7 @@ export function createConversationService({
                 contextPackageDigest: commandInputHash(workerRequest),
                 knowledgeSelectionInput: null,
               }),
+              reservedTurnId: taskTurnId,
               reserveTurn: () => ({ turnId: taskTurnId }),
               startWorker: async ({ turnId: reservedTurnId, prepared, onAdmitted }) => {
                 const worker = await startModeWorkerTurn({
@@ -4084,6 +4087,16 @@ export function createTaskStartOperation({
             checkpoint,
           });
         }
+        // The cancelled scheduler row survives live preparation removal and still owns this request.
+        if (
+          coreDb.sqlite
+            .prepare('SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? LIMIT 1')
+            .get(reservedTurnId)
+        ) {
+          throw directTaskModeRecoveryError(
+            'The Task request has retained admission effects without its checkpoint.'
+          );
+        }
       } finally {
         recoveryDb.sqlite.close();
       }
@@ -4164,6 +4177,7 @@ export function createTaskStartOperation({
                 knowledgeSelectionInput,
               };
             },
+            reservedTurnId,
             reserveTurn: () => ({ turnId: reservedTurnId }),
             startWorker: async ({ turnId, prepared, onAdmitted }) => {
               const turn = await startModeWorkerTurn({

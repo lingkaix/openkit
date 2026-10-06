@@ -150,6 +150,7 @@ export function createCoordinatorTaskTool(options: {
                   knowledgeSelectionInput,
                 };
               },
+              reservedTurnId: turnId,
               reserveTurn: () => {
                 reserveGoalTask(
                   options.store,

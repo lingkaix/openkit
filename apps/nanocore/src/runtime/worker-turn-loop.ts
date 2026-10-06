@@ -1,4 +1,9 @@
-import type { ActorRef, StopReason, TurnSchema } from '@openkit/protocol';
+import {
+  type ActorRef,
+  responsibleUserIdForActor,
+  type StopReason,
+  type TurnSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 
@@ -7,19 +12,26 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
-import { listSchedulerSessionLeasesForTurn } from '../scheduler-records.js';
+import {
+  listSchedulerSessionLeasesForTurn,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { readPublishedTurnIdentities } from '../storage/workspace-file-records.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { validateLiveProductTurnAdmission } from './product-turn-start.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
+  clearWorkerCheckpoint,
   createWorkerCheckpointContextDiagnostics,
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
   type WorkerCheckpointContextAssemblySummary,
+  type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
 import { workerTurnStageForStopReason } from './worker-stage.js';
 
@@ -129,6 +141,8 @@ export interface RunWorkerTurnLoopInput {
   readonly workspaceId: string;
   /** Thread that owns the worker turn. */
   readonly threadId: string;
+  /** Mode-derived immutable Turn identity available before preparation or replay effects. */
+  readonly reservedTurnId: string;
   /** Optional goal id associated with the worker turn. */
   readonly goalId?: string | null;
   /** Optional goal task id associated with the worker turn. */
@@ -186,6 +200,18 @@ export interface RunWorkerTurnLoopResult {
 export async function runWorkerTurnLoop(
   input: RunWorkerTurnLoopInput
 ): Promise<RunWorkerTurnLoopResult> {
+  // Command names can share a request UUID; only the mode-derived reserved Turn owns this attempt.
+  if (
+    input.coreDb.sqlite
+      .prepare('SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? LIMIT 1')
+      .get(input.reservedTurnId)
+  ) {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The worker request already has scheduler admission history.',
+      409
+    );
+  }
   const prepared = await input.prepare();
   if (
     !currentWorkspaceAuthority(
@@ -202,6 +228,16 @@ export async function runWorkerTurnLoop(
   const contextAssembly = createContextAssemblySummary(prepared);
   const turn = input.workspaceDb.sqlite.transaction(() => {
     const reserved = input.reserveTurn({ prepared });
+    if (
+      reserved.turnId !== input.reservedTurnId ||
+      getWorkerCheckpoint(input.workspaceDb, input.workspaceId, input.threadId, reserved.turnId)
+    ) {
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The worker invocation does not own a fresh exact checkpoint.',
+        409
+      );
+    }
     recordWorkerTurnLaunchDecision({
       workspaceDb: input.workspaceDb,
       workspaceId: input.workspaceId,
@@ -211,7 +247,7 @@ export async function runWorkerTurnLoop(
       taskId: input.taskId ?? null,
       ...(input.now ? { now: new Date(input.now()) } : {}),
     });
-    upsertWorkerCheckpoint(input.workspaceDb, {
+    const checkpoint = upsertWorkerCheckpoint(input.workspaceDb, {
       workspaceId: input.workspaceId,
       threadId: input.threadId,
       turnId: reserved.turnId,
@@ -225,16 +261,18 @@ export async function runWorkerTurnLoop(
       diagnosticsSummary: createWorkerCheckpointContextDiagnostics(contextAssembly),
       ...(input.now ? { now: input.now } : {}),
     });
-    return reserved;
+    return { ...reserved, checkpoint };
   })();
 
   let workerSessionId: string | null = null;
+  let admissionObserved = false;
 
   try {
     const started = await input.startWorker({
       turnId: turn.turnId,
       prepared,
       onAdmitted: (created, agentSessionId) => {
+        admissionObserved = true;
         const checkpoint = getWorkerCheckpoint(
           input.workspaceDb,
           input.workspaceId,
@@ -335,6 +373,9 @@ export async function runWorkerTurnLoop(
       contextAssembly,
     };
   } catch (error) {
+    if (!admissionObserved && removeOwnCancelledPreparation(input, turn.checkpoint, prepared)) {
+      throw error;
+    }
     // An exception cannot decide an already admitted or partially persisted worker outcome.
     // Preserve its owner tuple, including restart-cleanup interruption and completed closeout.
     const checkpoint = getWorkerCheckpoint(
@@ -344,6 +385,9 @@ export async function runWorkerTurnLoop(
       turn.turnId
     );
     if (
+      input.coreDb.sqlite
+        .prepare('SELECT 1 FROM scheduler_admission_entries WHERE turn_id = ? LIMIT 1')
+        .get(turn.turnId) ||
       (error instanceof TurnStartValidationError && error.code === 'recovery_required') ||
       !checkpoint ||
       checkpoint.stage !== 'preparing' ||
@@ -392,4 +436,106 @@ function createContextAssemblySummary(
     contextRefs: prepared.delegationRequest.contextRefs,
     knowledgeSelectionInput: prepared.knowledgeSelectionInput,
   };
+}
+
+/**
+ * Removes only this invocation's unchanged preparation after durable cancellation and a complete no-execution proof.
+ *
+ * Core cancellation is already committed; this synchronous Workspace transaction does not promise cross-store atomicity. Any contradiction preserves the checkpoint and original refusal. Process loss or removal failure leaves the existing inspection path authoritative.
+ * @param input Live invocation owning the checkpoint and request.
+ * @param ownCheckpoint Exact preparation written by this invocation before starting the Worker.
+ * @param prepared Exact serialized worker request passed to product admission.
+ * @returns Whether the preparation checkpoint was removed.
+ */
+function removeOwnCancelledPreparation(
+  input: RunWorkerTurnLoopInput,
+  ownCheckpoint: WorkerCheckpointRecord,
+  prepared: PreparedNextTurn
+): boolean {
+  return input.workspaceDb.sqlite.transaction(() => {
+    const checkpoint = getWorkerCheckpoint(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      ownCheckpoint.turnId
+    );
+    if (
+      !checkpoint ||
+      JSON.stringify(checkpoint) !== JSON.stringify(ownCheckpoint) ||
+      checkpoint.stage !== 'preparing' ||
+      checkpoint.workerSessionId !== null ||
+      checkpoint.stopReason !== null
+    )
+      return false;
+    const rows = input.coreDb.sqlite
+      .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
+      .all(checkpoint.turnId) as { id: string }[];
+    if (rows.length !== 1) return false;
+    const admission = requireSchedulerAdmissionEntry(input.coreDb, rows[0]!.id, {
+      workspaceId: input.workspaceId,
+    });
+    // Both owners receive these identities from the initiating mode; product-start copies the reserved Turn and exact serialized request into its admission.
+    if (
+      admission.status !== 'cancelled' ||
+      admission.workspaceId !== input.workspaceId ||
+      admission.threadId !== input.threadId ||
+      admission.turnId !== checkpoint.turnId ||
+      admission.requestId !== input.requestId ||
+      admission.triggerActor.kind !== input.triggerActor.kind ||
+      admission.triggerActor.id !== input.triggerActor.id ||
+      responsibleUserIdForActor(admission.triggerActor) !==
+        responsibleUserIdForActor(input.triggerActor) ||
+      admission.turnInput !== serializeStructuredWorkerDelegationRequest(prepared.delegationRequest)
+    )
+      return false;
+    const coreEffects = input.coreDb.sqlite
+      .prepare(`
+      SELECT 1 FROM scheduler_placement_plans WHERE turn_id = @turn OR queue_entry_id = @queue
+      UNION ALL SELECT 1 FROM scheduler_session_leases WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
+      UNION ALL SELECT 1 FROM scheduler_orphan_worker_evidence WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM idempotency_requests WHERE response_id = @turn OR json_extract(response_json, '$.downstream.turnId') = @turn
+      LIMIT 1`)
+      .get({
+        turn: checkpoint.turnId,
+        queue: admission.queueEntryId,
+      });
+    const workspaceEffects = input.workspaceDb.sqlite
+      .prepare(`
+      SELECT 1 FROM runtime_evidence WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM evidence_bundles WHERE turn_id = @turn
+      UNION ALL SELECT 1 FROM idempotency_requests WHERE response_id = @turn OR json_extract(response_json, '$.downstream.turnId') = @turn
+      LIMIT 1`)
+      .get({
+        turn: checkpoint.turnId,
+      });
+    if (
+      coreEffects ||
+      workspaceEffects ||
+      listExportableAgentEnvironmentPackageSnapshots(input.workspaceDb, input.workspaceId).some(
+        (snapshot) => snapshot.turnId === checkpoint.turnId
+      )
+    )
+      return false;
+    const dataRoot = input.store.getDataRoot();
+    if (!dataRoot || dataRoot !== input.coreDb.dataRoot || input.workspaceDb.dataRoot !== dataRoot)
+      return false;
+    const history = readPublishedTurnIdentities(dataRoot);
+    if (
+      history.status !== 'readable' ||
+      history.turns.some((turn) => turn.turnId === checkpoint.turnId)
+    )
+      return false;
+    // Published Turns own canonical AgentSession association and input Items; package/control/backend and runtime-binding rows above own native delivery and execution.
+    return clearWorkerCheckpoint(
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      checkpoint.turnId
+    );
+  })();
 }

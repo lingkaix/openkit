@@ -23,12 +23,14 @@ import { TurnStartValidationError } from './orchestrator.js';
 import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
 import { listThreadWorkerCheckpoints } from './worker-checkpoints.js';
+import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 it.each([
   'admitted',
   'interrupted',
   'read-denied',
   'refused',
+  'cancelled',
   'recovery-required-refusal',
 ] as const)('projects Goal Task reservation from ordinary admission owners (%s)', async (outcome) => {
   const readDenied = outcome === 'read-denied';
@@ -82,6 +84,7 @@ it.each([
         workerPlacement: 'local',
         providerCredentialResolver: () => null,
         reservedTurnId: input.reservedTurnId,
+        cancelDeferredAdmission: true,
         input: {
           workspaceId: input.workspaceId,
           threadId: input.threadId,
@@ -101,12 +104,15 @@ it.each([
         turnExecutor: {
           capabilities: {},
           eventFamilies: [],
-          prepareAgentSessionForTurn: async () => ({
-            agentSessionId: 'as_goal_fixture',
-            currentAgentSession: null,
-            replacementRequired: false,
-            sessionCompatibilityKey: 'sha256:fixture',
-          }),
+          prepareAgentSessionForTurn: async () => {
+            if (outcome === 'cancelled') throw new WorkerGovernanceCapacityUnavailableError();
+            return {
+              agentSessionId: 'as_goal_fixture',
+              currentAgentSession: null,
+              replacementRequired: false,
+              sessionCompatibilityKey: 'sha256:fixture',
+            };
+          },
           startTurn: async (
             _store: FsStore,
             turnId: string,
@@ -309,7 +315,11 @@ it.each([
     await vi.waitFor(() =>
       expect(connections.every((connection) => !connection.sqlite.open)).toBe(true)
     );
-    if (outcome === 'refused' || outcome === 'recovery-required-refusal') {
+    if (
+      outcome === 'refused' ||
+      outcome === 'recovery-required-refusal' ||
+      outcome === 'cancelled'
+    ) {
       expect(result.isError, JSON.stringify(result)).toBe(true);
       expect(startWorker).toHaveBeenCalledOnce();
       expect(linked.tasks).toMatchObject([
@@ -328,7 +338,9 @@ it.each([
         code:
           outcome === 'recovery-required-refusal'
             ? 'recovery_required'
-            : 'scheduler_admission_denied',
+            : outcome === 'cancelled'
+              ? 'scheduler_admission_deferred'
+              : 'scheduler_admission_denied',
       });
       // Retained pre-fix timestamps remain usable data but cannot prove a Turn was admitted.
       const retainedBytes = JSON.stringify({ ...task, admittedAt: '2026-09-01T00:00:00.000Z' });
@@ -337,12 +349,23 @@ it.each([
         .run(retainedBytes, task.threadId);
       expect(readGoalView(store, db, goal.goalId).tasks).toEqual(linked.tasks);
       const checkpoints = listThreadWorkerCheckpoints(db, ws.id, task.threadId);
-      expect(checkpoints).toMatchObject([
-        {
-          stage: outcome === 'recovery-required-refusal' ? 'preparing' : 'failed',
-          workerSessionId: null,
-        },
-      ]);
+      if (outcome === 'cancelled') {
+        expect(checkpoints).toEqual([]);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT status FROM scheduler_admission_entries WHERE thread_id=?')
+            .get(task.threadId)
+        ).toEqual({ status: 'cancelled' });
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_session_leases').get()
+        ).toEqual({ count: 0 });
+      } else
+        expect(checkpoints).toMatchObject([
+          {
+            stage: outcome === 'recovery-required-refusal' ? 'preparing' : 'failed',
+            workerSessionId: null,
+          },
+        ]);
       // Reopening the owners must preserve the attempted citation without inventing admission or retry.
       const reopened = openWorkspaceDb(root, ws.id);
       try {
