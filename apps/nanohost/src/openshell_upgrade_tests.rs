@@ -782,7 +782,7 @@ async fn run_forward_slice(
         let route_complete = Arc::clone(&complete);
         let route_handler_failed = Arc::clone(&handler_failed);
         let route = tokio::spawn(async move {
-            serve_sandbox_http2(&mut stream, move |_, request, respond| {
+            serve_sandbox_http2(&mut stream, "upgrade-probe", move |_, request, respond| {
                 let request_ok = Arc::clone(&route_request_ok);
                 let sent = Arc::clone(&route_sent);
                 let complete = Arc::clone(&route_complete);

@@ -782,21 +782,25 @@ impl NanoHostOpenShellClient {
             let projection = route_projection.clone();
             let route_sandbox_integration_binding_ref = sandbox_integration_binding_ref.clone();
             let mut route_server = tokio::spawn(async move {
-                let _ = serve_sandbox_http2(&mut stream, move |family, request, respond| {
-                    let projection = projection.clone();
-                    let harness_ready = harness_ready.clone();
-                    let sandbox_integration_binding_ref =
-                        route_sandbox_integration_binding_ref.clone();
-                    async move {
-                        if projection
-                            .forward(family, request, respond, &sandbox_integration_binding_ref)
-                            .await
-                            == Ok(true)
-                        {
-                            let _ = harness_ready.try_send(());
+                let admission_binding_ref = route_sandbox_integration_binding_ref.clone();
+                let _ = serve_sandbox_http2(
+                    &mut stream,
+                    &admission_binding_ref,
+                    move |family, request, respond| {
+                        let projection = projection.clone();
+                        let harness_ready = harness_ready.clone();
+                        let sandbox_integration_binding_ref =
+                            route_sandbox_integration_binding_ref.clone();
+                        async move {
+                            if let Ok(true) = projection
+                                .forward(family, request, respond, &sandbox_integration_binding_ref)
+                                .await
+                            {
+                                let _ = harness_ready.try_send(());
+                            }
                         }
-                    }
-                })
+                    },
+                )
                 .await;
             });
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

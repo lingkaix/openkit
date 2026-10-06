@@ -107,6 +107,7 @@ impl OuterRouteProjection {
     ///
     /// Rejects a non-POST request, an oversized body, outer connection failure, cancellation, exhausted outer family capacity, or response delivery failure.
     /// The returned boolean is true only for an exact credential-free Harness poll accepted with empty `204`.
+    /// Diagnostic writes are non-authorizing and ignore sink errors so they cannot replace the carriage outcome.
     pub async fn forward(
         &self,
         family: RouteFamily,
@@ -114,6 +115,28 @@ impl OuterRouteProjection {
         mut respond: SendResponse<Bytes>,
         sandbox_integration_binding_ref: &str,
     ) -> Result<bool, &'static str> {
+        // Closed labels and stream identity only: never log URI queries, headers or bodies.
+        let route = match request.uri().path() {
+            HARNESS_POLL_PATH => "harness.poll",
+            HARNESS_RESULT_PATH => "harness.result",
+            "/worker-control/heartbeat" => "heartbeat",
+            "/worker-control/events/append" => "event_append",
+            "/worker-control/final-status" => "final_status",
+            _ => match family {
+                RouteFamily::WorkerControl => "worker_control",
+                RouteFamily::Inference => "inference",
+                RouteFamily::Capabilities => "capability",
+            },
+        };
+        let stream_id = request.body().stream_id().as_u32();
+        let started = std::time::Instant::now();
+        if route != "harness.poll" {
+            let _ = writeln!(
+                std::io::stderr(),
+                "nanohost carriage request route={route} binding={sandbox_integration_binding_ref:?} stream={stream_id} outcome=started"
+            );
+        }
+        let result = async {
         let target = self
             .target
             .read()
@@ -220,9 +243,14 @@ impl OuterRouteProjection {
                         Ok::<_, &'static str>((outer_response, outer_body))
                     } => result?,
                 };
+                if route != "harness.poll" || outer_response.status() != StatusCode::NO_CONTENT {
+                    let _ = writeln!(std::io::stderr(),"nanohost carriage response route={route} binding={sandbox_integration_binding_ref:?} stream={stream_id} status={}", outer_response.status().as_u16());
+                }
                 let accepted_initial_harness_poll =
                     initial_harness_poll && outer_response.status() == StatusCode::NO_CONTENT;
                 let (response_parts, mut response_body) = outer_response.into_parts();
+                let empty_poll_response = route == "harness.poll"
+                    && response_parts.status == StatusCode::NO_CONTENT;
                 let mut response_builder = Response::builder().status(response_parts.status);
                 for (name, value) in &response_parts.headers {
                     response_builder = response_builder.header(name, value);
@@ -252,9 +280,25 @@ impl OuterRouteProjection {
                         .map_err(|_| "outer route response flow control failed")?;
                 }
                 send_h2_bytes(&mut nested_output, Bytes::new(), true).await?;
-                Ok(accepted_initial_harness_poll && response_bytes == 0)
+                Ok((accepted_initial_harness_poll && response_bytes == 0, empty_poll_response && response_bytes == 0))
             } => result,
         }
+        }.await;
+        if !matches!(result, Ok((_, true))) {
+            // Empty successful Harness polls are suppressed to bound idle logging.
+            let _ = writeln!(
+                std::io::stderr(),
+                "nanohost carriage request route={route} binding={sandbox_integration_binding_ref:?} stream={stream_id} outcome={} code={:?} duration_ms={}",
+                if result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                result.as_ref().err(),
+                started.elapsed().as_millis()
+            );
+        }
+        result.map(|(ready, _)| ready)
     }
 }
 

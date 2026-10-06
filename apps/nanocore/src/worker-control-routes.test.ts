@@ -9,6 +9,7 @@ import {
   type MaterializedWorkspaceRoot,
 } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -55,6 +56,7 @@ import {
   completeSchedulerSessionLease,
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
+  markExpiredSchedulerLeasesStale,
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
@@ -70,6 +72,28 @@ import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+
+// The real client retry owner uses timers/promises; route tests control only its clock.
+vi.mock('node:timers/promises', async (original) => {
+  const actual = await original<typeof import('node:timers/promises')>();
+  return {
+    ...actual,
+    setTimeout: <T>(ms: number, value: T, options?: { signal?: AbortSignal }) => {
+      if (!vi.isFakeTimers()) return actual.setTimeout(ms, value, options);
+      return new Promise<T>((resolve, reject) => {
+        const abort = () => {
+          clearTimeout(timer);
+          reject(options?.signal?.reason);
+        };
+        const timer = setTimeout(() => {
+          options?.signal?.removeEventListener('abort', abort);
+          resolve(value);
+        }, ms);
+        options?.signal?.addEventListener('abort', abort, { once: true });
+      });
+    },
+  };
+});
 
 /**
  * Creates an app with one registered worker control session.
@@ -328,6 +352,170 @@ function heartbeatEnvelope(
 }
 
 describe('worker control routes', () => {
+  it.each([
+    ['final-status', 'final_status'],
+    ['supply-refresh-ack', 'supply_refresh_ack'],
+    ['capability-summary', 'capability_summary'],
+  ])('observes early %s refusals without echoing attempted values', async (path, operation) => {
+    const { app, lineage, token } = createWorkerControlRouteFixture();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const attemptedOperation of ['heartbeat', operation]) {
+        log.mockClear();
+        const response = await app.request(`/api/worker-control/${path}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            schemaVersion: 2,
+            lineage,
+            operation: attemptedOperation,
+            sequence: 4,
+            body: { privateValue: 'PRIVATE_BODY_SENTINEL' },
+          }),
+        });
+        expect(response.status).toBe(400);
+        expect(log).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+          event: 'worker.control.request',
+          operation,
+          sequence: 4,
+          code: 'invalid_request',
+          outcome: 'refused',
+          status: 400,
+          leaseId: null,
+          turnId: null,
+          agentSessionId: null,
+        });
+        expect(log.mock.calls.join(' ')).not.toContain('PRIVATE_BODY_SENTINEL');
+        expect(log.mock.calls.join(' ')).not.toContain(token);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('localizes withheld heartbeat acknowledgements and blocked carriage without renewing stale authority', async () => {
+    const fixture = createWorkerControlRouteFixture();
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-heartbeat-gap-')));
+    applyMigrations(coreDb);
+    const binding = createDurableWorkerControlLease(
+      coreDb,
+      fixture.environmentPackage,
+      fixture.lineage,
+      'diagnostic_gap'
+    );
+    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(
+      gateway,
+      fixture.environmentPackage,
+      binding
+    );
+    const app = createApp({
+      coreDb,
+      mode: 'server',
+      store: fixture.store,
+      workerControlGateway: gateway,
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const attempts: string[] = [];
+    let releaseCarriage!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseCarriage = resolve;
+    });
+    let entered!: () => void;
+    const firstAccepted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let baseline: ReturnType<typeof requireSchedulerSessionLease> | undefined;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    const stop = new AbortController();
+    const client = new WorkerControlClient({
+      baseUrl: 'http://core/api/worker-control',
+      token: registration.token,
+      lineage: fixture.lineage,
+      fetch: async (url, init) => {
+        attempts.push(init.body);
+        if (attempts.length > 2) await blocked;
+        const response = await app.request(url, init);
+        if (attempts.length <= 2) {
+          expect(response.status).toBe(200);
+          const lease = requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap');
+          if (!baseline) {
+            baseline = lease;
+            entered();
+          } else expect(lease).toEqual(baseline); // Exact replay acknowledges; it never renews.
+          return { ok: true, status: 200, text: () => new Promise<string>(() => {}) };
+        }
+        return response;
+      },
+    });
+    client.enablePostLaunchRecovery();
+    const heartbeat = client
+      .recordHeartbeat({ status: 'starting', message: 'PRIVATE_STATUS_SENTINEL' }, stop.signal)
+      .catch((error: unknown) => error);
+    try {
+      await firstAccepted;
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(attempts.length).toBeGreaterThanOrEqual(3);
+      expect(new Set(attempts).size).toBe(1);
+      expect(requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap').heartbeatDeadline).toBe(
+        baseline!.heartbeatDeadline
+      );
+      expect(markExpiredSchedulerLeasesStale(coreDb, {})).toEqual([
+        expect.objectContaining({
+          leaseId: 'lease_diagnostic_gap',
+          status: 'stale',
+          releaseReason: 'heartbeat-timeout',
+          recoveryState: 'needs-evidence',
+        }),
+      ]);
+      releaseCarriage();
+      expect(await heartbeat).toMatchObject({ code: 'worker_control_lease_not_live', status: 403 });
+      expect(requireSchedulerSessionLease(coreDb, 'lease_diagnostic_gap')).toMatchObject({
+        status: 'stale',
+        lastWorkerSequence: 0,
+        heartbeatDeadline: baseline!.heartbeatDeadline,
+      });
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT count(*) AS count FROM worker_control_records WHERE operation = 'final_status'"
+          )
+          .get()
+      ).toEqual({ count: 0 });
+      const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          event: 'worker.control.request',
+          operation: 'heartbeat',
+          sequence: 0,
+          leaseId: 'lease_diagnostic_gap',
+          outcome: 'accepted',
+        })
+      );
+      expect(lines).toContainEqual(
+        expect.objectContaining({
+          event: 'worker.control.request',
+          sequence: 0,
+          leaseId: 'lease_diagnostic_gap',
+          outcome: 'refused',
+          status: 403,
+          deadlineDeltaMs: 1000,
+        })
+      );
+      expect(log.mock.calls.join(' ')).not.toContain(registration.token);
+      expect(log.mock.calls.join(' ')).not.toContain('PRIVATE_STATUS_SENTINEL');
+      expect(log.mock.calls.join(' ')).not.toContain('processKey');
+    } finally {
+      stop.abort();
+      releaseCarriage();
+      await heartbeat;
+      vi.useRealTimers();
+      log.mockRestore();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('strips descriptive heartbeat, final-status and refresh additions before gateway admission', async () => {
     const { app, gateway, lineage, token, environmentPackage } = createWorkerControlRouteFixture();
     const heartbeat = heartbeatEnvelope(lineage, 1, 'running', 'alive');

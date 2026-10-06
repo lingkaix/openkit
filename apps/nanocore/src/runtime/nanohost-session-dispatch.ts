@@ -7,7 +7,7 @@ import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
 } from '@openkit/config-schema';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -1359,6 +1359,24 @@ export function registerNanoHostSessionSemanticRoutes(
           if (command) {
             command = input.harnessCommandDispatched?.(command) ?? command;
           }
+          if (command) {
+            // Dispatch is committed; response handoff is evidence, never receipt or retry authority.
+            try {
+              console.error(
+                JSON.stringify({
+                  event: 'worker.harness.dispatched',
+                  harnessInstanceId: command.harnessInstanceId,
+                  operationId: command.operationId,
+                  operation: command.operation,
+                  sequence: command.sequence,
+                  at: new Date().toISOString(),
+                })
+              );
+            } catch {
+              /* Diagnostic sink failure has no execution authority. */
+            }
+            observeHarnessResponse(context, command);
+          }
           return command ? context.json(command, 200) : context.body(null, 204);
         }
         const result = value as unknown as NanoHostHarnessResult;
@@ -1368,6 +1386,20 @@ export function registerNanoHostSessionSemanticRoutes(
           timestamp: new Date().toISOString(),
           onSettled: input.harnessResultSettled,
         });
+        try {
+          console.error(
+            JSON.stringify({
+              event: 'worker.harness.result.accepted',
+              harnessInstanceId: result.harnessInstanceId,
+              operationId: result.operationId,
+              sequence: result.sequence,
+              disposition: result.disposition,
+              at: new Date().toISOString(),
+            })
+          );
+        } catch {
+          /* Diagnostic sink failure has no execution authority. */
+        }
         return context.body(null, 204);
       }
       await input.dispatch.route(requirePhysicalConnection(context.env), {
@@ -1394,6 +1426,54 @@ export function registerNanoHostSessionSemanticRoutes(
       return privateEffectError(error);
     }
   });
+}
+
+/** Observes native response handoff once without interpreting it as Integration receipt. */
+function observeHarnessResponse(context: Context, command: NanoHostHarnessCommand): void {
+  const bindings = context.env as
+    | {
+        outgoing?: import('node:http2').Http2ServerResponse;
+        incoming?: import('node:http2').Http2ServerRequest;
+      }
+    | undefined;
+  const outgoing = bindings?.outgoing;
+  if (!outgoing) return;
+  const started = performance.now();
+  let settled = false;
+  /** Emits a single fixed terminal disposition and removes every observer. */
+  const finish = (outcome: 'completed' | 'reset' | 'aborted') => {
+    if (settled) return;
+    settled = true;
+    outgoing.off('finish', terminal);
+    outgoing.off('close', terminal);
+    bindings?.incoming?.off('aborted', aborted);
+    try {
+      console.error(
+        JSON.stringify({
+          event: 'worker.harness.response',
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          operation: command.operation,
+          sequence: command.sequence,
+          outcome,
+          resetCode: bindings?.incoming?.stream.rstCode ?? null,
+          durationMs: Math.round(performance.now() - started),
+          at: new Date().toISOString(),
+        })
+      );
+    } catch {
+      /* Diagnostic sink failure has no execution authority. */
+    }
+  };
+  // Native H2 may emit finish on closure after end() even when DATA never completed.
+  const terminal = () =>
+    finish(
+      bindings?.incoming?.stream.rstCode || !outgoing.writableFinished ? 'reset' : 'completed'
+    );
+  const aborted = () => finish('aborted');
+  outgoing.once('finish', terminal);
+  outgoing.once('close', terminal);
+  bindings?.incoming?.once('aborted', aborted);
 }
 
 /**

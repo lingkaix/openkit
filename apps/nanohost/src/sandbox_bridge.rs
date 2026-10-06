@@ -366,15 +366,16 @@ impl Drop for OpenSandboxBridge {
 
 /// Serves one bounded standard HTTP/2 session on the stock bridge.
 ///
-/// The handler receives only worker-control, inference, and capability requests.
-/// CONNECT, absolute-origin, saturated-family, and unknown routes fail closed before semantic
-/// dispatch.
+/// The handler receives only worker-control, inference, and capability requests. CONNECT, absolute-origin, saturated-family, and unknown routes fail closed before semantic dispatch.
+///
+/// Saturation observations use only the retained binding, closed family and numeric stream/status; journal errors have no carriage authority.
 ///
 /// # Errors
 ///
 /// Returns the stock HTTP/2 error when handshake or connection processing fails.
 pub async fn serve_sandbox_http2<H, F>(
     stream: &mut TcpForwardByteStream,
+    sandbox_integration_binding_ref: &str,
     handler: H,
 ) -> Result<(), h2::Error>
 where
@@ -423,6 +424,17 @@ where
             RouteFamily::Capabilities => Arc::clone(&capabilities),
         };
         let Ok(permit) = semaphore.try_acquire_owned() else {
+            let family = match family {
+                RouteFamily::WorkerControl => "worker_control",
+                RouteFamily::Inference => "inference",
+                RouteFamily::Capabilities => "capability",
+            };
+            // Refusal precedes forwarding, so its only correlation is this admitted bridge and stream.
+            let _ = writeln!(
+                io::stderr(),
+                "nanohost carriage refusal family={family} binding={sandbox_integration_binding_ref:?} stream={} status=429 code=nested_route_family_saturated",
+                request.body().stream_id().as_u32()
+            );
             send_empty_response(&mut respond, StatusCode::TOO_MANY_REQUESTS)?;
             continue;
         };
@@ -1131,7 +1143,7 @@ mod tests {
                 let (done_tx, mut done_rx) = mpsc::unbounded_channel();
                 let server = tokio::spawn(async move {
                     let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
-                    serve_sandbox_http2(&mut stream, move |family, request, respond| {
+                    serve_sandbox_http2(&mut stream, "binding", move |family, request, respond| {
                         let projection = projection.clone();
                         let done_tx = done_tx.clone();
                         async move {
@@ -1208,6 +1220,34 @@ mod tests {
         }
     }
 
+    /// Captures the real journal owner while the capacity fixture proves pre-forwarding heartbeat refusal.
+    #[test]
+    fn nested_control_saturation_journals_one_correlated_refusal() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sandbox_bridge::tests::wp4_fixed_node_h2_reserves_worker_control_under_inference_saturation",
+                "--nocapture",
+            ])
+            .output()
+            .expect("capacity fixture process must run");
+        assert!(
+            output.status.success(),
+            "capacity fixture failed: {output:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let lines: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.starts_with("nanohost carriage refusal family=worker_control "))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "nanohost carriage refusal family=worker_control binding=\"binding\" stream=11 status=429 code=nested_route_family_saturated"
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn wp4_fixed_node_h2_reserves_worker_control_under_inference_saturation() {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1246,20 +1286,26 @@ mod tests {
                 }
             });
             let (handled_tx, mut handled_rx) = mpsc::unbounded_channel();
+            let release_control = Arc::new(Semaphore::new(0));
+            let server_release_control = Arc::clone(&release_control);
             let release_inference = Arc::new(Notify::new());
             let server_release_inference = Arc::clone(&release_inference);
             let release_capabilities = Arc::new(Semaphore::new(0));
             let server_release_capabilities = Arc::clone(&release_capabilities);
             let server = tokio::spawn(async move {
                 let mut stream = TcpForwardByteStream::new(inbound_rx, outbound_tx);
-                serve_sandbox_http2(&mut stream, move |family, request, mut respond| {
+                serve_sandbox_http2(&mut stream, "binding", move |family, request, mut respond| {
                     let handled_tx = handled_tx.clone();
+                    let release_control = Arc::clone(&server_release_control);
                     let release_inference = Arc::clone(&server_release_inference);
                     let release_capabilities = Arc::clone(&server_release_capabilities);
                     async move {
                         handled_tx
                             .send((family, request.uri().to_string()))
                             .expect("handler observation channel must remain open");
+                        if request.uri().path().starts_with("/worker-control/held/") {
+                            release_control.acquire().await.expect("control release").forget();
+                        }
                         if family == RouteFamily::Inference {
                             release_inference.notified().await;
                         }
@@ -1312,6 +1358,28 @@ mod tests {
                     "http://sandbox-integration:80/worker-control/heartbeat".into()
                 ))
             );
+
+            // Four active control exchanges exhaust the nested gate before forwarding is entered.
+            let mut held_control = Vec::new();
+            for index in 0..4 {
+                let uri = format!("http://sandbox-integration:80/worker-control/held/{index}");
+                let request = Request::builder().method(Method::POST).uri(&uri).body(()).unwrap();
+                let (response, _) = client.send_request(request, true).unwrap();
+                held_control.push(response);
+                assert_eq!(handled_rx.recv().await, Some((RouteFamily::WorkerControl, uri)));
+            }
+            let request = Request::builder().method(Method::POST)
+                .uri("http://sandbox-integration:80/worker-control/heartbeat").body(()).unwrap();
+            let (refused, output) = client.send_request(request, true).unwrap();
+            assert_eq!(output.stream_id().as_u32(), 11, "journal regression's refused stream");
+            let mut refused = refused.await.expect("immediate heartbeat refusal");
+            assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert!(refused.body_mut().data().await.is_none(), "429 must be empty");
+            assert!(handled_rx.try_recv().is_err(), "refused heartbeat must have zero forwarding");
+            release_control.add_permits(4);
+            for response in held_control {
+                assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+            }
 
             let mut saturated_inference = Vec::new();
             for request_index in 0..8 {

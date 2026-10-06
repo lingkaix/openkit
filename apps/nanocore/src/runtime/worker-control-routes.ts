@@ -11,7 +11,10 @@ import { z } from 'zod';
 
 import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import { recordSchedulerSupplyRefreshAck } from '../scheduler-records.js';
+import {
+  listSchedulerSessionLeasesForTurn,
+  recordSchedulerSupplyRefreshAck,
+} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   type WorkerControlGateway,
@@ -57,20 +60,41 @@ export function registerWorkerControlRoutes({
   readonly workerControlGateway: WorkerControlGateway;
 }): void {
   app.post('/api/worker-control/heartbeat', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlRequest(c, WorkerControlHeartbeatRequestReaderSchema);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'heartbeat',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'heartbeat',
+      parsed.data.sequence,
+      arrivedAt
+    );
     try {
-      return c.json({
+      const response = c.json({
         heartbeat: workerControlGateway.recordHeartbeat({
           ...workerControlTokenHashAuthentication(c),
           ...parsed.data,
         }),
       });
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -83,14 +107,29 @@ export function registerWorkerControlRoutes({
   });
 
   app.post('/api/worker-control/artifacts', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlRequest(c, WorkerControlArtifactNoticeRequestSchema);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'artifact_notice',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'artifact_notice',
+      parsed.data.sequence,
+      arrivedAt
+    );
     try {
-      return c.json({
+      const response = c.json({
         artifact: workerControlGateway.recordArtifactNotice({
           artifact: parsed.data.artifact,
           ...workerControlTokenHashAuthentication(c),
@@ -98,7 +137,13 @@ export function registerWorkerControlRoutes({
           sequence: parsed.data.sequence,
         }),
       });
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -111,21 +156,42 @@ export function registerWorkerControlRoutes({
   });
 
   app.post('/api/worker-control/events/append', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlEventAppendRequest(c);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'event_append',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'event_append',
+      parsed.data.record.sequence,
+      arrivedAt
+    );
     try {
-      return c.json(
+      const response = c.json(
         workerControlGateway.appendEvent({
           ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
           record: parsed.data.record,
         })
       );
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -138,24 +204,42 @@ export function registerWorkerControlRoutes({
   });
 
   app.post('/api/worker-control/final-status', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlEnvelope(c);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'final_status',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'final_status',
+      parsed.data.sequence,
+      arrivedAt
+    );
+
     if (parsed.data.operation !== 'final_status') {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(new Error('Worker control operation must be final_status.'));
     }
 
     const body = WorkerCanonicalTerminalEventDataReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(body.error);
     }
 
     try {
-      return c.json(
+      const response = c.json(
         workerControlGateway.recordFinalStatus({
           ...workerControlTokenHashAuthentication(c),
           ...(body.data.diagnostics ? { diagnostics: body.data.diagnostics } : {}),
@@ -166,7 +250,13 @@ export function registerWorkerControlRoutes({
           stopReason: body.data.stopReason,
         })
       );
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -179,13 +269,30 @@ export function registerWorkerControlRoutes({
   });
 
   app.post('/api/worker-control/supply-refresh-ack', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlEnvelope(c);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'supply_refresh_ack',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'supply_refresh_ack',
+      parsed.data.sequence,
+      arrivedAt
+    );
+
     if (parsed.data.operation !== 'supply_refresh_ack') {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(
         new Error('Worker control operation must be supply_refresh_ack.')
       );
@@ -194,6 +301,7 @@ export function registerWorkerControlRoutes({
     const body = WorkerControlSupplyRefreshAckBodyReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(body.error);
     }
 
@@ -222,10 +330,16 @@ export function registerWorkerControlRoutes({
         });
       }
 
-      return c.json({
+      const response = c.json({
         supplyRefreshAck,
       });
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -238,13 +352,30 @@ export function registerWorkerControlRoutes({
   });
 
   app.post('/api/worker-control/capability-summary', async (c) => {
+    const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlEnvelope(c);
 
     if (!parsed.success) {
+      observeControlRequest(
+        coreDb,
+        undefined,
+        'capability_summary',
+        null,
+        arrivedAt
+      )(parsed.response.status, 'invalid_request');
       return parsed.response;
     }
 
+    const diagnose = observeControlRequest(
+      coreDb,
+      parsed.data.lineage,
+      'capability_summary',
+      parsed.data.sequence,
+      arrivedAt
+    );
+
     if (parsed.data.operation !== 'capability_summary') {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(
         new Error('Worker control operation must be capability_summary.')
       );
@@ -253,18 +384,25 @@ export function registerWorkerControlRoutes({
     const body = WorkerCapabilityCallSummaryReaderSchema.safeParse(parsed.data.body);
 
     if (!body.success) {
+      diagnose(400, 'invalid_request');
       return asInvalidRequestError(body.error);
     }
 
     try {
-      return c.json({
+      const response = c.json({
         response: workerControlGateway.recordCapabilitySummary({
           ...workerControlTokenHashAuthentication(c),
           lineage: parsed.data.lineage,
           summary: body.data,
         }),
       });
+      diagnose(response.status);
+      return response;
     } catch (error) {
+      diagnose(
+        error instanceof WorkerControlGatewayError ? error.status : 500,
+        error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
+      );
       quarantineWorkerControlRejection({
         coreDb,
         error,
@@ -275,6 +413,73 @@ export function registerWorkerControlRoutes({
       return asWorkerControlApiError(error);
     }
   });
+}
+
+/** Captures pre-acceptance lease timing and emits only fixed route outcomes and identifiers. */
+function observeControlRequest(
+  coreDb: CoreDb | undefined,
+  lineage: WorkerControlLineage | undefined,
+  operation: string,
+  sequence: number | null,
+  arrivedAt: string
+): (status: number, code?: string) => void {
+  let lease: ReturnType<typeof listSchedulerSessionLeasesForTurn>[number] | undefined;
+  try {
+    lease =
+      coreDb && lineage
+        ? listSchedulerSessionLeasesForTurn(coreDb, lineage).find(
+            (candidate) =>
+              candidate.agentSessionId === lineage.agentSessionId &&
+              candidate.packageSnapshotId === lineage.packageSnapshotId
+          )
+        : undefined;
+  } catch {
+    // Diagnostic lookup cannot change acceptance or substitute for the gateway's authority check.
+  }
+  const workerDeadline = lease
+    ? lease.lastAcceptedHeartbeatAt
+      ? lease.heartbeatDeadline
+      : lease.startupDeadline
+    : null;
+  const deadline =
+    lease && workerDeadline
+      ? lease.expiresAt < workerDeadline
+        ? lease.expiresAt
+        : workerDeadline
+      : null;
+  return (status, code) => {
+    try {
+      console.error(
+        JSON.stringify({
+          event: 'worker.control.request',
+          operation,
+          sequence,
+          turnId: lease && lease.turnId.length <= 160 ? lease.turnId : null,
+          agentSessionId: lease && lease.agentSessionId.length <= 160 ? lease.agentSessionId : null,
+          leaseId: lease?.leaseId ?? null,
+          leaseStatus: lease?.status ?? null,
+          lastAcceptedHeartbeatAt: lease?.lastAcceptedHeartbeatAt ?? null,
+          lastWorkerSequence: lease?.lastWorkerSequence ?? null,
+          deadlineAt: deadline,
+          arrivedAt,
+          deadlineDeltaMs: deadline ? Date.parse(arrivedAt) - Date.parse(deadline) : null,
+          deadlineKind:
+            lease && deadline
+              ? deadline === lease.expiresAt
+                ? 'lease'
+                : lease.lastAcceptedHeartbeatAt
+                  ? 'heartbeat'
+                  : 'startup'
+              : null,
+          code: code ?? null,
+          outcome: status < 400 ? 'accepted' : 'refused',
+          status,
+        })
+      );
+    } catch {
+      /* Diagnostic sink failure has no execution authority. */
+    }
+  };
 }
 
 /**
