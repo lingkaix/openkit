@@ -24,6 +24,7 @@ import {
 } from './nanohost-effect-identity.js';
 import {
   dispatchNanoHostHarnessOperation,
+  markNanoHostHarnessOperationUnknown,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
   settleNanoHostHarnessOperation,
@@ -357,6 +358,13 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
     | undefined;
   /** Live runtime owner that advances the exact settled Harness operation. */
   readonly harnessResultSettled?: ((result: NanoHostHarnessResult) => void) | undefined;
+  /** Releases the exact live waiter into cleanup after incomplete-delivery fencing or storage failure. */
+  readonly harnessCommandDeliveryFailed?:
+    | ((
+        command: Pick<NanoHostHarnessCommand, 'harnessInstanceId' | 'operationId'>,
+        failure?: unknown
+      ) => void)
+    | undefined;
   /** Configured target identity and deployment checked against durable allocation. */
   readonly nanoHostConfig?: {
     readonly deploymentId: string;
@@ -1297,6 +1305,8 @@ export function registerNanoHostSessionSemanticRoutes(
   });
 
   input.app.notFound(async (context) => {
+    // Core semantic request entry precedes body collection, admission and the dispatch transaction.
+    const receivedAt = performance.now();
     const path = context.req.path;
     const family = path.startsWith('/worker-control/')
       ? 'worker-control'
@@ -1353,9 +1363,21 @@ export function registerNanoHostSessionSemanticRoutes(
           if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
+          const incoming = (context.env as { incoming?: import('node:http2').Http2ServerRequest })
+            ?.incoming;
+          // No await separates this check from dispatch: known cancelled carriage grants no delivery.
+          if (
+            request.signal.aborted ||
+            incoming?.aborted ||
+            incoming?.stream.destroyed ||
+            incoming?.stream.rstCode
+          ) {
+            return context.body(null, 204);
+          }
           let command = dispatchNanoHostHarnessOperation(input.coreDb, {
             sandboxIntegrationBindingRef,
           });
+          const committedAt = performance.now();
           if (command) {
             command = input.harnessCommandDispatched?.(command) ?? command;
           }
@@ -1375,7 +1397,35 @@ export function registerNanoHostSessionSemanticRoutes(
             } catch {
               /* Diagnostic sink failure has no execution authority. */
             }
-            observeHarnessResponse(context, command);
+            const coreDb = input.coreDb;
+            const identity = {
+              harnessInstanceId: command.harnessInstanceId,
+              operationId: command.operationId,
+            };
+            observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
+              // An accepted result may win before the reset observer; never fence a settled successor.
+              try {
+                const pending = coreDb.sqlite
+                  .prepare(
+                    `SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records
+                   WHERE harness_instance_id = ? AND operation_id = ? AND operation_state = 'dispatched'`
+                  )
+                  .get(identity.harnessInstanceId, identity.operationId) as
+                  | { harnessBindingRef: string }
+                  | undefined;
+                if (!pending) return;
+                markNanoHostHarnessOperationUnknown(coreDb, {
+                  harnessBindingRef: pending.harnessBindingRef,
+                  operationId: identity.operationId,
+                  timestamp: new Date().toISOString(),
+                });
+              } catch (failure) {
+                // A storage refusal must fail the live owner, not escape a native event callback.
+                input.harnessCommandDeliveryFailed?.(identity, failure);
+                return;
+              }
+              input.harnessCommandDeliveryFailed?.(identity);
+            });
           }
           return command ? context.json(command, 200) : context.body(null, 204);
         }
@@ -1428,8 +1478,13 @@ export function registerNanoHostSessionSemanticRoutes(
   });
 }
 
-/** Observes native response handoff once without interpreting it as Integration receipt. */
-function observeHarnessResponse(context: Context, command: NanoHostHarnessCommand): void {
+/** Fences known incomplete delivery once; completed native writes remain evidence, never receipt. */
+function observeHarnessResponse(
+  context: Context,
+  command: NanoHostHarnessCommand,
+  timing: { readonly receivedAt: number; readonly committedAt: number },
+  onIncompleteDelivery: () => void
+): void {
   const bindings = context.env as
     | {
         outgoing?: import('node:http2').Http2ServerResponse;
@@ -1439,6 +1494,7 @@ function observeHarnessResponse(context: Context, command: NanoHostHarnessComman
   const outgoing = bindings?.outgoing;
   if (!outgoing) return;
   const started = performance.now();
+  const { harnessInstanceId, operationId, operation, sequence } = command;
   let settled = false;
   /** Emits a single fixed terminal disposition and removes every observer. */
   const finish = (outcome: 'completed' | 'reset' | 'aborted') => {
@@ -1447,17 +1503,22 @@ function observeHarnessResponse(context: Context, command: NanoHostHarnessComman
     outgoing.off('finish', terminal);
     outgoing.off('close', terminal);
     bindings?.incoming?.off('aborted', aborted);
+    const observedAt = performance.now();
+    const resetCode = bindings?.incoming?.stream.rstCode ?? null;
+    if (resetCode && !outgoing.writableFinished) onIncompleteDelivery();
     try {
       console.error(
         JSON.stringify({
           event: 'worker.harness.response',
-          harnessInstanceId: command.harnessInstanceId,
-          operationId: command.operationId,
-          operation: command.operation,
-          sequence: command.sequence,
+          harnessInstanceId,
+          operationId,
+          operation,
+          sequence,
           outcome,
-          resetCode: bindings?.incoming?.stream.rstCode ?? null,
-          durationMs: Math.round(performance.now() - started),
+          resetCode,
+          durationMs: Math.round(observedAt - started),
+          pollToDispatchMs: Math.round(timing.committedAt - timing.receivedAt),
+          pollToResponseMs: Math.round(observedAt - timing.receivedAt),
           at: new Date().toISOString(),
         })
       );

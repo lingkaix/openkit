@@ -196,6 +196,11 @@ export interface ConfiguredWorkerLifecycleRuntime {
   ) => NanoHostHarnessCommand;
   /** Advances one exact live producer after its durable Harness result settles. */
   readonly acceptNanoHostHarnessResult: (result: NanoHostHarnessResult) => void;
+  /** Rejects the exact live waiter after its dispatched response is durably fenced as incomplete. */
+  readonly failNanoHostHarnessDelivery: (
+    command: Pick<NanoHostHarnessCommand, 'harnessInstanceId' | 'operationId'>,
+    failure?: unknown
+  ) => void;
   /** Cleans one exact durable backend identity during restart or online recovery. */
   readonly cleanupBackendSession: (
     identity: WorkerGovernanceBackendSessionIdentity
@@ -373,6 +378,8 @@ function createNanoHostWorkerLifecycleRuntime(
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
     acceptNanoHostHarnessCommand: (command) => backend.acceptHarnessCommand(command),
     acceptNanoHostHarnessResult: (result) => backend.acceptHarnessResult(result),
+    failNanoHostHarnessDelivery: (command, failure) =>
+      backend.failHarnessDelivery(command, failure),
     runtimeTargetKind: 'nanohost',
     reconcileAcceptedFinalStatus: async (session) => {
       if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
@@ -704,6 +711,38 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : { ...command, body: { ...command.body, runtimeEnvironment } };
     }
     return command;
+  }
+
+  /** Releases an exact durably fenced delivery into ordinary failure cleanup, never replay. */
+  public failHarnessDelivery(
+    command: Pick<NanoHostHarnessCommand, 'harnessInstanceId' | 'operationId'>,
+    failure?: unknown
+  ): void {
+    const session = [...this.sessions.values()].find(
+      (candidate) =>
+        candidate.harnessInstanceId === command.harnessInstanceId &&
+        candidate.pendingHarnessOperation?.operationId === command.operationId
+    );
+    const closeOwner = !session
+      ? [...this.agentSessionCloseOwners.values()].find(
+          (candidate) =>
+            candidate.inspection.harnessInstanceId === command.harnessInstanceId &&
+            candidate.pending?.operationId === command.operationId
+        )
+      : undefined;
+    const pending = session?.pendingHarnessOperation ?? closeOwner?.pending;
+    if (!pending) return;
+    if (pending.timeout) clearTimeout(pending.timeout);
+    if (session) session.pendingHarnessOperation = null;
+    if (closeOwner) {
+      closeOwner.pending = null;
+      this.agentSessionCloseOwners.delete(closeOwner.inspection.agentSessionRuntimeBindingId);
+    }
+    pending.reject(
+      new Error(`NanoHost Harness ${pending.operation} delivery incomplete: outcome unknown.`, {
+        cause: failure,
+      })
+    );
   }
 
   /** Resolves only the exact live producer after durable result settlement. */

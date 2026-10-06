@@ -1310,6 +1310,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ? {
           harnessCommandDispatched: configuredWorkerRuntime.acceptNanoHostHarnessCommand,
           harnessResultSettled: configuredWorkerRuntime.acceptNanoHostHarnessResult,
+          harnessCommandDeliveryFailed: configuredWorkerRuntime.failNanoHostHarnessDelivery,
         }
       : {}),
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),

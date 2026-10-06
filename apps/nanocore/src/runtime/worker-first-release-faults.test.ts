@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { connect, createServer } from 'node:http2';
+import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
@@ -195,9 +195,11 @@ async function faultFixture() {
     dispatch: createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority }),
     harnessCommandDispatched: runtime.acceptNanoHostHarnessCommand,
     harnessResultSettled: runtime.acceptNanoHostHarnessResult,
+    harnessCommandDeliveryFailed: runtime.failNanoHostHarnessDelivery,
   });
   let admitted = false;
   let dropNextPoll = false;
+  let resetNextPoll = false;
   let droppedCommand: NanoHostHarnessCommand | null = null;
   const listener = getRequestListener(app.fetch);
   const server = createServer((request, response) => {
@@ -222,7 +224,7 @@ async function faultFixture() {
         expect(
           coreDb.sqlite.prepare('SELECT operation_state FROM harness_instance_records').get()
         ).toEqual({ operation_state: 'dispatched' });
-        request.stream.close();
+        request.stream.close(resetNextPoll ? constants.NGHTTP2_CANCEL : constants.NGHTTP2_NO_ERROR);
         return response;
       }) as typeof response.end;
     }
@@ -416,8 +418,9 @@ async function faultFixture() {
     controlClient,
     close,
     isSettled: () => settled,
-    loseNextPoll: () => {
+    loseNextPoll: (reset = false) => {
       dropNextPoll = true;
+      resetNextPoll = reset;
     },
     droppedCommand: () => droppedCommand,
     sealTranscript: (command: NanoHostHarnessCommand) => {
@@ -562,7 +565,10 @@ describe('first-release worker faults (real Core crossings)', () => {
     }
   });
 
-  it('bounds a lost committed turn.start poll response without redelivery or false success', async () => {
+  it.each([
+    false,
+    true,
+  ])('bounds a lost committed turn.start poll response (explicit reset: %s) without redelivery or false success', async (reset) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
@@ -573,29 +579,40 @@ describe('first-release worker faults (real Core crossings)', () => {
         state: 'open',
       });
       await f.waitQueued('turn.start');
-      f.loseNextPoll();
+      f.loseNextPoll(reset);
       expect(await f.poll()).toEqual({ status: undefined, body: '' });
       expect(f.droppedCommand()?.operation).toBe('turn.start');
       const dispatched = f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
-      expect(await f.poll()).toEqual({ status: 204, body: '' });
-      expect(f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
-        dispatched
-      );
+      const nextPoll = await f.poll();
+      if (reset) {
+        // Prompt cleanup may already have retired the Integration; neither response may carry work.
+        expect([204, 409]).toContain(nextPoll.status);
+      } else {
+        expect(nextPoll).toEqual({ status: 204, body: '' });
+        expect(f.coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(
+          dispatched
+        );
+      }
       expect(
         f.coreDb.sqlite.prepare('SELECT count(*) AS count FROM worker_control_records').get()
       ).toEqual({ count: 0 });
-      await vi.advanceTimersByTimeAsync(299_999);
-      expect(f.isSettled()).toBe(false);
-      expect(f.store.getTurnById('fault-turn').status).toBe('running');
-      await vi.advanceTimersByTimeAsync(1);
-      await expect(f.running).rejects.toThrow(
-        'NanoHost Harness turn.start result outage budget expired: dispatched-awaiting-result.'
-      );
+      const expectedFailure = reset
+        ? 'NanoHost Harness turn.start delivery incomplete: outcome unknown.'
+        : 'NanoHost Harness turn.start result outage budget expired: dispatched-awaiting-result.';
+      if (reset) {
+        // Known incomplete delivery must release the waiter into cleanup without spending its budget.
+        await vi.advanceTimersByTimeAsync(100);
+        expect(f.isSettled()).toBe(true);
+      } else {
+        await vi.advanceTimersByTimeAsync(299_999);
+        expect(f.isSettled()).toBe(false);
+        expect(f.store.getTurnById('fault-turn').status).toBe('running');
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await expect(f.running).rejects.toThrow(expectedFailure);
       const turn = f.store.getTurnById('fault-turn');
       expect(turn.status).toBe('failed');
-      expect(turn.error?.message).toContain(
-        'NanoHost Harness turn.start result outage budget expired: dispatched-awaiting-result.'
-      );
+      expect(turn.error?.message).toContain(expectedFailure);
       expect(
         f.store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
       ).toEqual([

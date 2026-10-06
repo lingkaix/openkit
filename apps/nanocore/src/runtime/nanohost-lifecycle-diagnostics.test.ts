@@ -18,6 +18,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import {
   createNanoHostHarnessRuntime,
   markNanoHostHarnessOperationUnknown,
+  type NanoHostHarnessCommand,
   openNanoHostAgentSessionBinding,
   queueNanoHostHarnessOperation,
 } from './nanohost-harness-records.js';
@@ -44,10 +45,25 @@ function gate() {
 
 describe('Harness delivery localization through real Core and shim owners', () => {
   it.each([
+    'cancel-before-dispatch',
+    'request-aborted',
+    'stream-destroyed',
+    'stream-reset',
     'cancel-command',
     'cancel-ended-command',
+    'timed-cancel-ended-command',
+    'result-before-reset',
     'withhold-result',
-  ] as const)('distinguishes %s without redelivery or invented result certainty', async (shape) => {
+  ] as const)('distinguishes %s without redelivery or invented result certainty', async (scenario) => {
+    const shape =
+      scenario === 'timed-cancel-ended-command' || scenario === 'result-before-reset'
+        ? 'cancel-ended-command'
+        : scenario;
+    let coreClock = 100;
+    const clock =
+      scenario === 'timed-cancel-ended-command'
+        ? vi.spyOn(performance, 'now').mockImplementation(() => coreClock)
+        : undefined;
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const write = process.stdout.write.bind(process.stdout);
     const stdout = vi
@@ -67,11 +83,66 @@ describe('Harness delivery localization through real Core and shim owners', () =
     });
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     const app = new Hono<{ Variables: AuthVariables }>();
+    const knownCancellation = ['request-aborted', 'stream-destroyed', 'stream-reset'].includes(
+      scenario
+    );
+    let injectedCancellation = false;
+    let pollIncoming: import('node:http2').Http2ServerRequest | undefined;
+    let restoreCancellation: (() => void) | undefined;
+    const pollEntered = gate();
+    const releasePoll = gate();
+    const pollCompleted = gate();
+    const route = dispatch.route.bind(dispatch);
+    let firstPoll = true;
+    vi.spyOn(dispatch, 'route').mockImplementation(async (connection, request) => {
+      await route(connection, request);
+      if (request.path.endsWith('/poll') && knownCancellation && !injectedCancellation) {
+        // Inject after body collection so each signal reaches the dispatch guard independently.
+        injectedCancellation = true;
+        const target = scenario === 'request-aborted' ? pollIncoming! : pollIncoming!.stream;
+        const field =
+          scenario === 'request-aborted'
+            ? 'aborted'
+            : scenario === 'stream-destroyed'
+              ? 'destroyed'
+              : 'rstCode';
+        const descriptor = Object.getOwnPropertyDescriptor(target, field);
+        Object.defineProperty(target, field, {
+          configurable: true,
+          value: scenario === 'stream-reset' ? constants.NGHTTP2_CANCEL : true,
+        });
+        restoreCancellation = () => {
+          if (descriptor) Object.defineProperty(target, field, descriptor);
+          else Reflect.deleteProperty(target, field);
+        };
+      }
+      if (request.path.endsWith('/poll') && firstPoll) {
+        firstPoll = false;
+        if (shape === 'cancel-before-dispatch') {
+          pollEntered.resolve();
+          await releasePoll.promise;
+        }
+        coreClock = 850;
+      }
+    });
+    app.use('/worker-control/harness/poll', async (context, next) => {
+      pollIncoming = (context.env as { incoming: import('node:http2').Http2ServerRequest })
+        .incoming;
+      try {
+        await next();
+      } finally {
+        restoreCancellation?.();
+        restoreCancellation = undefined;
+      }
+      pollCompleted.resolve();
+    });
     const committed = gate();
     const resultEntered = gate();
     const retried = gate();
     const responseFailed = gate();
     let operationId = '';
+    let dispatchedCommand: NanoHostHarnessCommand | undefined;
+    let resultAcceptedBeforeReset = false;
     let rawTokens: string[] = [];
     let dispatchCount = 0;
     registerNanoHostSessionSemanticRoutes({
@@ -81,6 +152,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       nanoHostConfig: target,
       harnessCommandDispatched: (command) => {
         dispatchCount += 1;
+        dispatchedCommand = command;
         operationId = command.operationId;
         rawTokens = ['workerControlToken', 'inferenceToken', 'capabilityToken'].map(
           (name) => command.body[name] as string
@@ -91,6 +163,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
     });
     const listener = getRequestListener(app.fetch);
     let admitted = false;
+    let preDispatchCancelled = false;
     let holdCommand = shape !== 'withhold-result';
     let baselineListeners: { finish: number; close: number; aborted: number } | undefined;
     let failedResponse: import('node:http2').Http2ServerResponse | undefined;
@@ -154,6 +227,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
               stream.once('close', () => reject(new TypeError('Injected response reset.')));
             }
           );
+          // Cancellation may reject headers while the server-side gate is still joining.
+          void headers.catch(() => {});
           stream.end(body);
           if (shape === 'cancel-command' && path.endsWith('/poll') && dispatchCount === 0) {
             await Promise.race([
@@ -164,12 +239,57 @@ describe('Harness delivery localization through real Core and shim owners', () =
             ]);
             stream.close(constants.NGHTTP2_CANCEL);
           }
+          if (
+            shape === 'cancel-before-dispatch' &&
+            path.endsWith('/poll') &&
+            !preDispatchCancelled
+          ) {
+            preDispatchCancelled = true;
+            await pollEntered.promise;
+            stream.close(constants.NGHTTP2_CANCEL);
+            await responseFailed.promise;
+            releasePoll.resolve();
+          }
           const [received] = await headers;
           if (
             shape === 'cancel-ended-command' &&
             path.endsWith('/poll') &&
-            received[':status'] === 200
+            received[':status'] === 200 &&
+            (scenario !== 'result-before-reset' || !resultAcceptedBeforeReset)
           ) {
+            if (scenario === 'result-before-reset') {
+              resultAcceptedBeforeReset = true;
+              expect(dispatchedCommand).toBeDefined();
+              expect(
+                (
+                  await post(
+                    '/worker-control/harness/result',
+                    JSON.stringify({
+                      schemaVersion: 2,
+                      harnessInstanceId: dispatchedCommand!.harnessInstanceId,
+                      operationId: dispatchedCommand!.operationId,
+                      sequence: dispatchedCommand!.sequence,
+                      disposition: 'succeeded',
+                      body: {
+                        state: 'started',
+                        nativeHandleState: 'pending',
+                        nativeHandleDigest: null,
+                      },
+                    })
+                  )
+                ).status
+              ).toBe(204);
+              queueNanoHostHarnessOperation(coreDb, {
+                harnessInstanceId: 'diag-harness',
+                operation: 'session.inspect',
+                timestamp: new Date().toISOString(),
+                body: {
+                  agentSessionId: 'diag-session',
+                  agentSessionRuntimeBindingId: 'diag-session-binding',
+                },
+              });
+            }
+            coreClock = 1100;
             stream.close(constants.NGHTTP2_CANCEL);
           }
           const chunks: Buffer[] = [];
@@ -243,6 +363,90 @@ describe('Harness delivery localization through real Core and shim owners', () =
           workspaceId: 'diag-workspace',
         },
       });
+      if (knownCancellation) {
+        expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
+          204
+        );
+        expect(dispatchCount).toBe(0);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
+            .get()
+        ).toEqual({ operation_state: 'queued', operation_id: null });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash FROM scheduler_session_leases'
+            )
+            .get()
+        ).toEqual({
+          worker_control_token_hash: null,
+          worker_inference_token_hash: null,
+          worker_capability_token_hash: null,
+        });
+        expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
+          200
+        );
+        expect(dispatchCount).toBe(1);
+        return;
+      }
+      if (shape === 'cancel-before-dispatch') {
+        await expect(post('/worker-control/harness/poll', '{"schemaVersion":2}')).rejects.toThrow();
+        await pollCompleted.promise;
+        expect(failedRequest?.aborted).toBe(true);
+        expect(failedRequest?.stream.destroyed).toBe(true);
+        expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
+        expect(dispatchCount).toBe(0);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT operation_state, operation_id FROM harness_instance_records')
+            .get()
+        ).toEqual({ operation_state: 'queued', operation_id: null });
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT worker_control_token_hash FROM scheduler_session_leases')
+            .get()
+        ).toEqual({ worker_control_token_hash: null });
+        const next = await post('/worker-control/harness/poll', '{"schemaVersion":2}');
+        expect(next.status).toBe(200);
+        expect(JSON.parse(await next.text())).toMatchObject({
+          operation: 'turn.start',
+          sequence: 0,
+        });
+        expect(dispatchCount).toBe(1);
+        return;
+      }
+      if (scenario === 'result-before-reset') {
+        await expect(post('/worker-control/harness/poll', '{"schemaVersion":2}')).rejects.toThrow();
+        await responseFailed.promise;
+        expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
+        expect(failedResponse?.writableFinished).toBe(false);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT operation_state, operation, next_sequence, drain_state FROM harness_instance_records'
+            )
+            .get()
+        ).toEqual({
+          operation_state: 'queued',
+          operation: 'session.inspect',
+          next_sequence: 1,
+          drain_state: 'accepting',
+        });
+        // Release the deliberately zero DATA window before reading the successor's body.
+        await new Promise<void>((resolve, reject) => {
+          client!.settings({ initialWindowSize: 65_535 }, (error) =>
+            error ? reject(error) : resolve()
+          );
+        });
+        const next = await post('/worker-control/harness/poll', '{"schemaVersion":2}');
+        expect(next.status).toBe(200);
+        expect(JSON.parse(await next.text())).toMatchObject({
+          operation: 'session.inspect',
+          sequence: 1,
+        });
+        return;
+      }
       transport.client = {
         ready: Promise.resolve(),
         close: async () => {},
@@ -278,7 +482,11 @@ describe('Harness delivery localization through real Core and shim owners', () =
       const row = coreDb.sqlite
         .prepare('SELECT operation_state FROM harness_instance_records')
         .get();
-      expect(row).toEqual({ operation_state: 'dispatched' });
+      if (scenario !== 'timed-cancel-ended-command') {
+        expect(row).toEqual({
+          operation_state: shape === 'withhold-result' ? 'dispatched' : 'unknown',
+        });
+      }
       const lines = log.mock.calls.map(([line]) => JSON.parse(String(line)));
       expect(lines).toContainEqual(
         expect.objectContaining({
@@ -296,6 +504,12 @@ describe('Harness delivery localization through real Core and shim owners', () =
         })
       );
       if (shape === 'cancel-ended-command') {
+        if (scenario === 'timed-cancel-ended-command') {
+          expect(lines.filter((line) => line.event === 'worker.harness.response')).toEqual([
+            expect.objectContaining({ pollToDispatchMs: 750, pollToResponseMs: 1000 }),
+          ]);
+          expect(row).toEqual({ operation_state: 'unknown' });
+        }
         expect(failedResponse?.writableEnded).toBe(true);
         expect(failedResponse?.writableFinished).toBe(false);
         expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
@@ -309,12 +523,14 @@ describe('Harness delivery localization through real Core and shim owners', () =
         expect(failedResponse?.listenerCount('close')).toBe(baselineListeners?.close);
         expect(failedRequest?.listenerCount('aborted')).toBe(baselineListeners?.aborted);
       }
-      // Existing unknown/fence owner, invoked by the producer after its unchanged outage bound.
-      markNanoHostHarnessOperationUnknown(coreDb, {
-        harnessBindingRef: 'diag-harness-binding',
-        operationId,
-        timestamp: new Date(Date.now() + 300_000).toISOString(),
-      });
+      // A completed local write without a result still consumes the unchanged outage budget.
+      if (shape === 'withhold-result') {
+        markNanoHostHarnessOperationUnknown(coreDb, {
+          harnessBindingRef: 'diag-harness-binding',
+          operationId,
+          timestamp: new Date(Date.now() + 300_000).toISOString(),
+        });
+      }
       expect(
         coreDb.sqlite
           .prepare('SELECT operation_state, drain_state FROM harness_instance_records')
@@ -325,6 +541,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
       for (const token of rawTokens) expect(values).not.toContain(token);
       expect(rawTokens).toHaveLength(3);
     } finally {
+      releasePoll.resolve();
+      clock?.mockRestore();
       stop.abort();
       transport.client = null;
       client?.destroy();
