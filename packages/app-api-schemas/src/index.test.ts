@@ -1491,20 +1491,6 @@ describe('app api schemas', () => {
       },
     ],
     [
-      'raw secret in candidate page bytes',
-      {
-        ...knowledgeProposalDraftRequest,
-        canonicalPageBytes: `${knowledgeProposalDraftRequest.canonicalPageBytes}\nghp_openkit_candidate_canary`,
-      },
-    ],
-    [
-      'raw secret in rationale',
-      {
-        ...knowledgeProposalDraftRequest,
-        rationale: 'Preserve ghp_openkit_rationale_canary as a reusable lesson.',
-      },
-    ],
-    [
       'absolute host path in candidate page bytes',
       {
         ...knowledgeProposalDraftRequest,
@@ -1910,6 +1896,16 @@ describe('app api schemas', () => {
         },
       }).workspace.importedFrom?.sourceWorkspaceId
     ).toBe('ws_demo');
+  });
+
+  it('keeps credential-pattern rejection on secret-adjacent Vault metadata', () => {
+    expect(
+      VaultAdminStatusResponseSchema.safeParse({
+        backendKind: 'encrypted-file',
+        state: 'available',
+        diagnostic: 'Public fixture ghp_publicFixture',
+      }).success
+    ).toBe(false);
   });
 
   it('accepts redacted vault admin payloads and rejects secret-shaped responses', () => {
@@ -2570,7 +2566,7 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('accepts workspace permission decision read models without raw secrets', () => {
+  it('accepts workspace permission decision read models with ordinary credential-looking context', () => {
     const response = ListWorkspacePermissionDecisionsResponseSchema.parse({
       workspaceId: 'ws_demo',
       permissionDecisions: [
@@ -2606,14 +2602,14 @@ describe('app api schemas', () => {
         permissionDecisions: [
           {
             ...response.permissionDecisions[0],
-            subjectSummary: { token: rawSecretShapes[0] },
+            subjectSummary: { fixture: rawSecretShapes[0] },
           },
         ],
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('accepts server permission decision read models without raw secrets', () => {
+  it('accepts server permission decision read models with ordinary credential-looking context', () => {
     const response = ListServerPermissionDecisionsResponseSchema.parse({
       permissionDecisions: [
         {
@@ -2643,14 +2639,14 @@ describe('app api schemas', () => {
         permissionDecisions: [
           {
             ...response.permissionDecisions[0],
-            resourceSummary: { token: rawSecretShapes[0] },
+            resourceSummary: { fixture: rawSecretShapes[0] },
           },
         ],
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('accepts workspace synchronization records and generated CLI hunks with scoped secret guards', () => {
+  it('preserves ordinary workspace synchronization content and canonical patch encoding', () => {
     const inputSnapshot = WorkspaceInputSnapshotSchema.parse({
       id: 'wis_1',
       workspaceId: 'ws_demo',
@@ -2852,150 +2848,32 @@ describe('app api schemas', () => {
     });
     expect(workspaceReviews.items[0]?.artifactId).toBe('ar_workspace_changes_1');
 
-    const generatedPath = 'skills/openkit/scripts/openkit';
-    const blob = `(()=>{const locale="sk-Latn";const table="${'abcd'.repeat(4096)}";return table+locale})();`;
-    const generatedPatch = [
-      `diff --git a/${generatedPath} b/${generatedPath}`,
-      `--- a/${generatedPath}`,
-      `+++ b/${generatedPath}`,
-      '@@ -1 +1 @@',
-      '-(()=>{})();',
-      `+${blob}`,
-      '',
-    ].join('\n');
-    const normalPatch = [
-      'diff --git a/src/config.ts b/src/config.ts',
-      '--- a/src/config.ts',
-      '+++ b/src/config.ts',
-      '@@ -0,0 +1 @@',
-      '+const token = "ghp_testCredential1234567890";',
-      '',
-    ].join('\n');
+    const item = workspaceReviews.items[0]!;
     for (const text of [
-      generatedPatch
-        .replace(`--- a/${generatedPath}`, '--- /dev/null')
-        .replace('@@ -1 +1 @@\n-(()=>{})();\n', '@@ -0,0 +1 @@\n'),
-      generatedPatch
-        .replace(`+++ b/${generatedPath}`, '+++ /dev/null')
-        .replace('@@ -1 +1 @@\n-(()=>{})();\n+', '@@ -1 +0,0 @@\n-'),
-      generatedPatch
-        .replace('@@ -1 +1 @@', '@@ -1,2 +1,2 @@')
-        .replace('-(()=>{})();', ' context\n-(()=>{})();'),
-      `${generatedPatch}@@ -3 +3 @@\n-old\n+const locale="hf_Test";\n`,
-      generatedPatch.replace(
-        '-(()=>{})();',
-        '-const locale="okt_Test";\n\\ No newline at end of file'
-      ),
+      'diff --git a/src/fixture.ts b/src/fixture.ts\n+const fixture = "ghp_publicFixture";\n',
+      'sk-Latn hf_publicFixture okt_publicFixture',
     ]) {
+      const payload = { ...item.patchPayload!, text };
+      for (const patchPayload of [
+        payload,
+        { ...payload, encoding: 'base64' as const, text: btoa(text) },
+      ]) {
+        const retained = { ...item, patchPayload, review: { ...item.review, riskSummary: text } };
+        const read = ListWorkspaceSyncReviewsResponseSchema.parse({ items: [retained] }).items[0]!;
+        expect(read).toEqual(retained);
+        expect(
+          new TextDecoder().decode(appApiSchemas.workspaceSyncReviewPatchBytes(read.patchPayload!))
+        ).toBe(text);
+      }
+    }
+    for (const text of ['%%%', 'Zg', 'Zh==']) {
       expect(
         appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
-          ...workspaceReviews.items[0]!.patchPayload!,
-          text,
-        }).success
-      ).toBe(true);
-    }
-    const operatorPath = 'skills/openkit-ops/scripts/openkit';
-    for (const text of [generatedPatch, generatedPatch.replaceAll(generatedPath, operatorPath)]) {
-      const retained = {
-        ...workspaceReviews.items[0]!,
-        patchPayload: {
-          ...workspaceReviews.items[0]!.patchPayload!,
-          text,
-        },
-      };
-      expect(ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [retained] }).success).toBe(
-        true
-      );
-    }
-    for (const [from, to] of [
-      [generatedPath, operatorPath],
-      [operatorPath, generatedPath],
-    ]) {
-      const text = generatedPatch
-        .replace(`a/${generatedPath} b/${generatedPath}`, `a/${from} b/${to}`)
-        .replace(`--- a/${generatedPath}`, `rename from ${from}\nrename to ${to}\n--- a/${from}`)
-        .replace(`+++ b/${generatedPath}`, `+++ b/${to}`);
-      expect(
-        appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
-          ...workspaceReviews.items[0]!.patchPayload!,
+          ...item.patchPayload!,
+          encoding: 'base64',
           text,
         }).success
       ).toBe(false);
-    }
-    const item = workspaceReviews.items[0]!;
-    const patchPayload = { ...item.patchPayload!, text: generatedPatch };
-    const generatedItem = { ...item, patchPayload };
-    expect(
-      appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(patchPayload).success
-    ).toBe(true);
-    expect(appApiSchemas.WorkspaceSyncReviewItemSchema.safeParse(generatedItem).success).toBe(true);
-    expect(
-      ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [generatedItem] }).success
-    ).toBe(true);
-
-    for (const text of [
-      normalPatch,
-      generatedPatch + normalPatch,
-      normalPatch + generatedPatch,
-      ...['sk-testCredential', 'hf_testCredential', 'okt_testCredential'].map((secret) =>
-        normalPatch.replace('ghp_testCredential1234567890', secret)
-      ),
-      generatedPatch.replaceAll(generatedPath, 'src/bundle.min.js'),
-      generatedPatch.replace(
-        `a/${generatedPath} b/${generatedPath}`,
-        `a/src/config.ts b/${generatedPath}`
-      ),
-      generatedPatch
-        .replace(`--- a/${generatedPath}`, '--- /dev/null')
-        .replace(`+++ b/${generatedPath}`, '+++ /dev/null'),
-      generatedPatch.replace('@@ -1 +1 @@', '@@ -1 +1,9007199254740992 @@'),
-      generatedPatch.replace('@@ -1 +1 @@', '@@ malformed @@'),
-      generatedPatch.replace(
-        `--- a/${generatedPath}`,
-        `rename from src/config.ts\nrename to ${generatedPath}\n--- a/${generatedPath}`
-      ),
-      generatedPatch.replace(`--- a/${generatedPath}`, '--- /dev/null'),
-      generatedPatch.replace(
-        '@@ -1 +1 @@',
-        '--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1 +1 @@'
-      ),
-      generatedPatch.replace(`diff --git a/${generatedPath} b/${generatedPath}\n`, ''),
-      generatedPatch.replaceAll(generatedPath, `${generatedPath}.js`),
-      generatedPatch.replaceAll(generatedPath, `../${generatedPath}`),
-      generatedPatch.replace(`+++ b/${generatedPath}`, '+++ b/src/config.ts'),
-      generatedPatch.replace('@@ -1 +1 @@', '@@ -2 +1,2 @@'),
-      `${generatedPatch}+const token = "okt_testCredential";\n`,
-      `ghp_testCredential\n${generatedPatch}`,
-      generatedPatch.replace('@@ -1 +1 @@', '@@ -1 +1 @@ hf_testCredential'),
-    ]) {
-      const candidate = { ...patchPayload, text };
-      expect(appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse(candidate).success).toBe(
-        false
-      );
-      const result = ListWorkspaceSyncReviewsResponseSchema.safeParse({
-        items: [{ ...item, patchPayload: candidate }],
-      });
-      expect(result.success).toBe(false);
-      if (!result.success)
-        expect(
-          result.error.issues.some((issue) => issue.path.join('.') === 'items.0.patchPayload.text')
-        ).toBe(true);
-    }
-    for (const candidate of [
-      { ...generatedItem, artifactId: 'ghp_testCredential' },
-      { ...generatedItem, patchPayload: { ...patchPayload, digest: 'hf_testCredential' } },
-      { ...generatedItem, review: { ...item.review, riskSummary: 'okt_testCredential' } },
-      {
-        ...generatedItem,
-        changeSet: {
-          ...item.changeSet,
-          redaction: { status: 'redacted', notes: ['sk-testCredential'] },
-        },
-      },
-    ]) {
-      expect(ListWorkspaceSyncReviewsResponseSchema.safeParse({ items: [candidate] }).success).toBe(
-        false
-      );
     }
 
     const applyResult = {
@@ -3270,7 +3148,7 @@ describe('app api schemas', () => {
     ).toBe('swr_1');
   });
 
-  it('rejects unsafe workspace synchronization paths and secret-like payloads', () => {
+  it('rejects unsafe workspace synchronization paths', () => {
     const payload = {
       id: 'wcs_unsafe',
       materializationRecordId: 'wmr_1',
@@ -3960,7 +3838,7 @@ describe('app api schemas', () => {
     ).toBe(false);
   });
 
-  it('accepts redacted Git push records and rejects raw secrets or host paths', () => {
+  it('preserves ordinary Git push summaries and rejects host paths', () => {
     const pushRecord = {
       id: 'gpr_1',
       workspaceId: 'ws_demo',
@@ -4000,9 +3878,9 @@ describe('app api schemas', () => {
     expect(
       ArchivedGitPushRecordSchema.safeParse({
         ...pushRecord,
-        errorSummary: 'auth failed for ghp_openkit_secret',
+        errorSummary: 'public fixture ghp_openkit_fixture',
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('rejects raw-secret-shaped strings from setup diagnostics responses', () => {
@@ -6124,13 +6002,13 @@ it('preserves non-UTF8 patch bytes with canonical encoding and closed encoding a
       futureDescription: 'harmless',
     })
   ).toEqual(payload);
-  const secret = `sk-proj-${'x'.repeat(48)}`;
+  const fixtureLiteral = `sk-proj-${'x'.repeat(48)}`;
   expect(
     appApiSchemas.WorkspaceSyncReviewPatchPayloadSchema.safeParse({
       ...payload,
-      text: Buffer.from(secret).toString('base64'),
+      text: Buffer.from(fixtureLiteral).toString('base64'),
     }).success
-  ).toBe(false);
+  ).toBe(true);
   for (const bad of [
     { ...payload, encoding: 'unknown' },
     { ...payload, text: 'Zh==' },

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
@@ -1585,7 +1586,7 @@ describe('workspace export verifier', () => {
     expect(readImportSnapshot(root, 'ws_imported_demo')).toEqual(imported);
   });
 
-  it('normalizes unknown Git push record fields while reading workspace imports', () => {
+  it('preserves ordinary archived Git push fixture text through verified bytes and retained reads', () => {
     const root = freshExportRoot('openkit-workspace-import-git-push-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
@@ -1617,9 +1618,9 @@ describe('workspace export verifier', () => {
           approvalRowId: null,
           policyDecisionId: null,
           actorId: 'user_local',
-          remoteSummary: 'GitHub repository openkit on origin',
-          sourceRef: 'HEAD',
-          targetBranch: 'main',
+          remoteSummary: 'Public fixture ghp_publicFixture on origin',
+          sourceRef: 'hf_publicFixture',
+          targetBranch: 'sk-Latn',
           commitIds: ['abc123'],
           reviewIds: [],
           remoteHeadBefore: 'abc000',
@@ -1635,6 +1636,21 @@ describe('workspace export verifier', () => {
     });
 
     const imported = readImportSnapshot(root, 'ws_imported_demo');
+    const bytes = readFileSync(join(root, 'records/git-push-records.jsonl'));
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    expect(imported.gitPushRecords[0]).toMatchObject({
+      remoteSummary: 'Public fixture ghp_publicFixture on origin',
+      sourceRef: 'hf_publicFixture',
+      targetBranch: 'sk-Latn',
+    });
+    const { requestId: _requestId, ...history } = imported.gitPushRecords[0]!;
+    expect(ArchivedGitPushRecordSchema.parse(history)).toEqual(history);
+    expect(readFileSync(join(root, 'records/git-push-records.jsonl'))).toEqual(bytes);
+    expect(
+      createHash('sha256')
+        .update(readFileSync(join(root, 'records/git-push-records.jsonl')))
+        .digest('hex')
+    ).toBe(digest);
     expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
     expect(readImportSnapshot(root, 'ws_imported_demo')).toEqual(imported);
   });

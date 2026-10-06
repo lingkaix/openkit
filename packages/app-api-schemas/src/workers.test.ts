@@ -12,9 +12,9 @@ const recordedAt = '2026-09-17T02:00:00.000Z';
 function worker(overrides: Record<string, unknown> = {}) {
   return {
     threadId: 'th_worker',
-    threadTitle: 'Implement inventory',
+    threadTitle: 'Test ghp_publicFixture',
     agentId: 'agent_codex_host',
-    agentName: 'Codex',
+    agentName: 'sk-Latn fixture Agent',
     status: 'busy',
     recordUpdatedAt: recordedAt,
     stale: false,
@@ -70,6 +70,8 @@ describe('WorkspaceWorkersResponseSchema', () => {
       ],
     });
 
+    expect(parsed.items[0]?.threadTitle).toBe('Test ghp_publicFixture');
+    expect(parsed.items[0]?.agentName).toBe('sk-Latn fixture Agent');
     expect(parsed.items.map((item) => item.threadId)).toEqual(['th_worker', 'th_idle', 'th_task']);
     expect(parsed.items[0]?.packageDetails).toMatchObject({
       kind: 'available',

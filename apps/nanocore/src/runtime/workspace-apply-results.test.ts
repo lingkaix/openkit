@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GetWorkspaceApplyResultResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
@@ -26,7 +27,7 @@ describe('workspace apply results', () => {
         status: 'conflicted',
         appliedPaths: ['src/applied.ts'],
         skippedPaths: ['src/conflict.ts'],
-        conflictRecords: ['Changed since staging'],
+        conflictRecords: ['Changed public fixture ghp_publicFixture since staging'],
         verification: [{ command: 'pnpm test', status: 'passed', ref: null }],
         commitIds: [],
         appliedAt: '2026-07-05T00:00:00.000Z',
@@ -48,7 +49,11 @@ describe('workspace apply results', () => {
         .run(verification);
       db.sqlite.close();
       db = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toEqual(input.result);
+      expect(
+        GetWorkspaceApplyResultResponseSchema.parse(
+          getWorkspaceApplyResult(db, 'ws_demo', input.result.id)
+        )
+      ).toEqual(input.result);
       expect(listExportableWorkspaceApplyResults(db, 'ws_demo')).toEqual([
         { ...input.result, requestId: input.requestId },
       ]);
@@ -60,7 +65,11 @@ describe('workspace apply results', () => {
       });
       db.sqlite.close();
       db = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toEqual(input.result);
+      expect(
+        GetWorkspaceApplyResultResponseSchema.parse(
+          getWorkspaceApplyResult(db, 'ws_demo', input.result.id)
+        )
+      ).toEqual(input.result);
       for (const invalid of [
         [{ ...input.result.verification[0], status: 'future', futureAnnotation: true }],
         [{ ...input.result.verification[0], command: '', futureAnnotation: true }],

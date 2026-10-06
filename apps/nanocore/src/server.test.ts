@@ -9677,7 +9677,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('rejects secret-bearing or host-path-bearing proposal text without durable mutation', async () => {
+  it('rejects host-path-bearing proposal text without durable mutation', async () => {
     const store = createDemoStore();
     const app = createApp({ store }, true);
     const sourceResponse = await app.request(
@@ -9704,16 +9704,6 @@ describe('nanocore server', () => {
     const sourceReference = `source:${source.source.id}@${source.source.contentDigest}`;
 
     for (const [index, unsafe] of [
-      {
-        candidateSuffix: '\nghp_openkit_candidate_route_canary',
-        rationale: 'Preserve a bounded reusable lesson.',
-        canary: 'ghp_openkit_candidate_route_canary',
-      },
-      {
-        candidateSuffix: '',
-        rationale: 'Preserve ghp_openkit_rationale_route_canary as a reusable lesson.',
-        canary: 'ghp_openkit_rationale_route_canary',
-      },
       {
         candidateSuffix: '\nHost source: /Users/example/openkit/private.md',
         rationale: 'Preserve a bounded reusable lesson.',

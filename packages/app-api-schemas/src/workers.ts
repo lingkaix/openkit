@@ -1,6 +1,5 @@
 import { AgentSessionStatusSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
 
 /** Last recorded current AgentSession status; terminal states are not Worker rows. */
 export const WorkspaceWorkerStatusSchema = AgentSessionStatusSchema.exclude([
@@ -117,10 +116,7 @@ export const WorkspaceWorkerSchema = z
     packageDetails: WorkspaceWorkerPackageDetailsSchema,
     lastUsedModel: WorkspaceWorkerLastUsedModelSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Selected-Workspace current Worker inventory. */
 export const WorkspaceWorkersResponseSchema = z

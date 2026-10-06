@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ListWorkspaceApplyPlansResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
@@ -14,17 +15,23 @@ import {
 describe('workspace apply plans', () => {
   it('records apply plans before workspace apply mutation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
       const plan = workspaceApplyPlan();
       const first = recordWorkspaceApplyPlan(workspaceDb, plan);
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
       const replayed = recordWorkspaceApplyPlan(workspaceDb, plan);
 
       expect(first).toEqual(plan);
       expect(replayed).toEqual(plan);
-      expect(listWorkspaceApplyPlans(workspaceDb, 'ws_demo')).toEqual([plan]);
+      expect(
+        ListWorkspaceApplyPlansResponseSchema.parse({
+          items: listWorkspaceApplyPlans(workspaceDb, 'ws_demo'),
+        })
+      ).toEqual({ items: [plan] });
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -85,7 +92,7 @@ function workspaceApplyPlan(): Parameters<typeof recordWorkspaceApplyPlan>[1] {
     changeSetId: 'wcs_1',
     strategy: 'git',
     approvalState: 'approved',
-    plannedWrites: ['src/file.ts'],
+    plannedWrites: ['src/ghp_publicFixture.ts'],
     baselineChecks: [{ command: 'git apply --check', status: 'passed', ref: null }],
     pathConflicts: [],
     binaryRisks: [],

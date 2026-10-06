@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ListWorkspaceReconciliationRecordsResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
@@ -19,7 +20,13 @@ describe('workspace reconciliation records', () => {
     let db = openWorkspaceDb(dataRoot, 'ws_demo');
     try {
       applyScopedMigrations(db);
-      const original = recordWorkspaceReconciliationRecord(db, workspaceReconciliationRecord());
+      const original = recordWorkspaceReconciliationRecord(db, {
+        ...workspaceReconciliationRecord(),
+        backendReachability: {
+          ...workspaceReconciliationRecord().backendReachability,
+          detail: 'Public fixture hf_publicFixture',
+        },
+      });
       const extended = {
         ...original,
         futureAnnotation: { note: 'same owner', text: 'retained\nbytes' },
@@ -34,7 +41,11 @@ describe('workspace reconciliation records', () => {
         .run(payload);
       db.sqlite.close();
       db = openWorkspaceDb(dataRoot, 'ws_demo');
-      expect(listWorkspaceReconciliationRecords(db, 'ws_demo')).toEqual([original]);
+      expect(
+        ListWorkspaceReconciliationRecordsResponseSchema.parse({
+          items: listWorkspaceReconciliationRecords(db, 'ws_demo'),
+        })
+      ).toEqual({ items: [original] });
       recordWorkspaceReconciliationRecord(db, original);
       expect(
         db.sqlite.prepare('SELECT payload_json FROM workspace_reconciliation_records').get()

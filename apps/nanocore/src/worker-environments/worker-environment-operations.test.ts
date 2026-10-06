@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { type Actor, ensureLocalUser } from '../auth/identity.js';
-import type { FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import {
   activateWorkerStorageAttachment,
@@ -25,7 +25,7 @@ import { createWorkerEnvironmentOperations } from './worker-environment-operatio
 
 const NOW = '2026-09-10T00:00:00.000Z';
 const LAYOUT: WorkerStorageLayout = {
-  family: 'openkit-worker',
+  family: 'hf_publicFixture',
   gid: 1000,
   platform: { architecture: 'amd64', os: 'linux' },
   targets: [{ target: '/workspace' }, { target: '/sandbox' }],
@@ -238,9 +238,23 @@ describe('Worker environment operations', () => {
   });
   it('lists and selects an exact idle environment without reserving it', () => {
     const fixture = createFixture();
+    fixture.coreDb.sqlite.close();
+    const coreDb = openCoreDb(fixture.coreDb.dataRoot);
+    openDbs[openDbs.indexOf(fixture.coreDb)] = coreDb;
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const operations = createWorkerEnvironmentOperations({
+      coreDb,
+      runtimeEffects: {
+        inspectImage: vi.fn(),
+        inspectStorage: vi.fn(),
+        prepareImage: vi.fn(),
+        purgeStorage: vi.fn(),
+      },
+      store,
+    });
     const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
-    const listed = fixture.operations.list(context, { limit: 50 });
-    const selected = fixture.operations.select(context, {
+    const listed = operations.list(context, { limit: 50 });
+    const selected = operations.select(context, {
       adjudicatedThreadIds: [],
       expectedRevision: fixture.binding.revision,
       goalId: null,
@@ -252,7 +266,13 @@ describe('Worker environment operations', () => {
     });
 
     expect(listed).toMatchObject({
-      items: [{ storageRef: fixture.binding.storageRef }],
+      items: [
+        {
+          storageRef: fixture.binding.storageRef,
+          layout: { family: 'hf_publicFixture' },
+          layoutDigest: fixture.binding.layoutDigest,
+        },
+      ],
       nextCursor: null,
     });
     expect(selected.selected).toMatchObject({

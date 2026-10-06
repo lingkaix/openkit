@@ -1,6 +1,5 @@
 import { AuditEventSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
 
 const PermissionDecisionResultSchema = z.enum([
   'allow',
@@ -32,10 +31,7 @@ export const WorkspacePermissionDecisionSchema = z
     auditEventId: z.string().min(1).nullable(),
     createdAt: z.string().datetime(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Redacted server permission decision exposed through the App API. */
 export const ServerPermissionDecisionSchema = z
@@ -57,10 +53,7 @@ export const ServerPermissionDecisionSchema = z
     auditEventId: z.string().min(1).nullable(),
     createdAt: z.string().datetime(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Read-only workspace audit event ledger for one workspace. */
 export const ListWorkspaceAuditEventsResponseSchema = z
@@ -89,10 +82,7 @@ export const ListServerPermissionDecisionsResponseSchema = z
   .object({
     permissionDecisions: z.array(ServerPermissionDecisionSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Read-only workspace permission decision ledger for one workspace. */
 export const ListWorkspacePermissionDecisionsResponseSchema = z
@@ -100,10 +90,7 @@ export const ListWorkspacePermissionDecisionsResponseSchema = z
     workspaceId: z.string().min(1),
     permissionDecisions: z.array(WorkspacePermissionDecisionSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Redacted workspace permission decision. */
 export type WorkspacePermissionDecision = z.infer<typeof WorkspacePermissionDecisionSchema>;

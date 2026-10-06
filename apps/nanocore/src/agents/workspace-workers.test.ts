@@ -12,7 +12,7 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
-import type { FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -325,9 +325,9 @@ describe('worker.list operation', () => {
   });
 
   it('keeps a removed-catalog Agent visible and omits terminal predecessors, prelaunch, idle history, and incomplete lineage', async () => {
-    const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const liveThread = store.createThread('ws_demo', 'Removed catalog Worker');
+    let coreDb = createCoreDb();
+    let store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const liveThread = store.createThread('ws_demo', 'Removed catalog Worker ghp_publicFixture');
     const closedThread = store.createThread('ws_demo', 'Closed predecessor');
     const idleThread = store.createThread('ws_demo', 'Idle Worker');
     const prelaunchThread = store.createThread('ws_demo', 'Prelaunch Worker');
@@ -427,6 +427,9 @@ describe('worker.list operation', () => {
       ownerUserId: 'user_local',
       workspaceId: 'ws_demo',
     });
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(coreDb.dataRoot);
+    store = new FsStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({
       agentManifests: [
         createTestAgentSetup({
@@ -454,9 +457,13 @@ describe('worker.list operation', () => {
       const byThread = Object.fromEntries(body.items.map((item) => [item.threadId, item]));
 
       expect(response.status).toBe(200);
+      expect(store.getThread('ws_demo', liveThread.id).name).toBe(
+        'Removed catalog Worker ghp_publicFixture'
+      );
       expect(byThread[liveThread.id]).toMatchObject({
         agentId: 'agent_removed_codex',
         agentName: 'Retired Codex',
+        threadTitle: 'Removed catalog Worker ghp_publicFixture',
         work: {
           goalId: 'goal_removed',
           kind: 'goal',

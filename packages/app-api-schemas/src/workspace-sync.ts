@@ -1,6 +1,5 @@
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues, addRawSecretIssuesForPatchText } from './raw-secrets.js';
 
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
 const absolutePathPattern = /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)/;
@@ -81,10 +80,7 @@ export const WorkspaceInputSnapshotSchema = z
     backend: WorkspaceSynchronizationBackendSummarySchema,
     createdAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Product-safe readiness evidence reference for a materialized workspace. */
 export const WorkspaceEvidenceRefSchema = z
@@ -111,10 +107,7 @@ export const WorkspaceMaterializationRecordSchema = z
     readinessEvidence: z.array(WorkspaceEvidenceRefSchema),
     createdAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Redacted backend transport reference retained for recovery. */
 export const BackendWorkspaceTransportRefSchema = z
@@ -139,10 +132,7 @@ export const BackendWorkspaceHandleSchema = z
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Product-safe output reference declared by a worker output manifest. */
 export const WorkerOutputRefSchema = z
@@ -223,10 +213,7 @@ export const WorkerOutputManifestSchema = z
     evidenceRefs: z.array(WorkspaceEvidenceRefSchema),
     collectedAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** File-like payload reference produced by a backend transport. */
 export const WorkspacePayloadRefSchema = z
@@ -265,10 +252,7 @@ export const WorkspaceChangeSetSchema = z
     redaction: WorkspaceChangeSetRedactionSchema,
     createdAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Staging strategy used for human review. */
 export const StagedWorkspaceReviewStrategySchema = z.enum(['git_worktree', 'filesystem_staging']);
@@ -332,10 +316,7 @@ export const StagedWorkspaceReviewSchema = z
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Product-safe patch payload collected for a workspace synchronization review. */
 export const WorkspaceSyncReviewPatchPayloadSchema = z
@@ -347,11 +328,9 @@ export const WorkspaceSyncReviewPatchPayloadSchema = z
     bytes: z.number().int().nonnegative(),
   })
   .superRefine((value, ctx) => {
-    const { text, ...metadata } = value;
-    addRawSecretIssues(metadata, ctx, []);
     if (value.encoding === 'base64') {
       try {
-        if (btoa(atob(text)) !== text) throw new Error('Noncanonical base64.');
+        if (btoa(atob(value.text)) !== value.text) throw new Error('Noncanonical base64.');
       } catch {
         ctx.addIssue({
           code: 'custom',
@@ -361,11 +340,6 @@ export const WorkspaceSyncReviewPatchPayloadSchema = z
         return;
       }
     }
-    addRawSecretIssuesForPatchText(
-      new TextDecoder().decode(workspaceSyncReviewPatchBytes(value)),
-      ctx,
-      ['text']
-    );
   });
 
 /** Returns exact patch bytes; absent encoding denotes the existing UTF-8 text representation. */
@@ -395,10 +369,7 @@ export const WorkspaceApplyPlanSchema = z
     policyChecks: z.array(StagedWorkspaceReviewValidationSchema),
     createdAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Result of applying a human-accepted workspace synchronization review. */
 export const WorkspaceApplyResultSchema = z
@@ -415,10 +386,7 @@ export const WorkspaceApplyResultSchema = z
     commitIds: z.array(z.string().min(1)),
     appliedAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Durable restart recovery state for workspace synchronization. */
 export const WorkspaceReconciliationRecordSchema = z
@@ -445,10 +413,7 @@ export const WorkspaceReconciliationRecordSchema = z
     startedAt: TimestampSchema,
     finishedAt: TimestampSchema.nullable(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Human recovery decisions accepted for a requires-human reconciliation record. */
 export const WorkspaceRecoveryDecisionSchema = z.enum([
@@ -478,10 +443,7 @@ export const WorkspaceQuarantineRecordSchema = z
     updatedAt: TimestampSchema,
     resolvedAt: TimestampSchema.nullable(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Public App API item joining one workspace review with its change set and backing artifact. */
 export const WorkspaceSyncReviewItemSchema = z
@@ -491,11 +453,7 @@ export const WorkspaceSyncReviewItemSchema = z
     patchPayload: WorkspaceSyncReviewPatchPayloadSchema.nullable(),
     review: StagedWorkspaceReviewSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    // Nested schemas own their guards, including path-aware patch scanning.
-    addRawSecretIssues(value.artifactId, ctx, ['artifactId']);
-  });
+  .strict();
 
 /** App API response listing workspace synchronization reviews for one workspace. */
 export const ListWorkspaceSyncReviewsResponseSchema = z
@@ -522,10 +480,7 @@ export const SubmitWorkspaceSyncReviewDecisionResponseSchema = z
     review: StagedWorkspaceReviewSchema,
     workspaceApplyResult: WorkspaceApplyResultSchema.nullable().optional(),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** Request payload for recording one workspace recovery decision. */
 export const SubmitWorkspaceRecoveryDecisionRequestSchema = z
@@ -541,110 +496,77 @@ export const SubmitWorkspaceRecoveryDecisionResponseSchema = z
   .object({
     reconciliationRecord: WorkspaceReconciliationRecordSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace input snapshots for one workspace. */
 export const ListWorkspaceInputSnapshotsResponseSchema = z
   .object({
     items: z.array(WorkspaceInputSnapshotSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace materialization records for one workspace. */
 export const ListWorkspaceMaterializationRecordsResponseSchema = z
   .object({
     items: z.array(WorkspaceMaterializationRecordSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable backend workspace handles for one workspace. */
 export const ListBackendWorkspaceHandlesResponseSchema = z
   .object({
     items: z.array(BackendWorkspaceHandleSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable worker output manifests for one workspace. */
 export const ListWorkerOutputManifestsResponseSchema = z
   .object({
     items: z.array(WorkerOutputManifestSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace change sets for one workspace. */
 export const ListWorkspaceChangeSetsResponseSchema = z
   .object({
     items: z.array(WorkspaceChangeSetSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable staged workspace reviews for one workspace. */
 export const ListStagedWorkspaceReviewsResponseSchema = z
   .object({
     items: z.array(StagedWorkspaceReviewSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace apply results for one workspace. */
 export const ListWorkspaceApplyPlansResponseSchema = z
   .object({
     items: z.array(WorkspaceApplyPlanSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace reconciliation records for one workspace. */
 export const ListWorkspaceReconciliationRecordsResponseSchema = z
   .object({
     items: z.array(WorkspaceReconciliationRecordSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace quarantine records for one workspace. */
 export const ListWorkspaceQuarantineRecordsResponseSchema = z
   .object({
     items: z.array(WorkspaceQuarantineRecordSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response listing durable workspace apply results for one workspace. */
 export const ListWorkspaceApplyResultsResponseSchema = z
   .object({
     items: z.array(WorkspaceApplyResultSchema),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();
 
 /** App API response reading one durable workspace apply result by id. */
 export const GetWorkspaceApplyResultResponseSchema = WorkspaceApplyResultSchema;

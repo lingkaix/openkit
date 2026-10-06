@@ -1,6 +1,5 @@
 import { ActorRefSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
 
 const obviousKnowledgeProposalHostPathPattern =
   /(?:^|[\s"'`(])(?:\/(?:Users|home)\/\S+|~\/\S+|[A-Za-z]:[\\/]\S+|\\\\[^\\\s]+\\[^\\\s]+(?:\\\S*)?)/;
@@ -10,14 +9,13 @@ function containsObviousKnowledgeProposalHostPath(value: string): boolean {
   return obviousKnowledgeProposalHostPathPattern.test(value);
 }
 
-/** Non-empty proposal text without supported raw credential or local-home path canaries. */
+/** Non-empty ordinary proposal text excluding supported local-home path shapes. */
 const KnowledgeProposalSafeTextSchema = z
   .string()
   .min(1)
   .refine((value) => !containsObviousKnowledgeProposalHostPath(value), {
     message: 'Knowledge Proposal text must not expose an absolute host path.',
-  })
-  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+  });
 
 /** Server-assigned semantic owner of one Knowledge Manager invocation path. */
 export const KnowledgeManagerCallerSchema = z.enum(['assistant', 'task-mode', 'app-api']);

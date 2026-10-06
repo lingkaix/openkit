@@ -1,8 +1,6 @@
 import { ArtifactIdSchema, RequestIdSchema, TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-import { addRawSecretIssues } from './raw-secrets.js';
-
 const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const EmptyBuildContextDigest =
   'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -98,8 +96,7 @@ export const WorkerEnvironmentSummarySchema = z
     updatedAt: TimestampSchema,
     workspaceId: z.string().min(1),
   })
-  .strict()
-  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+  .strict();
 
 /** Bounded pagination over currently audience-admitted Worker environments. */
 export const ListWorkerEnvironmentsQuerySchema = z
@@ -205,7 +202,6 @@ export const WorkerEnvironmentStorageInspectionSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addRawSecretIssues(value, context, []);
     if (value.capacity.availableBytes > value.capacity.totalBytes) {
       context.addIssue({
         code: 'custom',
@@ -352,7 +348,6 @@ export const WorkerEnvironmentAuthoredCandidateArtifactSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addRawSecretIssues(value, context, []);
     addWorkerEnvironmentImpactIssues(value, context);
   });
 
@@ -370,47 +365,42 @@ export const WorkerEnvironmentResolvedCandidateArtifactSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addRawSecretIssues(value, context, []);
     addWorkerEnvironmentImpactIssues(value, context);
   });
 
 /** Canonical internal preparation or recovery command preserving retained receipt normalization. */
-export const PrepareWorkerEnvironmentRequestSchema = z
-  .discriminatedUnion('mode', [
-    z
-      .object({
-        administrationThreadId: z.string().min(1),
-        configuration: WorkerEnvironmentConfigurationSchema,
-        declaration: WorkerEnvironmentImageDeclarationSchema,
-        mode: z.literal('prepare'),
-        replaceNow: WorkerEnvironmentReplaceNowSchema.nullable().default(null),
-        requestId: RequestIdSchema,
-        target: WorkerEnvironmentTargetSchema,
-      })
-      .strict(),
-    z
-      .object({
-        administrationThreadId: z.string().min(1),
-        mode: z.literal('recover'),
-        recoverFrom: WorkerEnvironmentCandidateRefSchema,
-        requestId: RequestIdSchema,
-      })
-      .strict(),
-  ])
-  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+export const PrepareWorkerEnvironmentRequestSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      administrationThreadId: z.string().min(1),
+      configuration: WorkerEnvironmentConfigurationSchema,
+      declaration: WorkerEnvironmentImageDeclarationSchema,
+      mode: z.literal('prepare'),
+      replaceNow: WorkerEnvironmentReplaceNowSchema.nullable().default(null),
+      requestId: RequestIdSchema,
+      target: WorkerEnvironmentTargetSchema,
+    })
+    .strict(),
+  z
+    .object({
+      administrationThreadId: z.string().min(1),
+      mode: z.literal('recover'),
+      recoverFrom: WorkerEnvironmentCandidateRefSchema,
+      requestId: RequestIdSchema,
+    })
+    .strict(),
+]);
 
 /** Strict public preparation input; outer optional keeps omission valid in JSON Schema while retaining the owned null default. */
 export const WorkerEnvironmentPrepareInputSchema = PrepareWorkerEnvironmentRequestSchema.options[0]
   .omit({ mode: true })
   .extend({
     replaceNow: PrepareWorkerEnvironmentRequestSchema.options[0].shape.replaceNow.optional(),
-  })
-  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+  });
 
 /** Strict public result-only recovery input derived from the canonical command branch. */
-export const WorkerEnvironmentRecoverInputSchema = PrepareWorkerEnvironmentRequestSchema.options[1]
-  .omit({ mode: true })
-  .superRefine((value, context) => addRawSecretIssues(value, context, []));
+export const WorkerEnvironmentRecoverInputSchema =
+  PrepareWorkerEnvironmentRequestSchema.options[1].omit({ mode: true });
 
 /** Prepared candidate and bounded affected-work preview. */
 export const PrepareWorkerEnvironmentResponseSchema = z
@@ -428,7 +418,6 @@ export const PrepareWorkerEnvironmentResponseSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addRawSecretIssues(value, context, []);
     addWorkerEnvironmentImpactIssues(value, context);
     if (value.activationConfirmation !== workerEnvironmentActivationConfirmation(value)) {
       context.addIssue({
@@ -452,7 +441,6 @@ export const ActivateWorkerEnvironmentRequestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    addRawSecretIssues(value, context, []);
     addWorkerEnvironmentImpactIssues(value, context);
     if (!isCanonicalWorkerEnvironmentConfirmation(value)) {
       context.addIssue({

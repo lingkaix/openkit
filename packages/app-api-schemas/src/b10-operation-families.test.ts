@@ -61,22 +61,23 @@ describe('B10 family declarations', () => {
     );
     expect(emitted.required).not.toContain('replaceNow');
     expect(z.toJSONSchema(recoverSchema).additionalProperties).toBe(false);
-    const secret = `okt_${'a'.repeat(48)}`;
+    const fixtureLiteral = `okt_${'a'.repeat(48)}`;
     expect(
-      prepareSchema.safeParse({ ...prepare, target: { kind: 'agent', agentId: secret } }).success
-    ).toBe(false);
+      prepareSchema.safeParse({ ...prepare, target: { kind: 'agent', agentId: fixtureLiteral } })
+        .success
+    ).toBe(true);
     expect(
       recoverSchema.safeParse({
         ...recover,
-        recoverFrom: { ...recover.recoverFrom, artifactId: secret },
+        recoverFrom: { ...recover.recoverFrom, artifactId: fixtureLiteral },
       }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       operationModelInput(recoverSchema, ['requestId']).safeParse({
         administrationThreadId: 'thread_admin',
-        recoverFrom: { ...recover.recoverFrom, artifactId: secret },
+        recoverFrom: { ...recover.recoverFrom, artifactId: fixtureLiteral },
       }).success
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('keeps the host-owned receipt id required on the status read', () => {

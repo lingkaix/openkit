@@ -1,6 +1,5 @@
 import { TimestampSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { addRawSecretIssues } from './raw-secrets.js';
 
 /** Retired host records are archive history only; these codecs supply no resource or execution authority. */
 const embeddedAbsolutePathPattern = /(?:^|[\s"'`(])(?:\/|~\/|[A-Za-z]:[\\/]|\\\\|\/\/)\S*/;
@@ -65,7 +64,4 @@ export const ArchivedGitPushRecordSchema = z
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
+  .strict();

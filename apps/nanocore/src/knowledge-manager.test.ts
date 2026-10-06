@@ -24,6 +24,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
+import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -1395,11 +1396,11 @@ describe('Knowledge Manager answer operation', () => {
 
   it('drafts one fixed proposal with owner replay and fail-closed missing-receipt handling', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-proposal-usage-'));
-    const coreDb = openCoreDb(dataRoot);
+    let coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    let store = createDemoStore({ dataRoot });
+    let app = createApp({ coreDb, dataRoot, store });
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
@@ -1424,7 +1425,7 @@ describe('Knowledge Manager answer operation', () => {
       'release-cadence',
       'Release cadence',
       sourceReference,
-      'Friday releases require review.'
+      'Friday releases require review. Public fixture: ghp_publicFixture sk-Latn.'
     );
     const contentDigest = `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`;
     const draftRequest = {
@@ -1433,7 +1434,7 @@ describe('Knowledge Manager answer operation', () => {
       canonicalPageBytes,
       contentDigest,
       sourceReferences: [sourceReference],
-      rationale: 'Preserve the reviewed release cadence.',
+      rationale: 'Preserve the reviewed release cadence and hf_publicFixture.',
       confidence: 0.7,
     };
     const draft = (input: typeof draftRequest) =>
@@ -1452,6 +1453,7 @@ describe('Knowledge Manager answer operation', () => {
     const firstRes = await draft(draftRequest);
     expect(firstRes.status, await firstRes.clone().text()).toBe(200);
     const first = KnowledgeManagerDraftProposalResponseSchema.parse(await firstRes.json());
+    const { status: _status, ...retainedProposal } = first.proposal;
     expect(first).toMatchObject({
       operation: 'draft-proposal',
       workspaceId: 'ws_demo',
@@ -1464,7 +1466,7 @@ describe('Knowledge Manager answer operation', () => {
         canonicalPageBytes,
         contentDigest,
         sourceReferences: [sourceReference],
-        rationale: 'Preserve the reviewed release cadence.',
+        rationale: 'Preserve the reviewed release cadence and hf_publicFixture.',
         confidence: 0.7,
         producer: { kind: 'user', id: 'user_local' },
         status: 'pending',
@@ -1480,12 +1482,20 @@ describe('Knowledge Manager answer operation', () => {
       )
     ).toBe(false);
 
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(dataRoot);
+    store = new FsStore({ dataRoot });
+    app = createApp({ coreDb, dataRoot, store });
+
     const replayRes = await draft(draftRequest);
     expect(replayRes.status, await replayRes.clone().text()).toBe(200);
     const replay = KnowledgeManagerDraftProposalResponseSchema.parse(await replayRes.json());
     expect(replay.proposal).toEqual(first.proposal);
     expect(replay.validation).toEqual(first.validation);
-    expect(store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
+    expect(store.listKnowledgeProposals('ws_demo')).toEqual([retainedProposal]);
+    expect(
+      `sha256:${createHash('sha256').update(first.proposal.canonicalPageBytes).digest('hex')}`
+    ).toBe(contentDigest);
 
     const conflictRes = await draft({
       ...draftRequest,
@@ -1507,7 +1517,10 @@ describe('Knowledge Manager answer operation', () => {
     const missingReceiptRes = await draft(draftRequest);
     expect(missingReceiptRes.status).toBe(409);
     await expect(missingReceiptRes.json()).resolves.toMatchObject({ code: 'recovery_required' });
-    expect(store.listKnowledgeProposals('ws_demo')).toHaveLength(1);
+    expect(store.listKnowledgeProposals('ws_demo')).toEqual([retainedProposal]);
+    expect(
+      `sha256:${createHash('sha256').update(first.proposal.canonicalPageBytes).digest('hex')}`
+    ).toBe(contentDigest);
 
     const actionCenterRes = await app.request(
       ...operationRequest('attention.list', { workspaceId: 'ws_demo' }, undefined)

@@ -1,7 +1,10 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import {
+  ListServerPermissionDecisionsResponseSchema,
+  ListWorkspacePermissionDecisionsResponseSchema,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
@@ -9,12 +12,65 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   listExportableWorkspacePermissionDecisions,
+  listServerPermissionDecisions,
   recordBootPolicySelfCheckDecisions,
   recordPermissionDecision,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
 
 describe('permission decision recorder', () => {
+  it.each([
+    'workspace',
+    'server',
+  ] as const)('preserves ordinary fixture context in %s canonical writes, retained reads and public lists', (ownerScope) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
+    let coreDb = openCoreDb(dataRoot);
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    const contextSummary = { fixture: 'ghp_publicFixture sk-Latn', nested: ['hf_publicFixture'] };
+    try {
+      applyMigrations(coreDb);
+      applyScopedMigrations(workspaceDb);
+      recordProductPermissionDecision({
+        coreDb,
+        workspaceDb,
+        ownerScope,
+        ...(ownerScope === 'workspace' ? { workspaceId: 'ws_demo' } : {}),
+        decisionId: 'pd_public_fixture',
+        policyEngineVersion: 'test:v1',
+        policySnapshotId: 'test_snapshot',
+        subjectSummary: { kind: 'user', id: 'user_local' },
+        action: 'read',
+        resourceSummary: { fixture: 'okt_publicFixture' },
+        contextSummary,
+        result: 'allow',
+        reasonCode: 'allowed',
+        enforcementPoint: 'test',
+      });
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      const rows =
+        ownerScope === 'workspace'
+          ? listExportableWorkspacePermissionDecisions(workspaceDb, 'ws_demo')
+          : listServerPermissionDecisions(coreDb);
+      const response =
+        ownerScope === 'workspace'
+          ? ListWorkspacePermissionDecisionsResponseSchema.parse({
+              workspaceId: 'ws_demo',
+              permissionDecisions: rows,
+            })
+          : ListServerPermissionDecisionsResponseSchema.parse({ permissionDecisions: rows });
+      expect(response.permissionDecisions[0]?.contextSummary).toEqual(contextSummary);
+      expect(response.permissionDecisions[0]?.resourceSummary).toEqual({
+        fixture: 'okt_publicFixture',
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('records a policy-kernel decision as a durable server-scope row', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
     const coreDb = openCoreDb(dataRoot);

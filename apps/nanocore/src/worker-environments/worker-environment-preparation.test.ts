@@ -74,7 +74,7 @@ function manifest(): AuthoredAgentConfig {
 }
 
 function buildDeclaration(): WorkerEnvironmentImageDeclaration {
-  const content = 'FROM scratch\n';
+  const content = 'FROM scratch\n# Public fixture: ghp_publicFixture sk-Latn\n';
   return {
     arguments: { ZETA: 'last', ALPHA: 'first' },
     contextDigest: EMPTY_BUILD_CONTEXT_DIGEST,
@@ -234,6 +234,11 @@ describe('Worker environment preparation', () => {
   it('persists canonical A and B Artifacts and reads them after an FsStore restart', async () => {
     const fixture = createFixture();
     const request = prepareRequest(fixture.thread.id, fixture.configuration, buildDeclaration());
+    request.replaceNow = {
+      prompt: 'Check hf_publicFixture exactly.',
+      threadId: 'th_successor',
+      workspaceId: 'ws_demo',
+    };
     const response = await fixture.createService().prepare({ actor }, request);
 
     expect(response.image.environmentDefaults).toEqual({
@@ -267,13 +272,21 @@ describe('Worker environment preparation', () => {
       .createService(restarted)
       .readResolved({ actor }, response.resolvedCandidate);
     expect(read).toMatchObject({
-      authored: { declaration: request.declaration },
+      authored: { declaration: request.declaration, replaceNow: request.replaceNow },
       authoredCandidate: response.authoredCandidate,
-      resolved: { authoredCandidate: response.authoredCandidate },
+      resolved: { authoredCandidate: response.authoredCandidate, replaceNow: request.replaceNow },
       resolvedCandidate: response.resolvedCandidate,
       threadId: fixture.thread.id,
       workspaceId: fixture.workspace.id,
     });
+    for (const reference of [response.authoredCandidate, response.resolvedCandidate]) {
+      const artifact = restarted.getArtifact(fixture.workspace.id, reference.artifactId);
+      expect(artifact.contentDigest).toBe(reference.contentDigest);
+      expect(sha256(artifact.content.body)).toBe(reference.contentDigest);
+      expect(artifact.content.body).toBe(
+        fixture.store.getArtifact(fixture.workspace.id, reference.artifactId).content.body
+      );
+    }
     expect(restarted.listThreadTurns(fixture.workspace.id, fixture.thread.id)).toEqual([
       expect.objectContaining({ status: 'completed' }),
     ]);

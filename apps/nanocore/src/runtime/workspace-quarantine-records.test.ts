@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ListWorkspaceQuarantineRecordsResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
@@ -15,7 +16,7 @@ const timestamp = '2026-07-08T00:00:00.000Z';
 describe('workspace quarantine records', () => {
   it('records durable quarantine decisions for workspace synchronization recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-quarantine-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+    let workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
 
     try {
       applyScopedMigrations(workspaceDb);
@@ -28,13 +29,20 @@ describe('workspace quarantine records', () => {
         resolvedAt: timestamp,
       });
 
-      expect(listWorkspaceQuarantineRecords(workspaceDb, 'ws_demo')).toMatchObject([
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
+
+      expect(
+        ListWorkspaceQuarantineRecordsResponseSchema.parse({
+          items: listWorkspaceQuarantineRecords(workspaceDb, 'ws_demo'),
+        }).items
+      ).toMatchObject([
         {
           id: 'wqr_1',
           workspaceId: 'ws_demo',
           lifecycleRecordIds: ['wrr_1', 'wom_1'],
           failureKind: 'digest_mismatch',
-          storageRef: 'quarantine/workspace-sync/wqr_1',
+          storageRef: 'quarantine/workspace-sync/ghp_publicFixture',
           retentionClass: 'restricted-evidence',
           requiredHumanDecision: 'inspect_quarantined_output',
           resolution: 'retained',
@@ -54,7 +62,7 @@ function workspaceQuarantineRecord() {
     workspaceId: 'ws_demo',
     lifecycleRecordIds: ['wrr_1', 'wom_1'],
     failureKind: 'digest_mismatch',
-    storageRef: 'quarantine/workspace-sync/wqr_1',
+    storageRef: 'quarantine/workspace-sync/ghp_publicFixture',
     retentionClass: 'restricted-evidence',
     requiredHumanDecision: 'inspect_quarantined_output',
     resolution: 'pending',

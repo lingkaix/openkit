@@ -2,13 +2,17 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as schemas from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 
+import { FsStore } from '../lib/store.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { buildWorkspaceMaterializationRecords } from './workspace-materializer.js';
+import { parseWorkspaceSyncReviewArtifact } from './workspace-review-application.js';
 import {
   getWorkspaceSyncReview,
   importWorkspaceSyncRecords,
@@ -30,6 +34,97 @@ const workspacePatchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
 const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatchText).digest('hex')}`;
 
 describe('workspace sync records', () => {
+  it('preserves public fixture literals through canonical records, patch Artifacts and reopened public reads', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-public-fixture-'));
+    const store = createDemoStore({ dataRoot });
+    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const fixture = workspaceSyncImportFixture();
+    const literal = 'ghp_publicFixture sk-Latn hf_publicFixture okt_publicFixture';
+    const text = `diff --git a/src/fixture.ts b/src/fixture.ts\n--- a/src/fixture.ts\n+++ b/src/fixture.ts\n@@ -0,0 +1 @@\n+${literal}\n`;
+    const digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+    const bytes = Buffer.byteLength(text);
+    fixture.inputSnapshots[0]!.backend.label = literal;
+    fixture.materializationRecords[0]!.readinessEvidence[0]!.ref = literal;
+    fixture.backendWorkspaceHandles[0]!.transportRefs[0]!.ref = literal;
+    fixture.workerOutputManifests[0]!.ignoredOutputs.push({
+      path: 'src/ghp_publicFixture.ts',
+      reason: literal,
+    });
+    fixture.changeSets[0]!.redaction.notes.push(literal);
+    fixture.changeSets[0]!.patch = { ...fixture.changeSets[0]!.patch!, digest, bytes };
+    fixture.stagedReviews[0]!.review.riskSummary = literal;
+    fixture.stagedReviews[0]!.review.validation.push({
+      command: literal,
+      status: 'passed',
+      ref: literal,
+    });
+    fixture.stagedReviews[0]!.patchPayload = { mediaType: 'text/x-diff', text, digest, bytes };
+    try {
+      applyScopedMigrations(db);
+      importWorkspaceSyncRecords(db, fixture);
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      const read = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      expect(read).toEqual(fixture);
+      for (const [schema, records] of [
+        [schemas.ListWorkspaceInputSnapshotsResponseSchema, read.inputSnapshots],
+        [schemas.ListWorkspaceMaterializationRecordsResponseSchema, read.materializationRecords],
+        [schemas.ListBackendWorkspaceHandlesResponseSchema, read.backendWorkspaceHandles],
+        [schemas.ListWorkerOutputManifestsResponseSchema, read.workerOutputManifests],
+        [schemas.ListWorkspaceChangeSetsResponseSchema, read.changeSets],
+      ] as const)
+        expect(schema.parse({ items: records })).toEqual({ items: records });
+      const item = getWorkspaceSyncReview(db, 'ws_demo', fixture.stagedReviews[0]!.review.id)!;
+      expect(
+        schemas.ListWorkspaceSyncReviewsResponseSchema.parse({ items: [item] }).items[0]
+      ).toEqual(item);
+      expect(item.patchPayload).toEqual({ mediaType: 'text/x-diff', text, digest, bytes });
+      const body = JSON.stringify(item);
+      const artifactDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+      store.createArtifact({
+        id: item.artifactId,
+        workspaceId: 'ws_demo',
+        threadId: null,
+        turnId: null,
+        kind: 'file',
+        title: 'Workspace patch fixture',
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'json', body },
+        contentDigest: artifactDigest,
+        lastMutationRequestId: 'fixture-patch-artifact',
+        origin: {
+          kind: 'imported',
+          sourceKind: 'direct-import',
+          sourceId: 'fixture-patch-artifact',
+          sourceDigest: artifactDigest,
+          actor: { kind: 'user', id: 'user_local' },
+          requestId: 'fixture-patch-artifact',
+          recordedAt: timestamp,
+        },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      const artifact = new FsStore({ dataRoot }).getArtifact('ws_demo', item.artifactId);
+      expect(artifact.content.body).toBe(body);
+      expect(artifact.contentDigest).toBe(artifactDigest);
+      expect(`sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`).toBe(
+        artifactDigest
+      );
+      expect(parseWorkspaceSyncReviewArtifact(artifact)).toEqual(item);
+
+      const patchBytes = schemas.workspaceSyncReviewPatchBytes(item.patchPayload!);
+      expect(Buffer.from(patchBytes).toString()).toBe(text);
+      expect(`sha256:${createHash('sha256').update(patchBytes).digest('hex')}`).toBe(digest);
+      importWorkspaceSyncRecords(db, fixture);
+      expect(listExportableWorkspaceSyncRecords(db, 'ws_demo')).toEqual(read);
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('reads extended retained payloads, preserves replay bytes and mutable annotations after reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-extensions-'));
     let db = openWorkspaceDb(dataRoot, 'ws_demo');
