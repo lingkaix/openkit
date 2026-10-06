@@ -39,6 +39,8 @@ NanoCore schedules accepted work through one configured execution backend. Core 
 
 The admission holds the exact queued request, not a second outcome or fence. Attempt exclusion and backend-private residency serve different purposes; Core keeps no second active-Turn capacity record. SQLite transactions commit Core coordination but cannot atomically commit an external process, provider call, repository effect, or Sandbox output. Unknown acceptance is inspected, never resubmitted or converted into automatic replacement.
 
+References in this specification to NanoHost readiness and predecessor connections, worker process keys and heartbeat sequences, Harness inventory, Integration loopback drain, and worker-control final status specify the NanoHost profile's proof mechanisms, including their acceptance criteria. Backend-specific readiness, liveness, adoption, inventory, and physical fencing checks belong behind the execution backend boundary; generic admission, attempt, route, restart, and release coordination MUST NOT branch on backend family or require those mechanisms from every backend. Generic coordination requires exact operation and execution correlation, current authority, duplicate exclusion, authoritative stop or fence proof, and complete terminal handoff, output, evidence, outside collection, drain, and route-revocation barriers. Missing or contradictory required proof preserves refusal and exclusion. The NanoHost profile retains its attempt-held process-key hash and existing credential, worker-control verification, reconnect, and cleanup ownership unchanged. This scope distinction admits no other backend or alternative proof contract; those require acceptance in the affected existing owners.
+
 ## Goals / Non-goals
 
 Goals:

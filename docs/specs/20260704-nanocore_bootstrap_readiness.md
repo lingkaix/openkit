@@ -66,6 +66,8 @@ NanoCore boots through eight strictly ordered phases. Critical phases (config, d
 
 ## Contract / Expected Behavior
 
+The generic-predicate and NanoHost-proof distinction in [Durable Scheduler Design](20260703-durable_scheduler_design.md#summary) also governs restart here. Heartbeat sequence, process-key adoption, final-status carriage, and authoritative NanoHost connection requirements are NanoHost-profile mechanisms supplied through their existing owners. Generic boot retains the effect-free ownership scan, exclusion and fence preservation, one ordinary listener, and post-listen maintenance ordering without inspecting backend-specific proof fields or branching on backend family.
+
 ### Boot phases
 
 NanoCore MUST register `SIGINT` and `SIGTERM` handlers immediately on process entry, before phase 1 begins. Registration is process-safety plumbing rather than a boot phase and does not change the eight-phase ordering. A received signal closes admission and initiates bounded shutdown when possible, but it is diagnostic input only and never proves that a remote worker stopped or authorizes cleanup.
