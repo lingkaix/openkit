@@ -37,7 +37,7 @@ Related specs:
 
 NanoCore exposes the fixed agent-facing Gateway surface at `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`, plus `/health`. Route handling authenticates and authorizes the caller, resolves one logical model, selects one eligible private route member, derives a bounded cache scope, and delegates the Provider effect to the unified pi-ai dispatcher. The caller sees only the logical model ID and declared contract; Provider profile, provider-native model, account slot, and fallback lineage remain private except in authorized redacted audit and usage evidence.
 
-Codex and xAI subscription providers are not special Gateway backends. Their profiles use the same public routes and explicitly bind a server-owned account slot through provider-neutral OpenKit configuration. The unified backend resolves that slot before invoking pi-ai. The Gateway has no Codex app-server, `CODEX_HOME`, `auth.json`, or dedicated Codex client dependency in the clean target.
+Codex and xAI subscription providers are not special Gateway backends. Their profiles use the same public routes and explicitly bind a server-owned account slot through provider-neutral OpenKit configuration. The unified backend resolves that slot before invoking pi-ai. Each public request maps once into stock pi-ai intermediate representation, and each result projects once into the requested public format under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract), without a public-format detour. The Gateway has no Codex app-server, `CODEX_HOME`, `auth.json`, or dedicated Codex client dependency in the clean target.
 
 ## Goals / Non-goals
 
@@ -47,7 +47,7 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 - Keep provider and model authority in authored OpenKit profiles rather than adapter discovery.
 - Present stable logical model IDs whose concrete Provider profile, provider-native model, and account may vary without changing the caller-visible contract.
 - Support deterministic ordered route members, bounded pre-commit transient retry, and optional failover for the classified failures accepted below.
-- Support native endpoint families and bounded bridges without hiding semantic loss.
+- Support declared endpoint families through direct stock-IR mappings and public projections without hiding semantic loss.
 - Require explicit account-slot binding for every subscription-backed provider profile.
 - Preserve cache-scope input and provider-reported cache evidence without exposing raw ownership identifiers.
 - Return stable redacted public errors before and after streaming begins.
@@ -56,7 +56,7 @@ Codex and xAI subscription providers are not special Gateway backends. Their pro
 
 - Do not expose pi-ai, Codex app-server, or provider-private adapter vocabulary through public requests, responses, config, or diagnostics.
 - Do not copy Gateway request or response schemas into `packages/protocol`; this is an external provider-capability surface, not the UI-to-Core workflow protocol.
-- Do not attempt lossless bridging for Responses built-in tools, remote MCP, computer use, file input, image input, or another unrepresentable modality.
+- Do not admit Responses built-in tools, remote MCP, computer use, file input, image input, or another unrepresentable modality merely because a stock adapter or native hook exists.
 - Do not expose subscription credentials, raw provider account ids, Vault references, authorization headers, or raw account quota responses.
 - Do not accept pasted subscription tokens through Gateway routes or provider profiles.
 - Do not expose or implement `POST /v1/completions`.
@@ -73,11 +73,11 @@ Streaming uses OpenAI-compatible SSE chunks and terminates with `[DONE]`. If a p
 
 ### `POST /v1/responses`
 
-The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns native Responses payloads when the selected provider capability is `native`, or a converted Responses payload only when the provider is chat-native and the request is bridgeable under this spec.
+The route accepts OpenAI-compatible Responses requests with `model`, `input`, optional `stream`, and supported passthrough fields. It returns a Responses projection directly from the selected pi-ai result or event stream under the [backend mapping contract](20260708-pi_ai_unified_llm_backend.md#request-routing-contract). Same-protocol native content that stock Context, call options or result blocks cannot represent uses the admitted native channel; the public response never depends on conversion through Chat Completions.
 
 The route consumes the exact `context_management: [{ type: "compaction", compact_threshold }]` control under `docs/specs/20260902-agent_runtime_context_compaction.md`. The authenticated execution policy is authoritative: the Gateway injects an omitted control for OpenKit compaction authority, rejects a supplied mismatch or any control under runtime-native authority before Provider dispatch, and never blindly forwards this OpenKit-owned operation to a Provider. A caller-supplied `compaction_trigger` input item or another Provider-native compaction control is rejected rather than passed through. A completed OpenKit compaction item remains in the Responses output and may be round-tripped as later input under that owner.
 
-`openai-codex` is Responses-native through the unified pi-ai backend. It must not use the current Chat Completions bridge or a dedicated OpenKit Codex transport after migration.
+`openai-codex` is Responses-native through the unified pi-ai backend. It must use direct stock-IR mapping and Responses projection with no Chat Completions detour or dedicated OpenKit Codex transport.
 
 ### `GET /v1/models`
 
@@ -282,36 +282,37 @@ Provider metadata includes:
 }
 ```
 
-The matrix is the routing source of truth. Diagnostic booleans such as `supportsStreaming`, `supportsToolCalls`, and `supportsReasoning` are display hints only.
+The matrix remains the routing source of truth for each public format. `native` declares that the selected member's exact upstream API supports the same protocol and can carry that format's admitted native features. `bridged` declares that the public format is served by the bounded stock-IR mappings and public projections below on another upstream API; it no longer declares conversion through another public format. `unsupported` makes the member ineligible for that public surface. Neither `native` nor `bridged` promises every feature in a protocol, and stock catalog discovery or hook availability cannot widen admission. Diagnostic booleans such as `supportsStreaming`, `supportsToolCalls`, and `supportsReasoning` are display hints only.
 
-`openai_codex` is Responses-native and Chat Completions-bridged. An xAI Grok profile uses the endpoint capability declared by its reviewed pi-ai model adapter; a chat-native xAI model may bridge Responses only for the bounded shapes below. Subscription authentication does not change a model's endpoint capability.
+`openai_codex` is Responses-native and Chat Completions-bridged. An xAI Grok profile uses the endpoint capability declared by its reviewed pi-ai model adapter. Subscription authentication does not change a model's endpoint capability. Public mapping and native admission select by the exact upstream API capability rather than a Provider name.
 
-Provider transport and conversion stay outside Hono routes. A bridge that cannot preserve the public contract fails with `unsupported_gateway_feature` before the provider effect.
+Member eligibility requires the declared public format, selected upstream API and actual admitted feature mapping to agree. A selected destination unable to carry a semantic requirement fails with `unsupported_gateway_feature` before Provider access, rather than dropping the feature or traversing another public format. This checks OpenKit's own mapping and native admission; it does not add detection or compensation for accepted external serializer or Provider behavior under [the existing external-behavior decision](../decisions/20261002-external_provider_behavior_accepted.md). Provider transport and mapping stay outside Hono routes. The [convergence decision](../decisions/20261006-gateway_converges_on_pi_ai_ir.md) records the new meaning of the existing capability values.
 
 ## Bridge Compatibility
 
-The bounded bridge supports:
+The existing `bridged` capability label describes bounded public-to-stock-IR mapping and direct public output projection, not a public-format conversion chain. The [backend owner](20260708-pi_ai_unified_llm_backend.md#request-routing-contract) defines stock adaptation, reasoning projections and the request-local native channel. The bounded mapping supports:
 
 - text-only chat messages and Responses input items
 - `system` and `developer` instructions
 - simple function tools and tool results, including standard top-level or message-anchored `additional_tools` function declarations grouped under one namespace level; the canonical default `functions` namespace is equivalent to an unqualified function name
 - `temperature`
 - `max_tokens`, `max_completion_tokens`, and `max_output_tokens`
-- reasoning-effort mapping
+- reasoning-effort mapping under the unchanged fitting and retention contract
+- readable assistant `reasoning_content` input and readable non-redacted thinking output under the backend reasoning contract
 - simple `tool_choice`
-- text-only message streaming and simple function-call identity, index, name and argument-delta conversion, with correlated function results in continuation history and truthful terminal and usage semantics
+- text-only message streaming and simple function-call identity, index, name and argument-delta projection, with correlated function results in continuation history and truthful terminal and usage semantics
 - optional cache-scope input
 
-The bridge rejects:
+The bounded mapping rejects the following shapes; a same-protocol native feature requires its separately accepted admission under the backend owner and exact selected-member capability:
 
 - Responses built-in tools
 - remote MCP tools
 - computer-use tools
 - file and image input
 - structured content that cannot be reduced to text without semantic loss
-- non-function tool schemas, nested namespaces and deferred function declarations on the chat-native bridge
+- non-function tool schemas, nested namespaces and deferred function declarations on a cross-protocol mapping
 
-The pi-ai Responses path preserves admitted function-call identity and arguments, text tool outputs, developer/system instructions and terminal streamed or non-streamed output across a complete tool round trip. Standard declarations use the existing pi-ai context and Responses event projection without introducing an `additional_tools` item into the caller or provider payload. A namespace description, when present, is prepended to each member description so its instructions survive lowering. For a non-default namespace, the bridge uses a deterministic provider-private function name containing only ASCII letters, digits and underscores, at most 64 characters, and an exact request-local reverse mapping. The member description retains its original qualified name so the model can distinguish otherwise identical tools. It lowers declarations and replayed function calls together and restores the original namespace and name on streamed and non-streamed output, including the terminal response. Same-named functions in different namespaces remain distinct. Collision checks span plain functions and every lowered namespace member. Non-function namespace children remain unsupported. Mapping collisions, conflicting default-namespace aliases and undeclared or unmatched history fail before provider access; undeclared Provider output fails instead of inventing a callable identity. Incomplete streamed identities are withheld until they can be restored. The mapping is an ephemeral Gateway projection with no persistent registry and grants no tool execution authority. Native Codex namespace/custom-tool support retains its separate admission boundary.
+The direct Responses mapping and projection preserve admitted function-call identity and arguments, text tool outputs, developer/system instructions and terminal streamed or non-streamed output across a complete tool round trip. Standard declarations use stock pi-ai Context and the direct Responses event projection without introducing an `additional_tools` item into the caller or provider payload. A namespace description, when present, is prepended to each member description so its instructions survive lowering. For a non-default namespace on a cross-protocol mapping, the public input mapping uses a deterministic stock function identity containing only ASCII letters, digits and underscores, at most 64 characters, and an exact request-local reverse mapping. The member description retains its original qualified name so the model can distinguish otherwise identical tools. It maps declarations and replayed function calls together and restores the original namespace and name on streamed and non-streamed output, including the terminal response. Same-named functions in different namespaces remain distinct. Collision checks span plain functions and every lowered namespace member. Non-function namespace children remain unsupported. Mapping collisions, conflicting default-namespace aliases and undeclared or unmatched history fail before provider access; undeclared Provider output fails instead of inventing a callable identity. Incomplete streamed identities are withheld until they can be restored. The mapping is an ephemeral Gateway projection with no persistent registry and grants no tool execution authority. Upstream wire-name adaptation belongs to stock pi-ai. Same-protocol native namespace/custom-tool support retains its separate admission boundary under the backend owner, selected by exact API capability.
 
 ## Cache Scope
 
@@ -379,7 +380,7 @@ The removed Gateway and account dependencies do not remove or rename `vault.boot
 ## Testing Strategy / Acceptance Criteria
 
 - L1 route and resolution tests prove authentication order, logical-model and context-management validation, catalog-enriched capability intersection, admission of exact hand-authored IDs with missing model or family metadata, cross-family and unknown-family multi-route admission with shared-or-null family projection, ordered member eligibility, provider-neutral slot binding, no default-slot guess, bounded pre-commit failover, no post-commit retry, exact subscription pre-dispatch errors, stable cache priority, and absence of a Provider-specific backend branch. A regression must observe an uncatalogued configured default in public discovery and an inference dispatch retaining its exact upstream model ID.
-- L1 bridge tests prove the accepted mappings and fail every unrepresentable shape before provider effects.
+- L1 mapping tests prove direct public-to-stock-IR input and stock-result-to-public output for both formats, the accepted readable reasoning and native-channel boundaries, and refusal of every unrepresentable shape before Provider access.
 - L2 contract tests prove public Chat Completions, Responses, logical models, SSE, error, usage, route-attempt attribution, and redaction behavior across API-key and subscription-backed profiles, including non-`2xx` JSON rather than SSE for every pre-start terminal failure.
 - L3 black-box tests prove two logical models can dispatch through different Provider profiles on the same `/v1/*` routes, one logical model can advance across two subscription-account profiles on an admitted pre-commit failure when failover is enabled, discovery advertises only dispatchable logical IDs, and overlapping account slots remain isolated.
 - L3 opt-in real-provider evidence proves one authenticated public Codex Gateway request per run, accepted streaming behavior, stable public envelopes, and redaction.

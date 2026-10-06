@@ -57,7 +57,7 @@ The historical pre-unification upgrade baseline was `0.80.3`, the subscription-u
 ## Decision
 
 - `@earendil-works/pi-ai` is a private implementation dependency and never OpenKit protocol, public API, product, or authored-configuration vocabulary.
-- OpenKit consumes a stock published release and does not fork, vendor, patch, or monkey-patch pi-ai source. A missing capability uses the smallest bounded local guard, defers the provider path, waits for upstream, or triggers a new design decision.
+- OpenKit consumes a stock published release and does not fork, vendor, patch, or monkey-patch pi-ai source. In-flight inference uses stock IR types without extra properties or new block variants. Missing same-protocol semantics may use only the request-local native channel admitted by the [backend owner](20260708-pi_ai_unified_llm_backend.md#native-channel), through documented `onPayload` and, only for unrepresented native output, `onProviderStreamEvent`. Other missing capability uses the smallest bounded local guard, defers the provider path, waits for upstream, or triggers a new design decision. The [convergence decision](../decisions/20261006-gateway_converges_on_pi_ai_ir.md) records why arbitrary IR extension is excluded.
 - The consuming package declares one exact version with no `^`, `~`, workspace override, patch artifact, or alternate source.
 - The selected release must expose provider-owned login discovery, a custom `CredentialStore` integration, automatic OAuth refresh, native Codex Responses, and xAI subscription login and inference sufficient for the accepted account and backend specs.
 - OpenKit injects its credential-store view and explicit provider settings. It must not let pi-ai read its default `auth.json`, execute credential commands, or fall through to ambient environment credentials for a configured OpenKit provider.
@@ -69,6 +69,7 @@ The historical pre-unification upgrade baseline was `0.80.3`, the subscription-u
 - Pi-ai type names, event names, provider identifiers, API identifiers, option names, login callback shapes, credential shapes, and error strings must not appear in `packages/protocol`, public App API schemas, Gateway responses or errors, authored provider profiles, product UI, bundled CLI output, or remote MCP contract.
 - OpenKit schemas use provider-neutral terms such as provider profile, subscription provider, account slot, login interaction, status, quota, endpoint capability, and cache scope.
 - Pi-ai-native detail may appear only in redacted restricted diagnostics or implementation tests. This permits debugging but does not transfer contract ownership.
+- Pi-ai inference types remain in flight; persisted Gateway records use OpenKit-owned schemas rather than serialized stock Context, assistant messages, events or native envelopes. The stock thinking-signature carrier keeps its existing provider meaning and never becomes an OpenKit durable schema or arbitrary extension bag.
 - Replacing pi-ai must not require a change to an OpenKit public endpoint, schema, product term, or authored configuration file.
 
 ## Exact Pin And Upgrade Review
@@ -116,7 +117,7 @@ The former Codex account and Responses implementations and their residual source
 
 ## Accepted Design
 
-NanoCore has one small pi-ai boundary module that constructs provider runtimes with explicit OpenKit configuration and credential inputs, then maps pi-ai events and errors into OpenKit-owned internal shapes. Account management supplies a slot-scoped custom credential store; inference supplies the selected model and bounded options. The integration imports only stock public pi-ai APIs and contains no copied provider logic.
+NanoCore has one small pi-ai boundary module that constructs provider runtimes with explicit OpenKit configuration and credential inputs, then maps pi-ai events and errors into OpenKit-owned internal shapes. Account management supplies a slot-scoped custom credential store; inference supplies the selected model, stock Context and bounded options, plus the request-local native envelope only where admitted by the backend owner. The integration imports only stock public pi-ai APIs and contains no copied provider logic. Provider-specific reasoning conversion for common providers is permitted only inside the Gateway under that owner, preferring stock behavior; the exception does not authorize compatibility work outside the Gateway.
 
 ## Testing Strategy / Acceptance Criteria
 
