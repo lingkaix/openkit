@@ -828,12 +828,20 @@ describe('AI interface deployment-admin workflow', () => {
     await waitFor(() => expect(getAccountStatus).toHaveBeenCalledTimes(2));
   });
 
-  it('logs out and refreshes quota without swallowing a failed mutation', async () => {
+  it('shows a successful logout retry even when the following status refresh fails', async () => {
     const user = userEvent.setup();
+    let account: typeof LOGGED_IN_ACCOUNT | typeof CODEX_ACCOUNT = LOGGED_IN_ACCOUNT;
+    const getAccountStatus = vi
+      .fn()
+      .mockResolvedValueOnce(LOGGED_IN_ACCOUNT)
+      .mockRejectedValue(new ApiCallError(500, 'Status failed.'));
     const logoutAccount = vi
       .fn()
       .mockRejectedValueOnce(new ApiCallError(500, 'Internal Server Error'))
-      .mockResolvedValue(CODEX_ACCOUNT);
+      .mockImplementation(async () => {
+        account = { ...CODEX_ACCOUNT, updatedAt: REFRESHED_AT };
+        return account;
+      });
     const client = makeClient({
       operations: {
         'provider-subscription.account-list': vi
@@ -841,10 +849,10 @@ describe('AI interface deployment-admin workflow', () => {
           .mockImplementation(
             ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
               Promise.resolve({
-                accounts: providerId === 'openai-codex' ? [LOGGED_IN_ACCOUNT] : [],
+                accounts: providerId === 'openai-codex' ? [account] : [],
               })
           ),
-        'provider-subscription.account-status': vi.fn().mockResolvedValue(LOGGED_IN_ACCOUNT),
+        'provider-subscription.account-status': getAccountStatus,
         'provider-subscription.account-logout': logoutAccount,
       },
     });
@@ -857,6 +865,18 @@ describe('AI interface deployment-admin workflow', () => {
     expect(await screen.findByText(/Couldn't log out this account/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(logoutAccount).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Couldn't refresh login status.")).toBeInTheDocument();
+    expect(within(codex).getByRole('button', { name: 'Start login' })).toBeEnabled();
+    expect(within(codex).queryByText('Connected')).not.toBeInTheDocument();
+    expect(within(codex).queryByText(/Couldn't log out this account/i)).not.toBeInTheDocument();
+    await user.click(within(codex).getByRole('button', { name: 'Start login' }));
+    expect(
+      client.operations['provider-subscription.account-login-start']
+    ).toHaveBeenCalledExactlyOnceWith({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+      mode: 'device_code',
+    });
   });
 
   it('refreshes only the selected quota pair and updates last checked and reset times', async () => {
