@@ -16,6 +16,8 @@ Never write tokens, cookies, private keys, or raw credential material into the r
 
 ## Run
 
+For a persistent installed, enrolled host taking a later release, use the [operator Skill replacement procedure](../../skills/openkit-ops/references/nanocore-operations.en.md#replace-an-installed-nanohost-release) under [NanoHost Installed Release Replacement](../specs/20260802-nanohost_runtime_and_transport.md#installed-release-replacement). Have an external Agent with authorized host tools preserve identity, enrollment and retained data. Do not run this fixture's bring-up or teardown on that persistent target. The fixture teardown contract below remains unchanged.
+
 From the repository root, provision the only allowed host correction and then assert every admitted fact:
 
 ```bash

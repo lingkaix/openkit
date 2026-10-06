@@ -7,7 +7,7 @@ This procedure requires an authorized host, a supported container runtime for Ap
 
 ## Choose The Installation
 
-For an existing deployment, inspect it and use the operations reference. Do not replay first-run setup, replace its Vault key or create a second process on its writable Data Root.
+For an existing deployment, inspect it and use the operations reference. For maintenance, we recommend an external Agent with this `openkit-ops` Skill and your authorized host tools; name the deployment, exact target release and permitted interruption. Ask it to follow [installed NanoHost release replacement](nanocore-operations.en.md#replace-an-installed-nanohost-release) when upgrading the execution host, separately from App updates. Do not replay first-run setup, replace its Vault key or create a second process on its writable Data Root.
 
 For a release installation, acquire the selected App image and required matching release assets through the repository's release distribution. Retain exact image digest and source identity. Use [deployment modes](nanocore-deployment-modes.en.md) for persistence, authentication and the separate NanoHost boundary. A package or image download alone is not a working installation.
 

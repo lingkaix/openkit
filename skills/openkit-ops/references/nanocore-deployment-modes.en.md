@@ -130,6 +130,8 @@ The selected authored AgentManifest supplies the exact Worker image, pull policy
 
 A real remote worker input uses one credential-free HTTPS Git source and exact accepted commit. Private-repository credential injection requires a separately owned Vault-backed contract and is not implied by NanoHost setup.
 
+For an existing enrolled host, use [installed NanoHost release replacement](nanocore-operations.en.md#replace-an-installed-nanohost-release) through an external Agent with this Skill and authorized host tools. Preserve its configuration and enrollment; the fixture workflow above is not persistent-host upgrade or recovery.
+
 ## Verification
 
 Read deployment diagnostics through the authenticated deployment surface:
