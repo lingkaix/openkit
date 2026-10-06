@@ -22,15 +22,15 @@ describe('internal environment observation boundary', () => {
     expect(parseWorkObservationRecord(environment)).toEqual(environment);
   });
 
-  it('rejects non-Core claims and inline prompt or tool schema content', () => {
+  it('rejects non-Core claims and omits inline prompt or tool schema content', () => {
     expect(() => parseWorkObservationRecord({ ...environment, obs: 'gateway' })).toThrow();
-    expect(() =>
+    expect(
       parseWorkObservationRecord({
         ...environment,
         payload: { ...environment.payload, prompt: 'private prompt body' },
       })
-    ).toThrow();
-    expect(() =>
+    ).toEqual(environment);
+    expect(
       parseWorkObservationRecord({
         ...environment,
         payload: {
@@ -38,7 +38,7 @@ describe('internal environment observation boundary', () => {
           tools: [{ ...environment.payload.tools[0], inputSchema: { type: 'object' } }],
         },
       })
-    ).toThrow();
+    ).toEqual(environment);
   });
 });
 
@@ -61,9 +61,9 @@ describe('Core recovery observation boundary', () => {
     expect(parseWorkObservationRecord(reap)).toEqual(reap);
   });
 
-  it('rejects a non-Core decision and inline call arguments', () => {
+  it('rejects a non-Core decision and omits inline call arguments', () => {
     expect(() => parseWorkObservationRecord({ ...reap, obs: 'sidecar' })).toThrow();
-    expect(() =>
+    expect(
       parseWorkObservationRecord({
         ...reap,
         payload: {
@@ -71,6 +71,6 @@ describe('Core recovery observation boundary', () => {
           unresolvedCalls: [{ ...reap.payload.unresolvedCalls[0], arguments: { text: 'private' } }],
         },
       })
-    ).toThrow();
+    ).toEqual(reap);
   });
 });

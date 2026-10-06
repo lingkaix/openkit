@@ -728,6 +728,7 @@ describe('FsStore canonical reload', () => {
         originatingThreadId: thread.id,
         originatingTurnId: turn.id,
         originatingFileId: null,
+        capturedAt: turn.startedAt ?? timestamp,
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       },

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { type AuditEvent, AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 
 /** Input for recording one server-owned audit event. */
 export interface RecordServerAuditEventInput {
@@ -426,7 +427,7 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
     );
 }
 
-/** Converts one SQLite audit row into a protocol audit event. */
+/** Normalizes retained descriptive attribution before projecting one protocol-valid SQLite audit event. */
 function auditEventFromRow(row: unknown): AuditEvent {
   const event = row as Record<string, unknown>;
 
@@ -441,8 +442,12 @@ function auditEventFromRow(row: unknown): AuditEvent {
     permissionDecisionId: event.permission_decision_id,
     vaultGrantId: event.vault_grant_id,
     requestId: event.request_id,
-    actor: event.actor_json ? JSON.parse(String(event.actor_json)) : null,
-    subject: event.subject_json ? JSON.parse(String(event.subject_json)) : null,
+    actor: event.actor_json
+      ? ActorRefReaderSchema.parse(JSON.parse(String(event.actor_json)))
+      : null,
+    subject: event.subject_json
+      ? ActorRefReaderSchema.parse(JSON.parse(String(event.subject_json)))
+      : null,
     agentId: event.agent_id,
     agentSessionId: event.agent_session_id,
     category: event.category,

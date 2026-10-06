@@ -183,6 +183,49 @@ function writePortableFixture(root: string): void {
 }
 
 describe('workspace portable file-state IO', () => {
+  it('reads, rewrites and reopens all Knowledge ledger families with nested descriptive additions', () => {
+    const source = workspaceRoot('openkit-knowledge-extended-');
+    const target = workspaceRoot('openkit-knowledge-rewritten-');
+    writePortableFixture(source);
+    for (const family of ['observations', 'claims', 'conflicts', 'traces']) {
+      const path = join(source, 'knowledge', family, '202607.jsonl');
+      const rows = readFileSync(path, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      for (const row of rows) row.futureNote = 'retained';
+      if (family === 'traces') {
+        rows[0].retrievalParameters.futureNote = 'retained';
+        rows[0].selected = [
+          {
+            knowledgePageId: 'selected',
+            contentDigest: `sha256:${'a'.repeat(64)}`,
+            score: 1,
+            sourceReferences: [],
+            futureNote: 'retained',
+          },
+        ];
+        rows[0].excluded = [
+          {
+            knowledgePageId: 'excluded',
+            contentDigest: null,
+            reason: 'source_unavailable',
+            futureNote: 'retained',
+          },
+        ];
+      }
+      writeJsonl(path, rows);
+    }
+    const state = readWorkspacePortableFileState(source, [PORTABLE_TURN]);
+    expect(JSON.stringify([...state.retrievalTraces.values()])).not.toContain('futureNote');
+    writeWorkspacePortableFileState(target, state);
+    const reopened = readWorkspacePortableFileState(target, [PORTABLE_TURN]);
+    expect(reopened.retrievalTraces).toEqual(state.retrievalTraces);
+    for (const family of ['observations', 'claims', 'conflicts', 'traces'])
+      expect(readFileSync(join(target, 'knowledge', family, '202607.jsonl'), 'utf8')).toContain(
+        'futureNote'
+      );
+  });
   it('round-trips strict monthly ledgers and exact workspace-owned text', () => {
     const sourceRoot = workspaceRoot('openkit-portable-state-source-');
     const targetRoot = workspaceRoot('openkit-portable-state-target-');
@@ -262,13 +305,13 @@ describe('workspace portable file-state IO', () => {
       {
         id: 'kc_unknown',
         workspaceId: 'ws_portable_source',
-        statement: 'Unknown fields must fail closed.',
+        statement: 'Unknown core values must fail closed.',
         sourceReferences: [],
         scope: 'workspace',
         producer: 'test',
         confidence: 1,
         freshness: 'current',
-        reviewState: 'accepted',
+        reviewState: 'unsupported',
         conflictStatus: 'none',
         createdAt: JULY,
         updatedAt: JULY,

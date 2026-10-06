@@ -105,18 +105,23 @@ describe('workspace canonical record schemas', () => {
     expect(() => new FsStore({ dataRoot })).toThrow();
   });
 
-  it('rejects a knowledge proposal with embedded decision status', () => {
+  it('ignores an embedded Proposal status while preserving its source bytes', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
     const content = readFileSync(path, 'utf8');
 
-    writeFileSync(
-      path,
-      content.replace('review_required: true', 'review_required: true\nstatus: "pending"')
+    const extended = content.replace(
+      'review_required: true',
+      'review_required: true\nstatus: "accepted"'
     );
+    writeFileSync(path, extended);
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    const reopened = new FsStore({ dataRoot });
+    expect(reopened.getKnowledgeProposal(proposal.id)).toEqual(proposal);
+    expect(reopened.getKnowledgeProposal(proposal.id)).not.toHaveProperty('status');
+    reopened.createThread(workspace.id, 'Preserve ignored status');
+    expect(readFileSync(path, 'utf8')).toBe(extended);
   });
 
   it('rejects a knowledge proposal review with invalid persisted fields', () => {

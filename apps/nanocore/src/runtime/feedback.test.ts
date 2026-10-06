@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
@@ -10,7 +10,7 @@ import { createAppWithWorkspaceAuthority as createApp } from '../test-support/ap
 import { createDemoStore } from '../test-support/demo-store.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { feedbackFilePath, readTurnFeedback } from './feedback.js';
+import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from './feedback.js';
 
 /**
  * Creates a server-mode auth stub keyed by x-user-id.
@@ -31,6 +31,28 @@ function createHeaderAuthStub(): BetterAuthServer {
 }
 
 describe('turn feedback', () => {
+  it('preserves descriptive disk additions across update and reopen while returning only known fields', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-extension-'));
+    const store = createDemoStore({ dataRoot });
+    const turn = store.createTurn('ws_demo', 'th_demo', 'Feedback', {
+      kind: 'user',
+      id: 'user_local',
+    });
+    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    const path = feedbackFilePath(store, turn);
+    const original = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...original, futureNote: 'retained' }));
+    expect(readTurnFeedback(store, turn.id)).toEqual(original);
+    expect(
+      updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Updated' })
+    ).not.toHaveProperty('futureNote');
+    expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id).rating).toBe('good');
+    expect(JSON.parse(readFileSync(path, 'utf8')).futureNote).toBe('retained');
+    writeFileSync(path, JSON.stringify({ ...original, rating: 'future' }));
+    expect(() => readTurnFeedback(store, turn.id)).toThrow();
+    writeFileSync(path, JSON.stringify({ ...original, turnId: 'tu_wrong' }));
+    expect(() => readTurnFeedback(store, turn.id)).toThrow();
+  });
   it('creates a feedback file when a turn completes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-'));
     const store = createDemoStore({ dataRoot });

@@ -16,11 +16,12 @@ import {
   KnowledgeObservationSchema,
   KnowledgeRetrievalResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
+  preserveDescriptiveRecord,
   readCanonicalJsonLines,
   readCanonicalTextFile,
 } from './workspace-file-records.js';
@@ -29,6 +30,34 @@ const ObservationRowSchema = KnowledgeObservationSchema.strict();
 const ClaimRowSchema = KnowledgeClaimSchema.strict();
 const ConflictRowSchema = KnowledgeConflictSchema.strict();
 const RetrievalTraceRowSchema = KnowledgeRetrievalResponseSchema.strict();
+const ObservationReaderSchema = ObservationRowSchema.strip();
+const ClaimReaderSchema = ClaimRowSchema.strip();
+const ConflictReaderSchema = ConflictRowSchema.strip();
+const RetrievalTraceReaderSchema = RetrievalTraceRowSchema.extend({
+  retrievalParameters: RetrievalTraceRowSchema.shape.retrievalParameters.strip(),
+  selected: z.array(RetrievalTraceRowSchema.shape.selected.element.strip()),
+  excluded: z.array(RetrievalTraceRowSchema.shape.excluded.element.strip()),
+}).strip();
+const retainedLedgerRow = Symbol('retainedKnowledgeLedgerRow');
+
+/** Keeps owned source annotations separate from the normalized Knowledge read model. */
+function parseRetainedLedgerRow<T>(schema: z.ZodType<T>, raw: unknown): T {
+  const core = schema.parse(raw);
+  if (typeof core === 'object' && core !== null)
+    Object.defineProperty(core, retainedLedgerRow, { value: { raw, core: structuredClone(core) } });
+  return core;
+}
+
+/** Serializes the validated core with only annotations retained from an owned read. */
+function serializeRetainedLedgerRow(row: unknown): string {
+  const retained =
+    typeof row === 'object' && row !== null
+      ? (row as { [retainedLedgerRow]?: { raw: unknown; core: unknown } })[retainedLedgerRow]
+      : undefined;
+  return JSON.stringify(
+    retained ? preserveDescriptiveRecord(retained.raw, retained.core, row) : row
+  );
+}
 
 /** Authoritative file-backed workspace state that is portable but not owned by canonical protocol records. */
 export interface WorkspacePortableFileState {
@@ -85,7 +114,7 @@ export function readWorkspaceKnowledgeObservationLedger(
   return readMonthlyLedger(
     workspaceRoot,
     'knowledge/observations',
-    ObservationRowSchema,
+    ObservationReaderSchema,
     (row) => row.observedAt,
     repairFinalFragment
   );
@@ -126,7 +155,7 @@ export function readWorkspaceKnowledgeClaimLedger(
   return readMonthlyLedger(
     workspaceRoot,
     'knowledge/claims',
-    ClaimRowSchema,
+    ClaimReaderSchema,
     (row) => row.createdAt,
     repairFinalFragment
   );
@@ -167,7 +196,7 @@ export function readWorkspaceKnowledgeConflictLedger(
   return readMonthlyLedger(
     workspaceRoot,
     'knowledge/conflicts',
-    ConflictRowSchema,
+    ConflictReaderSchema,
     (row) => row.resolvedAt ?? row.createdAt,
     repairFinalFragment
   );
@@ -189,7 +218,7 @@ export function appendWorkspaceKnowledgeRetrievalTrace(
   const existing = readMonthlyLedger(
     workspaceRoot,
     'knowledge/traces',
-    RetrievalTraceRowSchema,
+    RetrievalTraceReaderSchema,
     (entry) => entry.createdAt,
     true
   );
@@ -225,7 +254,7 @@ export function readWorkspaceKnowledgeRetrievalTrace(
     ...readMonthlyLedger(
       workspaceRoot,
       'knowledge/traces',
-      RetrievalTraceRowSchema,
+      RetrievalTraceReaderSchema,
       (row) => row.createdAt
     ).values(),
   ]
@@ -261,7 +290,7 @@ export function readWorkspacePortableFileState(
     retrievalTraces: readMonthlyLedger(
       root,
       'knowledge/traces',
-      RetrievalTraceRowSchema,
+      RetrievalTraceReaderSchema,
       (row) => row.createdAt
     ),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
@@ -289,28 +318,28 @@ export function writeWorkspacePortableFileState(
     root,
     'knowledge/observations',
     state.observations,
-    ObservationRowSchema,
+    ObservationReaderSchema,
     (row) => row.observedAt
   );
   writeMonthlyLedger(
     root,
     'knowledge/claims',
     state.claims,
-    ClaimRowSchema,
+    ClaimReaderSchema,
     (row) => row.createdAt
   );
   writeMonthlyLedger(
     root,
     'knowledge/conflicts',
     state.conflicts,
-    ConflictRowSchema,
+    ConflictReaderSchema,
     (row) => row.resolvedAt ?? row.createdAt
   );
   writeMonthlyLedger(
     root,
     'knowledge/traces',
     state.retrievalTraces,
-    RetrievalTraceRowSchema,
+    RetrievalTraceReaderSchema,
     (row) => row.createdAt
   );
   if (state.workspaceConfig !== null) {
@@ -343,7 +372,7 @@ export function writeWorkspacePortableExportState(
     'records/knowledge-observations.jsonl',
     serializeMonthlyLedger(
       state?.observations ?? empty,
-      ObservationRowSchema,
+      ObservationReaderSchema,
       (row) => row.observedAt
     ),
     false
@@ -351,7 +380,7 @@ export function writeWorkspacePortableExportState(
   writeText(
     root,
     'records/knowledge-claims.jsonl',
-    serializeMonthlyLedger(state?.claims ?? empty, ClaimRowSchema, (row) => row.createdAt),
+    serializeMonthlyLedger(state?.claims ?? empty, ClaimReaderSchema, (row) => row.createdAt),
     false
   );
   writeText(
@@ -359,7 +388,7 @@ export function writeWorkspacePortableExportState(
     'records/knowledge-conflicts.jsonl',
     serializeMonthlyLedger(
       state?.conflicts ?? empty,
-      ConflictRowSchema,
+      ConflictReaderSchema,
       (row) => row.resolvedAt ?? row.createdAt
     ),
     false
@@ -369,7 +398,7 @@ export function writeWorkspacePortableExportState(
     'records/knowledge-retrieval-traces.jsonl',
     serializeMonthlyLedger(
       state?.retrievalTraces ?? empty,
-      RetrievalTraceRowSchema,
+      RetrievalTraceReaderSchema,
       (row) => row.createdAt
     ),
     false
@@ -426,7 +455,7 @@ function readMonthlyLedger<T>(
     }
     const month = entry.name.slice(0, 6);
     const rows = readCanonicalJsonLines(join(directory, entry.name), repairFinalFragment).map(
-      (row) => schema.parse(row)
+      (row) => parseRetainedLedgerRow(schema, row)
     );
 
     for (const row of rows) {
@@ -483,7 +512,7 @@ function writeMonthlyLedger<T>(
     }
     appendCanonicalTextFile(
       path,
-      rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : ''
+      rows.length > 0 ? `${rows.map(serializeRetainedLedgerRow).join('\n')}\n` : ''
     );
   }
 }
@@ -497,7 +526,7 @@ function serializeMonthlyLedger<T>(
   const rows = [...ledgers]
     .sort(([left], [right]) => left.localeCompare(right))
     .flatMap(([month, inputRows]) => parseLedgerMonth(month, inputRows, schema, timestamp));
-  return rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
+  return rows.length > 0 ? `${rows.map(serializeRetainedLedgerRow).join('\n')}\n` : '';
 }
 
 /** Parses and validates every row stored under one monthly ledger key. */
@@ -510,7 +539,14 @@ function parseLedgerMonth<T>(
   if (!/^\d{6}$/.test(month)) {
     throw new Error(`Portable ledger month is invalid: ${month}.`);
   }
-  const rows = inputRows.map((row) => schema.parse(row));
+  const rows = inputRows.map((row) => {
+    const parsed = schema.parse(row);
+    if (typeof row === 'object' && row !== null && typeof parsed === 'object' && parsed !== null) {
+      const retained = (row as { [retainedLedgerRow]?: unknown })[retainedLedgerRow];
+      if (retained) Object.defineProperty(parsed, retainedLedgerRow, { value: retained });
+    }
+    return parsed;
+  });
   for (const row of rows) {
     assertLedgerMonth(month, timestamp(row));
   }

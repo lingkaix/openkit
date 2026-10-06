@@ -191,7 +191,7 @@ An invalid outer envelope or applicable embedded `Turn` surfaces `ProtocolValida
 
 After `ProtocolValidationError`, the failed subscription exposes no private cursor as recovery authority, performs no automatic recovery, and adds no public recovery shape. A later caller-created subscription supplies only a caller-owned `since` value or no `since`, and it may fail again until an authoritative read establishes usable state or a compatible client-server upgrade is installed.
 
-Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives persisted feedback validation from `TurnFeedbackResponseSchema` and applies strict validation at the disk boundary without defining a second public schema.
+Turn feedback submissions use the strict shared `SubmitTurnFeedbackRequestSchema`: NanoCore and `@openkit/core-client` reject unknown request fields, while the generated OpenAPI projection documents the same closed object shape. NanoCore derives retained feedback validation from `TurnFeedbackResponseSchema`, validates its known fields and owning Turn strictly, admits and preserves safe descriptive additions on disk updates, and emits only the known response fields without defining a second public schema.
 
 ## Current Implementation Projection
 

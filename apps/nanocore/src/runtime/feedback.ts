@@ -11,8 +11,8 @@ import { OperationError } from '../operation-error.js';
 
 type Turn = import('zod').infer<typeof TurnSchema>;
 
-/** Strict public feedback shape used at the disk boundary. */
-const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.strict();
+/** Owned disk annotations survive rewrites; public responses use the known-field projection. */
+const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.passthrough();
 
 /**
  * Returns the feedback file path for one turn.
@@ -61,7 +61,7 @@ export function ensureTurnFeedback(
   const path = feedbackFilePath(store, turn);
 
   if (existsSync(path)) {
-    return readFeedbackFile(path);
+    return TurnFeedbackResponseSchema.parse(readFeedbackFile(path, turn.id));
   }
 
   const feedback: TurnFeedbackResponse = {
@@ -84,7 +84,9 @@ export function ensureTurnFeedback(
  * @returns Feedback record.
  */
 export function readTurnFeedback(store: FsStore, turnId: string): TurnFeedbackResponse {
-  return readFeedbackFile(feedbackFilePath(store, store.getTurnById(turnId)));
+  return TurnFeedbackResponseSchema.parse(
+    readFeedbackFile(feedbackFilePath(store, store.getTurnById(turnId)), turnId)
+  );
 }
 
 /**
@@ -103,7 +105,7 @@ export function updateTurnFeedback(
   const turn = store.getTurnById(turnId);
   const existing =
     store.getDataRoot() && existsSync(feedbackFilePath(store, turn))
-      ? readTurnFeedback(store, turnId)
+      ? readFeedbackFile(feedbackFilePath(store, turn), turnId)
       : ensureTurnFeedback(store, turn, turn.agentId ?? null);
 
   if (!existing) {
@@ -117,17 +119,21 @@ export function updateTurnFeedback(
   };
 
   writeFeedbackFile(feedbackFilePath(store, turn), updated);
-  return updated;
+  return TurnFeedbackResponseSchema.parse(updated);
 }
 
 /**
  * Reads and validates one feedback file.
  *
  * @param path Feedback file path.
+ * @param turnId Identity supplied by the owning canonical Turn.
  * @returns Feedback record.
  */
-function readFeedbackFile(path: string): TurnFeedbackResponse {
-  return PersistedTurnFeedbackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+function readFeedbackFile(path: string, turnId: string): TurnFeedbackResponse {
+  const feedback = PersistedTurnFeedbackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  if (feedback.turnId !== turnId)
+    throw new Error('Feedback Turn identity does not match its owner.');
+  return feedback;
 }
 
 /**

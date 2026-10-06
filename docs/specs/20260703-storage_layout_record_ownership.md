@@ -225,6 +225,8 @@ SQLite-derived records:
 
 Derived records must be rebuildable from file-backed records or authoritative SQLite ledgers.
 
+Descriptive canonical history reads ignore unknown object annotations while validating known values and lineage; same-record writes preserve safe owned annotations, append-only history and immutable digest-referenced bytes, while public and effect-facing projections contain only validated known fields.
+
 ## Release-Scoped SQLite Migrations
 
 Each Core, User, Workspace, and Light App database owns its applied-migration ledger independently. Packaged, ordered SQL migrations define changes to that scope; they do not migrate another scope, canonical file formats, external Vaults, or Worker storage. The implementation uses Drizzle migration execution and its native ledger rather than a second setup-only ledger. Diagnostics and the public storage layout report project actually recorded migrations as scope-qualified migration names; they do not create migration authority or infer an applied migration from a later timestamp alone.

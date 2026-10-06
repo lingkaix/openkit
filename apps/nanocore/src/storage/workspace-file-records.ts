@@ -26,14 +26,21 @@ import {
 } from '@openkit/app-api-schemas';
 import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
+  ActorRefSchema,
   AgentSandboxSummarySchema,
   AgentSessionSchema,
+  ApprovalDecisionItemSchema,
+  ArtifactOriginSchema,
   ArtifactSchema,
+  GitFailureExplanationReaderSchema,
   ItemSchema,
   KnowledgeEntrySchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
+  UserActorRefSchema,
+  UserInputResponseItemSchema,
+  UserMessageItemSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import {
@@ -86,21 +93,87 @@ const THREAD_REQUIRED_FEATURES = [
 ];
 
 const CanonicalTimestampSchema = z.string().datetime();
+const retainedProposal = Symbol('retainedKnowledgeProposal');
+/** Retained attribution is descriptive; all actor branches and accountability fields remain closed. */
+export const ActorRefReaderSchema = z.union(ActorRefSchema.options.map((schema) => schema.strip()));
+/** Canonical Item reader keeps the fixed approval actor and its grant refinement. */
+const retainedItemSchemas = ItemSchema.options.map((schema) => {
+  if (schema === UserMessageItemSchema)
+    return UserMessageItemSchema.extend({ actor: ActorRefReaderSchema });
+  if (schema === UserInputResponseItemSchema)
+    return UserInputResponseItemSchema.extend({ actor: UserActorRefSchema.strip() });
+  if (schema === ApprovalDecisionItemSchema)
+    return ApprovalDecisionItemSchema.safeExtend({
+      actor: z.union([
+        ApprovalDecisionItemSchema.shape.actor.options[0].strip(),
+        ApprovalDecisionItemSchema.shape.actor.options[1].strip(),
+      ]),
+    });
+  return schema;
+});
+/** The producer's nonempty branch set keeps discriminator dispatch at the retained boundary. */
+const ItemReaderSchema = z.discriminatedUnion('type', [
+  retainedItemSchemas[0]!,
+  ...retainedItemSchemas.slice(1),
+]);
+/** Retained Turn reader normalizes attribution and Items before relationship validation. */
+export const TurnReaderSchema = TurnSchema.safeExtend({
+  triggerActor: ActorRefReaderSchema,
+  items: z.array(ItemReaderSchema),
+  error: TurnSchema.shape.error
+    .unwrap()
+    .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
+    .nullable(),
+});
+/** Imported-origin attribution is a historical fact, never current import authority. */
+const ArtifactReaderSchema = ArtifactSchema.safeExtend({
+  origin: z.discriminatedUnion('kind', [
+    ArtifactOriginSchema.options[0],
+    ArtifactOriginSchema.options[1].extend({ actor: ActorRefReaderSchema }).strip(),
+  ]),
+});
+/** Retained event snapshots use the same historical readers before exact envelope validation. */
+const SseEventReaderSchema = z.preprocess((value) => {
+  if (typeof value !== 'object' || value === null || !('data' in value)) return value;
+  const data = value.data;
+  if (typeof data !== 'object' || data === null) return value;
+  const normalized = { ...data } as Record<string, unknown>;
+  switch (normalized.type) {
+    case 'workspace-updated':
+      normalized.workspace = WorkspaceRecordSchema.strip().parse(normalized.workspace);
+      break;
+    case 'turn-updated':
+    case 'turn-completed':
+      normalized.turn = TurnReaderSchema.parse(normalized.turn);
+      break;
+    case 'item-created':
+    case 'item-completed':
+      normalized.item = ItemReaderSchema.parse(normalized.item);
+      break;
+    case 'artifact-created':
+    case 'artifact-updated':
+      normalized.artifact = ArtifactReaderSchema.parse(normalized.artifact);
+      break;
+  }
+  return { ...value, data: normalized };
+}, SseEventEnvelopeSchema);
 export const WorkspaceSystemRecordSchema = WorkspaceRecordSchema.omit({
   name: true,
   counts: true,
-}).strict();
+}).strip();
 export const KnowledgeProposalRecordSchema = KnowledgeManagerDraftedProposalSchema.omit({
   status: true,
 })
   .extend({
     id: z.string().regex(/^kp_[a-f0-9]{64}$/),
+    producer: ActorRefReaderSchema,
   })
-  .strict();
+  .strip();
 export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.extend({
   reviewId: z.string().regex(/^kr_[a-f0-9]{64}$/),
+  actor: ActorRefReaderSchema,
 })
-  .strict()
+  .strip()
   .superRefine((review, context) => {
     const accepted = review.decision === 'accepted';
     if (accepted !== (review.targetAbsentAtDecision === true)) {
@@ -111,13 +184,14 @@ export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema
       });
     }
   });
-const KnowledgeProposalReviewFileSchema = z
+/** Retained Review reader validates ordered decision core and identities without descriptive annotations. */
+export const KnowledgeProposalReviewFileSchema = z
   .object({
     proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
     workspaceId: z.string().min(1),
     decisions: z.array(KnowledgeProposalReviewRecordSchema).min(1),
   })
-  .strict()
+  .strip()
   .superRefine((file, context) => {
     const requestIds = new Set<string>();
     const reviewIds = new Set<string>();
@@ -157,21 +231,21 @@ export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   capturedAt: CanonicalTimestampSchema,
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
-}).strict();
+}).strip();
 /** Private historical attachment provenance; current admission remains with WorkerStorageBinding. */
 export const AgentSessionRetainedStorageSchema = z
   .object({
     storageRef: z.string().regex(/^wst_[0-9a-f]{32}$/),
     workSlotRef: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
   })
-  .strict();
+  .strip();
 
 /** Canonical AgentSession record schema shared with workspace portability. */
 export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   sandboxSummary: AgentSandboxSummarySchema.extend({
     workspaceRootRefs: z.array(z.string().min(1)),
   })
-    .strict()
+    .strip()
     .nullable(),
   createdAt: CanonicalTimestampSchema,
   updatedAt: CanonicalTimestampSchema,
@@ -193,8 +267,10 @@ export const AgentSessionRecordSchema = AgentSessionSchema.extend({
   policySnapshotId: z.string().min(1).nullable(),
   sessionCompatibilityKey: z.string().min(1).nullable(),
   stale: z.boolean(),
-  workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
-}).strict();
+  workspaceRoots: z.array(
+    z.union(MaterializedWorkspaceRootSchema.options.map((schema) => schema.strip()))
+  ),
+}).strip();
 
 const TERMINAL_AGENT_SESSION_STATUSES = new Set<AgentSession['status']>([
   'interrupted',
@@ -330,13 +406,13 @@ export function parseCanonicalWorkspaceHistory(input: {
   agentSessions: AgentSession[];
   turnEvents: Array<[string, SseEventEnvelope[]]>;
 } {
-  const workspace = WorkspaceRecordSchema.parse(input.workspace);
+  const workspace = WorkspaceRecordSchema.strip().parse(input.workspace);
   const threads = input.threads.map((record) => ThreadSchema.parse(record));
-  const turns = input.turns.map((record) => TurnSchema.parse(record));
-  const itemRevisions = input.itemRevisions.map((record) => ItemSchema.parse(record));
-  const artifacts = input.artifacts.map((record) => ArtifactSchema.parse(record));
+  const turns = input.turns.map((record) => TurnReaderSchema.parse(record));
+  const itemRevisions = input.itemRevisions.map((record) => ItemReaderSchema.parse(record));
+  const artifacts = input.artifacts.map((record) => ArtifactReaderSchema.parse(record));
   const knowledgeProposals = (input.knowledgeProposals ?? []).map((record) =>
-    KnowledgeProposalRecordSchema.parse(record)
+    parseRetainedKnowledgeProposal(record)
   );
   const knowledgeProposalReviews = (input.knowledgeProposalReviews ?? []).map((record) =>
     KnowledgeProposalReviewRecordSchema.parse(record)
@@ -349,7 +425,7 @@ export function parseCanonicalWorkspaceHistory(input: {
   );
   const turnEvents = input.turnEvents.map(
     ([turnId, events]) =>
-      [turnId, events.map((event) => SseEventEnvelopeSchema.parse(event))] as [
+      [turnId, events.map((event) => SseEventReaderSchema.parse(event))] as [
         string,
         SseEventEnvelope[],
       ]
@@ -892,7 +968,7 @@ function readPublishedTurnRecord(
       );
     }
   }
-  const turnWithoutItems = TurnSchema.parse({ ...rawTurn, items: [] });
+  const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
   if (
     turnWithoutItems.id !== turnId ||
     turnWithoutItems.workspaceId !== workspaceId ||
@@ -905,7 +981,7 @@ function readPublishedTurnRecord(
     throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
   }
   const items = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
-  TurnSchema.parse({ ...turnWithoutItems, items });
+  TurnReaderSchema.parse({ ...turnWithoutItems, items });
 }
 
 /**
@@ -928,7 +1004,7 @@ function readPublishedItemRevisions(
   const order: string[] = [];
   const items = new Map<string, Item>();
   for (const value of readDurableCanonicalJsonLines(path)) {
-    const item = ItemSchema.parse(value);
+    const item = ItemReaderSchema.parse(value);
     const previous = items.get(item.id);
     if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
       throw new Error(`Item record ${item.id} has invalid lineage.`);
@@ -1235,7 +1311,7 @@ function loadWorkspace(
         }
         turnCaptureCoverage.set(turnId, parsedCoverage.data);
       }
-      const turnWithoutItems = TurnSchema.parse({ ...rawTurn, items: [] });
+      const turnWithoutItems = TurnReaderSchema.parse({ ...rawTurn, items: [] });
 
       if (
         turnWithoutItems.id !== turnId ||
@@ -1251,7 +1327,7 @@ function loadWorkspace(
       }
 
       const loadedItems = loadItemRevisions(itemsPath, workspaceId, threadId, turnId);
-      const turn = TurnSchema.parse({ ...turnWithoutItems, items: loadedItems.current });
+      const turn = TurnReaderSchema.parse({ ...turnWithoutItems, items: loadedItems.current });
       const runtimeRoot = join(turnsRoot, turnId, 'runtime');
       if (lstatSync(runtimeRoot, { throwIfNoEntry: false })) {
         assertCanonicalDirectory(runtimeRoot);
@@ -1361,7 +1437,11 @@ function writeWorkspaceMetadata(
     }
   }
 
-  writeJsonAtomic(workspaceRecordPath, projectWorkspaceSystemRecord(workspace));
+  writeOwnedDescriptiveJson(
+    workspaceRecordPath,
+    projectWorkspaceSystemRecord(workspace),
+    WorkspaceSystemRecordSchema
+  );
 }
 
 /**
@@ -1420,7 +1500,7 @@ function loadItemRevisions(
   const revisions: Item[] = [];
 
   for (const value of readCanonicalJsonLines(path, true)) {
-    const item = ItemSchema.parse(value);
+    const item = ItemReaderSchema.parse(value);
     const previous = items.get(item.id);
 
     if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
@@ -1460,7 +1540,7 @@ function loadTurnEvents(
   itemIds: ReadonlySet<string>
 ): SseEventEnvelope[] {
   const events = readCanonicalJsonLines(path, true).map((value) =>
-    SseEventEnvelopeSchema.parse(value)
+    SseEventReaderSchema.parse(value)
   );
 
   for (const [index, event] of events.entries()) {
@@ -1680,6 +1760,13 @@ function loadKnowledge(workspaceRoot: string): KnowledgeEntry[] {
  * @returns Exact canonical proposal-file bytes.
  */
 export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalRecord): string {
+  const retained = (
+    proposal as KnowledgeProposalRecord & {
+      [retainedProposal]?: { bytes: string; core: KnowledgeProposalRecord };
+    }
+  )[retainedProposal];
+  if (retained && isDeepStrictEqual(retained.core, KnowledgeProposalRecordSchema.parse(proposal)))
+    return retained.bytes;
   return [
     '---',
     'type: "proposal"',
@@ -1695,27 +1782,6 @@ export function serializeKnowledgeProposalRecord(proposal: KnowledgeProposalReco
     '---',
     proposal.canonicalPageBytes,
   ].join('\n');
-}
-
-/**
- * Serializes one append-only Knowledge Review file in its canonical JSON encoding.
- *
- * @param proposalId Immutable Proposal that owns the Review history.
- * @param workspaceId Workspace that owns the Proposal and Review.
- * @param decisions Ordered append-only Review rows.
- * @returns Exact canonical Review-file bytes.
- */
-export function serializeKnowledgeProposalReviewFile(
-  proposalId: string,
-  workspaceId: string,
-  decisions: readonly KnowledgeProposalReviewRecord[]
-): string {
-  const reviewFile = KnowledgeProposalReviewFileSchema.parse({
-    proposalId,
-    workspaceId,
-    decisions: [...decisions],
-  });
-  return `${JSON.stringify(reviewFile, null, 2)}\n`;
 }
 
 /**
@@ -1774,12 +1840,12 @@ function loadKnowledgeProposals(
       const candidateDigest = `sha256:${createHash('sha256')
         .update(proposal.canonicalPageBytes, 'utf8')
         .digest('hex')}`;
-      if (
-        proposal.contentDigest !== candidateDigest ||
-        content !== serializeKnowledgeProposalRecord(proposal)
-      ) {
+      if (proposal.contentDigest !== candidateDigest) {
         throw new Error(`Knowledge proposal ${id} does not preserve its canonical bytes.`);
       }
+      Object.defineProperty(proposal, retainedProposal, {
+        value: { bytes: content, core: structuredClone(proposal) },
+      });
       return proposal;
     });
 }
@@ -1917,9 +1983,9 @@ function loadArtifacts(
 
     const contentPath = join(artifactRoot, 'files', artifactContentFileName(format));
     assertCanonicalDirectory(join(artifactRoot, 'files'));
-    const artifact = ArtifactSchema.parse({
+    const artifact = ArtifactReaderSchema.parse({
       ...metadata,
-      content: { format, body: readCanonicalTextFile(contentPath) },
+      content: { ...metadataContent, format, body: readCanonicalTextFile(contentPath) },
     });
 
     if (
@@ -2073,7 +2139,7 @@ function classifyThreadVisibilityCutover(
   }
   const turnsRoot = join(workspaceRoot, 'threads', threadId, 'turns');
   const turns = listDirectoryNames(turnsRoot).map((id) =>
-    TurnSchema.parse({ ...(readJson(join(turnsRoot, id, 'turn.json')) as object), items: [] })
+    TurnReaderSchema.parse({ ...(readJson(join(turnsRoot, id, 'turn.json')) as object), items: [] })
   );
   const firstTurn = turns.sort(
     (left, right) =>
@@ -2245,14 +2311,21 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
         throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
       }
       const captureCoverage = nextCoverage ?? previousCoverage;
-      writeJsonAtomic(turnPath, {
-        ...turn,
-        items: [],
-        ...(captureCoverage ? { captureCoverage } : {}),
-        ...(previousRaw?.requiredFeatures
-          ? { requiredFeatures: previousRaw.requiredFeatures }
-          : {}),
-      });
+      writeOwnedDescriptiveJson(
+        turnPath,
+        {
+          ...turn,
+          items: [],
+          ...(captureCoverage ? { captureCoverage } : {}),
+          ...(previousRaw?.requiredFeatures
+            ? { requiredFeatures: previousRaw.requiredFeatures }
+            : {}),
+        },
+        TurnReaderSchema.safeExtend({
+          captureCoverage: CaptureCoverageBindingSchema.optional(),
+          requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
+        })
+      );
       const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
       const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
       if (!itemLogMetadata) {
@@ -2386,7 +2459,24 @@ function writeKnowledge(
   }
 
   removeStaleFiles(proposalsRoot, expectedProposals, '.md');
+  const existingProposals = new Map(
+    loadKnowledgeProposals(workspaceRoot, records.workspace.id).map((proposal) => [
+      proposal.id,
+      proposal,
+    ])
+  );
   for (const proposal of records.knowledgeProposals) {
+    const previous = existingProposals.get(proposal.id);
+    if (previous) {
+      if (
+        !isDeepStrictEqual(
+          KnowledgeProposalRecordSchema.parse(previous),
+          KnowledgeProposalRecordSchema.parse(proposal)
+        )
+      )
+        throw new Error(`Knowledge proposal ${proposal.id} changed immutable content.`);
+      continue;
+    }
     writeFileAtomic(
       join(proposalsRoot, `${proposal.id}.md`),
       serializeKnowledgeProposalRecord(proposal)
@@ -2395,9 +2485,10 @@ function writeKnowledge(
 
   removeStaleFiles(reviewsRoot, expectedReviews, '.json');
   for (const [proposalId, decisions] of reviewsByProposal) {
-    writeFileAtomic(
+    writeOwnedDescriptiveJson(
       join(reviewsRoot, `${proposalId}.json`),
-      serializeKnowledgeProposalReviewFile(proposalId, decisions[0]!.workspaceId, decisions)
+      { proposalId, workspaceId: decisions[0]!.workspaceId, decisions },
+      KnowledgeProposalReviewFileSchema
     );
   }
 
@@ -2452,6 +2543,16 @@ function writeKnowledge(
           : serializeUserAuthoredKnowledgePage(entry);
     writeFileAtomic(path, content);
   }
+}
+
+/** Normalizes a Proposal without losing its already verified immutable source bytes. */
+function parseRetainedKnowledgeProposal(value: unknown): KnowledgeProposalRecord {
+  const proposal = KnowledgeProposalRecordSchema.parse(value);
+  if (typeof value === 'object' && value !== null) {
+    const retained = (value as { [retainedProposal]?: unknown })[retainedProposal];
+    if (retained) Object.defineProperty(proposal, retainedProposal, { value: retained });
+  }
+  return proposal;
 }
 
 /** Ensures the bundle-root v0.2 index without maintaining human-authored navigation. */
@@ -2510,7 +2611,11 @@ function writeSources(workspaceRoot: string, records: WorkspaceFileRecords): voi
   removeStaleDirectories(materialsRoot, expectedIds);
   removeStaleDirectories(derivedRoot, expectedIds);
   for (const source of records.knowledgeSources) {
-    writeJsonAtomic(join(registryRoot, `${source.id}.json`), source);
+    writeOwnedDescriptiveJson(
+      join(registryRoot, `${source.id}.json`),
+      source,
+      KnowledgeSourceRecordSchema
+    );
   }
 }
 
@@ -2539,10 +2644,17 @@ function writeArtifacts(workspaceRoot: string, records: WorkspaceFileRecords): v
         rmSync(join(filesRoot, staleFileName), { force: true });
       }
     }
-    writeJsonAtomic(join(artifactRoot, 'artifact.json'), {
-      ...artifact,
-      content: { format: artifact.content.format },
-    });
+    writeOwnedDescriptiveJson(
+      join(artifactRoot, 'artifact.json'),
+      {
+        ...artifact,
+        content: { format: artifact.content.format },
+      },
+      z.object({
+        ...ArtifactReaderSchema.shape,
+        content: ArtifactSchema.shape.content.omit({ body: true }),
+      })
+    );
     writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
   }
 }
@@ -2563,7 +2675,7 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
     const sessionRoot = join(root, session.id);
 
     ensureCanonicalDirectory(sessionRoot);
-    writeJsonAtomic(join(sessionRoot, 'session.json'), session);
+    writeOwnedDescriptiveJson(join(sessionRoot, 'session.json'), session, AgentSessionRecordSchema);
   }
 }
 
@@ -2787,6 +2899,53 @@ export function writeFileAtomic(path: string, content: string | Uint8Array): voi
     rmSync(temporaryPath, { force: true });
     throw error;
   }
+}
+
+/** Preserves owned annotations while replacing known fields; append-order arrays retain their member annotations. */
+export function preserveDescriptiveRecord(raw: unknown, previous: unknown, next: unknown): unknown {
+  if (Array.isArray(next)) {
+    return next.map((value, index) =>
+      preserveDescriptiveRecord(
+        Array.isArray(raw) ? raw[index] : undefined,
+        Array.isArray(previous) ? previous[index] : undefined,
+        value
+      )
+    );
+  }
+  if (
+    typeof next !== 'object' ||
+    next === null ||
+    typeof raw !== 'object' ||
+    raw === null ||
+    Array.isArray(raw) ||
+    typeof previous !== 'object' ||
+    previous === null ||
+    Array.isArray(previous)
+  )
+    return next;
+  const old = previous as Record<string, unknown>;
+  const replacement = next as Record<string, unknown>;
+  if (['kind', 'type', 'id'].some((key) => old[key] !== undefined && old[key] !== replacement[key]))
+    return next;
+  const retained = { ...raw } as Record<string, unknown>;
+  for (const key of Object.keys(old)) delete retained[key];
+  for (const [key, value] of Object.entries(replacement))
+    Object.defineProperty(retained, key, {
+      value: preserveDescriptiveRecord((raw as Record<string, unknown>)[key], old[key], value),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  return retained;
+}
+
+/** Validates an existing owned record before preserving annotations on its normal rewrite. */
+function writeOwnedDescriptiveJson(path: string, next: unknown, schema: z.ZodType): void {
+  const previous = existsSync(path) ? readJson(path) : undefined;
+  const core = schema.parse(next);
+  const oldCore = previous === undefined ? undefined : schema.parse(previous);
+  if (previous !== undefined && isDeepStrictEqual(oldCore, core)) return;
+  writeJsonAtomic(path, preserveDescriptiveRecord(previous, oldCore, core));
 }
 
 /**

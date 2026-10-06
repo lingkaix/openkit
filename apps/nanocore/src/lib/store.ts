@@ -90,6 +90,7 @@ import {
   deleteWorkspaceKnowledgeRecord,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
+  KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
@@ -97,7 +98,6 @@ import {
   readWorkspaceKnowledgePage,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
-  serializeKnowledgeProposalReviewFile,
   serializeUserAuthoredKnowledgePage,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   updateUserAuthoredKnowledgePage,
@@ -1871,7 +1871,7 @@ export class FsStore {
   }
 
   /**
-   * Re-reads one Review file and verifies its exact append-only history and Proposal digest.
+   * Re-reads one retained Review file and verifies its ordered decision core and Proposal digest.
    *
    * @param proposal Immutable Proposal that owns the Review history.
    * @param reviewId Exact Review row to return.
@@ -1906,12 +1906,16 @@ export class FsStore {
         'reviews',
         `${proposal.id}.json`
       );
-      const expected = serializeKnowledgeProposalReviewFile(
-        proposal.id,
-        proposal.workspaceId,
-        decisions
+      const retained = KnowledgeProposalReviewFileSchema.parse(
+        JSON.parse(readCanonicalTextFile(path))
       );
-      if (readCanonicalTextFile(path) !== expected) {
+      if (
+        !isDeepStrictEqual(retained, {
+          proposalId: proposal.id,
+          workspaceId: proposal.workspaceId,
+          decisions,
+        })
+      ) {
         throw knowledgeProposalAuthorityError('recovery_required');
       }
       return review;

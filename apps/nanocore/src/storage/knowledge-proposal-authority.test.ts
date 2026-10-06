@@ -453,6 +453,83 @@ describe('knowledge proposal authority', () => {
     expect(existsSync(fixture.pagePath)).toBe(false);
   });
 
+  it('projects annotated retained Reviews and recovers acceptance while refusing changed decision core', () => {
+    const fixture = createFixture('proposal-annotated-review');
+    const deferred = decide(fixture, 'deferred', 'review-annotated-deferred');
+    const accepted = decide(fixture, 'accepted', 'review-annotated-accepted');
+    expect(
+      fixture.store.projectKnowledgeProposalDecision(fixture.workspaceId, accepted.review.reviewId)
+    ).toEqual(accepted);
+    expect(accepted.review.proposalDigest).toBe(digest(readFileSync(fixture.proposalPath, 'utf8')));
+    expect(accepted.review.proposalDigest).not.toBe(fixture.contentDigest);
+
+    const retained = JSON.parse(readFileSync(fixture.reviewPath, 'utf8'));
+    retained.futureNote = 'Retained Review description';
+    for (const review of retained.decisions) {
+      review.futureNote = 'Retained decision description';
+      review.actor.futureNote = 'Retained attribution description';
+    }
+    const annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
+    writeFileSync(fixture.reviewPath, annotatedBytes);
+    const restarted = { ...fixture, store: new FsStore({ dataRoot: fixture.dataRoot }) };
+    expect(
+      restarted.store.projectKnowledgeProposalDecision(
+        fixture.workspaceId,
+        deferred.review.reviewId
+      )
+    ).toEqual(deferred);
+    expect(
+      restarted.store.projectKnowledgeProposalDecision(
+        fixture.workspaceId,
+        accepted.review.reviewId
+      )
+    ).toEqual(accepted);
+
+    rmSync(fixture.pagePath);
+    expect(decide(restarted, 'accepted', 'review-annotated-accepted')).toEqual(accepted);
+    expect(readFileSync(fixture.pagePath, 'utf8')).toBe(fixture.canonicalPageBytes);
+    expect(readFileSync(fixture.reviewPath, 'utf8')).toBe(annotatedBytes);
+
+    // Re-read against the cached ordered core before any projection or recovery effect.
+    for (const [key, value] of [
+      ['decision', 'rejected'],
+      ['proposalDigest', `sha256:${'0'.repeat(64)}`],
+      ['contentDigest', `sha256:${'1'.repeat(64)}`],
+      ['knowledgePageId', 'review/foreign-page'],
+      ['requestId', authorityRequestId('foreign-review-request')],
+      ['reviewId', `kr_${'2'.repeat(64)}`],
+      ['workspaceId', 'ws_foreign'],
+      ['actor', { kind: 'user', id: 'user_foreign' }],
+    ] as const) {
+      const changed = JSON.parse(annotatedBytes);
+      changed.decisions[1][key] = value;
+      writeFileSync(fixture.reviewPath, `${JSON.stringify(changed, null, 2)}\n`);
+      expectAuthorityFailure(
+        () =>
+          restarted.store.projectKnowledgeProposalDecision(
+            fixture.workspaceId,
+            accepted.review.reviewId
+          ),
+        'recovery_required'
+      );
+      expectAuthorityFailure(
+        () => decide(restarted, 'accepted', 'review-annotated-accepted'),
+        'recovery_required'
+      );
+      expect(readFileSync(fixture.pagePath, 'utf8')).toBe(fixture.canonicalPageBytes);
+    }
+    retained.decisions.reverse();
+    writeFileSync(fixture.reviewPath, `${JSON.stringify(retained, null, 2)}\n`);
+    expectAuthorityFailure(
+      () =>
+        restarted.store.projectKnowledgeProposalDecision(
+          fixture.workspaceId,
+          accepted.review.reviewId
+        ),
+      'recovery_required'
+    );
+  });
+
   it('fails closed when the durable Review bytes contradict the accepted proposal', () => {
     const fixture = createFixture('proposal-review-tamper');
     const accepted = decide(fixture, 'accepted', 'review-tamper');

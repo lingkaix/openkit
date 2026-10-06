@@ -116,6 +116,170 @@ function assistant(bytes: Uint8Array): WorkObservationDraft {
 }
 
 describe('durable work observations', () => {
+  it('reads appends and reopens observations with annotated owning Turn attribution', () => {
+    const f = fixture();
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+    const turnPath = join(f.turnRoot, 'turn.json');
+    const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
+    retained.triggerActor.futureNote = 'Retained attribution';
+    writeFileSync(turnPath, `${JSON.stringify(retained, null, 2)}\n`);
+    expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
+      {
+        kind: 'user',
+        id: 'user_local',
+      }
+    );
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+    const appended = appendWorkObservation(f.db, { ...f.owner, observation: model(), bodies: [] });
+    expect(appended.disposition).toBe('committed');
+    f.db.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(reopened);
+    expect(readWorkObservations(reopened, f.owner)).toEqual([appended.observation]);
+    expect(
+      appendWorkObservation(reopened, { ...f.owner, observation: model(), bodies: [] }).disposition
+    ).toBe('duplicate');
+    expect(JSON.parse(readFileSync(turnPath, 'utf8')).triggerActor).toEqual(retained.triggerActor);
+    expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
+      {
+        kind: 'user',
+        id: 'user_local',
+      }
+    );
+  });
+
+  it('refuses body effects for an observation kind without a body declaration', () => {
+    const f = fixture();
+    expect(() =>
+      appendWorkObservation(f.db, {
+        ...f.owner,
+        observation: {
+          id: 'env-with-body',
+          type: 'env.bound',
+          obs: 'core',
+          ts: '2026-09-29T00:00:00.000Z',
+          payload: {
+            version: '1',
+            workspaceId: f.db.workspaceId,
+            content: { state: 'expected' },
+            systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+            tools: [],
+          },
+        },
+        bodies: [
+          {
+            id: 'undeclared',
+            bytes: Buffer.from('Unconsumed prompt bytes'),
+            mediaType: 'text/plain',
+            boundary: 'gateway-request-v1',
+          },
+        ],
+      })
+    ).toThrow('This observation type has no admitted body');
+    expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+  });
+  it('normalizes model sampling, content, body and publication additions while retaining their bytes', () => {
+    const f = fixture();
+    const observation = {
+      ...model('model-request'),
+      payload: {
+        attempt: 0,
+        direction: 'request',
+        event: 'request',
+        runtimeOriginRef: null,
+        content: { state: 'expected', futureNote: 'ignored' },
+        providerRef: 'provider',
+        model: 'model',
+        systemPromptDigest: `sha256:${'d'.repeat(64)}`,
+        sampling: { temperature: 0, futureNote: 'ignored' },
+        futureNote: 'ignored',
+      },
+    };
+    const bytes = Buffer.from('Owned model evidence');
+    appendWorkObservation(f.db, {
+      ...f.owner,
+      observation,
+      bodies: [{ id: 'model-body', bytes, mediaType: 'text/plain', boundary: 'model-request-v1' }],
+    });
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const rows = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(JSON.stringify(rows)).not.toContain('futureNote');
+    for (const row of rows) {
+      row.futureNote = 'retained';
+      row.payload.futureNote = 'retained';
+      for (const descriptor of row.payload.bodies) descriptor.futureNote = 'retained';
+      for (const ref of row.refs ?? []) ref.futureNote = 'retained';
+    }
+    rows[0].payload.content.futureNote = 'retained';
+    rows[0].payload.sampling.futureNote = 'retained';
+    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    const retained = readFileSync(path, 'utf8');
+    expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
+    expect(appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }).disposition).toBe(
+      'duplicate'
+    );
+    expect(readFileSync(path, 'utf8')).toBe(retained);
+    expect(() =>
+      parseWorkObservationRecord({
+        ...rows[0],
+        payload: { ...rows[0].payload, turnId: 'tu_foreign' },
+      })
+    ).toThrow(/header identity/);
+  });
+  it('normalizes live nested additions and reopens annotated history without rewriting its evidence', () => {
+    const f = fixture();
+    const bytes = Buffer.from('Retained descriptive evidence');
+    const observation = assistant(bytes);
+    const extended = structuredClone(observation);
+    (extended.payload.fact as Record<string, unknown>).futureNote = 'ignored';
+    (extended.payload.content as Record<string, unknown>).futureNote = 'ignored';
+    extended.payload.futureNote = 'ignored';
+    const body = {
+      id: 'assistant',
+      bytes,
+      mediaType: 'text/plain',
+      boundary: 'outward-assistant-v1',
+    };
+    const admitted = appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: extended,
+      bodies: [body],
+    });
+    expect(JSON.stringify(admitted.observation)).not.toContain('futureNote');
+    const path = join(f.turnRoot, 'observations.jsonl');
+    const rows = readFileSync(path, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    for (const row of rows) {
+      row.futureNote = 'retained';
+      row.payload.futureNote = 'retained';
+      for (const ref of row.refs ?? []) ref.futureNote = 'retained';
+      for (const descriptor of row.payload.bodies ?? []) descriptor.futureNote = 'retained';
+    }
+    rows[0].payload.fact.futureNote = 'retained';
+    rows[0].payload.content.futureNote = 'retained';
+    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    const retainedBytes = readFileSync(path, 'utf8');
+    expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
+    expect(
+      appendWorkObservation(f.db, { ...f.owner, observation, bodies: [body] }).disposition
+    ).toBe('duplicate');
+    expect(readFileSync(path, 'utf8')).toBe(retainedBytes);
+    f.db.sqlite.close();
+    const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(reopened);
+    expect(readWorkObservations(reopened, f.owner)).toHaveLength(2);
+    expect(
+      readThreadRuntimeActivity(reopened, {
+        threadId: f.owner.threadId,
+        turnIds: [f.owner.turnId],
+      })[0]?.entries[0]?.text
+    ).toBe(bytes.toString());
+  });
   it.skipIf(process.platform === 'win32').each(['before-publication', 'after-publication'])(
     'preserves the blob/reference boundary after SIGKILL %s and reopen',
     (boundary) => {
@@ -449,14 +613,14 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(existsSync(root)).toBe(false);
   });
 
-  it('rejects unknown semantics, unowned metadata fields and forged publication edges', () => {
+  it('rejects unknown semantics and forged publication edges while omitting unowned metadata', () => {
     const row = { ...model(), turnId: 'turn', v: 1, seq: 1 };
     expect(() => parseWorkObservationRecord({ ...row, type: 'unowned.fact' })).toThrow(
       /Unsupported/
     );
-    expect(() =>
+    expect(
       parseWorkObservationRecord({ ...row, payload: { ...row.payload, secretBody: 'forbidden' } })
-    ).toThrow();
+    ).not.toHaveProperty('payload.secretBody');
     expect(() =>
       parseWorkObservationRecord({
         ...row,

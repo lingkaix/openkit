@@ -649,15 +649,13 @@ function recoverySummary(
   };
 }
 
-/** Compares one stored actor or subject reference without relying on JSON key order. */
+/** Compares known historical attribution facts; descriptive additions are not recovery authority. */
 function isExactActor(json: string | null, kind: 'system' | 'user', id: string): boolean {
   if (!json) return false;
   try {
     const value = JSON.parse(json) as unknown;
     if (!isRecord(value) || value.kind !== kind || value.id !== id) return false;
-    return kind === 'system'
-      ? value.responsibleUserId === null && Object.keys(value).length === 3
-      : Object.keys(value).length === 2;
+    return kind === 'system' ? value.responsibleUserId === null : true;
   } catch {
     return false;
   }

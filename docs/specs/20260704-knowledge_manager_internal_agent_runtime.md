@@ -168,6 +168,8 @@ Authorization keeps the existing authentication mapping, invalid request bodies 
 
 After restart, only the Knowledge Store, Knowledge Proposal and review records, the S61 retrieval trace, any ordinary Thread and Turn history retained by their owners, and the separately owned S39 Context Package trace remain durable. Pure answer, repair-suggestion, and health-report calls have no resumable lifecycle, and a failed semantic Turn is retried only as a new Turn from those owners. Missing or invalid durable knowledge remains a knowledge-store recovery failure and must not be reconstructed from process memory, provider memory, or a Knowledge Manager diagnostics ledger.
 
+Retained Proposal, Review, Source, maintenance-ledger and retrieval-trace readers ignore descriptive additions at each object level and project only known fields; normal rewrites preserve owned annotations, immutable Proposal bytes and their referenced digest, and append-only Review order, while proposal and review instructions remain exact. Public Review decision projection and accepted-decision recovery verify the retained ordered decision core, identities, Proposal digest and content digest; descriptive annotations alone do not require recovery.
+
 ## Accepted Design
 
 Keep existing deterministic operations and one S61 retrieval owner. Optional semantic read/proposal Turns use their three-Tool set; explicitly admitted `maintain` uses its separate four-Tool set and the notebook publisher. Task Mode still requests S61 preparation once; Workflow Coordinator owns composition and S39 owns worker delivery. Neither maintenance nor a retrieval trace creates worker execution, scheduling, Goal integration or a second context owner.

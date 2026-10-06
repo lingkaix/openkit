@@ -169,7 +169,10 @@ describe('direct canonical JSONL ledgers', () => {
 
     appendLedgerRecord(store, workspaceId, family, 'invalid');
     const row = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    writeFileSync(path, `${JSON.stringify({ ...row, unexpected: true })}\n`);
+    writeFileSync(
+      path,
+      `${JSON.stringify({ ...row, [family === 'claims' ? 'reviewState' : 'status']: 'unsupported' })}\n`
+    );
 
     expect(() => readLedger(store, workspaceId, family)).toThrow();
   });

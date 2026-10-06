@@ -122,6 +122,8 @@ Readers MUST reject unsupported `requiredFeatures`.
 
 Readers MUST ignore unknown optional descriptive fields when reading.
 
+Canonical history readers normalize descriptive objects at every nesting level, including Actor attribution (including retained Audit actors and subjects), retained session summaries, Knowledge history, observation references and payloads, and command-receipt metadata; owned source bytes or annotations remain separate from strictly valid emitted projections, and live observation admission uses the parsed payload rather than forwarding its original unconsumed fields.
+
 Readers SHOULD preserve unknown optional fields on same-record writes when preservation is practical and safe.
 
 Readers MUST NOT treat unknown canonical record types as processed.

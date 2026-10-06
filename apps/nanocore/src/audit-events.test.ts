@@ -22,6 +22,69 @@ function createDataRoot(): string {
 }
 
 describe('workspace audit events', () => {
+  it('normalizes retained Audit actor and subject additions without changing attribution', () => {
+    const workspaceDb = openWorkspaceDb(createDataRoot(), 'ws_demo');
+    try {
+      applyScopedMigrations(workspaceDb);
+      const event = recordWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId: 'ws_demo',
+        auditEventId: 'aud_annotated',
+        actor: { kind: 'system', id: 'openkit-operator', responsibleUserId: null },
+        subject: { kind: 'user', id: 'user_editor' },
+        action: 'workspace.inspect',
+        outcome: 'succeeded',
+        summary: 'Workspace inspected.',
+      });
+      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([event]);
+      const actorJson = JSON.stringify({ ...event.actor, futureNote: 'Retained Actor' });
+      const subjectJson = JSON.stringify({ ...event.subject, futureNote: 'Retained subject' });
+      workspaceDb.sqlite
+        .prepare(
+          'UPDATE audit_events SET actor_json = ?, subject_json = ? WHERE audit_event_id = ?'
+        )
+        .run(actorJson, subjectJson, event.id);
+      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toEqual([event]);
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT actor_json, subject_json FROM audit_events WHERE audit_event_id = ?')
+          .get(event.id)
+      ).toEqual({ actor_json: actorJson, subject_json: subjectJson });
+
+      // Descriptive normalization cannot hide a changed known attribution value.
+      const changedActor = {
+        kind: 'agent',
+        id: 'agent_distinct',
+        responsibleUserId: 'user_distinct',
+        futureNote: 'Retained Actor',
+      };
+      workspaceDb.sqlite
+        .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+        .run(JSON.stringify(changedActor), event.id);
+      expect(listWorkspaceAuditEvents(workspaceDb, 'ws_demo')[0]?.actor).toEqual({
+        kind: 'agent',
+        id: 'agent_distinct',
+        responsibleUserId: 'user_distinct',
+      });
+      workspaceDb.sqlite
+        .prepare('UPDATE audit_events SET actor_json = ? WHERE audit_event_id = ?')
+        .run(JSON.stringify({ ...changedActor, kind: 'unknown' }), event.id);
+      expect(() => listWorkspaceAuditEvents(workspaceDb, 'ws_demo')).toThrow();
+      expect(() =>
+        recordWorkspaceAuditEvent({
+          workspaceDb,
+          workspaceId: 'ws_demo',
+          action: 'workspace.inspect',
+          outcome: 'succeeded',
+          summary: 'Workspace inspected.',
+          actor: { ...changedActor } as typeof event.actor,
+        })
+      ).toThrow();
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('records protocol-valid redacted audit events in the server database', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);

@@ -49,7 +49,7 @@ type CommandRequestOwner =
   | { readonly scope: 'app'; readonly workspaceId: string; readonly appId: string };
 
 /** Closed schema for the sole extra metadata allowed on a command receipt. */
-const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandReceiptMetadata> = z
+const ConversationCommandReceiptMetadataSchema = z
   .object({
     targetRef: z.string().min(1),
     logicalModelId: z.string().min(1).nullable(),
@@ -81,6 +81,17 @@ const ConversationCommandReceiptMetadataSchema: z.ZodType<ConversationCommandRec
     status: z.union([z.literal(200), z.literal(202)]),
   })
   .strict();
+
+/** Retained descriptive metadata is normalized without relaxing current receipt emission. */
+const ConversationCommandReceiptMetadataReaderSchema =
+  ConversationCommandReceiptMetadataSchema.extend({
+    downstream: z
+      .discriminatedUnion('kind', [
+        ConversationCommandReceiptMetadataSchema.shape.downstream.unwrap().options[0].strip(),
+        ConversationCommandReceiptMetadataSchema.shape.downstream.unwrap().options[1].strip(),
+      ])
+      .nullable(),
+  }).strip();
 
 const COMMAND_REQUEST_SELECT = `SELECT
   request_key AS key,
@@ -161,6 +172,25 @@ export function recordCommandRequestRecordInDb(
 ): void {
   assertCommandRequestDbOwner(db, record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
+  const previous = db.sqlite
+    .prepare(`${COMMAND_REQUEST_SELECT} WHERE request_key = ?`)
+    .get(record.key) as CommandRequestRow | undefined;
+  let responseJson =
+    response.conversationMetadata === undefined
+      ? null
+      : JSON.stringify(response.conversationMetadata);
+  if (
+    previous?.responseJson &&
+    previous.command === record.command &&
+    previous.inputHash === record.inputHash &&
+    previous.scopeJson === JSON.stringify(record.scope) &&
+    previous.responseKind === response.kind &&
+    previous.responseId === response.id
+  ) {
+    const retained = mapCommandRequestRow(previous);
+    if (JSON.stringify(retained.response) === JSON.stringify(response))
+      responseJson = previous.responseJson;
+  }
   db.sqlite
     .prepare(
       `INSERT OR REPLACE INTO idempotency_requests (
@@ -184,9 +214,7 @@ export function recordCommandRequestRecordInDb(
       record.inputHash,
       response.kind,
       response.id,
-      response.conversationMetadata === undefined
-        ? null
-        : JSON.stringify(response.conversationMetadata),
+      responseJson,
       record.createdAt,
       record.expiresAt
     );
@@ -580,9 +608,18 @@ function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
     response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,
       id: row.responseId,
-      ...(row.responseJson === null ? {} : { conversationMetadata: JSON.parse(row.responseJson) }),
+      ...(row.responseJson === null
+        ? {}
+        : { conversationMetadata: readConversationMetadata(row.responseJson) }),
     }),
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
   };
+}
+
+/** Reads only the retained metadata core before exact response-pointer validation. */
+function readConversationMetadata(json: string): ConversationCommandReceiptMetadata {
+  const result = ConversationCommandReceiptMetadataReaderSchema.safeParse(JSON.parse(json));
+  if (!result.success) throw new Error('conversation.submit command receipt metadata is invalid.');
+  return result.data;
 }

@@ -6,7 +6,7 @@ import {
   THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES,
   THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
 } from '@openkit/app-api-schemas';
-import { ReasoningEffortSchema, SystemPromptDigestSchema, TurnSchema } from '@openkit/protocol';
+import { ReasoningEffortSchema, SystemPromptDigestSchema } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -24,6 +24,7 @@ import {
   readCanonicalFile,
   readCanonicalTextFile,
   syncCanonicalDirectory,
+  TurnReaderSchema,
   writeFileAtomic,
 } from './workspace-file-records.js';
 
@@ -97,7 +98,7 @@ const referenceSchema = z
     digest: z.string().optional(),
     edge: z.enum(['association', 'publication']),
   })
-  .strict();
+  .strip();
 const draftSchema = z
   .object({
     id: z.string().min(1).max(512),
@@ -121,7 +122,7 @@ const draftSchema = z
     ext: z.record(z.string(), z.unknown()).optional(),
     payload: z.record(z.string(), z.unknown()),
   })
-  .strict();
+  .strip();
 const recordSchema = draftSchema.extend({
   v: z.literal(1),
   seq: z.number().int().positive(),
@@ -136,7 +137,7 @@ const bodyDescriptorSchema = z
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     bundleId: z.string().min(1),
   })
-  .strict();
+  .strip();
 const modelEventSchema = z.enum([
   'request',
   'start',
@@ -153,13 +154,13 @@ const modelEventSchema = z.enum([
   'failed',
 ]);
 const modelContentSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.enum(['off', 'expected']) }).strict(),
+  z.object({ state: z.enum(['off', 'expected']) }).strip(),
   z
     .object({
       state: z.literal('unavailable'),
       reason: z.enum(['credential-excluded', 'limit-exceeded', 'capture-failed']),
     })
-    .strict(),
+    .strip(),
 ]);
 const modelSamplingSchema = z
   .object({
@@ -170,7 +171,7 @@ const modelSamplingSchema = z
     reasoningSummary: z.enum(['auto', 'concise', 'detailed', 'off', 'on']).nullable().optional(),
     reasoningContext: z.literal('all_turns').nullable().optional(),
   })
-  .strict();
+  .strip();
 const modelPayloadFields = {
   attempt: z.number().int().nonnegative(),
   runtimeOriginRef: z
@@ -193,11 +194,11 @@ const payloadSchemas = {
             name: z.string().min(1).nullable(),
             ts: z.string().datetime(),
           })
-          .strict()
+          .strip()
       ),
       inferredBy: z.string().min(1),
     })
-    .strict(),
+    .strip(),
   'env.bound': z
     .object({
       version: z.string().min(1),
@@ -209,10 +210,10 @@ const payloadSchemas = {
             name: z.string().min(1),
             inputSchemaDigest: z.string().regex(/^[a-f0-9]{64}$/),
           })
-          .strict()
+          .strip()
       ),
     })
-    .strict(),
+    .strip(),
   'runtime.observed': WorkerObservationDataSchema,
   'model.observed': z.discriminatedUnion('direction', [
     z
@@ -225,7 +226,7 @@ const payloadSchemas = {
         systemPromptDigest: SystemPromptDigestSchema,
         sampling: modelSamplingSchema,
       })
-      .strict(),
+      .strip(),
     z
       .object({
         ...modelPayloadFields,
@@ -233,7 +234,7 @@ const payloadSchemas = {
         event: modelEventSchema.exclude(['request']),
         reportedModel: z.string().min(1).optional(),
       })
-      .strict(),
+      .strip(),
   ]),
   'model.capture-gap': z
     .object({
@@ -245,16 +246,16 @@ const payloadSchemas = {
           state: z.literal('unavailable'),
           reason: z.enum(['capture-failed', 'credential-excluded', 'limit-exceeded']),
         })
-        .strict(),
+        .strip(),
     })
-    .strict(),
-  'content.published': z.object({ bodies: z.array(bodyDescriptorSchema).min(1) }).strict(),
+    .strip(),
+  'content.published': z.object({ bodies: z.array(bodyDescriptorSchema).min(1) }).strip(),
   'capture.unavailable': z
     .object({
       family: z.enum(['model-request', 'model-response', 'runtime-content']),
       reason: z.enum(['unsupported', 'capture-failed', 'truncated', 'credential-excluded']),
     })
-    .strict(),
+    .strip(),
 };
 
 /** Identifies canonical types whose complete payload semantics this implementation admits. */
@@ -268,7 +269,11 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
   if (!isSupportedWorkObservationType(row.type))
     throw new Error(`Unsupported work observation type: ${row.type}`);
   const schema = payloadSchemas[row.type as keyof typeof payloadSchemas];
-  schema.parse(row.payload);
+  for (const key of ['id', 'turnId'] as const) {
+    if (row.payload[key] !== undefined && row.payload[key] !== row[key])
+      throw new Error('recovery_required: observation header identity mismatch');
+  }
+  row.payload = schema.parse(row.payload);
   if (
     (row.type.startsWith('model.') && row.obs !== 'gateway') ||
     (row.type === 'runtime.observed' && row.obs !== 'sidecar') ||
@@ -324,7 +329,7 @@ export function readWorkObservationTurnBinding(
     assertCanonicalDirectory(root);
   }
   const raw = JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))) as Record<string, unknown>;
-  const turn = TurnSchema.parse({ ...raw, items: [] });
+  const turn = TurnReaderSchema.parse({ ...raw, items: [] });
   if (
     turn.id !== input.turnId ||
     turn.threadId !== input.threadId ||
@@ -427,7 +432,7 @@ export function appendWorkObservation(
   // ponytail: full-ledger validation makes total append work quadratic; add an incremental index if long-Turn latency becomes material.
   const { rows, committedBytes, totalBytes } = readRows(path, input.turnId);
   const existing = rows.find((row) => row.id === draft.id);
-  const candidate: WorkObservationRecord = {
+  const candidate = parseWorkObservationRecord({
     ...draft,
     payload:
       descriptors.length && draft.type !== 'runtime.observed'
@@ -441,8 +446,7 @@ export function appendWorkObservation(
     v: 1,
     seq: existing?.seq ?? rows.length + 1,
     turnId: input.turnId,
-  };
-  parseWorkObservationRecord(candidate);
+  });
   if (draft.type === 'runtime.observed' && descriptors.length) {
     const expected = WorkerObservationDataSchema.parse(draft.payload).content;
     const body = descriptors[0];
@@ -537,10 +541,6 @@ function readRows(
     const row = parseWorkObservationRecord(JSON.parse(line));
     if (row.seq !== rows.length + 1 || row.turnId !== turnId || ids.has(row.id))
       throw new Error('recovery_required: corrupt observation sequence or identity');
-    for (const key of ['id', 'turnId'] as const) {
-      if (row.payload[key] !== undefined && row.payload[key] !== row[key])
-        throw new Error('recovery_required: observation header identity mismatch');
-    }
     ids.add(row.id);
     rows.push(row);
   }

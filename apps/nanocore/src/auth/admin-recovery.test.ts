@@ -95,6 +95,41 @@ function completeRecoveryFixture(name: string): {
 }
 
 describe('stopped-server administrator recovery', () => {
+  it('retries against annotated historical Audit actors without reissuing credentials', () => {
+    const fixture = completeRecoveryFixture('annotated-history.json');
+    const db = openCoreDb(fixture.dataRoot);
+    const row = db.sqlite
+      .prepare('SELECT actor_json, subject_json FROM audit_events WHERE request_id = ?')
+      .get(fixture.envelope.requestId) as { actor_json: string; subject_json: string };
+    db.sqlite
+      .prepare('UPDATE audit_events SET actor_json = ?, subject_json = ? WHERE request_id = ?')
+      .run(
+        JSON.stringify({ ...JSON.parse(row.actor_json), futureNote: 'retained' }),
+        JSON.stringify({ ...JSON.parse(row.subject_json), futureNote: 'retained' }),
+        fixture.envelope.requestId
+      );
+    db.sqlite.close();
+    const bytes = readFileSync(fixture.outputPath, 'utf8');
+    expect(
+      runOpenKitOperatorCli(recoveryArgs(fixture.dataRoot, fixture.outputPath), {
+        now: () => NOW,
+        write() {},
+      })
+    ).toMatchObject({ status: 'completed', tokenId: fixture.envelope.tokenId });
+    expect(readFileSync(fixture.outputPath, 'utf8')).toBe(bytes);
+    const reopened = openCoreDb(fixture.dataRoot);
+    expect(
+      reopened.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+        .get(fixture.envelope.requestId)
+    ).toEqual({ count: 1 });
+    expect(
+      reopened.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM openkit_access_tokens WHERE token_id = ?')
+        .get(fixture.envelope.tokenId)
+    ).toEqual({ count: 1 });
+    reopened.sqlite.close();
+  });
   it('lists only redacted active canonical Users and releases the data-root lock', () => {
     const dataRoot = createRecoveryDataRoot();
     const output: string[] = [];
