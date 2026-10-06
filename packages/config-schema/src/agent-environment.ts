@@ -1294,6 +1294,45 @@ export const AgentEnvironmentPackageSchema = z
     }
   });
 
+/** Historical descriptive AEP view; executable declarations, bindings and authority remain exact. */
+export const RetainedAgentEnvironmentPackageSchema = z.preprocess(
+  (value, ctx) => {
+    // Confidentiality applies to original evidence, including fields normalization discards.
+    addRawSecretIssues(value, ctx, []);
+    return value;
+  },
+  AgentEnvironmentPackageSchema.safeExtend({
+    scope: AgentEnvironmentScopeSchema.safeExtend({
+      triggerActor: z.discriminatedUnion('kind', [
+        ActorRefSchema.options[0].strip(),
+        ActorRefSchema.options[1].strip(),
+      ]),
+    }).strip(),
+    agent: AgentEnvironmentAgentSchema.safeExtend({
+      instructions: z
+        .array(
+          AgentEnvironmentInstructionSchema.safeExtend({
+            integrity: AgentEnvironmentInstructionSchema.shape.integrity
+              .unwrap()
+              .strip()
+              .optional(),
+          }).strip()
+        )
+        .default([]),
+    }).strip(),
+    runtime: AgentEnvironmentRuntimeSchema.safeExtend({
+      image: z.union([
+        AgentEnvironmentRuntimeImageSchema.options[0].strip(),
+        AgentEnvironmentRuntimeImageSchema,
+      ]),
+    }),
+    observability: AgentEnvironmentObservabilitySchema.safeExtend({
+      captureCoverage: AgentEnvironmentCaptureCoverageSchema.strip(),
+      audit: AgentEnvironmentObservabilitySchema.shape.audit.strip(),
+    }).strip(),
+  })
+);
+
 /**
  * Parsed Agent Environment Package.
  */
@@ -1581,7 +1620,13 @@ function addRawSecretIssues(
   path: Array<string | number>
 ): void {
   // These exact validated entries are public settings, not credential field declarations.
-  if (path.join('.') === 'runtime.environment.values') return;
+  if (
+    path.length === 3 &&
+    path[0] === 'runtime' &&
+    path[1] === 'environment' &&
+    path[2] === 'values'
+  )
+    return;
 
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
@@ -1615,7 +1660,12 @@ function addRawSecretIssues(
  */
 function redactRuntimeReferences(value: unknown, path: string[] = []): unknown {
   // Preserve admitted literal bytes and names; paths and runtime-looking strings are public here.
-  if (path.join('.') === 'runtime.environment.values')
+  if (
+    path.length === 3 &&
+    path[0] === 'runtime' &&
+    path[1] === 'environment' &&
+    path[2] === 'values'
+  )
     return Object.fromEntries(Object.entries(value as Record<string, string>));
   if (Array.isArray(value)) {
     return value.map((item, index) => redactRuntimeReferences(item, [...path, String(index)]));
@@ -1641,17 +1691,12 @@ function redactRuntimeReferences(value: unknown, path: string[] = []): unknown {
     return value;
   }
 
-  const output: Record<string, unknown> = {};
-
-  for (const [key, nested] of Object.entries(value)) {
-    if (BACKEND_PRIVATE_FIELD_NAMES.has(key)) {
-      continue;
-    }
-
-    output[key] = redactRuntimeReferences(nested, [...path, key]);
-  }
-
-  return output;
+  // Define own JSON keys, including __proto__, without invoking inherited setters.
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !BACKEND_PRIVATE_FIELD_NAMES.has(key))
+      .map(([key, nested]) => [key, redactRuntimeReferences(nested, [...path, key])])
+  );
 }
 
 /**

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -302,6 +302,34 @@ describe('administration catalog configuration', () => {
     expect(() => f.service.propose(f.request, f.home)).toThrow();
     await expect(f.service.apply(f.confirm(proposal))).rejects.toThrow('administrator authority');
     expect(f.reload).not.toHaveBeenCalled();
+  });
+
+  it('replays an extended retained apply outcome after reopening without repeating the effect', async () => {
+    const f = fixture();
+    const proposal = f.service.propose(f.request, f.home);
+    const request = f.confirm(proposal);
+    const result = await f.service.apply(request);
+    const outcome = f.store
+      .listArtifacts(f.workspaceId)
+      .find((artifact) => artifact.id.startsWith('artifact_configuration_result_'))!;
+    const root = join(f.dataRoot, 'workspaces', f.workspaceId, 'artifacts', outcome.id);
+    const body = {
+      ...result,
+      annotation: 'outcome',
+      candidate: { ...result.candidate, annotation: 'reference' },
+    };
+    const bytes = JSON.stringify(body);
+    const metadataPath = join(root, 'artifact.json');
+    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    metadata.contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    writeFileSync(join(root, 'files/content.json'), bytes);
+    writeFileSync(metadataPath, JSON.stringify(metadata));
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    const service = createAdministrationConfiguration({ ...f, store: reopened });
+    expect(await service.apply(request)).toEqual(result);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(readFileSync(join(root, 'files/content.json'), 'utf8')).toBe(bytes);
+    expect(await service.apply(request)).toEqual(result);
   });
 
   it('retains persisted bytes and reports reload failure without repeating the effect', async () => {

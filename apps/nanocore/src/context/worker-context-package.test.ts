@@ -238,7 +238,11 @@ function createEnvironmentPackage(
 /** Creates an accepted trace and every dependency used by the shared verifier. */
 function createAcceptedFixture(
   workspaceRoot: string,
-  options: { readonly requestId?: string; readonly turnId?: string } = {}
+  options: {
+    readonly requestId?: string;
+    readonly turnId?: string;
+    readonly knowledge?: boolean;
+  } = {}
 ): {
   authorities: WorkerContextPackageAuthorityReader;
   packageFiles: WorkerContextPackageFiles;
@@ -246,12 +250,48 @@ function createAcceptedFixture(
 } {
   const requestId = options.requestId ?? 'req_context';
   const turnId = options.turnId ?? 'tu_context';
-  const packageFiles = createPackage(workspaceRoot, true, turnId);
+  let packageFiles = createPackage(workspaceRoot, !options.knowledge, turnId);
+  if (options.knowledge) {
+    packageFiles = createWorkerContextPackageFiles({
+      contextBudgetTokens: 4_096,
+      includedItemIds: packageFiles.includedItemIds,
+      knowledgeSelections: [
+        {
+          content: KNOWLEDGE_PAGE_BYTES,
+          contentDigest: sha256(KNOWLEDGE_PAGE_BYTES),
+          knowledgePageId: 'lessons/task-mode',
+          sourceRefs: ['source:ks_alpha', 'source:ks_beta'],
+        },
+      ],
+      materialSelections: packageFiles.materialSelections.map((selection) => ({
+        ...selection,
+        content: selection.materialId === 'mat_a' ? '# First material\n' : 'Second material.\n',
+      })),
+      threadId: 'th_context',
+      turnId,
+      workerRequestBytes: WORKER_REQUEST_BYTES,
+      workerRequestItemId: 'it_request',
+      workspaceId: 'ws_context',
+    });
+    writeWorkerContextPackageFiles(workspaceRoot, packageFiles);
+  }
   const environmentPackage = createEnvironmentPackage(packageFiles, requestId);
   const trace = createWorkerContextPackageTrace({
     agentSessionId: 'as_context',
     excludedItems: [{ itemId: 'it_excluded', reason: 'policy_excluded' }],
-    goalId: 'goal_context',
+    goalId: options.knowledge ? null : 'goal_context',
+    knowledgeSelectionInput: options.knowledge
+      ? { retrievalTraceId: 'krt_0190f4c8-0000-7000-8000-000000000399' }
+      : null,
+    knowledgeExclusions: options.knowledge
+      ? [
+          {
+            knowledgePageId: 'lessons/omitted',
+            contentDigest: sha256('Omitted page'),
+            reason: 'budget_exceeded',
+          },
+        ]
+      : [],
     materialExclusions: [
       {
         materialId: 'mat_excluded',
@@ -263,7 +303,7 @@ function createAcceptedFixture(
     packageFiles,
     packageSnapshotId: environmentPackage.snapshotId,
     requestId,
-    taskId: 'task_context',
+    taskId: options.knowledge ? null : 'task_context',
   });
   const requiredCapabilities = environmentPackage.backend.requiredCapabilities;
   const workspaceInputSnapshot = {
@@ -586,6 +626,94 @@ function createLiveNullKnowledgeFixture(
 }
 
 describe('worker Context Package owner', () => {
+  it.each([
+    false,
+    true,
+  ])('verifies extended retained traces and manifests against original bytes, then reopens (Knowledge: %s)', (knowledge) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-extended-'));
+    const fixture = createAcceptedFixture(workspaceRoot, { knowledge });
+    const packagePath = join(
+      workspaceRoot,
+      'threads/th_context/turns/tu_context/context-package/package.json'
+    );
+    const manifest = JSON.parse(readFileSync(packagePath, 'utf8'));
+    manifest.annotation = 'manifest';
+    manifest.materialSelections[0].annotation = 'manifest selection';
+    if (knowledge) manifest.knowledgeSelections[0].annotation = 'manifest Knowledge selection';
+    const canonical = (value: unknown): string => {
+      const sort = (entry: unknown): unknown => {
+        if (Array.isArray(entry)) return entry.map(sort);
+        if (entry && typeof entry === 'object')
+          return Object.fromEntries(
+            Object.entries(entry)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([key, item]) => [key, sort(item)])
+          );
+        return entry;
+      };
+      return JSON.stringify(sort(value));
+    };
+    const bytes = canonical(manifest);
+    writeFileSync(packagePath, bytes);
+    const raw = JSON.parse(JSON.stringify(fixture.trace));
+    raw.annotation = 'trace';
+    raw.retainedTrace = { ignored: 'untrusted metadata cannot replace trace bytes' };
+    if (knowledge) {
+      raw.knowledgeSelectionInput.annotation = 'retrieval input';
+      raw.knowledgeSelections[0].annotation = 'Knowledge selection';
+      raw.knowledgeExclusions[0].annotation = 'Knowledge exclusion';
+    }
+    raw.materialSelections[0].annotation = 'selection';
+    raw.materialExclusions[0].annotation = 'exclusion';
+    raw.excludedItems[0].annotation = 'item';
+    const entry = raw.fileInventory.find(
+      (entry: { path: string }) => entry.path === 'package.json'
+    );
+    entry.byteLength = Buffer.byteLength(bytes);
+    entry.contentDigest = sha256(bytes);
+    const { contextPackageDigest: _prior, ...withoutDigest } = raw;
+    raw.contextPackageDigest = `ctxpkg_sha256_${sha256(canonical(withoutDigest)).slice(7)}`;
+    const originalRead = fixture.authorities.readWorkspaceInputSnapshot;
+    const packageRootDigest = sha256(canonical(raw.fileInventory));
+    fixture.authorities.readWorkspaceInputSnapshot = (...args) => ({
+      ...originalRead(...args)!,
+      base: { commit: null, contentDigest: packageRootDigest },
+    });
+    const originalAep = fixture.authorities.readAgentEnvironmentPackage;
+    fixture.authorities.readAgentEnvironmentPackage = (...args) => {
+      const aep = structuredClone(originalAep(...args)!);
+      aep.workspace.inputs[0]!.materialization!.contentDigest = packageRootDigest;
+      return aep;
+    };
+    const originalWmr = fixture.authorities.readWorkspaceMaterializationRecord;
+    fixture.authorities.readWorkspaceMaterializationRecord = (...args) => ({
+      ...originalWmr(...args)!,
+      base: { commit: null, contentDigest: packageRootDigest },
+    });
+    const read = parseWorkerContextPackageTrace(raw);
+    expect(read).not.toHaveProperty('annotation');
+    expect(JSON.stringify(read)).not.toContain('annotation');
+    expect(
+      verifyWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot })
+        .contextPackageDigest
+    ).toBe(raw.contextPackageDigest);
+    writeWorkerContextPackageTrace({ ...fixture, trace: read, workspaceRoot });
+    expect(
+      readWorkerContextPackageTrace({
+        authorities: fixture.authorities,
+        workspaceId: 'ws_context',
+        threadId: 'th_context',
+        turnId: 'tu_context',
+        workspaceRoot,
+      })
+    ).toEqual(read);
+    expect(readFileSync(packagePath, 'utf8')).toBe(bytes);
+    expect(JSON.parse(serializeWorkerContextPackageTrace(read))).toEqual(raw);
+    Object.assign(read, { requestId: 'req_changed' });
+    expect(() => parseWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
+    expect(() => serializeWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
+  });
+
   it('builds deterministic files, inventory, digests, and the exact generated AEP input', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-'));
     const first = createPackage(workspaceRoot);
@@ -836,9 +964,11 @@ describe('worker Context Package owner', () => {
     expect(parseWorkerContextPackageTrace(JSON.parse(JSON.stringify(fixture.trace)))).toEqual(
       fixture.trace
     );
-    expect(() => parseWorkerContextPackageTrace({ ...fixture.trace, unexpected: true })).toThrow(
-      'trace is malformed'
-    );
+    expect(
+      parseWorkerContextPackageTrace(
+        rewriteTrace(fixture.trace, { unexpected: true } as Partial<WorkerContextPackageTrace>)
+      )
+    ).not.toHaveProperty('unexpected');
 
     expect(
       writeWorkerContextPackageTrace({
@@ -1089,7 +1219,7 @@ describe('worker Context Package owner', () => {
           }),
       ],
       [
-        'extra nested trace field',
+        'digest-uncovered nested trace annotation',
         () =>
           verify(fixture.authorities, {
             ...fixture.trace,
@@ -1097,7 +1227,7 @@ describe('worker Context Package owner', () => {
               index === 0 ? { ...selection, unexpected: true } : selection
             ),
           } as WorkerContextPackageTrace),
-        /malformed/,
+        /digest mismatch/,
       ],
       [
         'pre-existing ancestor link',

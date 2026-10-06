@@ -276,11 +276,13 @@ An immutable package proves authority at resolution time, not perpetual current 
 
 ## Snapshot Restart And Recovery
 
-NanoCore persists one immutable, redacted, strictly parsed AEP snapshot under the owning Workspace at:
+NanoCore persists one immutable, redacted AEP snapshot with validated known core fields under the owning Workspace at:
 
 ```text
 runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
 ```
+
+Retained snapshot readers verify the original serialized redacted package before deriving a known-field view that ignores descriptive additions in attribution, Agent summaries, instruction facts, immutable image references and observability. Same-identity storage and source-evidence export preserve that original package and digest; execution and public views carry only supported fields. Executable declarations, bindings, credentials, policy and required backend semantics remain exact. Only the accepted portable import remint may rewrite owned references and recompute the digest over the representation actually written.
 
 The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, AgentSession, Agent, runtime kind, backend kind, `createdAt`, the redacted package, and a SHA-256 digest of the exact serialized redacted package.
 

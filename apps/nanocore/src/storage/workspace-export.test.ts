@@ -166,6 +166,35 @@ describe('workspace export verifier', () => {
     expect(verified.checkedFiles).toEqual(['records/workspace-record.json']);
   });
 
+  it.each([
+    false,
+    true,
+  ])('rejects exact inventory annotations with covering digest %s', (coversAddition) => {
+    const root = writeExportTree();
+    const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    verifyWorkspaceExportTree({ exportRoot: root });
+    manifest.contentInventory[0].annotation = 'inert';
+    if (coversAddition)
+      manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(() => verifyWorkspaceExportTree({ exportRoot: root })).toThrow(/Unrecognized key/);
+  });
+
+  it('verifies the original serialized inventory ordering before projecting known fields', () => {
+    const root = writeExportTree();
+    const path = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(path, 'utf8'));
+    const entry = manifest.contentInventory[0];
+    manifest.contentInventory = [{ bytes: entry.bytes, digest: entry.digest, path: entry.path }];
+    manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest.contentDigest).toBe(
+      manifest.contentDigest
+    );
+    expect(readFileSync(path, 'utf8')).toBe(JSON.stringify(manifest));
+  });
+
   it('rejects tampered or extra files', () => {
     const tamperedRoot = writeExportTree();
     writeFileSync(join(tamperedRoot, 'records', 'workspace-record.json'), '{"id":"changed"}');
@@ -1383,7 +1412,7 @@ describe('workspace export verifier', () => {
     );
   });
 
-  it('rejects unknown evidence fields while reading workspace imports', () => {
+  it('normalizes unknown evidence fields while reading workspace imports', () => {
     const root = freshExportRoot('openkit-workspace-import-evidence-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
@@ -1472,10 +1501,12 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
+    const imported = readImportSnapshot(root, 'ws_imported_demo');
+    expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
+    expect(readImportSnapshot(root, 'ws_imported_demo')).toEqual(imported);
   });
 
-  it('rejects unknown usage ledger fields while reading workspace imports', () => {
+  it('normalizes unknown usage ledger fields while reading workspace imports', () => {
     const root = freshExportRoot('openkit-workspace-import-usage-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
@@ -1549,10 +1580,12 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
+    const imported = readImportSnapshot(root, 'ws_imported_demo');
+    expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
+    expect(readImportSnapshot(root, 'ws_imported_demo')).toEqual(imported);
   });
 
-  it('rejects unknown Git push record fields while reading workspace imports', () => {
+  it('normalizes unknown Git push record fields while reading workspace imports', () => {
     const root = freshExportRoot('openkit-workspace-import-git-push-extra-');
     writeWorkspaceExportTree({
       exportRoot: root,
@@ -1581,14 +1614,14 @@ describe('workspace export verifier', () => {
           id: 'gpr_extra',
           workspaceId: 'ws_demo',
           repositoryResourceId: 'repo_default',
-          approvalRowId: 'act_git_push_1',
-          policyDecisionId: 'pd_git_push_1',
+          approvalRowId: null,
+          policyDecisionId: null,
           actorId: 'user_local',
           remoteSummary: 'GitHub repository openkit on origin',
           sourceRef: 'HEAD',
           targetBranch: 'main',
           commitIds: ['abc123'],
-          reviewIds: ['wr_review_1'],
+          reviewIds: [],
           remoteHeadBefore: 'abc000',
           remoteHeadAfter: 'def456',
           outcome: 'pushed',
@@ -1601,7 +1634,9 @@ describe('workspace export verifier', () => {
       ],
     });
 
-    expect(() => readImportSnapshot(root, 'ws_imported_demo')).toThrow();
+    const imported = readImportSnapshot(root, 'ws_imported_demo');
+    expect(JSON.stringify(imported)).not.toContain('futureOptionalNote');
+    expect(readImportSnapshot(root, 'ws_imported_demo')).toEqual(imported);
   });
 
   it('rewrites workspace quarantine records while reading workspace imports', () => {
@@ -1831,7 +1866,7 @@ describe('workspace export verifier', () => {
           packageId: workerPackage.packageId,
           runtimeKind: 'codex',
           backendKind: 'openshell',
-          contentDigest: 'digest_demo',
+          contentDigest: createHash('sha256').update(JSON.stringify(workerPackage)).digest('hex'),
           snapshot: workerPackage,
           createdAt: timestamp,
         },

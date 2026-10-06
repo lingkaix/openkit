@@ -17,6 +17,7 @@ import {
   clearWorkerCheckpoint,
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
+  parseWorkerCheckpointContextAssembly,
   updateWorkerCheckpoint,
   upsertWorkerCheckpoint,
 } from './worker-checkpoints.js';
@@ -89,6 +90,53 @@ describe('worker checkpoint storage', () => {
       );
       expect(checkpoint.diagnosticsSummary).not.toContain('live_secret');
       expect(checkpoint.diagnosticsSummary).not.toContain('native_secret');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it('reads, rewrites and reopens annotated checkpoint selection summaries', () => {
+    const workspaceDb = createWorkspaceDb();
+    try {
+      const diagnostics = JSON.stringify({
+        annotation: 'outer',
+        contextAssembly: {
+          contextDigest: 'sha256:context',
+          annotation: 'assembly',
+          contextRefs: [{ kind: 'workspace', id: 'ws_demo', annotation: 'reference' }],
+          knowledgeSelectionInput: {
+            retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001',
+            annotation: 'selection',
+          },
+        },
+      });
+      const expected = {
+        contextDigest: 'sha256:context',
+        contextRefs: [{ kind: 'workspace', id: 'ws_demo' }],
+        knowledgeSelectionInput: { retrievalTraceId: 'krt_00000000-0000-4000-8000-000000000001' },
+      };
+      expect(parseWorkerCheckpointContextAssembly(diagnostics)).toEqual(expected);
+      const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
+        workspaceId: 'ws_demo',
+        threadId: 'th_demo',
+        turnId: 'turn_extended',
+        requestId: 'req_extended',
+        requestInputHash: 'sha256:extended',
+        stage: 'running_worker',
+        iteration: 1,
+        diagnosticsSummary: diagnostics,
+      });
+      expect(parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)).toEqual(expected);
+      const reopened = openWorkspaceDb(workspaceDb.dataRoot, workspaceDb.workspaceId);
+      try {
+        expect(
+          parseWorkerCheckpointContextAssembly(
+            getWorkerCheckpoint(reopened, 'ws_demo', 'th_demo', 'turn_extended')!.diagnosticsSummary
+          )
+        ).toEqual(expected);
+      } finally {
+        reopened.sqlite.close();
+      }
     } finally {
       workspaceDb.sqlite.close();
     }

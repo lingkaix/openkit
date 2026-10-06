@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   AgentEnvironmentPackageSnapshotRecordSchema,
   type AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord,
@@ -17,19 +18,20 @@ import {
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  RetainedAgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
 import type { WorkspaceDb } from '../storage/db.js';
 
-/** Durable Workspace-owned AEP snapshot record with its strictly parsed V4 snapshot. */
+/** Durable Workspace-owned AEP snapshot record with its validated known-field V4 view. */
 export type AgentEnvironmentPackageSnapshotRecord = Omit<
   AppApiAgentEnvironmentPackageSnapshotRecord,
   'snapshot'
 > & { readonly snapshot: AgentEnvironmentPackage };
 
-/** Ledger read with digest-verified original JSON for admitted-key verification, excluded from record serialization. */
+/** Ledger read with digest-verified original JSON for integrity and owned same-identity serialization, excluded from public projections. */
 export type AgentEnvironmentPackageSnapshotReadRecord = AgentEnvironmentPackageSnapshotRecord & {
-  /** Known core has passed the current schema; ignored stored content remains for hashing only. */
+  /** Known core has passed the current schema; ignored stored content remains for integrity, same-identity storage and evidence export. */
   readonly retainedSnapshot: AgentEnvironmentPackage;
 };
 
@@ -245,7 +247,11 @@ function writeSnapshotRecord(
   );
 
   try {
-    writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx' });
+    writeFileSync(
+      temporaryPath,
+      `${JSON.stringify({ ...record, snapshot: 'retainedSnapshot' in record ? record.retainedSnapshot : record.snapshot }, null, 2)}\n`,
+      { flag: 'wx' }
+    );
     try {
       linkSync(temporaryPath, path);
     } catch (error) {
@@ -310,7 +316,8 @@ function requireMatchingSnapshotRecord(
 
   if (
     existing.contentDigest === expected.contentDigest &&
-    JSON.stringify(existing.snapshot) === JSON.stringify(expected.snapshot)
+    JSON.stringify(existing.retainedSnapshot) ===
+      JSON.stringify('retainedSnapshot' in expected ? expected.retainedSnapshot : expected.snapshot)
   ) {
     return existing;
   }
@@ -319,30 +326,48 @@ function requireMatchingSnapshotRecord(
 }
 
 /**
- * Parses one public snapshot record as V2 and verifies its digest and complete AEP lineage.
+ * Parses one retained snapshot record and verifies its original digest and complete AEP lineage.
  *
  * @param workspaceDb Workspace that owns the snapshot.
  * @param value Candidate snapshot record.
  * @returns Validated record with a parsed Agent Environment Package.
+ * @throws Error for unsafe original evidence, invalid integrity or lineage, or changed retained core.
  */
 function validateSnapshotRecord(
   workspaceDb: WorkspaceDb,
   value: unknown
 ): AgentEnvironmentPackageSnapshotReadRecord {
-  const parsed = AgentEnvironmentPackageSnapshotRecordSchema.parse(value);
+  const candidate = value as AgentEnvironmentPackageSnapshotReadRecord;
+  const hasRetainedSnapshot =
+    candidate &&
+    typeof candidate === 'object' &&
+    Object.getOwnPropertyDescriptor(candidate, 'retainedSnapshot')?.enumerable === false;
+  const parsed = AgentEnvironmentPackageSnapshotRecordSchema.parse(
+    hasRetainedSnapshot ? { ...candidate, snapshot: candidate.retainedSnapshot } : value
+  );
   // Retained identity covers the stored value; normalization may discard ignored extensions.
   if (parsed.contentDigest !== snapshotDigest(parsed.snapshot)) {
     throw new Error(`Agent environment package snapshot digest mismatch: ${parsed.snapshotId}`);
   }
-  const snapshot = AgentEnvironmentPackageSchema.parse(parsed.snapshot);
-  const redactedSnapshot = AgentEnvironmentPackageSchema.parse(
-    redactAgentEnvironmentPackageSnapshot(snapshot)
-  );
-  const record: AgentEnvironmentPackageSnapshotRecord = { ...parsed, snapshot };
-
-  if (JSON.stringify(snapshot) !== JSON.stringify(redactedSnapshot)) {
-    throw new Error(`Agent environment package snapshot is not redacted: ${record.snapshotId}`);
+  const snapshot = RetainedAgentEnvironmentPackageSchema.parse(parsed.snapshot);
+  if (
+    hasRetainedSnapshot &&
+    !isDeepStrictEqual(snapshot, RetainedAgentEnvironmentPackageSchema.parse(candidate.snapshot))
+  ) {
+    throw new Error(
+      `Agent environment package snapshot retained core mismatch: ${parsed.snapshotId}`
+    );
   }
+  // Check the original before granting preservation eligibility; normalization hides unknown unsafe fields.
+  if (
+    !isDeepStrictEqual(
+      parsed.snapshot,
+      redactAgentEnvironmentPackageSnapshot(parsed.snapshot as AgentEnvironmentPackage)
+    )
+  ) {
+    throw new Error(`Agent environment package snapshot is not redacted: ${parsed.snapshotId}`);
+  }
+  const record: AgentEnvironmentPackageSnapshotRecord = { ...parsed, snapshot };
 
   assertWorkspaceOwner(workspaceDb, record.workspaceId);
   assertPathSegment(record.agentSessionId, 'AgentSession id');
@@ -362,8 +387,8 @@ function validateSnapshotRecord(
     throw new Error(`Agent environment package snapshot lineage mismatch: ${record.snapshotId}`);
   }
 
-  // Keep original JSON out of ledger writes and public/export projections.
-  // It is available only to integrity checks; operational consumers continue to use the normalized snapshot.
+  // Same-identity storage and evidence export retain this digest-covered representation.
+  // Execution and public consumers use only the normalized snapshot.
   return Object.defineProperty(record, 'retainedSnapshot', {
     value: parsed.snapshot,
   }) as AgentEnvironmentPackageSnapshotReadRecord;

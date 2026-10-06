@@ -19,7 +19,7 @@ export const AgentEnvironmentPackageSnapshotRecordSchema = z
     snapshot: z.record(z.string(), z.any()),
     createdAt: TimestampSchema,
   })
-  .strict()
+  .strip()
   .superRefine((value, ctx) => {
     const runtime = value.snapshot.runtime;
     if (runtime && typeof runtime === 'object' && runtime.environment !== undefined) {

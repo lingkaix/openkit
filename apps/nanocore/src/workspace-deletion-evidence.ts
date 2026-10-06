@@ -64,7 +64,7 @@ export const WorkspaceDeletionClosureSchema = z
     recordType: z.literal('workspace-deletion-closure'),
     id: z.string().min(1),
     ownerScope: z.literal('server'),
-    lineage: z.object({ workspaceId: WorkspaceIdSchema, requestId: RequestIdSchema }).strict(),
+    lineage: z.object({ workspaceId: WorkspaceIdSchema, requestId: RequestIdSchema }),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
     contentDigest: DigestSchema,
@@ -85,8 +85,14 @@ export const WorkspaceDeletionClosureSchema = z
     recoveryExportManifestDigest: DigestSchema,
     contentInventory: z.array(ClosureInventoryEntrySchema),
   })
-  .strict()
+  .strip()
   .superRefine((manifest, context) => {
+    if (manifest.requiredFeatures.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Unsupported Workspace deletion closure required feature.',
+      });
+    }
     if (
       manifest.id !== manifest.closureId ||
       manifest.sourceWorkspaceId !== manifest.lineage.workspaceId ||

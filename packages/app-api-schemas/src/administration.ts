@@ -79,13 +79,13 @@ export const ApplyAdministrationConfigurationRequestSchema = z
 /** Persisted configuration and actual reload outcome, without claiming provider readiness. */
 export const ApplyAdministrationConfigurationResponseSchema = z
   .object({
-    candidate: ConfigurationCandidateRefSchema,
+    candidate: ConfigurationCandidateRefSchema.strip(),
     persisted: z.boolean(),
     revision: z.string().nullable(),
     reload: z.enum(['applied', 'rejected', 'failed', 'not-attempted']),
     restartRequired: z.boolean(),
   })
-  .strict();
+  .strip();
 
 /** Catalog proposal input validated again by its configuration owner. */
 export type ProposeAdministrationConfigurationRequest = z.infer<

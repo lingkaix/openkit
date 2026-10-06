@@ -233,6 +233,255 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
+  it('rewrites and reopens a valid extended snapshot without invalidating its retained digest', () => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const retained = JSON.parse(readFileSync(snapshotPath(source, environmentPackage), 'utf8'));
+      retained.snapshot.control.transcript.retiredDescription = 'inert';
+      retained.contentDigest = snapshotDigest(retained.snapshot);
+      writeFileSync(snapshotPath(source, environmentPackage), JSON.stringify(retained));
+      const read = requireAgentEnvironmentPackageSnapshot(
+        source,
+        'ws_1',
+        environmentPackage.snapshotId
+      );
+      expect(read.snapshot.control.transcript).not.toHaveProperty('retiredDescription');
+      importAgentEnvironmentPackageSnapshots(target, [read]);
+      const written = JSON.parse(readFileSync(snapshotPath(target, environmentPackage), 'utf8'));
+      expect(snapshotDigest(written.snapshot)).toBe(written.contentDigest);
+      expect(written.snapshot).toEqual(retained.snapshot);
+      const { dataRoot, workspaceId } = target;
+      target.sqlite.close();
+      const reopened = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        const reread = requireAgentEnvironmentPackageSnapshot(
+          reopened,
+          workspaceId,
+          environmentPackage.snapshotId
+        );
+        expect(reread.contentDigest).toBe(retained.contentDigest);
+        expect(reread.snapshot).toEqual(read.snapshot);
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      source.sqlite.close();
+      if (target.sqlite.open) target.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['password', 'synthetic-review-password'],
+    ['backendSessionId', 'synthetic-private-handle'],
+    ['annotation', '/Users/synthetic/private-location'],
+  ])('refuses digest-valid unsafe original %s before read, publication or export', (key, value) => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const path = snapshotPath(source, environmentPackage);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      retained.snapshot.scope[key] = value;
+      retained.contentDigest = snapshotDigest(retained.snapshot);
+      const unsafeBytes = JSON.stringify(retained);
+      writeFileSync(path, unsafeBytes);
+      expect(() =>
+        requireAgentEnvironmentPackageSnapshot(source, 'ws_1', environmentPackage.snapshotId)
+      ).toThrow();
+      expect(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
+      expect(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
+      expect(() => listExportableAgentEnvironmentPackageSnapshots(source, 'ws_1')).toThrow();
+      expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
+      expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
+        retained.contentDigest
+      );
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['root', 'password', 'synthetic-review-password'],
+    ['root', 'annotation', '/Users/synthetic/private-location'],
+    ['root', 'annotation', 'runtime://synthetic/private-ref'],
+    ['runtime', 'password', 'synthetic-review-password'],
+    ['runtime', 'annotation', '/Users/synthetic/private-location'],
+    ['runtime', 'annotation', 'runtime://synthetic/private-ref'],
+  ])('refuses digest-valid dotted %s key with unsafe %s value %s', (location, key, value) => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const path = snapshotPath(source, environmentPackage);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      if (location === 'root') retained.snapshot['runtime.environment.values'] = { [key!]: value };
+      else retained.snapshot.runtime['environment.values'] = { [key!]: value };
+      retained.contentDigest = snapshotDigest(retained.snapshot);
+      const unsafeBytes = JSON.stringify(retained);
+      writeFileSync(path, unsafeBytes);
+      expect(snapshotDigest(retained.snapshot)).toBe(retained.contentDigest);
+      expect
+        .soft(() =>
+          requireAgentEnvironmentPackageSnapshot(source, 'ws_1', environmentPackage.snapshotId)
+        )
+        .toThrow();
+      expect.soft(() => importAgentEnvironmentPackageSnapshots(target, [retained])).toThrow();
+      expect.soft(existsSync(snapshotPath(target, environmentPackage))).toBe(false);
+      expect.soft(() => listExportableAgentEnvironmentPackageSnapshots(source, 'ws_1')).toThrow();
+      expect(readFileSync(path, 'utf8')).toBe(unsafeBytes);
+      expect(snapshotDigest(JSON.parse(readFileSync(path, 'utf8')).snapshot)).toBe(
+        retained.contentDigest
+      );
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
+  });
+
+  it('preserves public native-environment literals through original safety checks and publication', () => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    environmentPackage.runtime.environment = {
+      imageDigest: `sha256:${'a'.repeat(64)}`,
+      defaultsDigest: `sha256:${'b'.repeat(64)}`,
+      values: {
+        token: 'public literal',
+        PATH: '/Users/public/tools',
+        VENDOR: 'runtime://public/literal',
+      },
+    };
+    try {
+      const record = recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      importAgentEnvironmentPackageSnapshots(target, [record]);
+      expect(
+        listExportableAgentEnvironmentPackageSnapshots(target, 'ws_1')[0]!.snapshot.runtime
+          .environment
+      ).toEqual(environmentPackage.runtime.environment);
+      expect(
+        snapshotDigest(
+          JSON.parse(readFileSync(snapshotPath(target, environmentPackage), 'utf8')).snapshot
+        )
+      ).toBe(record.contentDigest);
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
+  });
+
+  it('refuses a changed supplied core alongside an unchanged retained-original round trip', () => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const path = snapshotPath(source, environmentPackage);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      retained.snapshot.scope.annotation = 'inert';
+      retained.contentDigest = snapshotDigest(retained.snapshot);
+      writeFileSync(path, JSON.stringify(retained));
+      const read = requireAgentEnvironmentPackageSnapshot(
+        source,
+        'ws_1',
+        environmentPackage.snapshotId
+      );
+      importAgentEnvironmentPackageSnapshots(target, [read]);
+      const publishedBytes = readFileSync(snapshotPath(target, environmentPackage), 'utf8');
+      Object.assign(read.snapshot, { packageId: 'aep_changed' });
+      expect(() => importAgentEnvironmentPackageSnapshots(target, [read])).toThrow(
+        'retained core mismatch'
+      );
+      expect(readFileSync(snapshotPath(target, environmentPackage), 'utf8')).toBe(publishedBytes);
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
+  });
+
+  it.each([
+    ['scope'],
+    ['scope', 'triggerActor'],
+    ['agent'],
+    ['agent', 'instructions', 0],
+    ['agent', 'instructions', 0, 'integrity'],
+    ['observability'],
+    ['observability', 'captureCoverage'],
+    ['observability', 'audit'],
+    ['runtime'],
+    ['runtime', 'image'],
+    ['control', 'transcript'],
+  ])('reads and republishes descriptive AEP annotations at %j', (...path) => {
+    const source = createWorkspaceDb();
+    const target = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    environmentPackage.agent.instructions = [
+      {
+        id: 'instruction_fact',
+        kind: 'reference',
+        sourceRef: 'instructions://fact',
+        workerPath: '/openkit/instructions/fact.md',
+        integrity: { sha256: 'a'.repeat(64) },
+      },
+    ];
+    try {
+      recordAgentEnvironmentPackageSnapshot(source, {
+        createdAt: '2026-07-06T00:00:01.000Z',
+        environmentPackage,
+      });
+      const retained = JSON.parse(readFileSync(snapshotPath(source, environmentPackage), 'utf8'));
+      let annotated = retained.snapshot;
+      for (const key of path) annotated = annotated[key];
+      annotated.annotation = 'inert';
+      retained.annotation = 'record';
+      retained.retainedSnapshot = { ignored: 'untrusted metadata cannot replace snapshot bytes' };
+      retained.contentDigest = snapshotDigest(retained.snapshot);
+      writeFileSync(snapshotPath(source, environmentPackage), JSON.stringify(retained));
+      const read = requireAgentEnvironmentPackageSnapshot(
+        source,
+        'ws_1',
+        environmentPackage.snapshotId
+      );
+      expect(read).not.toHaveProperty('annotation');
+      expect(read.snapshot).toEqual(environmentPackage);
+      importAgentEnvironmentPackageSnapshots(target, [read]);
+      const reread = requireAgentEnvironmentPackageSnapshot(
+        target,
+        'ws_1',
+        environmentPackage.snapshotId
+      );
+      expect(reread.retainedSnapshot).toEqual(retained.snapshot);
+      expect(
+        snapshotDigest(
+          JSON.parse(readFileSync(snapshotPath(target, environmentPackage), 'utf8')).snapshot
+        )
+      ).toBe(retained.contentDigest);
+    } finally {
+      source.sqlite.close();
+      target.sqlite.close();
+    }
+  });
+
   it('rejects altered stored content even when the altered transcript field would be ignored', () => {
     const workspaceDb = createWorkspaceDb();
     const environmentPackage = createEnvironmentPackage();

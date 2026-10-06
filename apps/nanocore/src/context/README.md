@@ -1,5 +1,7 @@
 # LLM Context Projection
 
+Retained Context Package manifests and traces admit descriptive annotations while verifying the original canonical representation and byte digests. The trace reader returns known fields with its original immutable representation retained for same-identity serialization. Inventories and structured instructions remain exact; portable import remints only owned references and recalculates target digests. See [Worker Context Package](../../../../docs/specs/20260703-worker_context_package.md).
+
 This directory owns deterministic projection of durable OpenKit items into provider-visible LLM context.
 
 ## Boundaries
@@ -21,3 +23,5 @@ The S39 authority reader locates the trace's exact AEP snapshot filename under r
 Run `pnpm --filter @openkit/nanocore exec vitest run src/context` and the workflows that materialize context packages.
 
 See [Work Model](../../../../docs/core/work-model.md).
+
+Revalidating a parsed Context Package trace with its retained original requires equality of their normalized known core; a changed supplied core fails closed before serialization.

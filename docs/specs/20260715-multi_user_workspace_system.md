@@ -546,6 +546,8 @@ The registry status owns only `active`, `deleting`, and `deleted`; the deletion 
 
 Recovery invokes the existing portable importer with the tombstone authority only after those checks. The permanent deleted registry row creates an ID collision, so the accepted import rule remints a new Workspace ID. The reminted Workspace's only active owner and member is the tombstone's original owner, including when the administrator performed the recovery. The administrator is the recorded actor and does not become the owner. Recovery does not apply ordinary private-history import rebinding and does not transfer any private resource to the administrator. There is no caller-selected owner option. Repository and Vault references remain unbound. The original tombstone, deletion request, closure, export, and terminal audit remain immutable. Recovery never reactivates or overwrites the deleted ID, repairs bytes in place, returns Workspace content bytes as its result, or treats portable actor lineage as authority.
 
+Deletion requests, confirmations, phase transitions and retry authority remain exact. The closure is a descriptive, non-authorizing observation whose root and lineage readers ignore descriptive additions; its exact inventory and original manifest-file digest remain binding under the audit owner. Tolerance cannot advance deletion, substitute an actor or grant recovery authority.
+
 User deletion never triggers Workspace deletion.
 
 ## Agent, Automation, And Integration Work

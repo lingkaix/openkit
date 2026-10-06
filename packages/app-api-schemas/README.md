@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+AEP snapshot records and consumed administration apply outcomes ignore descriptive envelope annotations; apply-outcome candidate references are descriptive, while proposed candidates and application requests remain exact. Snapshot readers preserve original digest-bound evidence separately from the public known-field view. See [Agent Environment Package](../../docs/specs/20260616-agent_environment_package.md) and [Chat Mode Assistant](../../docs/specs/20260704-chat_mode_assistant.md).
+
 Thread dashboard taskInputs carry only Item identity and objective from NanoCore-verified structured Worker requests. They add no durable task payload or runtime identity, and are shared by Web, remote MCP and the administrator CLI.
 
 Thread dashboard schemas include the nullable authenticated viewer id and a narrow participant display-name projection. These release-coupled labels do not replace immutable protocol actors or expose private profile fields.

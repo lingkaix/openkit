@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   ArchivedGitPushRecordSchema,
   ArchivedWorkspaceRepositoryGitConfigSchema,
@@ -28,11 +29,17 @@ import {
   WorkspaceReconciliationRecordSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
-import type { PortableSkillPayload, ResourceCatalogDocument } from '@openkit/config-schema';
+import type {
+  AgentEnvironmentPackage,
+  PortableSkillPayload,
+  ResourceCatalogDocument,
+} from '@openkit/config-schema';
 import {
   AgentEnvironmentPackageSchema,
   parseWorkspaceDataSourceCatalog,
   planSessionWorkspaceMaterialization,
+  RetainedAgentEnvironmentPackageSchema,
+  redactAgentEnvironmentPackageSnapshot,
   WorkspaceConfigSchema,
   type WorkspaceDataSourceCatalog,
   type WorkspaceExportManifest,
@@ -69,6 +76,7 @@ import {
 import { parseJsoncObject } from '../config/jsonc.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
+  canonicalJson,
   createWorkerContextPackageFiles,
   createWorkerContextPackagePolicyDigest,
   createWorkerContextPackageTrace,
@@ -76,6 +84,7 @@ import {
   serializeWorkerContextPackageTrace,
   verifyImportedWorkerContextPackageTrace,
   type WorkerContextPackageAuthorityReader,
+  WorkerContextPackageManifestSchema,
   type WorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
@@ -146,10 +155,10 @@ type WorkspaceReconciliationRecord = z.infer<typeof WorkspaceReconciliationRecor
 
 const ImportedWorkspaceMaterialSchema = WorkspaceMaterialViewSchema.extend({
   lastMutationRequestId: z.string().min(1),
-}).strict();
+}).strip();
 const ImportedWorkspaceMaterialRevisionSchema = WorkspaceMaterialRevisionViewSchema.extend({
   createdByRequestId: z.string().min(1),
-}).strict();
+}).strip();
 const ImportedThreadMaterialBindingSchema = z
   .object({
     workspaceId: z.string().min(1),
@@ -162,27 +171,40 @@ const ImportedThreadMaterialBindingSchema = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
-const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.extend({
+  .strip();
+const ImportedArtifactReviewSchema = ArtifactReviewViewSchema.safeExtend({
+  materialProposal: ArtifactReviewViewSchema.shape.materialProposal.unwrap().strip().nullable(),
   decisionRequestId: z.string().min(1).nullable(),
-}).strict();
+}).strip();
 
-/** Strict portable Workspace Material owner accepted by import. */
+/** Known-field portable Workspace Material owner accepted by import. */
 type ImportedWorkspaceMaterial = z.infer<typeof ImportedWorkspaceMaterialSchema>;
-/** Strict portable immutable Material revision accepted by import. */
+/** Known-field portable immutable Material revision accepted by import. */
 type ImportedWorkspaceMaterialRevision = z.infer<typeof ImportedWorkspaceMaterialRevisionSchema>;
-/** Strict portable Thread-to-Material binding accepted by import. */
+/** Known-field portable Thread-to-Material binding accepted by import. */
 type ImportedThreadMaterialBinding = z.infer<typeof ImportedThreadMaterialBindingSchema>;
-/** Strict portable version-keyed Artifact Review accepted by import. */
+/** Known-field portable version-keyed Artifact Review accepted by import. */
 type ImportedArtifactReview = z.infer<typeof ImportedArtifactReviewSchema>;
 
-const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.strict();
-const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.strict();
-const ImportedUsageRecordSchema = UsageRecordSchema.strict();
-const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strict();
-const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strict();
-const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strict();
-const ImportedKnowledgeRetrievalTraceSchema = KnowledgeRetrievalResponseSchema.strict();
+const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.safeExtend({
+  rawEvidenceRefs: z.array(EvidenceBundleRecordSchema.shape.rawEvidenceRefs.element.strip()),
+  redactedEvidenceRefs: z.array(
+    EvidenceBundleRecordSchema.shape.redactedEvidenceRefs.element.strip()
+  ),
+}).strip();
+const ImportedRuntimeEvidenceRecordSchema = RuntimeEvidenceRecordSchema.safeExtend({
+  uploadManifest: z.array(RuntimeEvidenceRecordSchema.shape.uploadManifest.element.strip()),
+  downloadManifest: z.array(RuntimeEvidenceRecordSchema.shape.downloadManifest.element.strip()),
+}).strip();
+const ImportedUsageRecordSchema = UsageRecordSchema.strip();
+const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
+const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
+const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
+const ImportedKnowledgeRetrievalTraceSchema = KnowledgeRetrievalResponseSchema.safeExtend({
+  retrievalParameters: KnowledgeRetrievalResponseSchema.shape.retrievalParameters.strip(),
+  selected: z.array(KnowledgeRetrievalResponseSchema.shape.selected.element.strip()),
+  excluded: z.array(KnowledgeRetrievalResponseSchema.shape.excluded.element.strip()),
+}).strip();
 
 const ExportedResolvedAgentSetupSchema = z
   .object({
@@ -198,7 +220,7 @@ const ExportedResolvedAgentSetupSchema = z
     setup: z.unknown(),
     createdAt: z.string().datetime(),
   })
-  .strict();
+  .strip();
 
 type ExportedResolvedAgentSetup = Omit<ResolvedAgentSetupRecord, 'setup'> & {
   readonly requiredFeatures: ResolvedAgentSetupRecord['requiredFeatures'];
@@ -220,7 +242,7 @@ const ExportedAgentEnvironmentPackageSnapshotSchema = z
     snapshot: z.unknown(),
     createdAt: z.string().datetime(),
   })
-  .strict();
+  .strip();
 
 type ExportedAgentEnvironmentPackageSnapshot = Omit<
   AgentEnvironmentPackageSnapshotRecord,
@@ -234,11 +256,11 @@ const ExportedWorkspaceRepositoryResourceSchema = z
     resourceId: z.string().min(1),
     type: z.literal('git_repository'),
     displayName: z.string().min(1),
-    git: ArchivedWorkspaceRepositoryGitConfigSchema,
+    git: ArchivedWorkspaceRepositoryGitConfigSchema.strip(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
+  .strip();
 
 type ExportedWorkspaceRepositoryResource = z.infer<
   typeof ExportedWorkspaceRepositoryResourceSchema
@@ -251,13 +273,13 @@ const ExportedCapabilityCallSchema = CapabilityCallSchema.safeExtend({
   providerRef: z.string().min(1).nullable(),
   serviceRef: z.string().min(1).nullable(),
   redactionClass: z.string().min(1),
-}).strict();
+}).strip();
 
 type ExportedCapabilityCall = z.infer<typeof ExportedCapabilityCallSchema>;
 
 const ExportedGitPushRecordSchema = ArchivedGitPushRecordSchema.extend({
   requestId: z.string().min(1),
-}).strict();
+}).strip();
 
 type ExportedGitPushRecord = z.infer<typeof ExportedGitPushRecordSchema>;
 
@@ -267,13 +289,13 @@ const ExportedStagedWorkspaceReviewSchema = z
     review: StagedWorkspaceReviewSchema,
     patchPayload: WorkspaceSyncReviewPatchPayloadSchema.nullable(),
   })
-  .strict();
+  .strip();
 
 type ExportedStagedWorkspaceReview = z.infer<typeof ExportedStagedWorkspaceReviewSchema>;
 
 const ExportedWorkspaceApplyResultSchema = WorkspaceApplyResultSchema.extend({
   requestId: z.string().min(1),
-}).strict();
+}).strip();
 
 type ExportedWorkspaceApplyResult = z.infer<typeof ExportedWorkspaceApplyResultSchema>;
 
@@ -345,7 +367,7 @@ const ExportedWorkerCheckpointSchema = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
+  .strip();
 
 type ExportedWorkerCheckpoint = z.infer<typeof ExportedWorkerCheckpointSchema>;
 
@@ -364,11 +386,11 @@ const ExportedMcpToolSchemaSnapshotSchema = z
           inputSchema: z.record(z.string(), z.unknown()),
           name: z.string().min(1),
         })
-        .strict()
+        .strip()
     ),
     workspaceId: z.string().min(1),
   })
-  .strict();
+  .strip();
 
 type ExportedMcpToolSchemaSnapshot = z.infer<typeof ExportedMcpToolSchemaSnapshotSchema>;
 
@@ -909,7 +931,7 @@ export function readWorkspaceImportSnapshot(
     resolvedAgentSetups: securityRuntime.resolvedAgentSetups,
     agentEnvironmentPackageSnapshots: workResources.agentEnvironmentPackageSnapshots.map(
       (record) => {
-        const environmentPackage = AgentEnvironmentPackageSchema.parse(record.snapshot);
+        const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
         const snapshot = {
           ...environmentPackage,
           extensions: {
@@ -1203,7 +1225,23 @@ function readCanonicalImportState(context: ImportRemintContext) {
   );
   const agentEnvironmentPackageSnapshots = exportedAgentEnvironmentPackageSnapshots.map(
     (parsed) => {
-      const snapshot = z.record(z.string(), z.unknown()).parse(parsed.snapshot);
+      const originalSnapshot = z.record(z.string(), z.unknown()).parse(parsed.snapshot);
+      if (
+        parsed.contentDigest !==
+        createHash('sha256').update(JSON.stringify(originalSnapshot)).digest('hex')
+      ) {
+        throw new Error(`Agent environment package snapshot digest mismatch: ${parsed.snapshotId}`);
+      }
+      // Refuse unsafe source evidence before normalization can hide it or remint can replace its digest.
+      if (
+        !isDeepStrictEqual(
+          originalSnapshot,
+          redactAgentEnvironmentPackageSnapshot(originalSnapshot as AgentEnvironmentPackage)
+        )
+      ) {
+        throw new Error(`Agent environment package snapshot is not redacted: ${parsed.snapshotId}`);
+      }
+      const snapshot = RetainedAgentEnvironmentPackageSchema.parse(originalSnapshot);
       const scope = z.record(z.string(), z.unknown()).parse(snapshot.scope);
       if (
         parsed.workspaceId !== report.exportedWorkspaceId ||
@@ -2436,10 +2474,15 @@ function readWorkResourceImportState(
       throw new Error('Worker Context Package request Item has no canonical text.');
     }
     const sourcePackageRoot = `workspace-files/threads/${sourceThreadId}/turns/${sourceTurnId}/context-package`;
-    const sourceManifest = z
-      .object({ contextBudgetTokens: z.number().int().positive().safe() })
-      .passthrough()
-      .parse(JSON.parse(requiredExportFile(context.files, `${sourcePackageRoot}/package.json`)));
+    const sourceManifestText = requiredExportFile(
+      context.files,
+      `${sourcePackageRoot}/package.json`
+    );
+    const originalManifest = JSON.parse(sourceManifestText);
+    const sourceManifest = WorkerContextPackageManifestSchema.parse(originalManifest);
+    if (canonicalJson(originalManifest) !== sourceManifestText) {
+      throw new Error('Worker Context Package source manifest is not canonical.');
+    }
     const knowledgeSelections = sourceTrace.knowledgeSelections.map((selection) => ({
       content: requiredExportFile(context.files, `${sourcePackageRoot}/${selection.packagePath}`),
       contentDigest: selection.contentDigest,
@@ -2465,6 +2508,30 @@ function readWorkResourceImportState(
       workerRequestItemId: sourceTrace.workerRequestItemId,
       workspaceId: context.report.exportedWorkspaceId,
     });
+    // Source annotations stay digest attributable; compare the generated package only through known facts.
+    const expectedManifest = WorkerContextPackageManifestSchema.parse(
+      JSON.parse(
+        Buffer.from(
+          sourcePackage.files.find((file) => file.path === 'package.json')!.bytes
+        ).toString('utf8')
+      )
+    );
+    // The source manifest entry covers its original bytes, not the annotation-free target projection.
+    const originalInventory = sourcePackage.fileInventory.map((entry) =>
+      entry.path === 'package.json'
+        ? {
+            ...entry,
+            byteLength: Buffer.byteLength(sourceManifestText),
+            contentDigest: `sha256:${createHash('sha256').update(sourceManifestText).digest('hex')}`,
+          }
+        : entry
+    );
+    if (
+      !isDeepStrictEqual(sourceManifest, expectedManifest) ||
+      !isDeepStrictEqual(sourceTrace.fileInventory, originalInventory)
+    ) {
+      throw new Error('Worker Context Package source manifest or inventory is contradictory.');
+    }
     const rebuiltSourceTrace = createWorkerContextPackageTrace({
       agentSessionId: sourceTrace.agentSessionId,
       excludedItems: sourceTrace.excludedItems,
@@ -2472,14 +2539,17 @@ function readWorkResourceImportState(
       knowledgeExclusions: sourceTrace.knowledgeExclusions,
       knowledgeSelectionInput: sourceTrace.knowledgeSelectionInput,
       materialExclusions: sourceTrace.materialExclusions,
-      packageFiles: sourcePackage,
+      packageFiles: { ...sourcePackage, fileInventory: originalInventory },
       packageSnapshotId: sourceTrace.packageSnapshotId,
       requestId: sourceTrace.requestId,
       taskId: sourceTrace.taskId,
     });
+    const { contextPackageDigest: _sourceDigest, ...sourceCore } = sourceTrace;
+    const { contextPackageDigest: _rebuiltDigest, ...rebuiltCore } = rebuiltSourceTrace;
     if (
-      serializeWorkerContextPackageTrace(rebuiltSourceTrace) !==
-      requiredExportFile(context.files, tracePath)
+      !isDeepStrictEqual(sourceCore, rebuiltCore) ||
+      serializeWorkerContextPackageTrace(sourceTrace) !==
+        requiredExportFile(context.files, tracePath)
     ) {
       throw new Error('Worker Context Package source trace is contradictory.');
     }
@@ -2487,7 +2557,10 @@ function readWorkResourceImportState(
     for (const file of sourcePackage.files) {
       const path = `${sourcePackageRoot}/${file.path}`;
       sourcePackagePaths.add(path);
-      if (requiredExportFile(context.files, path) !== Buffer.from(file.bytes).toString('utf8')) {
+      if (
+        file.path !== 'package.json' &&
+        requiredExportFile(context.files, path) !== Buffer.from(file.bytes).toString('utf8')
+      ) {
         throw new Error(`Worker Context Package source bytes are contradictory: ${file.path}`);
       }
     }
@@ -2606,7 +2679,7 @@ function readWorkResourceImportState(
       throw new Error('Worker Context Package AEP snapshot is missing.');
     }
     const record = agentEnvironmentPackageSnapshots[packageIndex]!;
-    const environmentPackage = AgentEnvironmentPackageSchema.parse(record.snapshot);
+    const environmentPackage = RetainedAgentEnvironmentPackageSchema.parse(record.snapshot);
     const rewrittenEnvironmentPackage = AgentEnvironmentPackageSchema.parse({
       ...environmentPackage,
       scope: {

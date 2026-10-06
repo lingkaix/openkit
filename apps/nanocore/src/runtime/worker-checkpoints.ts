@@ -235,9 +235,9 @@ export function parseWorkerCheckpointContextAssembly(
     let normalizedKnowledgeSelectionInput: { retrievalTraceId: string } | null = null;
     if (knowledgeSelectionInput !== null) {
       if (
+        !knowledgeSelectionInput ||
         typeof knowledgeSelectionInput !== 'object' ||
-        Array.isArray(knowledgeSelectionInput) ||
-        Object.keys(knowledgeSelectionInput).length !== 1
+        Array.isArray(knowledgeSelectionInput)
       ) {
         return null;
       }

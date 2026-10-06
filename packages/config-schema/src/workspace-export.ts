@@ -26,11 +26,13 @@ export const WorkspaceExportInventoryPathSchema = z
   );
 
 /** One content file listed by a workspace export manifest. */
-export const WorkspaceExportInventoryEntrySchema = z.object({
-  path: WorkspaceExportInventoryPathSchema,
-  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  bytes: z.number().int().nonnegative(),
-});
+export const WorkspaceExportInventoryEntrySchema = z
+  .object({
+    path: WorkspaceExportInventoryPathSchema,
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    bytes: z.number().int().nonnegative(),
+  })
+  .strict();
 
 /** Workspace export manifest record. */
 export const WorkspaceExportManifestSchema = RecordEnvelopeSchema.safeExtend({

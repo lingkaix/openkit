@@ -421,6 +421,8 @@ File-system-first records should remain the durable explanation. SQLite or read-
 
 ## Historical Inspection
 
+Readers ignore descriptive additions in package manifests, traces, Material and Knowledge selection or exclusion facts, and checkpoint selection summaries. They verify canonical serialization and package, trace and file integrity against the original retained representation before deriving known-field comparisons or public views. Inventory membership and entries remain exact, as do materialization and structured worker instructions; an ignored annotation cannot establish delivery or authorize execution. Same-identity trace writes preserve the original representation, while accepted portable remint recomputes digests after rewriting owned references.
+
 The retained immutable trace and materialized package bytes are the only faithful historical view of what the owning mode delivered. NanoCore MAY read those retained bytes and verify them against the package and per-file digests for inspection, review, or explicit work reflection.
 
 If the retained package is absent, incomplete, or digest-invalid, the historical package is `unavailable` or `drifted`. NanoCore MUST NOT reconstruct it from current Knowledge, source, Artifact, Material, or Workspace records, substitute newer bytes, replay stale authority, or create a repair record. A consumer that needs later inspection retains the original package snapshot; missing history is the accepted bounded compromise.

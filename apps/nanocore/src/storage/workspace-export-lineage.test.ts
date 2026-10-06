@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
@@ -28,12 +29,24 @@ import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
+import {
+  importAgentEnvironmentPackageSnapshots,
+  requireAgentEnvironmentPackageSnapshot,
+  snapshotDigest,
+} from '../runtime/aep-snapshot-ledger.js';
+import {
+  importMcpToolSchemaSnapshots,
+  listExportableMcpToolSchemaSnapshots,
+  mcpToolSchemaContentDigest,
+} from '../runtime/mcp-tool-schema-snapshots.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
+  verifyWorkspaceExportTree,
+  WORKSPACE_EXPORT_MANIFEST_FILE,
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
@@ -1614,6 +1627,261 @@ describe('workspace auxiliary lineage reminting', () => {
     ]);
     expect(pageContent).toContain(
       'sources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
+    );
+  });
+
+  it('admits populated portable runtime and MCP descriptions, remints core and reopens exact target packages', () => {
+    const input = createWorkResourceLineageExportInput();
+    const tools = [{ name: 'inspect', inputSchema: { type: 'object', properties: {} } }];
+    const sourceExport = writeWorkspaceExportTree({
+      ...input,
+      runtimeEvidence: input.runtimeEvidence?.map((row) => ({
+        ...RuntimeEvidenceRecordSchema.parse(row),
+        uploadManifest: [
+          {
+            path: 'upload.txt',
+            size: 6,
+            digest: `sha256:${createHash('sha256').update('upload').digest('hex')}`,
+          },
+        ],
+        downloadManifest: [
+          {
+            path: 'download.txt',
+            size: 8,
+            digest: `sha256:${createHash('sha256').update('download').digest('hex')}`,
+          },
+        ],
+      })),
+      mcpToolSchemaSnapshots: [
+        {
+          capturedAt: timestamp,
+          catalogEntryId: 'mcp_source',
+          contentDigest: mcpToolSchemaContentDigest(tools),
+          schemaSnapshotId: 'mcp_snapshot_source',
+          serverVersion: '1.0.0',
+          source: 'live',
+          sourceRef: null,
+          tools,
+          workspaceId: source.workspaceId,
+        },
+      ],
+    });
+    const manifestPath = join(input.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const canonical = (value: unknown): string => {
+      const sort = (entry: unknown): unknown => {
+        if (Array.isArray(entry)) return entry.map(sort);
+        if (entry && typeof entry === 'object')
+          return Object.fromEntries(
+            Object.entries(entry)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([key, item]) => [key, sort(item)])
+          );
+        return entry;
+      };
+      return JSON.stringify(sort(value));
+    };
+    const packagePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
+    const tracePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package.json`;
+    const packageManifest = JSON.parse(readFileSync(join(input.exportRoot, packagePath), 'utf8'));
+    packageManifest.annotation = { '10': 'ten', '2': 'two' };
+    packageManifest.materialSelections[0].annotation = 'source Material selection';
+    packageManifest.knowledgeSelections[0].annotation = 'source Knowledge selection';
+    const packageBytes = canonical(packageManifest);
+    const sourceTrace = JSON.parse(readFileSync(join(input.exportRoot, tracePath), 'utf8'));
+    sourceTrace.annotation = 'source trace';
+    sourceTrace.materialSelections[0].annotation = 'source selection';
+    sourceTrace.knowledgeSelections[0].annotation = 'source Knowledge';
+    sourceTrace.knowledgeSelectionInput.annotation = 'source retrieval';
+    const packageEntry = sourceTrace.fileInventory.find(
+      (entry: { path: string }) => entry.path === 'package.json'
+    );
+    packageEntry.byteLength = Buffer.byteLength(packageBytes);
+    packageEntry.contentDigest = `sha256:${createHash('sha256').update(packageBytes).digest('hex')}`;
+    const { contextPackageDigest: _originalDigest, ...traceWithoutDigest } = sourceTrace;
+    sourceTrace.contextPackageDigest = `ctxpkg_sha256_${createHash('sha256').update(canonical(traceWithoutDigest)).digest('hex')}`;
+    const packageRootDigest = `sha256:${createHash('sha256').update(canonical(sourceTrace.fileInventory)).digest('hex')}`;
+    for (const [path, bytes] of [
+      [packagePath, packageBytes],
+      [tracePath, canonical(sourceTrace)],
+    ]) {
+      writeFileSync(join(input.exportRoot, path!), bytes!);
+      const entry = manifest.contentInventory.find(
+        (entry: { path: string }) => entry.path === path
+      );
+      entry.bytes = Buffer.byteLength(bytes!);
+      entry.digest = `sha256:${createHash('sha256').update(bytes!).digest('hex')}`;
+    }
+    const paths = [
+      'records/workspace-materials.jsonl',
+      'records/workspace-material-revisions.jsonl',
+      'records/thread-material-bindings.jsonl',
+      'records/artifact-reviews.jsonl',
+      'records/agent-environment-package-snapshots.jsonl',
+      'records/resolved-agent-setups.jsonl',
+      'records/worker-turn-checkpoints.jsonl',
+      'records/mcp-tool-schema-snapshots.jsonl',
+      'records/capability-calls.jsonl',
+      'records/evidence-bundles.jsonl',
+      'records/runtime-evidence.jsonl',
+      'records/usage-records.jsonl',
+      'records/workspace-repositories.jsonl',
+      'records/workspace-input-snapshots.jsonl',
+      'records/workspace-materialization-records.jsonl',
+    ];
+    const changed: string[] = [];
+    for (const path of paths) {
+      const entry = manifest.contentInventory.find(
+        (entry: { path: string }) => entry.path === path
+      );
+      if (!entry) continue;
+      const rows = readFileSync(join(input.exportRoot, path), 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((text) => JSON.parse(text));
+      if (rows.length === 0) continue;
+      for (const row of rows) {
+        if (row.base) row.base.contentDigest = packageRootDigest;
+        else row.annotation = 'portable';
+        if (row.git) row.git.annotation = 'archived repository configuration';
+        for (const tool of row.tools ?? []) tool.annotation = 'descriptive Tool snapshot';
+        if (row.materialProposal) row.materialProposal.annotation = 'proposal';
+        for (const ref of row.redactedEvidenceRefs ?? []) ref.annotation = 'reference';
+        for (const ref of row.rawEvidenceRefs ?? []) ref.annotation = 'reference';
+        for (const ref of row.uploadManifest ?? []) ref.annotation = 'upload';
+        for (const ref of row.downloadManifest ?? []) ref.annotation = 'download';
+        if (row.snapshot) {
+          row.snapshot.workspace.inputs.find(
+            (input: { materialization?: { slotId: string } }) =>
+              input.materialization?.slotId === 'context'
+          ).materialization.contentDigest = packageRootDigest;
+          row.snapshot.control.transcript.annotation = 'transcript';
+          row.snapshot.scope.annotation = JSON.parse('{"__proto__":"inert"}');
+          row.snapshot.scope.triggerActor.annotation = 'actor';
+          row.snapshot.agent.annotation = 'agent';
+          row.contentDigest = snapshotDigest(row.snapshot);
+        }
+      }
+      const text = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+      writeFileSync(join(input.exportRoot, path), text);
+      entry.bytes = Buffer.byteLength(text);
+      entry.digest = `sha256:${createHash('sha256').update(text).digest('hex')}`;
+      changed.push(path);
+    }
+    expect(changed).toEqual(paths);
+    manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const verified = verifyWorkspaceExportTree({ exportRoot: input.exportRoot });
+    expect(verified.manifest.contentDigest).not.toBe(sourceExport.manifest.contentDigest);
+    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-extended-portable-target-'));
+    const targetWorkspaceRoot = join(targetRoot, 'workspaces', targetWorkspaceId);
+    const snapshotFile = join(
+      input.exportRoot,
+      'records/agent-environment-package-snapshots.jsonl'
+    );
+    const safeSnapshotBytes = readFileSync(snapshotFile, 'utf8');
+    const safeManifestBytes = readFileSync(manifestPath, 'utf8');
+    const safeSnapshotDigest = JSON.parse(safeSnapshotBytes.trim()).contentDigest;
+    expect(verified.manifestDigest).toBe(
+      `sha256:${createHash('sha256').update(safeManifestBytes).digest('hex')}`
+    );
+    try {
+      for (const annotation of [
+        '/Users/synthetic/private-location',
+        'runtime://synthetic/private-ref',
+        JSON.parse('{"__proto__":"runtime://synthetic/private-ref"}'),
+      ]) {
+        const unsafeRows = safeSnapshotBytes
+          .trim()
+          .split('\n')
+          .map((text) => JSON.parse(text));
+        const unsafeRecord = unsafeRows[0]!;
+        unsafeRecord.snapshot.scope.annotation = annotation;
+        unsafeRecord.contentDigest = snapshotDigest(unsafeRecord.snapshot);
+        const unsafeSnapshotBytes = `${unsafeRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+        const unsafeManifest = JSON.parse(safeManifestBytes);
+        const entry = unsafeManifest.contentInventory.find(
+          (entry: { path: string }) =>
+            entry.path === 'records/agent-environment-package-snapshots.jsonl'
+        );
+        entry.bytes = Buffer.byteLength(unsafeSnapshotBytes);
+        entry.digest = `sha256:${createHash('sha256').update(unsafeSnapshotBytes).digest('hex')}`;
+        unsafeManifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(unsafeManifest.contentInventory)).digest('hex')}`;
+        const unsafeManifestBytes = JSON.stringify(unsafeManifest);
+        writeFileSync(snapshotFile, unsafeSnapshotBytes);
+        writeFileSync(manifestPath, unsafeManifestBytes);
+        const unsafeVerified = verifyWorkspaceExportTree({ exportRoot: input.exportRoot });
+        expect(snapshotDigest(unsafeRecord.snapshot)).toBe(unsafeRecord.contentDigest);
+        expect(unsafeVerified.manifestDigest).toBe(
+          `sha256:${createHash('sha256').update(unsafeManifestBytes).digest('hex')}`
+        );
+        expect
+          .soft(() => readWorkspaceImportSnapshot({ verified: unsafeVerified, targetWorkspaceId }))
+          .toThrow('Agent environment package snapshot is not redacted');
+        expect(existsSync(targetWorkspaceRoot)).toBe(false);
+        expect(readFileSync(snapshotFile, 'utf8')).toBe(unsafeSnapshotBytes);
+        expect(readFileSync(manifestPath, 'utf8')).toBe(unsafeManifestBytes);
+        expect(snapshotDigest(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).snapshot)).toBe(
+          unsafeRecord.contentDigest
+        );
+      }
+    } finally {
+      // Restore the independently admitted safe fixture, never a redacted/rehashed unsafe source.
+      writeFileSync(snapshotFile, safeSnapshotBytes);
+      writeFileSync(manifestPath, safeManifestBytes);
+    }
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    expect(JSON.stringify(imported)).not.toContain('annotation');
+    expect(imported.artifactReviews[0]?.materialProposal).not.toHaveProperty('annotation');
+    expect(imported.workspaceMaterials[0]).not.toHaveProperty('annotation');
+    expect(imported.agentEnvironmentPackageSnapshots[0]!.snapshot.scope).not.toHaveProperty(
+      'annotation'
+    );
+    const db = openWorkspaceDb(targetRoot, targetWorkspaceId);
+    applyScopedMigrations(db);
+    importAgentEnvironmentPackageSnapshots(db, imported.agentEnvironmentPackageSnapshots);
+    importMcpToolSchemaSnapshots(db, imported.mcpToolSchemaSnapshots);
+    const record = imported.agentEnvironmentPackageSnapshots[0]!;
+    writeWorkspacePortableFileState(targetWorkspaceRoot, imported.portableFileState);
+    verifyImportedWorkerContextPackageSnapshot(imported, targetWorkspaceRoot);
+    db.sqlite.close();
+    const reopened = openWorkspaceDb(targetRoot, targetWorkspaceId);
+    try {
+      const read = requireAgentEnvironmentPackageSnapshot(
+        reopened,
+        targetWorkspaceId,
+        record.snapshotId
+      );
+      expect(read.contentDigest).toBe(snapshotDigest(read.retainedSnapshot));
+      expect(read.snapshot).toEqual(record.snapshot);
+      const [mcp] = listExportableMcpToolSchemaSnapshots(reopened, targetWorkspaceId);
+      expect(mcp?.tools).toEqual(tools);
+      expect(JSON.stringify(mcp)).not.toContain('annotation');
+      expect(mcp?.contentDigest).toBe(mcpToolSchemaContentDigest(tools));
+      expect(mcp?.contentDigest).toBe(imported.mcpToolSchemaSnapshots[0]!.contentDigest);
+      const stored = reopened.sqlite
+        .prepare(
+          'SELECT tools_json, content_digest FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?'
+        )
+        .get(mcp!.schemaSnapshotId) as { tools_json: string; content_digest: string };
+      expect(JSON.parse(stored.tools_json)).toEqual(tools);
+      expect(stored.tools_json).not.toContain('annotation');
+      expect(stored.content_digest).toBe(mcpToolSchemaContentDigest(JSON.parse(stored.tools_json)));
+      verifyImportedWorkerContextPackageSnapshot(imported, targetWorkspaceRoot);
+    } finally {
+      reopened.sqlite.close();
+    }
+    for (const [path, text] of imported.portableFileState.workerContextPackageFiles) {
+      expect(readFileSync(join(targetWorkspaceRoot, path), 'utf8')).toBe(text);
+    }
+    expect(readFileSync(snapshotFile, 'utf8')).toBe(safeSnapshotBytes);
+    expect(readFileSync(manifestPath, 'utf8')).toBe(safeManifestBytes);
+    expect(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).contentDigest).toBe(
+      safeSnapshotDigest
+    );
+    expect(snapshotDigest(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).snapshot)).toBe(
+      safeSnapshotDigest
     );
   });
 

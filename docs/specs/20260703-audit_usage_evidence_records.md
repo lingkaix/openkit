@@ -177,6 +177,8 @@ Creation owns a previously absent closure root, writes and `fsync`s retained fil
 
 The closure is non-authorizing historical evidence. It cannot grant membership, select a recovery actor, make a portable actor current, authorize import, reopen a deleted Workspace, or replace the registry tombstone. Recovery authorization comes only from the deleted registry tombstone under the multi-user specification; the closure supplies verified evidence and the recovery-export reference after that authorization succeeds.
 
+Closure readers ignore unknown descriptive manifest and lineage fields and project only known facts. The complete inventory entries remain exact, unsupported required features refuse, and the manifest digest continues to cover the original file bytes. Once sealed, annotations remain part of immutable evidence identity and cannot be rewritten or interpreted as deletion or recovery authority.
+
 ## Schema Evolution
 
 Audit, usage, capability-call, permission-decision, vault-use, evidence-bundle, and runtime-evidence records follow the general unknown-field and fail-closed rules in `docs/core/contract-evolution.md` and the concrete envelope mechanics in `docs/specs/20260703-schema_evolution_record_envelope.md`.

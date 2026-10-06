@@ -105,6 +105,8 @@ The export unit is one workspace, serialized as a plain V2 directory tree with a
 - Export creation MUST own a previously absent export root, write the manifest last, verify the completed tree before returning it, and remove that owned root if any step fails.
 - Export preflight MUST reject a Workspace containing any unresolved `user-input-request` before creating the export root. The V2 verifier and importer MUST independently reject any input containing one, including input produced by another implementation or deployment. Product-safe diagnostics MUST identify the blocking Item ids. Completed historical request and response Items remain portable lineage, but no portable import may reactivate a source responsible-user identifier as target authority.
 
+Inventory entries admit exactly path, byte length and SHA-256 digest; unknown entry fields refuse whether or not the inventory digest covers them. Verification hashes the validated original serialized inventory, preserving supported original field ordering. Descriptive manifest and portable record readers ignore unknown descriptive fields without forwarding them into target effects or public views. Source snapshot digests are verified before normalization; only the accepted import remint rewrites owned references and recomputes package, trace and snapshot digests over the exact target representations written.
+
 ### Required Portable Contents
 
 V2 MUST include the complete canonical workspace history, not only current projections:

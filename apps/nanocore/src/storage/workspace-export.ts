@@ -599,7 +599,12 @@ export function writeWorkspaceExportTree(
     if (input.agentEnvironmentPackageSnapshots?.length) {
       writeJsonl(
         join(recordsRoot, 'agent-environment-package-snapshots.jsonl'),
-        input.agentEnvironmentPackageSnapshots
+        input.agentEnvironmentPackageSnapshots.map((value) => {
+          const record = value as { snapshot?: unknown; retainedSnapshot?: unknown };
+          return Object.getOwnPropertyDescriptor(record, 'retainedSnapshot')?.enumerable === false
+            ? { ...record, snapshot: record.retainedSnapshot }
+            : value;
+        })
       );
     }
     if (input.workspaceRepositories?.length) {
@@ -843,7 +848,8 @@ export function verifyWorkspaceExportTree(
   }
   const manifestPath = join(input.exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
   const manifestText = readCanonicalTextFile(manifestPath);
-  const manifest = parseWorkspaceExportManifest(JSON.parse(manifestText), {
+  const originalManifest = JSON.parse(manifestText);
+  const manifest = parseWorkspaceExportManifest(originalManifest, {
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       'workspace.generative-kernel.v1',
@@ -880,7 +886,7 @@ export function verifyWorkspaceExportTree(
   ) {
     throw new Error('Workspace export is missing records/agent-resource-catalog.json.');
   }
-  if (manifest.contentDigest !== digestText(JSON.stringify(manifest.contentInventory))) {
+  if (manifest.contentDigest !== digestText(JSON.stringify(originalManifest.contentInventory))) {
     throw new Error('Workspace export manifest content digest does not match its inventory.');
   }
   const expected = new Map(manifest.contentInventory.map((entry) => [entry.path, entry]));

@@ -79,7 +79,7 @@ const FileInventoryEntrySchema = z.strictObject({
   contentDigest: Sha256Schema,
   path: IdSchema,
 });
-const MaterialSelectionSchema = z.strictObject({
+const MaterialSelectionSchema = z.object({
   bindingMutationRequestId: IdSchema.nullable(),
   contentDigest: Sha256Schema,
   inclusionReason: z.enum(['thread_binding', 'goal_steering']),
@@ -91,7 +91,7 @@ const MaterialSelectionSchema = z.strictObject({
   sensitivity: z.enum(['public', 'internal']),
   sensitivityDecision: z.literal('included'),
 });
-const MaterialExclusionSchema = z.strictObject({
+const MaterialExclusionSchema = z.object({
   materialId: IdSchema,
   reason: z.enum([
     'explicit_scope_excluded',
@@ -102,21 +102,22 @@ const MaterialExclusionSchema = z.strictObject({
   revisionId: IdSchema,
   sensitivity: z.enum(['public', 'internal', 'restricted']),
 });
-const KnowledgeSelectionInputSchema = z.strictObject({
+const KnowledgeSelectionInputSchema = z.object({
   retrievalTraceId: IdSchema,
 });
-const KnowledgeSelectionSchema = z.strictObject({
+const KnowledgeSelectionSchema = z.object({
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   packagePath: IdSchema,
   sourceRefs: z.array(IdSchema),
 });
-const KnowledgeExclusionSchema = z.strictObject({
+const KnowledgeExclusionSchema = z.object({
   contentDigest: Sha256Schema,
   knowledgePageId: IdSchema,
   reason: z.literal('budget_exceeded'),
 });
-const WorkerContextPackageManifestSchema = z.strictObject({
+/** Known descriptive package facts with exact file-inventory admission. */
+export const WorkerContextPackageManifestSchema = z.object({
   contextBudgetTokens: z.number().int().positive().safe(),
   contextPackageId: IdSchema,
   fileInventory: z.array(FileInventoryEntrySchema),
@@ -136,7 +137,7 @@ const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit(
 }).extend({
   agentSessionId: IdSchema,
   contextPackageDigest: ContextPackageDigestSchema,
-  excludedItems: z.array(z.strictObject({ itemId: IdSchema, reason: ExclusionReasonSchema })),
+  excludedItems: z.array(z.object({ itemId: IdSchema, reason: ExclusionReasonSchema })),
   goalId: IdSchema.nullable(),
   knowledgeExclusions: z.array(KnowledgeExclusionSchema),
   knowledgeSelectionInput: KnowledgeSelectionInputSchema.nullable(),
@@ -789,18 +790,14 @@ export function writeWorkerContextPackageTrace(input: {
   readonly trace: WorkerContextPackageTrace;
   readonly workspaceRoot: string;
 }): WorkerContextPackageTrace {
-  verifyWorkerContextPackageTrace(input);
-  const path = workerContextPackageTracePath(
-    input.workspaceRoot,
-    input.trace.threadId,
-    input.trace.turnId
-  );
+  const trace = verifyWorkerContextPackageTrace(input);
+  const path = workerContextPackageTracePath(input.workspaceRoot, trace.threadId, trace.turnId);
   writeImmutableFile(
     path,
-    Buffer.from(canonicalJson(input.trace), 'utf8'),
+    Buffer.from(serializeWorkerContextPackageTrace(trace), 'utf8'),
     'Worker Context Package trace conflict.'
   );
-  return input.trace;
+  return trace;
 }
 
 /** Reads and fully verifies one immutable trace without consulting a checkpoint. */
@@ -855,26 +852,52 @@ export function readPortableWorkerContextPackageTrace(input: {
 }
 
 /**
- * Parses one closed worker Context Package trace before authority-specific verification.
+ * Verifies the original trace digest and parses known descriptive fields while retaining original JSON.
  *
  * @param value Untrusted source trace value.
- * @returns The unchanged trace after complete structural validation.
- * @throws Error when the trace shape, paths, ordering, or closed selections are invalid.
+ * @returns Normalized trace with its original representation available only to integrity and serialization.
+ * @throws Error when the trace shape, paths, ordering, closed selections, original digest or retained core agreement are invalid.
  */
 export function parseWorkerContextPackageTrace(value: unknown): WorkerContextPackageTrace {
-  assertTraceShape(value);
-  return value;
+  const original = value as WorkerContextPackageTrace & { readonly retainedTrace?: unknown };
+  const retained =
+    original &&
+    typeof original === 'object' &&
+    Object.getOwnPropertyDescriptor(original, 'retainedTrace')?.enumerable === false
+      ? original.retainedTrace
+      : value;
+  assertTraceShape(retained);
+  const { contextPackageDigest, ...traceWithoutDigest } = retained;
+  if (
+    contextPackageDigest !==
+    `ctxpkg_sha256_${sha256Hex(Buffer.from(canonicalJson(traceWithoutDigest), 'utf8'))}`
+  ) {
+    throw new Error('Worker Context Package trace digest mismatch.');
+  }
+  const normalized = WorkerContextPackageTraceSchema.parse(retained);
+  if (
+    retained !== value &&
+    !isDeepStrictEqual(normalized, WorkerContextPackageTraceSchema.parse(value))
+  ) {
+    throw new Error('Worker Context Package trace retained core mismatch.');
+  }
+  return Object.defineProperty(normalized, 'retainedTrace', {
+    value: retained,
+  });
 }
 
 /**
- * Serializes one structurally valid trace with the canonical S39 JSON ordering.
+ * Serializes one digest-valid trace with the canonical S39 JSON ordering.
  *
  * @param trace Worker Context Package trace to serialize.
  * @returns Exact canonical UTF-8 text used by the immutable trace owner.
- * @throws Error when the trace shape, paths, ordering, or closed selections are invalid.
+ * @throws Error when the trace shape, paths, ordering, closed selections, original digest or retained core agreement are invalid.
  */
 export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTrace): string {
-  return canonicalJson(parseWorkerContextPackageTrace(trace));
+  const parsed = parseWorkerContextPackageTrace(trace);
+  return canonicalJson(
+    (parsed as WorkerContextPackageTrace & { readonly retainedTrace: unknown }).retainedTrace
+  );
 }
 
 /**
@@ -919,7 +942,7 @@ export function projectWorkerContextRequest(text: string): {
  * Verifies one strict delivery trace against every runtime and portable owner and exact package byte.
  *
  * @param input Authority reader, trace, and published Workspace root.
- * @returns The unchanged trace after complete strict verification.
+ * @returns The known-field trace retaining its original representation after complete strict verification.
  * @throws Error when reserved history lineage or any required owner or package byte is inconsistent.
  */
 export function verifyWorkerContextPackageTrace(input: {
@@ -994,14 +1017,8 @@ function verifyWorkerContextPackagePortableOwners(
   },
   importedHistory: boolean
 ): WorkerContextPackageTrace {
-  const { authorities, trace } = input;
-  const { contextPackageDigest: _digest, ...traceWithoutDigest } = trace;
-  const expectedDigest = `ctxpkg_sha256_${sha256Hex(
-    Buffer.from(canonicalJson(traceWithoutDigest), 'utf8')
-  )}`;
-  if (trace.contextPackageDigest !== expectedDigest) {
-    throw new Error('Worker Context Package trace digest mismatch.');
-  }
+  const { authorities } = input;
+  const trace = parseWorkerContextPackageTrace(input.trace);
   if ((trace.goalId === null) !== (trace.taskId === null)) {
     throw new Error('Worker Context Package Goal and Task lineage is incomplete.');
   }
@@ -1322,12 +1339,11 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
     }
   }
   const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json');
-  const parsedManifest = WorkerContextPackageManifestSchema.safeParse(
-    JSON.parse(manifestBytes.toString('utf8'))
-  );
+  const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
+  const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
   if (
     !parsedManifest.success ||
-    manifestBytes.toString('utf8') !== canonicalJson(parsedManifest.data)
+    manifestBytes.toString('utf8') !== canonicalJson(originalManifest)
   ) {
     throw new Error('Worker Context Package manifest is malformed.');
   }
@@ -1357,7 +1373,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
 }
 
 /**
- * Checks the exact closed structural shape and path-safe identity fields before authority verification.
+ * Checks known structural fields, exact inventory and path-safe identity before authority verification.
  *
  * @param value Candidate trace value.
  * @throws Error when the value is malformed or contains an unsafe path identity.
@@ -1679,8 +1695,13 @@ function compareBytewise(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
 }
 
-/** Serializes JSON with recursively sorted object keys. */
-function canonicalJson(value: unknown): string {
+/**
+ * Serializes Context Package JSON with the owner's recursive object-key ordering.
+ *
+ * @param value JSON data whose original representation must remain integrity attributable.
+ * @returns Exact canonical JSON text with array order preserved.
+ */
+export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortCanonicalValue(value));
 }
 
