@@ -1569,12 +1569,16 @@ describe('Goal definition projections', () => {
           }),
         });
         expect(tools.map((tool) => tool.name).sort()).toEqual(
-          Object.entries(GOAL_OPERATION_DEFINITIONS)
-            .filter(([, definition]) =>
-              (definition.credentials as readonly string[]).includes('coordinator')
-            )
-            .map(([id]) => operationToolName(id))
-            .sort()
+          [
+            ...Object.entries(GOAL_OPERATION_DEFINITIONS)
+              .filter(([, definition]) =>
+                (definition.credentials as readonly string[]).includes('coordinator')
+              )
+              .map(([id]) => operationToolName(id)),
+            ...['thread.items', 'artifact.read', 'turn.read', 'evidence.runtime-list'].map(
+              operationToolName
+            ),
+          ].sort()
         );
         const read = await tools.find((tool) => tool.name === 'goal_read')!.execute({});
         expect(read.isError).not.toBe(true);

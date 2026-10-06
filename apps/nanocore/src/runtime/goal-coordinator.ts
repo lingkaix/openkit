@@ -2,12 +2,18 @@ import { randomUUID } from 'node:crypto';
 import {
   GOAL_OPERATION_DEFINITIONS,
   GoalRecordSchema,
+  OPERATION_DEFINITIONS,
+  operationModelInput,
   operationToolName,
 } from '@openkit/app-api-schemas';
 import { isSealedTurnTerminal } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
-import { authorizeWorkspace } from '../auth/operation-authorizer.js';
+import {
+  authorizeWorkspace,
+  isCurrentDeploymentAdministrator,
+} from '../auth/operation-authorizer.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
@@ -19,6 +25,7 @@ import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -81,7 +88,7 @@ export interface GoalCoordinatorOptions {
   readonly taskTool: (goalId: string, turnId: string) => AgentTool;
   readonly services: () => GoalOwnerServices;
 }
-/** Table-derived Tools bind trusted identity to the existing admitted Coordinator Turn. */
+/** Table-derived Goal Tools and linked Task reads bind authority to the admitted Coordinator Turn. */
 export function createGoalTools(input: {
   readonly store: FsStore;
   readonly db: WorkspaceDb;
@@ -92,7 +99,7 @@ export function createGoalTools(input: {
   readonly invoke: ReturnType<typeof createOperationInvocation>;
 }): AgentTool[] {
   const goal = readGoalView(input.store, input.db, input.goalId).goal!;
-  return Object.entries(GOAL_OPERATION_DEFINITIONS)
+  const goalTools: AgentTool[] = Object.entries(GOAL_OPERATION_DEFINITIONS)
     .filter(([, definition]) =>
       (definition.credentials as readonly string[]).includes('coordinator')
     )
@@ -138,6 +145,124 @@ export function createGoalTools(input: {
         },
       };
     });
+  // This fixed read set uses the responsible actor's existing credentials, just like the internal administration read projection.
+  const evidenceTools: AgentTool[] = (
+    ['thread.items', 'artifact.read', 'turn.read', 'evidence.runtime-list'] as const
+  ).map((id) => {
+    const definition = OPERATION_DEFINITIONS[id];
+    const modelInput = operationModelInput(definition.inputSchema, ['workspaceId']);
+    const { $schema: _schema, ...schema } = z.toJSONSchema(modelInput);
+    return {
+      name: operationToolName(id),
+      description: `${definition.description} Only this Goal's linked Task Threads and their referenced Artifacts are available.`,
+      inputSchema: schema,
+      execute: async (value) => {
+        try {
+          const parsed = modelInput.safeParse(value);
+          if (!parsed.success)
+            throw new OperationError('invalid_request', 'Invalid operation input.', 400);
+          // Re-read links under current Goal authority rather than treating Tool presence as a cached grant.
+          const current = await input.invoke(
+            'goal.read',
+            {},
+            {
+              kind: 'coordinator',
+              actor: input.actor,
+              workspaceId: goal.workspaceId,
+              threadId: goal.threadId,
+              goalId: goal.goalId,
+              turnId: input.turnId,
+              requestId: randomUUID(),
+            }
+          );
+          if (!current.goal) throw new OperationError('not_found', 'Goal not found.', 404);
+          const actor = goalActor(current.goal);
+          const entry = { kind: 'public' as const, actor, delivery: 'model' as const };
+          const workspaceId = current.goal.workspaceId;
+          const administratorEligible = isCurrentDeploymentAdministrator(
+            input.services.coreDb!,
+            actor
+          );
+          const linkedThreads = new Set(
+            current.tasks
+              .filter((task) =>
+                isThreadIdVisible(
+                  input.store,
+                  workspaceId,
+                  task.threadId,
+                  actor.userId,
+                  administratorEligible
+                )
+              )
+              .map((task) => task.threadId)
+          );
+          const args = { ...parsed.data, workspaceId } as Record<string, unknown>;
+          if ('threadId' in args && !linkedThreads.has(String(args.threadId)))
+            throw new OperationError('not_found', 'Thread not found.', 404);
+          if (id === 'artifact.read') {
+            let referenced = false;
+            for (const threadId of linkedThreads) {
+              const history = await input.invoke('thread.items', { workspaceId, threadId }, entry);
+              if (
+                history.items.some(
+                  (item) =>
+                    item.type === 'artifact-reference' && item.artifactId === args.artifactId
+                )
+              ) {
+                referenced = true;
+                break;
+              }
+            }
+            if (!referenced) throw new OperationError('not_found', 'Artifact not found.', 404);
+          }
+          let output: unknown;
+          if (id === 'artifact.read') {
+            const artifact = await input.invoke(id, args, entry);
+            // Native origin authorization permits personal reads; shared Goal input also requires a shared origin audience.
+            if (
+              artifact.origin.kind !== 'imported' &&
+              input.store.getThread(workspaceId, artifact.origin.threadId).visibility !==
+                'workspace'
+            )
+              throw new OperationError('not_found', 'Artifact not found.', 404);
+            output = artifact;
+          } else if (id === 'evidence.runtime-list') {
+            // The Workspace evidence owner retains refused attempts even when no Turn was admitted.
+            const result = await input.invoke(id, args, entry);
+            output = {
+              ...result,
+              runtimeEvidence: result.runtimeEvidence.filter(
+                (row) =>
+                  row.workspaceId === workspaceId &&
+                  row.threadId !== null &&
+                  linkedThreads.has(row.threadId)
+              ),
+            };
+          } else {
+            output = await input.invoke(id, args, entry);
+          }
+          return { content: [{ type: 'text' as const, text: JSON.stringify(output) }] };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  projectOperationError(error) ?? {
+                    code: 'internal_error',
+                    message: 'Task evidence is unavailable.',
+                    status: 500,
+                  }
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    };
+  });
+  return [...goalTools, ...evidenceTools];
 }
 /** Runs ordinary internal-agent Turns and owns their terminal closeout and wake opportunities. */
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {

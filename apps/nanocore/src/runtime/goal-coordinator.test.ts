@@ -97,6 +97,14 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
       { timeout: 10000 }
     );
     expect(dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(dispatch.mock.calls[0]?.[1].tools.map((tool: { name: string }) => tool.name)).toEqual(
+      expect.arrayContaining([
+        'thread_items',
+        'artifact_read',
+        'turn_read',
+        'evidence_runtime_list',
+      ])
+    );
     expect(store.listThreadAgentSessions(workspace.id, created.goal.threadId)).toEqual([]);
     expect(readGoalView(store, db, created.goal.goalId).tasks).toEqual([]);
     expect(readGoalView(store, db, created.goal.goalId).goal?.disposition).toBeNull();
