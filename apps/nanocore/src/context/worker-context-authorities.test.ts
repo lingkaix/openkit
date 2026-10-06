@@ -2,8 +2,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import {
+  AgentEnvironmentSnapshotReadError,
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
   snapshotDigest,
@@ -84,9 +86,21 @@ describe('worker Context Package authority reader', () => {
       writeFileSync(historicalPath, historicalBytes);
       const reader = createWorkerContextPackageAuthorityReader({ coreDb, store, workspaceDb });
 
-      expect(() => listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo')).toThrow(
-        /captureCoverage/
-      );
+      let exportError: unknown;
+      try {
+        listExportableAgentEnvironmentPackageSnapshots(workspaceDb, 'ws_demo');
+      } catch (error) {
+        exportError = error;
+      }
+      expect(exportError).toBeInstanceOf(AgentEnvironmentSnapshotReadError);
+      expect(exportError).toMatchObject({ cause: expect.any(z.ZodError) });
+      expect(exportError).toMatchObject({
+        cause: {
+          issues: expect.arrayContaining([
+            expect.objectContaining({ path: ['observability', 'captureCoverage'] }),
+          ]),
+        },
+      });
       expect(reader.readAgentEnvironmentPackage('ws_demo', record.snapshotId)).toEqual(
         record.snapshot
       );
