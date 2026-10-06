@@ -14,6 +14,8 @@ The [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md) pe
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
+Scheduler admission denials exclude the retired generic target-health variant. Pool, queue, policy and request denials remain shared by attention, dashboard and Web readers.
+
 `src/pending-request.ts` validates the derived approval-effect preview for App read models. User-input answer and pending-request withdrawal commands and their outcome belong to `@openkit/protocol`. NanoCore owns the durable request, grant, execution, and delivery lifecycle; a completed raising Turn does not close its request.
 
 The private administration configuration candidate Artifact schema is shared by the server proposal/apply owner and Web human review. Its exact version and digest remain the application identity; the schema grants no configuration authority.

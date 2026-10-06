@@ -21,7 +21,6 @@ import {
   requireSchedulerSessionLease,
   resolveSchedulerLeaseTokenBinding,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import * as schedulerRecords from '../scheduler-records.js';
@@ -288,15 +287,6 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
     queueDepth: 0,
     observationSource: 'configured',
     observedAt: '2026-07-05T00:00:00.000Z',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    targetId: 'target_local',
-    healthState: 'healthy',
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
   });
 }
 

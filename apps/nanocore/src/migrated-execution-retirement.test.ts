@@ -62,7 +62,7 @@ describe('migrated execution route retirement', () => {
     if (operation === 'scheduler.retry')
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retirement',
-        denialReason: 'no-healthy-target',
+        denialReason: 'no-compatible-pool',
       });
     const beforeQueue = requireSchedulerAdmissionEntry(coreDb, 'queue_retirement');
     const beforeTurn = { ...store.getTurnById(turn.id) };

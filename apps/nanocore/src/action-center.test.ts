@@ -1167,7 +1167,7 @@ describe('action center app API', () => {
         workspaceId: 'ws_demo',
         threadId: deniedThread.id,
         turnId: 'turn_denied_scheduler',
-        turnInput: 'Run after target recovery.',
+        turnInput: 'Run after pool configuration.',
         requestedAgentId: 'agent_codex_host',
         profileRef: 'agent_codex_host',
         priorityClass: 'interactive',
@@ -1176,7 +1176,7 @@ describe('action center app API', () => {
       });
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_denied_action_center',
-        denialReason: 'no-healthy-target',
+        denialReason: 'no-compatible-pool',
       });
 
       const app = createAuthorizedCoreApp(coreDb, store);
@@ -1215,11 +1215,12 @@ describe('action center app API', () => {
         severity: 'blocked',
         threadId: deniedThread.id,
         turnId: 'turn_denied_scheduler',
+        summary: 'The scheduler denied this worker turn.',
         source: {
           type: 'scheduler_admission',
           queueEntryId: 'queue_denied_action_center',
           status: 'denied',
-          denialReason: 'no-healthy-target',
+          denialReason: 'no-compatible-pool',
         },
         actions: expect.arrayContaining([
           expect.objectContaining({

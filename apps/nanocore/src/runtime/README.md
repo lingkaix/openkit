@@ -61,6 +61,8 @@ A live attempt that receives a successful `sandbox.create` result and then fails
 
 Result-only cleanup of an exact `cleanup-pending` backend with no in-memory session or durable Sandbox also releases its sole matching Worker storage reservation after definite writer cleanup. A non-null current Sandbox binding must match the durable backend Sandbox binding; a null pre-Sandbox reservation remains valid. The association keeps its identity, targets, attachment generation and contributor history while clearing the current attachment. The reservation is captured before awaiting cleanup, so ambiguous lineage, contradictory Sandbox ownership, failed or unknown cleanup, and a changed revision or generation cannot release it; sibling reservations and retained bytes remain untouched. The existing different fresh physical Epoch cleanup branch is unchanged.
 
+Generic scheduler target health, probation, and periodic target probes are removed. Dispatch retains pool and capacity checks, and lease renewal retains pool, expiry, heartbeat, recovery and package checks. Execution still requires the configured NanoHost RuntimeTarget's authoritative readiness, exact connection generation and predecessor fence. Provider credential-refresh polling remains independent at 60 seconds.
+
 ## File Groups
 
 - `worker-*-executor.ts`, `worker-*-backend.ts`, and `worker-*-gateway.ts` own governed worker execution and transport.

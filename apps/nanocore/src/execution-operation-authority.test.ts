@@ -59,7 +59,7 @@ describe('execution operation authority', () => {
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_admin',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     let actor: Actor = { kind: 'session', userId: 'user_local' };
     const app = new Hono<{ Variables: AuthVariables }>();

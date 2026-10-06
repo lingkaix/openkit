@@ -62,11 +62,11 @@ describe('scheduler admission thread audience', () => {
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_foreign_private',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_own_private',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
 
     const app = new Hono<{ Variables: AuthVariables }>();

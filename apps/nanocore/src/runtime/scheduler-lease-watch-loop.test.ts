@@ -8,7 +8,6 @@ import {
   dispatchNextSchedulerEntry,
   resolveSchedulerLeaseTokenBinding,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
@@ -61,15 +60,6 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
     queueDepth: 0,
     observationSource: 'configured',
     observedAt: '2026-07-05T00:00:00.000Z',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    targetId: `target_${suffix}`,
-    healthState: 'healthy',
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
   });
 }
 

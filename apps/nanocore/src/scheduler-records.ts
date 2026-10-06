@@ -22,7 +22,6 @@ import type {
   SchedulerCapacityObservationSource,
   SchedulerPlacementPlanStatus,
   SchedulerSessionLeaseStatus,
-  SchedulerTargetHealthState,
   SchedulerWorkerPoolStatus,
 } from './storage/schema/index.js';
 
@@ -306,28 +305,6 @@ export interface SchedulerCapacityRecord {
   readonly version: number;
 }
 
-/** Durable scheduler target health record. */
-export interface SchedulerTargetHealthRecord {
-  /** Stable target id. */
-  readonly targetId: string;
-  /** Target health state. */
-  readonly healthState: SchedulerTargetHealthState;
-  /** Per-surface check results. */
-  readonly checkResults: unknown[];
-  /** Consecutive required-check failure count. */
-  readonly consecutiveFailureCount: number;
-  /** Consecutive required-check success count. */
-  readonly consecutiveSuccessCount: number;
-  /** Quarantine entry timestamp. */
-  readonly quarantineEnteredAt: string | null;
-  /** Probation deadline timestamp. */
-  readonly probationDeadline: string | null;
-  /** Last probe timestamp. */
-  readonly lastProbeAt: string;
-  /** Next scheduled probe timestamp. */
-  readonly nextProbeAt: string;
-}
-
 /** Result from one baseline scheduler dispatch attempt. */
 export type SchedulerDispatchResult =
   | {
@@ -496,27 +473,12 @@ interface SchedulerCapacityRow {
   readonly version: number;
 }
 
-/** Raw scheduler target health row. */
-interface SchedulerTargetHealthRow {
-  readonly target_id: string;
-  readonly health_state: SchedulerTargetHealthState;
-  readonly check_results_json: string;
-  readonly consecutive_failure_count: number;
-  readonly consecutive_success_count: number;
-  readonly quarantine_entered_at: string | null;
-  readonly probation_deadline: string | null;
-  readonly last_probe_at: string;
-  readonly next_probe_at: string;
-}
-
 /** Candidate selected for one dispatch attempt. */
 interface SchedulerDispatchCandidate {
   /** Selected worker pool. */
   readonly pool: SchedulerWorkerPoolRecord;
   /** Selected capacity record. */
   readonly capacity: SchedulerCapacityRecord;
-  /** Selected target health record. */
-  readonly health: SchedulerTargetHealthRecord;
 }
 
 /** Input used to enqueue one scheduler admission entry. */
@@ -719,28 +681,6 @@ export interface UpsertSchedulerCapacityRecordInput {
   readonly observationSource: SchedulerCapacityObservationSource;
   /** Observation timestamp. */
   readonly observedAt: string;
-}
-
-/** Input used to upsert one scheduler target health record. */
-export interface UpsertSchedulerTargetHealthRecordInput {
-  /** Stable target id. */
-  readonly targetId: string;
-  /** Target health state. */
-  readonly healthState: SchedulerTargetHealthState;
-  /** Per-surface check results. */
-  readonly checkResults: readonly unknown[];
-  /** Consecutive required-check failure count. */
-  readonly consecutiveFailureCount: number;
-  /** Consecutive required-check success count. */
-  readonly consecutiveSuccessCount: number;
-  /** Quarantine entry timestamp. */
-  readonly quarantineEnteredAt?: string | null;
-  /** Probation deadline timestamp. */
-  readonly probationDeadline?: string | null;
-  /** Last probe timestamp. */
-  readonly lastProbeAt: string;
-  /** Next scheduled probe timestamp. */
-  readonly nextProbeAt: string;
 }
 
 /** Input used to initialize the configured scheduler baseline when missing. */
@@ -2810,56 +2750,7 @@ export function upsertSchedulerCapacityRecord(
 }
 
 /**
- * Upserts one scheduler target health record.
- *
- * @param coreDb Open Core database handle.
- * @param input Target health input.
- * @returns Stored target health record.
- */
-export function upsertSchedulerTargetHealthRecord(
-  coreDb: CoreDb,
-  input: UpsertSchedulerTargetHealthRecordInput
-): SchedulerTargetHealthRecord {
-  coreDb.sqlite
-    .prepare(
-      `INSERT INTO scheduler_target_health_records (
-        target_id,
-        health_state,
-        check_results_json,
-        consecutive_failure_count,
-        consecutive_success_count,
-        quarantine_entered_at,
-        probation_deadline,
-        last_probe_at,
-        next_probe_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(target_id) DO UPDATE SET
-        health_state = excluded.health_state,
-        check_results_json = excluded.check_results_json,
-        consecutive_failure_count = excluded.consecutive_failure_count,
-        consecutive_success_count = excluded.consecutive_success_count,
-        quarantine_entered_at = excluded.quarantine_entered_at,
-        probation_deadline = excluded.probation_deadline,
-        last_probe_at = excluded.last_probe_at,
-        next_probe_at = excluded.next_probe_at`
-    )
-    .run(
-      input.targetId,
-      input.healthState,
-      JSON.stringify([...input.checkResults]),
-      input.consecutiveFailureCount,
-      input.consecutiveSuccessCount,
-      input.quarantineEnteredAt ?? null,
-      input.probationDeadline ?? null,
-      input.lastProbeAt,
-      input.nextProbeAt
-    );
-
-  return requireSchedulerTargetHealthRecord(coreDb, input.targetId);
-}
-
-/**
- * Ensures the configured scheduler pool, capacity, and health rows exist.
+ * Ensures the configured scheduler pool and capacity rows exist.
  *
  * @param coreDb Open Core database handle.
  * @param input Configured scheduler placement and optional deterministic clock.
@@ -2920,21 +2811,6 @@ export function ensureConfiguredSchedulerBaseline(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(targetId, poolId, input.placement, 1, 0, 0, timestamp, 'configured', 1);
-    coreDb.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO scheduler_target_health_records (
-          target_id,
-          health_state,
-          check_results_json,
-          consecutive_failure_count,
-          consecutive_success_count,
-          quarantine_entered_at,
-          probation_deadline,
-          last_probe_at,
-          next_probe_at
-        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`
-      )
-      .run(targetId, 'healthy', JSON.stringify([]), 0, 1, timestamp, timestamp);
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
     coreDb.sqlite.exec('ROLLBACK');
@@ -2984,16 +2860,6 @@ export function dispatchNextSchedulerEntry(
   }
 
   const candidate = findDispatchCandidate(coreDb, matchingPools);
-
-  if (candidate === 'no-healthy-target') {
-    return {
-      status: 'denied',
-      entry: denySchedulerAdmissionEntry(coreDb, {
-        queueEntryId: entry.queueEntryId,
-        denialReason: 'no-healthy-target',
-      }),
-    };
-  }
 
   if (candidate === 'capacity-saturated') {
     return { status: 'queued', reason: 'capacity-saturated' };
@@ -3329,29 +3195,6 @@ function requireSchedulerCapacityRecord(coreDb: CoreDb, targetId: string): Sched
 }
 
 /**
- * Reads one target health record or throws.
- *
- * @param coreDb Open Core database handle.
- * @param targetId Target id.
- * @returns Stored target health record.
- * @throws Error when the target health record does not exist.
- */
-function requireSchedulerTargetHealthRecord(
-  coreDb: CoreDb,
-  targetId: string
-): SchedulerTargetHealthRecord {
-  const row = coreDb.sqlite
-    .prepare(`${schedulerTargetHealthRecordSelectSql()} WHERE target_id = ?`)
-    .get(targetId) as SchedulerTargetHealthRow | undefined;
-
-  if (!row) {
-    throw new Error(`Scheduler target health record not found: ${targetId}`);
-  }
-
-  return mapSchedulerTargetHealthRow(row);
-}
-
-/**
  * Finds a placeable target for the first matching pool.
  *
  * @param coreDb Open Core database handle.
@@ -3361,29 +3204,20 @@ function requireSchedulerTargetHealthRecord(
 function findDispatchCandidate(
   coreDb: CoreDb,
   pools: readonly SchedulerWorkerPoolRecord[]
-): SchedulerDispatchCandidate | 'no-healthy-target' | 'capacity-saturated' {
-  let sawSaturatedHealthyTarget = false;
-
+): SchedulerDispatchCandidate | 'capacity-saturated' {
   for (const pool of pools) {
     const capacities = listSchedulerCapacityRecordsForPool(coreDb, pool.poolId);
 
     for (const capacity of capacities) {
-      const health = getSchedulerTargetHealthRecord(coreDb, capacity.targetId);
-
-      if (!health || !isPlaceableTargetHealth(health.healthState)) {
-        continue;
-      }
-
       if (capacity.inUseCount >= capacity.concurrencyCeiling) {
-        sawSaturatedHealthyTarget = true;
         continue;
       }
 
-      return { pool, capacity, health };
+      return { pool, capacity };
     }
   }
 
-  return sawSaturatedHealthyTarget ? 'capacity-saturated' : 'no-healthy-target';
+  return 'capacity-saturated';
 }
 
 /**
@@ -3402,24 +3236,6 @@ function listSchedulerCapacityRecordsForPool(
       .prepare(`${schedulerCapacityRecordSelectSql()} WHERE pool_id = ? ORDER BY target_id ASC`)
       .all(poolId) as SchedulerCapacityRow[]
   ).map(mapSchedulerCapacityRow);
-}
-
-/**
- * Reads one target health record if present.
- *
- * @param coreDb Open Core database handle.
- * @param targetId Target id.
- * @returns Target health record or null.
- */
-function getSchedulerTargetHealthRecord(
-  coreDb: CoreDb,
-  targetId: string
-): SchedulerTargetHealthRecord | null {
-  const row = coreDb.sqlite
-    .prepare(`${schedulerTargetHealthRecordSelectSql()} WHERE target_id = ?`)
-    .get(targetId) as SchedulerTargetHealthRow | undefined;
-
-  return row ? mapSchedulerTargetHealthRow(row) : null;
 }
 
 /**
@@ -3442,16 +3258,6 @@ function poolMatchesConstraints(
 
     return backendMatches && placementMatches;
   });
-}
-
-/**
- * Returns whether target health allows new placement in the baseline profile.
- *
- * @param healthState Target health state.
- * @returns True when the target can receive a placement.
- */
-function isPlaceableTargetHealth(healthState: SchedulerTargetHealthState): boolean {
-  return healthState === 'healthy' || healthState === 'degraded' || healthState === 'probation';
 }
 
 /**
@@ -3723,25 +3529,6 @@ function schedulerCapacityRecordSelectSql(): string {
     observation_source,
     version
   FROM scheduler_capacity_records`;
-}
-
-/**
- * Returns the shared scheduler target health SELECT list.
- *
- * @returns SQL select fragment.
- */
-function schedulerTargetHealthRecordSelectSql(): string {
-  return `SELECT
-    target_id,
-    health_state,
-    check_results_json,
-    consecutive_failure_count,
-    consecutive_success_count,
-    quarantine_entered_at,
-    probation_deadline,
-    last_probe_at,
-    next_probe_at
-  FROM scheduler_target_health_records`;
 }
 
 /**
@@ -4024,25 +3811,5 @@ function mapSchedulerCapacityRow(row: SchedulerCapacityRow): SchedulerCapacityRe
     observedAt: row.observed_at,
     observationSource: row.observation_source,
     version: row.version,
-  };
-}
-
-/**
- * Maps one raw target health row to the public record shape.
- *
- * @param row Raw SQLite row.
- * @returns Target health record.
- */
-function mapSchedulerTargetHealthRow(row: SchedulerTargetHealthRow): SchedulerTargetHealthRecord {
-  return {
-    targetId: row.target_id,
-    healthState: row.health_state,
-    checkResults: JSON.parse(row.check_results_json) as unknown[],
-    consecutiveFailureCount: row.consecutive_failure_count,
-    consecutiveSuccessCount: row.consecutive_success_count,
-    quarantineEnteredAt: row.quarantine_entered_at,
-    probationDeadline: row.probation_deadline,
-    lastProbeAt: row.last_probe_at,
-    nextProbeAt: row.next_probe_at,
   };
 }

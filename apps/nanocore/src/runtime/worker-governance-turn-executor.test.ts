@@ -56,7 +56,6 @@ import {
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
@@ -247,15 +246,6 @@ function dispatchExecutorLease(
     observedAt: '2026-07-15T00:00:00.000Z',
     poolId: 'pool_executor_anchor',
     queueDepth: 0,
-    targetId: 'target_executor_anchor',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-15T00:00:00.000Z',
-    nextProbeAt: '2026-07-15T00:01:00.000Z',
     targetId: 'target_executor_anchor',
   });
   createSchedulerAdmissionEntry(coreDb, {

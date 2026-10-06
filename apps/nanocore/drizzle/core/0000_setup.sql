@@ -401,20 +401,6 @@ CREATE TABLE `scheduler_supply_refresh_declarations` (
 
 --> statement-breakpoint
 
-CREATE TABLE `scheduler_target_health_records` (
-	`target_id` text PRIMARY KEY NOT NULL,
-	`health_state` text NOT NULL,
-	`check_results_json` text NOT NULL,
-	`consecutive_failure_count` integer NOT NULL,
-	`consecutive_success_count` integer NOT NULL,
-	`quarantine_entered_at` text,
-	`probation_deadline` text,
-	`last_probe_at` text NOT NULL,
-	`next_probe_at` text NOT NULL
-);
-
---> statement-breakpoint
-
 CREATE TABLE `scheduler_worker_pools` (
 	`pool_id` text PRIMARY KEY NOT NULL,
 	`allowed_backend_kinds_json` text NOT NULL,
@@ -952,10 +938,6 @@ CREATE INDEX `scheduler_session_leases_target_idx` ON `scheduler_session_leases`
 --> statement-breakpoint
 
 CREATE INDEX `scheduler_supply_refresh_declarations_scope_idx` ON `scheduler_supply_refresh_declarations` (`workspace_id`,`thread_id`,`turn_id`,`agent_session_id`,`package_snapshot_id`,`status`);
-
---> statement-breakpoint
-
-CREATE INDEX `scheduler_target_health_records_state_idx` ON `scheduler_target_health_records` (`health_state`,`next_probe_at`);
 
 --> statement-breakpoint
 

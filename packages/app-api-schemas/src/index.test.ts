@@ -4982,6 +4982,9 @@ describe('app api schemas', () => {
     expect(CancelSchedulerAdmissionResponseSchema.parse({ cancelled: true }).cancelled).toBe(true);
     expect(RetrySchedulerAdmissionResponseSchema.parse({ retried: true }).retried).toBe(true);
     expect(
+      appApiSchemas.SchedulerAdmissionDenialReasonSchema.safeParse('no-healthy-target').success
+    ).toBe(false);
+    expect(
       ListSchedulerAdmissionsResponseSchema.parse({
         items: [
           {
@@ -5017,7 +5020,7 @@ describe('app api schemas', () => {
             firstCapDeferredAt: null,
             requiredPoolConstraints: ['openshell.local'],
             status: 'denied',
-            denialReason: 'no-healthy-target',
+            denialReason: 'no-compatible-pool',
             queuePosition: null,
           },
         ],

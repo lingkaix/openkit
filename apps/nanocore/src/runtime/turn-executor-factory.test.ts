@@ -28,7 +28,6 @@ import {
   dispatchNextSchedulerEntry,
   ensureConfiguredSchedulerBaseline,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -1923,15 +1922,6 @@ describe('createConfiguredTurnExecutor', () => {
         observedAt: '2026-08-21T00:00:04.000Z',
         poolId: 'pool_continuity_commit',
         queueDepth: 1,
-        targetId: 'target_continuity_commit',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        healthState: 'healthy',
-        lastProbeAt: '2026-08-21T00:00:04.000Z',
-        nextProbeAt: '2026-08-21T00:01:04.000Z',
         targetId: 'target_continuity_commit',
       });
       createSchedulerAdmissionEntry(coreDb, {
@@ -9782,15 +9772,6 @@ describe('createConfiguredTurnExecutor', () => {
         queueDepth: 0,
         targetId: 'target_admission_stall',
       });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        healthState: 'healthy',
-        lastProbeAt: '2026-09-06T00:00:00.000Z',
-        nextProbeAt: '2999-01-01T00:00:00.000Z',
-        targetId: 'target_admission_stall',
-      });
       /** Enqueues product lineage before the same capacity probe and lease insertion as dispatch. */
       const enqueue = (environmentPackage: AgentEnvironmentPackage) =>
         createSchedulerAdmissionEntry(coreDb, {
@@ -12079,15 +12060,6 @@ describe('createConfiguredTurnExecutor', () => {
         observedAt: '2026-09-11T00:00:02.000Z',
         poolId: 'pool_restart_selected',
         queueDepth: 1,
-        targetId: 'scheduler-target-restart-selected',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        healthState: 'healthy',
-        lastProbeAt: '2026-09-11T00:00:02.000Z',
-        nextProbeAt: '2026-09-11T00:01:02.000Z',
         targetId: 'scheduler-target-restart-selected',
       });
       createSchedulerAdmissionEntry(coreDb, {

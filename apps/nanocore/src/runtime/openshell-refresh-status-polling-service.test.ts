@@ -29,7 +29,7 @@ describe('OpenShell refresh status polling service', () => {
       },
     });
 
-    await service.runOnce();
+    await expect(service.runOnce()).resolves.toEqual([evidence]);
     callbacks[0]?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
     service.stop();

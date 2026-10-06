@@ -36,7 +36,6 @@ import {
   schedulerLeaseHasAppliedSupplyRefreshAck,
   transitionStartupTimedOutSchedulerLeases,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from './scheduler-records';
 import { openCoreDb } from './storage/db';
@@ -159,15 +158,6 @@ function createDispatchedLease(coreDb: ReturnType<typeof createMigratedCoreDb>, 
     queueDepth: 0,
     observationSource: 'configured',
     observedAt: '2026-07-05T00:00:00.000Z',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    targetId: `target_${suffix}`,
-    healthState: 'healthy',
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
   });
   createSchedulerAdmissionEntry(coreDb, {
     triggerActor: { kind: 'user', id: 'user_local' },
@@ -641,7 +631,7 @@ describe('scheduler records', () => {
       });
       denySchedulerAdmissionEntry(coreDb, {
         queueEntryId: 'queue_retry_denied',
-        denialReason: 'no-healthy-target',
+        denialReason: 'no-compatible-pool',
       });
 
       const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
@@ -2134,30 +2124,25 @@ describe('scheduler records', () => {
     }
   });
 
-  it('persists target health records', () => {
+  it('sets up configured capacity without a generic target-health table', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      const health = upsertSchedulerTargetHealthRecord(coreDb, {
-        targetId: 'target_local',
-        healthState: 'probation',
-        checkResults: [{ surface: 'worker-control', status: 'ok' }],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 2,
-        quarantineEnteredAt: null,
-        probationDeadline: '2026-07-05T00:05:00.000Z',
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
-      });
-
-      expect(health).toMatchObject({
-        targetId: 'target_local',
-        healthState: 'probation',
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 2,
-        probationDeadline: '2026-07-05T00:05:00.000Z',
-      });
-      expect(health.checkResults).toEqual([{ surface: 'worker-control', status: 'ok' }]);
+      expect(
+        coreDb.sqlite
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'scheduler_target_health_records%'"
+          )
+          .all()
+      ).toEqual([]);
+      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
+      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'remote' });
+      ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT target_id FROM scheduler_capacity_records ORDER BY target_id')
+          .all()
+      ).toEqual([{ target_id: 'target_local' }, { target_id: 'target_remote' }]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -2190,15 +2175,6 @@ describe('scheduler records', () => {
         queueDepth: 0,
         observationSource: 'configured',
         observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        targetId: 'target_local',
-        healthState: 'healthy',
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_local' },
@@ -2282,15 +2258,6 @@ describe('scheduler records', () => {
         queueDepth: 0,
         observationSource: 'configured',
         observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        targetId: 'target_local',
-        healthState: 'healthy',
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_local' },
@@ -2420,15 +2387,6 @@ describe('scheduler records', () => {
         queueDepth: 1,
         observationSource: 'configured',
         observedAt: '2026-07-05T00:00:00.000Z',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        targetId: 'target_local',
-        healthState: 'healthy',
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
       });
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_local' },

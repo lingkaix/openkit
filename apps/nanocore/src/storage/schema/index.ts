@@ -48,12 +48,10 @@ export type {
 export { schedulerAdmissionEntries } from './scheduler-admission-entries.js';
 export type {
   SchedulerCapacityObservationSource,
-  SchedulerTargetHealthState,
   SchedulerWorkerPoolStatus,
 } from './scheduler-operational-records.js';
 export {
   schedulerCapacityRecords,
-  schedulerTargetHealthRecords,
   schedulerWorkerPools,
 } from './scheduler-operational-records.js';
 export type { SchedulerPlacementPlanStatus } from './scheduler-placement-plans.js';

@@ -47,7 +47,7 @@ describe('scheduler admission routes', () => {
       });
     }
     for (const queueEntryId of ['queue_retry_close', 'queue_retry_audit_failure']) {
-      denySchedulerAdmissionEntry(coreDb, { queueEntryId, denialReason: 'no-healthy-target' });
+      denySchedulerAdmissionEntry(coreDb, { queueEntryId, denialReason: 'no-compatible-pool' });
     }
 
     const workspaceDbs: WorkspaceDb[] = [];
@@ -161,7 +161,7 @@ describe('scheduler admission routes', () => {
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_foreign_retry',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     const repositoryWorkspaceDb = vi.fn(() => {
       throw new Error('Foreign scheduler admissions must fail before opening workspace storage.');
@@ -266,7 +266,7 @@ describe('scheduler admission routes', () => {
     }
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_victim_retry',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     registerOperationJsonRoutes({
       app,

@@ -314,7 +314,7 @@ describe('remote MCP App endpoint', () => {
         priorityClass: 'interactive',
         requiredPoolConstraints: ['openshell.local'],
       });
-      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'no-healthy-target' });
+      denySchedulerAdmissionEntry(f.coreDb, { queueEntryId, denialReason: 'no-compatible-pool' });
     }
     const before = ['queue_private', 'queue_foreign'].map((id) =>
       requireSchedulerAdmissionEntry(f.coreDb, id)
@@ -516,7 +516,7 @@ describe('remote MCP App endpoint', () => {
       });
     denySchedulerAdmissionEntry(f.coreDb, {
       queueEntryId: 'queue_b9_retry',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_demo');
     applyScopedMigrations(workspaceDb);

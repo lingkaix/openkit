@@ -6,14 +6,6 @@ export type SchedulerWorkerPoolStatus = 'active' | 'draining' | 'disabled';
 /** Durable scheduler capacity observation sources. */
 export type SchedulerCapacityObservationSource = 'probe' | 'report' | 'configured';
 
-/** Durable scheduler target health states. */
-export type SchedulerTargetHealthState =
-  | 'healthy'
-  | 'degraded'
-  | 'quarantined'
-  | 'probation'
-  | 'unavailable';
-
 /** Server-scoped durable scheduler worker pool rows. */
 export const schedulerWorkerPools = sqliteTable(
   'scheduler_worker_pools',
@@ -74,32 +66,4 @@ export const schedulerCapacityRecords = sqliteTable(
     version: integer('version').notNull(),
   },
   (table) => [index('scheduler_capacity_records_pool_idx').on(table.poolId, table.observedAt)]
-);
-
-/** Server-scoped durable scheduler target health rows. */
-export const schedulerTargetHealthRecords = sqliteTable(
-  'scheduler_target_health_records',
-  {
-    /** Stable target id. */
-    targetId: text('target_id').primaryKey().notNull(),
-    /** Target health state. */
-    healthState: text('health_state').$type<SchedulerTargetHealthState>().notNull(),
-    /** JSON array of per-surface check results. */
-    checkResultsJson: text('check_results_json').notNull(),
-    /** Consecutive required-check failure count. */
-    consecutiveFailureCount: integer('consecutive_failure_count').notNull(),
-    /** Consecutive required-check success count. */
-    consecutiveSuccessCount: integer('consecutive_success_count').notNull(),
-    /** Quarantine entry timestamp. */
-    quarantineEnteredAt: text('quarantine_entered_at'),
-    /** Probation deadline timestamp. */
-    probationDeadline: text('probation_deadline'),
-    /** Last probe timestamp. */
-    lastProbeAt: text('last_probe_at').notNull(),
-    /** Next scheduled probe timestamp. */
-    nextProbeAt: text('next_probe_at').notNull(),
-  },
-  (table) => [
-    index('scheduler_target_health_records_state_idx').on(table.healthState, table.nextProbeAt),
-  ]
 );

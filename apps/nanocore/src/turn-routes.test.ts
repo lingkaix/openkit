@@ -875,10 +875,8 @@ describe('generic turn routes', () => {
       const target = fixture.coreDb.sqlite
         .prepare(
           `SELECT capacity.capacity_class AS capacityClass,
-                  capacity.concurrency_ceiling AS concurrencyCeiling,
-                  health.health_state AS healthState
+                  capacity.concurrency_ceiling AS concurrencyCeiling
            FROM scheduler_capacity_records AS capacity
-           JOIN scheduler_target_health_records AS health USING (target_id)
            WHERE capacity.target_id = 'target_remote'`
         )
         .get();
@@ -921,7 +919,7 @@ describe('generic turn routes', () => {
         poolConcurrency: 1,
         responseStatus: 202,
         startupTimeoutMs: 1_500_000,
-        target: { capacityClass: 'remote', concurrencyCeiling: 1, healthState: 'healthy' },
+        target: { capacityClass: 'remote', concurrencyCeiling: 1 },
       });
     } finally {
       fixture.coreDb.sqlite.close();

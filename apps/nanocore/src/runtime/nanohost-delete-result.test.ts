@@ -16,7 +16,6 @@ import {
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
@@ -150,15 +149,6 @@ async function createFixture() {
     observedAt: '2026-07-15T00:00:00.000Z',
     poolId: 'pool_backend_session',
     queueDepth: 0,
-    targetId: 'target_backend_session',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-15T00:00:00.000Z',
-    nextProbeAt: '2026-07-15T00:01:00.000Z',
     targetId: 'target_backend_session',
   });
   createSchedulerAdmissionEntry(coreDb, {

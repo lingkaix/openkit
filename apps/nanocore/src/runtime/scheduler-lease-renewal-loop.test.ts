@@ -7,7 +7,6 @@ import {
   createSchedulerAdmissionEntry,
   dispatchNextSchedulerEntry,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
@@ -54,15 +53,6 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
     observedAt: '2026-07-05T00:00:00.000Z',
     poolId: `pool_${suffix}`,
     queueDepth: 0,
-    targetId: `target_${suffix}`,
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
     targetId: `target_${suffix}`,
   });
 }
@@ -211,25 +201,16 @@ describe('scheduler lease renewal loop', () => {
     }
   });
 
-  it('renews a live lease on a quarantined target when its heartbeat is fresh', () => {
+  it('renews a live lease using fresh heartbeat authority without target health', () => {
     const coreDb = createMigratedCoreDb();
 
     try {
-      dispatchLease(coreDb, 'quarantined');
+      dispatchLease(coreDb, 'fresh_heartbeat');
       acceptSchedulerLeaseHeartbeat(coreDb, {
         heartbeatTimeoutMs: 900_000,
-        leaseId: 'lease_quarantined',
+        leaseId: 'lease_fresh_heartbeat',
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [{ status: 'failed', surface: 'worker-control' }],
-        consecutiveFailureCount: 3,
-        consecutiveSuccessCount: 0,
-        healthState: 'quarantined',
-        lastProbeAt: '2026-07-05T00:10:00.000Z',
-        nextProbeAt: '2026-07-05T00:11:00.000Z',
-        targetId: 'target_quarantined',
       });
 
       const result = runSchedulerLeaseRenewalLoop(coreDb, {
@@ -242,9 +223,9 @@ describe('scheduler lease renewal loop', () => {
         .prepare(
           'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
         )
-        .get('lease_quarantined');
+        .get('lease_fresh_heartbeat');
 
-      expect(result.renewed.map((renewed) => renewed.leaseId)).toEqual(['lease_quarantined']);
+      expect(result.renewed.map((renewed) => renewed.leaseId)).toEqual(['lease_fresh_heartbeat']);
       expect(lease).toEqual({ renewalCount: 1 });
     } finally {
       coreDb.sqlite.close();
@@ -280,46 +261,6 @@ describe('scheduler lease renewal loop', () => {
 
       expect(result.renewed.map((renewed) => renewed.leaseId)).toEqual(['lease_draining']);
       expect(lease).toEqual({ renewalCount: 1 });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('does not renew leases on unavailable targets', () => {
-    const coreDb = createMigratedCoreDb();
-
-    try {
-      dispatchLease(coreDb, 'unavailable');
-      acceptSchedulerLeaseHeartbeat(coreDb, {
-        heartbeatTimeoutMs: 900_000,
-        leaseId: 'lease_unavailable',
-        now: () => '2026-07-05T00:00:10.000Z',
-        workerSequence: 1,
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [{ status: 'failed', surface: 'worker-control' }],
-        consecutiveFailureCount: 3,
-        consecutiveSuccessCount: 0,
-        healthState: 'unavailable',
-        lastProbeAt: '2026-07-05T00:10:00.000Z',
-        nextProbeAt: '2026-07-05T00:11:00.000Z',
-        targetId: 'target_unavailable',
-      });
-
-      const result = runSchedulerLeaseRenewalLoop(coreDb, {
-        maxTotalLeaseMs: 7_200_000,
-        now: () => '2026-07-05T00:10:30.000Z',
-        renewalDurationMs: 1_800_000,
-        renewalLeadMs: 300_000,
-      });
-      const lease = coreDb.sqlite
-        .prepare(
-          'SELECT renewal_count AS renewalCount FROM scheduler_session_leases WHERE lease_id = ?'
-        )
-        .get('lease_unavailable');
-
-      expect(result.renewed).toEqual([]);
-      expect(lease).toEqual({ renewalCount: 0 });
     } finally {
       coreDb.sqlite.close();
     }

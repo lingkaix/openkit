@@ -62,7 +62,6 @@ import {
   resolveSchedulerLeaseTokenBinding,
   schedulerLeaseHasAppliedSupplyRefreshAck,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from './scheduler-records.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -193,15 +192,6 @@ function createDurableWorkerControlLease(
     observedAt: '2026-07-05T00:00:00.000Z',
     poolId,
     queueDepth: 0,
-    targetId,
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
     targetId,
   });
   createSchedulerAdmissionEntry(coreDb, {
@@ -1292,15 +1282,6 @@ describe('worker control routes', () => {
       queueDepth: 0,
       targetId: 'target_default_binding',
     });
-    upsertSchedulerTargetHealthRecord(coreDb, {
-      checkResults: [],
-      consecutiveFailureCount: 0,
-      consecutiveSuccessCount: 1,
-      healthState: 'healthy',
-      lastProbeAt: '2026-07-05T00:00:00.000Z',
-      nextProbeAt: '2026-07-05T00:01:00.000Z',
-      targetId: 'target_default_binding',
-    });
     createSchedulerAdmissionEntry(coreDb, {
       triggerActor: { kind: 'user', id: 'user_local' },
       priorityClass: 'interactive',
@@ -1723,15 +1704,6 @@ describe('worker control routes', () => {
       observedAt: '2026-07-05T00:00:00.000Z',
       poolId: 'pool_final_status',
       queueDepth: 0,
-      targetId: 'target_final_status',
-    });
-    upsertSchedulerTargetHealthRecord(coreDb, {
-      checkResults: [],
-      consecutiveFailureCount: 0,
-      consecutiveSuccessCount: 1,
-      healthState: 'healthy',
-      lastProbeAt: '2026-07-05T00:00:00.000Z',
-      nextProbeAt: '2026-07-05T00:01:00.000Z',
       targetId: 'target_final_status',
     });
     createSchedulerAdmissionEntry(coreDb, {
@@ -2532,15 +2504,6 @@ describe('worker control routes', () => {
         queueDepth: 0,
         targetId: 'target_supply_refresh',
       });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        healthState: 'healthy',
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
-        targetId: 'target_supply_refresh',
-      });
       createSchedulerAdmissionEntry(coreDb, {
         triggerActor: { kind: 'user', id: 'user_local' },
         priorityClass: 'interactive',
@@ -2819,15 +2782,6 @@ describe('worker control routes', () => {
         observedAt: '2026-07-05T00:00:00.000Z',
         poolId: 'pool_rebuild',
         queueDepth: 0,
-        targetId: 'target_rebuild',
-      });
-      upsertSchedulerTargetHealthRecord(coreDb, {
-        checkResults: [],
-        consecutiveFailureCount: 0,
-        consecutiveSuccessCount: 1,
-        healthState: 'healthy',
-        lastProbeAt: '2026-07-05T00:00:00.000Z',
-        nextProbeAt: '2026-07-05T00:01:00.000Z',
         targetId: 'target_rebuild',
       });
       createSchedulerAdmissionEntry(coreDb, {

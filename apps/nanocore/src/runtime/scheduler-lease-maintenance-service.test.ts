@@ -13,7 +13,6 @@ import {
   listSchedulerLeasesNeedingWorkspaceRecovery,
   markSchedulerSessionLeaseReleasing,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
@@ -161,15 +160,6 @@ function seedLocalTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix
     queueDepth: 0,
     targetId: `target_${suffix}`,
   });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
-    targetId: `target_${suffix}`,
-  });
 }
 
 /** Dispatches one queued lease for scheduler maintenance tests. */
@@ -258,7 +248,7 @@ describe('scheduler lease maintenance service', () => {
     const maintenanceStart = source.indexOf(
       'schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {'
     );
-    const maintenanceEnd = source.indexOf('schedulerHealthProbe =', maintenanceStart);
+    const maintenanceEnd = source.indexOf('if (refreshStatusCollector)', maintenanceStart);
     const wiring = source.slice(maintenanceStart, maintenanceEnd);
 
     expect(maintenanceStart).toBeGreaterThan(-1);

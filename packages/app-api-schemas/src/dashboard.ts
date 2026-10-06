@@ -170,7 +170,6 @@ export const SchedulerAdmissionDenialReasonSchema = z.enum([
   'queue-full',
   'policy-cap',
   'no-compatible-pool',
-  'no-healthy-target',
   'invalid-request',
 ]);
 

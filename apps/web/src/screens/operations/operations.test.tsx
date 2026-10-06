@@ -172,7 +172,7 @@ const DENIED_ADMISSION = {
     firstCapDeferredAt: null,
     requiredPoolConstraints: ['linux'],
     status: 'denied',
-    denialReason: 'no-healthy-target',
+    denialReason: 'no-compatible-pool',
     queuePosition: null,
   }),
   workspaceCwd: HOST_PATH,

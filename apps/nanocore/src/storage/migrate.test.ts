@@ -44,7 +44,6 @@ const CORE_TABLES = [
   'scheduler_placement_plans',
   'scheduler_session_leases',
   'scheduler_supply_refresh_declarations',
-  'scheduler_target_health_records',
   'scheduler_worker_pools',
   'server_settings',
   'session',

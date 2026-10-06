@@ -31,7 +31,6 @@ import {
   markSchedulerSessionLeaseReleasing,
   requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import {
@@ -1468,15 +1467,6 @@ function seedTarget(coreDb: ReturnType<typeof createMigratedCoreDb>, suffix: str
     observedAt: '2026-07-05T00:00:00.000Z',
     poolId: `pool_${suffix}`,
     queueDepth: 0,
-    targetId: `target_${suffix}`,
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
     targetId: `target_${suffix}`,
   });
 }

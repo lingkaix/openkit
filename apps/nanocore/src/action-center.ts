@@ -659,10 +659,6 @@ function schedulerAdmissionTitle(entry: SchedulerAdmissionEntryRecord): string {
  * @returns Human-readable row summary.
  */
 function schedulerAdmissionSummary(entry: SchedulerAdmissionEntryRecord): string {
-  if (entry.denialReason === 'no-healthy-target') {
-    return 'No healthy worker target is available for this turn.';
-  }
-
   if (entry.denialReason === 'queue-full') {
     return 'The scheduler queue is full for the required worker pool.';
   }

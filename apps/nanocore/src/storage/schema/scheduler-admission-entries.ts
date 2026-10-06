@@ -11,7 +11,6 @@ export type SchedulerAdmissionStatus = 'queued' | 'admitted' | 'denied' | 'cance
 export type SchedulerAdmissionDenialReason =
   | 'queue-full'
   | 'no-compatible-pool'
-  | 'no-healthy-target'
   | 'policy-cap'
   | 'budget-exhausted';
 

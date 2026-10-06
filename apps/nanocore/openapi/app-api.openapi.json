@@ -21152,7 +21152,6 @@
                         "queue-full",
                         "policy-cap",
                         "no-compatible-pool",
-                        "no-healthy-target",
                         "invalid-request"
                       ]
                     },
@@ -91236,5 +91235,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:1180b75b80b04ea88bbed096c79421a41d9c4beb98cc5acbdaba6f594dc71ce8"
+  "x-openkit-source-digest": "sha256:bee0b7bd6f58c5977e83bfafa990cb928dddc7c4ec7f00bda651c69226b849af"
 }

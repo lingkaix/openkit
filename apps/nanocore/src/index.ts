@@ -70,10 +70,6 @@ import {
   startSchedulerDispatchRetryService,
 } from './runtime/scheduler-dispatch-service.js';
 import {
-  type SchedulerHealthProbeService,
-  startSchedulerHealthProbeService,
-} from './runtime/scheduler-health-probe-loop.js';
-import {
   type SchedulerLeaseMaintenanceService,
   startSchedulerLeaseMaintenanceService,
 } from './runtime/scheduler-lease-maintenance-service.js';
@@ -126,17 +122,12 @@ const SCHEDULER_LEASE_MAINTENANCE_INTERVAL_MS = 30_000;
 const SCHEDULER_LEASE_RENEWAL_LEAD_MS = 300_000;
 const SCHEDULER_LEASE_RENEWAL_DURATION_MS = 900_000;
 const SCHEDULER_LEASE_MAX_TOTAL_MS = 7_200_000;
+const OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS = 60_000;
 const SCHEDULER_DISPATCH_RETRY_INTERVAL_MS = 30_000;
 const SCHEDULER_DISPATCH_RETRY_MAX_DISPATCHES = 5;
-const SCHEDULER_HEALTH_PROBE_INTERVAL_MS = 30_000;
-const SCHEDULER_HEALTH_PROBE_LIVE_INTERVAL_MS = 60_000;
-const SCHEDULER_HEALTH_PROBE_IDLE_INTERVAL_MS = 300_000;
-const SCHEDULER_HEALTH_PROBE_FAILURE_THRESHOLD = 3;
-const SCHEDULER_HEALTH_PROBE_SUCCESS_THRESHOLD = 2;
 let dataRootLock: DataRootLock | null = null;
 let openshellRefreshStatusPolling: OpenShellRefreshStatusPollingService | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
-let schedulerHealthProbe: SchedulerHealthProbeService | null = null;
 let schedulerLeaseMaintenance: SchedulerLeaseMaintenanceService | null = null;
 let schedulerEpoch = 1;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
@@ -669,22 +660,10 @@ schedulerLeaseMaintenance = startSchedulerLeaseMaintenanceService(coreDb, {
     );
   },
 });
-schedulerHealthProbe = startSchedulerHealthProbeService(coreDb, {
-  failureThreshold: SCHEDULER_HEALTH_PROBE_FAILURE_THRESHOLD,
-  idleIntervalMs: SCHEDULER_HEALTH_PROBE_IDLE_INTERVAL_MS,
-  intervalMs: SCHEDULER_HEALTH_PROBE_INTERVAL_MS,
-  liveIntervalMs: SCHEDULER_HEALTH_PROBE_LIVE_INTERVAL_MS,
-  successThreshold: SCHEDULER_HEALTH_PROBE_SUCCESS_THRESHOLD,
-  onError: (error) => {
-    console.warn(
-      `Scheduler health probe failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  },
-});
 if (refreshStatusCollector) {
   openshellRefreshStatusPolling = startOpenShellRefreshStatusPollingService({
     collector: refreshStatusCollector,
-    intervalMs: SCHEDULER_HEALTH_PROBE_LIVE_INTERVAL_MS,
+    intervalMs: OPENSHELL_REFRESH_STATUS_POLL_INTERVAL_MS,
     onError: (error) => {
       console.warn(
         `OpenShell refresh status polling failed: ${
@@ -734,12 +713,10 @@ function shutdown(signal: NodeJS.Signals): void {
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
   schedulerDispatchRetry?.stop();
-  schedulerHealthProbe?.stop();
   schedulerLeaseMaintenance?.stop();
   openshellRefreshStatusPolling?.stop();
   const stepsCompleted = [
     'scheduler.dispatch-retry.stop',
-    'scheduler.health-probe.stop',
     'scheduler.lease-maintenance.stop',
     'openshell.refresh-status-polling.stop',
   ];

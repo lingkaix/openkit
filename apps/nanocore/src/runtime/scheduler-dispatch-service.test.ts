@@ -10,7 +10,6 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records';
 import { openCoreDb } from '../storage/db';
@@ -102,15 +101,6 @@ function seedLocalSchedulerTarget(coreDb: ReturnType<typeof createMigratedCoreDb
     observationSource: 'configured',
     poolId: 'pool_local',
     queueDepth: 0,
-    targetId: 'target_local',
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: '2026-07-05T00:00:00.000Z',
-    nextProbeAt: '2026-07-05T00:01:00.000Z',
     targetId: 'target_local',
   });
 }

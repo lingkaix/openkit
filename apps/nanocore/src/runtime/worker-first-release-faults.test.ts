@@ -23,7 +23,6 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerSessionLease,
   upsertSchedulerCapacityRecord,
-  upsertSchedulerTargetHealthRecord,
   upsertSchedulerWorkerPool,
 } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -280,15 +279,6 @@ async function faultFixture() {
     observedAt: NOW,
     poolId: 'fault-pool',
     queueDepth: 0,
-    targetId: target.identityId,
-  });
-  upsertSchedulerTargetHealthRecord(coreDb, {
-    checkResults: [],
-    consecutiveFailureCount: 0,
-    consecutiveSuccessCount: 1,
-    healthState: 'healthy',
-    lastProbeAt: NOW,
-    nextProbeAt: '2099-01-01T00:00:00.000Z',
     targetId: target.identityId,
   });
   createSchedulerAdmissionEntry(coreDb, {

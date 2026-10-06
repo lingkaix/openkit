@@ -3362,7 +3362,7 @@ describe('nanocore server', () => {
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_read_route_denied',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     createSchedulerAdmissionEntry(coreDb, {
       triggerActor: { kind: 'user', id: 'user_local' },
@@ -3403,7 +3403,7 @@ describe('nanocore server', () => {
         queueEntryId: 'queue_read_route_denied',
         workspaceId: 'ws_demo',
         status: 'denied',
-        denialReason: 'no-healthy-target',
+        denialReason: 'no-compatible-pool',
         queuePosition: null,
       },
     ]);
@@ -3798,7 +3798,7 @@ describe('nanocore server', () => {
     });
     denySchedulerAdmissionEntry(coreDb, {
       queueEntryId: 'queue_retry_route',
-      denialReason: 'no-healthy-target',
+      denialReason: 'no-compatible-pool',
     });
     const app = createApp({ coreDb, dataRoot, store });
 
