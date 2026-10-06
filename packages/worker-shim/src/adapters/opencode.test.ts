@@ -31,7 +31,7 @@ import type {
 import { WORKER_ADAPTERS } from '../adapter-registry.js';
 import { WorkerHarness } from '../harness.js';
 import type { SandboxIntegrationClient } from '../integration-client.js';
-import { LifecycleDeadline } from '../lifecycle-deadline.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { type RuntimeObservation, RuntimeSemanticCapture } from '../runtime-capture.js';
 import {
   type SyntheticCapability,
@@ -3817,292 +3817,309 @@ describe('W4 round-seven collection proof', () => {
 });
 
 describe('W4 round-eight refused setup cleanup', () => {
-  for (const stop of ['proved', 'unproved', 'forced'] as const)
-    it(`r8: Harness ${stop} pre-prompt cleanup preserves its release boundary`, async () => {
-      const layout = makeRoots();
-      const integration = fakeIntegration();
-      const residents: WorkerResidentSession[] = [];
-      let native!: ChildProcess;
-      let kill!: ChildProcess['kill'];
-      let prompts = 0;
-      const adapter = createOpenCodeAdapter({
-        // Forced cleanup needs native signal delivery time; only unproved cleanup uses a short window.
-        stopTimeoutMs: stop === 'unproved' ? 30 : 2000,
-        loadClient: async () => {
-          if (stop === 'unproved') {
-            const module = failingModule('prompt');
-            const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
-            client.model.list = async () => ({ data: [] });
-            client.session.prompt = async () => {
-              prompts += 1;
-              throw new Error('unexpected prompt');
-            };
-            module.OpenCode.make = () => client;
-            return module;
-          }
-          const real = await import('@opencode/client');
-          return {
-            OpenCode: {
-              make(options) {
-                const client = real.OpenCode.make(options);
-                client.model.list = async () => ({ location: { directory: '/unused' }, data: [] });
-                const prompt = client.session.prompt;
-                client.session.prompt = async (input) => {
-                  prompts += 1;
-                  return prompt(input);
-                };
-                return client;
-              },
-            },
-          };
-        },
-        spawnServer: (binary, args, options) => {
-          if (stop === 'unproved') {
-            // This fence predicate uses the existing peer; real persistence stays in the proved case.
-            native = stubbornChild([]);
-            Object.assign(native, {
-              stdin: Object.assign(new EventEmitter(), { end: () => native.stdin }),
-            });
-            native.kill = () => {
-              Object.assign(native, { exitCode: 1 });
-              native.stdout?.emit('end');
-              native.stderr?.emit('end');
-              native.emit('exit', 1, null);
-              native.emit('close', 1, null);
-              return true;
-            };
-            kill = native.kill.bind(native);
-            native.kill = () => false;
-            // Seed only the existing read-only handle-admission predicate, not native durability proof.
-            const data = join(String(options.env.XDG_DATA_HOME), 'opencode');
-            mkdirSync(data, { recursive: true });
-            const db = new DatabaseSync(join(data, 'opencode.db'));
-            try {
-              db.exec(
-                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY); INSERT INTO session_v2 VALUES ('sess-1');"
-              );
-            } finally {
-              db.close();
+  for (const stop of ['proved', 'unproved', 'forced'] as const) {
+    // Withheld EOF can consume the complete preparation allowance after native open.
+    // Let the Harness prove bounded cleanup before the fixture's own deadline fires.
+    const fixtureTimeoutMs =
+      stop === 'forced'
+        ? 2 * LIFECYCLE_DEFAULTS.nativeOpenMs + LIFECYCLE_DEFAULTS.nativeStopMs
+        : 60_000;
+    it(
+      `r8: Harness ${stop} pre-prompt cleanup preserves its release boundary`,
+      async () => {
+        const layout = makeRoots();
+        const integration = fakeIntegration();
+        const residents: WorkerResidentSession[] = [];
+        let native!: ChildProcess;
+        let kill!: ChildProcess['kill'];
+        let prompts = 0;
+        const adapter = createOpenCodeAdapter({
+          // Forced cleanup needs native signal delivery time; only unproved cleanup uses a short window.
+          stopTimeoutMs: stop === 'unproved' ? 30 : 2000,
+          loadClient: async () => {
+            if (stop === 'unproved') {
+              const module = failingModule('prompt');
+              const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
+              client.model.list = async () => ({ data: [] });
+              client.session.prompt = async () => {
+                prompts += 1;
+                throw new Error('unexpected prompt');
+              };
+              module.OpenCode.make = () => client;
+              return module;
             }
+            const real = await import('@opencode/client');
+            return {
+              OpenCode: {
+                make(options) {
+                  const client = real.OpenCode.make(options);
+                  client.model.list = async () => ({
+                    location: { directory: '/unused' },
+                    data: [],
+                  });
+                  const prompt = client.session.prompt;
+                  client.session.prompt = async (input) => {
+                    prompts += 1;
+                    return prompt(input);
+                  };
+                  return client;
+                },
+              },
+            };
+          },
+          spawnServer: (binary, args, options) => {
+            if (stop === 'unproved') {
+              // This fence predicate uses the existing peer; real persistence stays in the proved case.
+              native = stubbornChild([]);
+              Object.assign(native, {
+                stdin: Object.assign(new EventEmitter(), { end: () => native.stdin }),
+              });
+              native.kill = () => {
+                Object.assign(native, { exitCode: 1 });
+                native.stdout?.emit('end');
+                native.stderr?.emit('end');
+                native.emit('exit', 1, null);
+                native.emit('close', 1, null);
+                return true;
+              };
+              kill = native.kill.bind(native);
+              native.kill = () => false;
+              // Seed only the existing read-only handle-admission predicate, not native durability proof.
+              const data = join(String(options.env.XDG_DATA_HOME), 'opencode');
+              mkdirSync(data, { recursive: true });
+              const db = new DatabaseSync(join(data, 'opencode.db'));
+              try {
+                db.exec(
+                  "CREATE TABLE session_v2 (id TEXT PRIMARY KEY); INSERT INTO session_v2 VALUES ('sess-1');"
+                );
+              } finally {
+                db.close();
+              }
+              return native;
+            }
+            native = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+            kill = native.kill.bind(native);
+            if (stop !== 'proved') native.stdin!.end = (() => native.stdin) as never;
             return native;
-          }
-          native = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
-          kill = native.kill.bind(native);
-          if (stop !== 'proved') native.stdin!.end = (() => native.stdin) as never;
-          return native;
-        },
-      });
-      const nativeRoot = join(layout.root, 'native');
-      const sandboxRoot = join(layout.root, 'sandbox');
-      const harness = new WorkerHarness({
-        adapters: {
-          opencode: {
-            openSession: async (input) => {
-              const resident = await adapter.openSession(input);
-              residents.push(resident);
-              sessions.push(resident);
-              return resident;
+          },
+        });
+        const nativeRoot = join(layout.root, 'native');
+        const sandboxRoot = join(layout.root, 'sandbox');
+        const harness = new WorkerHarness({
+          adapters: {
+            opencode: {
+              openSession: async (input) => {
+                const resident = await adapter.openSession(input);
+                residents.push(resident);
+                sessions.push(resident);
+                return resident;
+              },
             },
           },
-        },
-        environment: { PATH: process.env.PATH! },
-        integration: integration.client,
-        nativeDataRootDirectory: nativeRoot,
-        rootDirectory: join(layout.root, 'private'),
-        sandboxRoot,
-        turnOutputDirectory: join(sandboxRoot, 'session'),
-      });
-      let sequence = 0;
-      const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
-        harness.handle({
-          body,
-          harnessInstanceId: 'harness-r8',
-          operation: operation as never,
-          operationId: credential(`${layout.root}:${sequence}`),
-          schemaVersion: 2,
-          sequence: sequence++,
+          environment: { PATH: process.env.PATH! },
+          integration: integration.client,
+          nativeDataRootDirectory: nativeRoot,
+          rootDirectory: join(layout.root, 'private'),
+          sandboxRoot,
+          turnOutputDirectory: join(sandboxRoot, 'session'),
         });
-      const selector = (id: string) => ({
-        agentSessionId: id,
-        agentSessionRuntimeBindingId: `binding-${id}`,
-      });
-      const open = (id: string, resume: { digest: string; locator: string } | null = null) => {
-        const config = join(sandboxRoot, 'sessions', id, 'config');
-        mkdirSync(config, { recursive: true });
-        writeFileSync(
-          join(config, 'package.json'),
-          JSON.stringify({
-            scope: { agentSessionId: id, threadId: 'thread-r8', workspaceId: 'workspace-r8' },
-            workspace: { root: sandboxRoot, inputs: [] },
-            extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
-          })
-        );
-        return send('session.open', {
-          ...selector(id),
-          adapterId: 'opencode',
-          agentSessionCompatibilityKey: 'a'.repeat(64),
-          capabilityLoopbackCredential: credential(`capability-${id}`),
-          effectiveSetupGeneration: 1,
-          inferenceLoopbackCredential: credential(`inference-${id}`),
-          resume,
-          threadId: 'thread-r8',
-          workspaceId: 'workspace-r8',
-        });
-      };
-      try {
-        expect(await open('as-r8')).toMatchObject({
-          disposition: 'succeeded',
-          body: { nativeHandleState: 'ready' },
-        });
-        const reference = readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8'));
-        const config = join(sandboxRoot, 'sessions', 'as-r8', 'config');
-        mkdirSync(config, { recursive: true });
-        const packagePath = join(config, 'package.json');
-        writeFileSync(
-          packagePath,
-          JSON.stringify({
-            capabilities: { mode: 'disabled', routes: [] },
-            control: {
-              adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
-              bindings: {
-                capabilities: {
-                  pathPrefix: '/capabilities/',
-                  tokenRef: 'runtime://openkit/capability-token',
-                },
-                inference: {
-                  pathPrefix: '/inference/',
-                  tokenRef: 'runtime://openkit/inference-token',
-                },
-                workerControl: {
-                  pathPrefix: '/worker-control/',
-                  tokenRef: 'runtime://openkit/worker-control-token',
-                },
-              },
-              mode: 'sandbox-integration',
-            },
-            credentials: { declarations: [] },
-            extensions: { openkit: { turnInput: 'never-prompt-r8' } },
-            llm: {
-              mode: 'gateway',
-              preferredLogicalModelId: 'model-r8',
-              routes: [
-                {
-                  credentialVisibility: 'placeholder',
-                  endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
-                  id: 'inference-r8',
-                  model: 'model-r8',
-                  providerInstanceId: 'provider-r8',
-                },
-              ],
-            },
-            observability: { captureCoverage: { scope: 'server', value: 'off' } },
-            runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
-            scope: {
-              agentSessionId: 'as-r8',
-              threadId: 'thread-r8',
-              turnId: 'turn-r8',
-              workspaceId: 'workspace-r8',
-            },
-            snapshotId: 'package-r8',
-            supply: { mcpServers: [] },
-          })
-        );
-        const started = await send('turn.start', {
-          ...selector('as-r8'),
-          aepRef: packagePath,
-          capabilityToken: credential('capability-turn'),
-          contextPackageId: 'ctxpkg_turn-r8',
-          contextRef: join(sandboxRoot, 'sessions', 'as-r8', 'context'),
-          deadline: '2099-01-01T00:00:00.000Z',
-          inferenceToken: credential('inference-turn'),
-          leaseId: 'lease-r8',
-          packageSnapshotId: 'package-r8',
-          threadId: 'thread-r8',
-          turnId: 'turn-r8',
-          turnSequence: 0,
-          workerControlToken: credential('control-turn'),
-          workspaceId: 'workspace-r8',
-        });
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          const inspection = await send('session.inspect', selector('as-r8'));
-          const nativeWorkFinished =
-            stop !== 'forced' || (await send('harness.drain', {})).body.activeTurns === 0;
-          if (
-            nativeWorkFinished &&
-            inspection.body.state !== 'active' &&
-            inspection.body.cleanupState !== 'pending'
-          )
-            break;
-          await delay(10);
-        }
-        expect(prompts).toBe(0);
-        if (stop === 'proved') {
-          expect(started).toMatchObject({
-            disposition: 'refused',
-            body: {
-              reasonCode: 'dependency_failed',
-              startupFailure: { stage: 'native_spawn', reason: 'failed' },
-            },
+        let sequence = 0;
+        const send = (operation: string, body: Readonly<Record<string, unknown>>) =>
+          harness.handle({
+            body,
+            harnessInstanceId: 'harness-r8',
+            operation: operation as never,
+            operationId: credential(`${layout.root}:${sequence}`),
+            schemaVersion: 2,
+            sequence: sequence++,
           });
-          expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
-            childState: 'absent',
-            cleanupState: 'clean',
-          });
-          expect(await send('session.close', selector('as-r8'))).toMatchObject({
-            disposition: 'succeeded',
-            body: { state: 'closed', privateState: 'absent' },
-          });
-          expect(existsSync(join(sandboxRoot, 'sessions', 'as-r8'))).toBe(false);
-          expect(integration.calls).toContain('destroy:as-r8');
-          expect(
-            await open('as-r8-successor', {
-              digest: createHash('sha256').update(reference).digest('hex'),
-              locator: 'as-r8',
+        const selector = (id: string) => ({
+          agentSessionId: id,
+          agentSessionRuntimeBindingId: `binding-${id}`,
+        });
+        const open = (id: string, resume: { digest: string; locator: string } | null = null) => {
+          const config = join(sandboxRoot, 'sessions', id, 'config');
+          mkdirSync(config, { recursive: true });
+          writeFileSync(
+            join(config, 'package.json'),
+            JSON.stringify({
+              scope: { agentSessionId: id, threadId: 'thread-r8', workspaceId: 'workspace-r8' },
+              workspace: { root: sandboxRoot, inputs: [] },
+              extensions: { openkit: { sessionWorkspace: { layout: { slots: [] } } } },
             })
-          ).toMatchObject({ disposition: 'succeeded', body: { nativeHandleState: 'ready' } });
-          const resumed = await residents[1]!.nativeHandle();
-          expect(resumed.state).toBe('ready');
-          if (resumed.state === 'ready') expect(Buffer.from(resumed.reference)).toEqual(reference);
-          expect(
-            readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8-successor'))
-          ).toEqual(reference);
-          expect(await send('session.close', selector('as-r8-successor'))).toMatchObject({
+          );
+          return send('session.open', {
+            ...selector(id),
+            adapterId: 'opencode',
+            agentSessionCompatibilityKey: 'a'.repeat(64),
+            capabilityLoopbackCredential: credential(`capability-${id}`),
+            effectiveSetupGeneration: 1,
+            inferenceLoopbackCredential: credential(`inference-${id}`),
+            resume,
+            threadId: 'thread-r8',
+            workspaceId: 'workspace-r8',
+          });
+        };
+        try {
+          expect(await open('as-r8')).toMatchObject({
             disposition: 'succeeded',
+            body: { nativeHandleState: 'ready' },
           });
-          expect((await send('harness.drain', {})).body).toMatchObject({
-            activeTurns: 0,
-            openSessions: 0,
+          const reference = readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8'));
+          const config = join(sandboxRoot, 'sessions', 'as-r8', 'config');
+          mkdirSync(config, { recursive: true });
+          const packagePath = join(config, 'package.json');
+          writeFileSync(
+            packagePath,
+            JSON.stringify({
+              capabilities: { mode: 'disabled', routes: [] },
+              control: {
+                adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+                bindings: {
+                  capabilities: {
+                    pathPrefix: '/capabilities/',
+                    tokenRef: 'runtime://openkit/capability-token',
+                  },
+                  inference: {
+                    pathPrefix: '/inference/',
+                    tokenRef: 'runtime://openkit/inference-token',
+                  },
+                  workerControl: {
+                    pathPrefix: '/worker-control/',
+                    tokenRef: 'runtime://openkit/worker-control-token',
+                  },
+                },
+                mode: 'sandbox-integration',
+              },
+              credentials: { declarations: [] },
+              extensions: { openkit: { turnInput: 'never-prompt-r8' } },
+              llm: {
+                mode: 'gateway',
+                preferredLogicalModelId: 'model-r8',
+                routes: [
+                  {
+                    credentialVisibility: 'placeholder',
+                    endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+                    id: 'inference-r8',
+                    model: 'model-r8',
+                    providerInstanceId: 'provider-r8',
+                  },
+                ],
+              },
+              observability: { captureCoverage: { scope: 'server', value: 'off' } },
+              runtime: {
+                command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot },
+              },
+              scope: {
+                agentSessionId: 'as-r8',
+                threadId: 'thread-r8',
+                turnId: 'turn-r8',
+                workspaceId: 'workspace-r8',
+              },
+              snapshotId: 'package-r8',
+              supply: { mcpServers: [] },
+            })
+          );
+          const started = await send('turn.start', {
+            ...selector('as-r8'),
+            aepRef: packagePath,
+            capabilityToken: credential('capability-turn'),
+            contextPackageId: 'ctxpkg_turn-r8',
+            contextRef: join(sandboxRoot, 'sessions', 'as-r8', 'context'),
+            deadline: '2099-01-01T00:00:00.000Z',
+            inferenceToken: credential('inference-turn'),
+            leaseId: 'lease-r8',
+            packageSnapshotId: 'package-r8',
+            threadId: 'thread-r8',
+            turnId: 'turn-r8',
+            turnSequence: 0,
+            workerControlToken: credential('control-turn'),
+            workspaceId: 'workspace-r8',
           });
-        } else {
-          expect(started).toMatchObject({ disposition: 'succeeded', body: { state: 'started' } });
-          expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
-            state: 'failed',
-            cleanupState: stop === 'unproved' ? 'unknown' : 'clean',
-            childState: stop === 'unproved' ? 'unknown' : 'absent',
-          });
-          expect(await send('session.close', selector('as-r8'))).toMatchObject({
-            disposition: 'refused',
-            body: { reasonCode: 'cleanup_required' },
-          });
-          expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
-            cleanupState: 'unknown',
-            state: 'failed',
-          });
-          expect((await send('harness.drain', {})).body).toMatchObject({
-            activeTurns: stop === 'unproved' ? 1 : 0,
-            openSessions: 1,
-          });
+          for (let attempt = 0; attempt < 100; attempt += 1) {
+            const inspection = await send('session.inspect', selector('as-r8'));
+            const nativeWorkFinished =
+              stop !== 'forced' || (await send('harness.drain', {})).body.activeTurns === 0;
+            if (
+              nativeWorkFinished &&
+              inspection.body.state !== 'active' &&
+              inspection.body.cleanupState !== 'pending'
+            )
+              break;
+            await delay(10);
+          }
+          expect(prompts).toBe(0);
+          if (stop === 'proved') {
+            expect(started).toMatchObject({
+              disposition: 'refused',
+              body: {
+                reasonCode: 'dependency_failed',
+                startupFailure: { stage: 'native_spawn', reason: 'failed' },
+              },
+            });
+            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+              childState: 'absent',
+              cleanupState: 'clean',
+            });
+            expect(await send('session.close', selector('as-r8'))).toMatchObject({
+              disposition: 'succeeded',
+              body: { state: 'closed', privateState: 'absent' },
+            });
+            expect(existsSync(join(sandboxRoot, 'sessions', 'as-r8'))).toBe(false);
+            expect(integration.calls).toContain('destroy:as-r8');
+            expect(
+              await open('as-r8-successor', {
+                digest: createHash('sha256').update(reference).digest('hex'),
+                locator: 'as-r8',
+              })
+            ).toMatchObject({ disposition: 'succeeded', body: { nativeHandleState: 'ready' } });
+            const resumed = await residents[1]!.nativeHandle();
+            expect(resumed.state).toBe('ready');
+            if (resumed.state === 'ready')
+              expect(Buffer.from(resumed.reference)).toEqual(reference);
+            expect(
+              readFileSync(join(nativeRoot, 'agent-session-references', 'as-r8-successor'))
+            ).toEqual(reference);
+            expect(await send('session.close', selector('as-r8-successor'))).toMatchObject({
+              disposition: 'succeeded',
+            });
+            expect((await send('harness.drain', {})).body).toMatchObject({
+              activeTurns: 0,
+              openSessions: 0,
+            });
+          } else {
+            expect(started).toMatchObject({ disposition: 'succeeded', body: { state: 'started' } });
+            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+              state: 'failed',
+              cleanupState: stop === 'unproved' ? 'unknown' : 'clean',
+              childState: stop === 'unproved' ? 'unknown' : 'absent',
+            });
+            expect(await send('session.close', selector('as-r8'))).toMatchObject({
+              disposition: 'refused',
+              body: { reasonCode: 'cleanup_required' },
+            });
+            expect((await send('session.inspect', selector('as-r8'))).body).toMatchObject({
+              cleanupState: 'unknown',
+              state: 'failed',
+            });
+            expect((await send('harness.drain', {})).body).toMatchObject({
+              activeTurns: stop === 'unproved' ? 1 : 0,
+              openSessions: 1,
+            });
+          }
+        } finally {
+          if (stop === 'unproved') {
+            native.kill = kill;
+            kill('SIGKILL');
+            await residents[0]!.exited;
+          }
+          for (const id of ['as-r8', 'as-r8-successor'])
+            await send('session.close', selector(id)).catch(() => undefined);
         }
-      } finally {
-        if (stop === 'unproved') {
-          native.kill = kill;
-          kill('SIGKILL');
-          await residents[0]!.exited;
-        }
-        for (const id of ['as-r8', 'as-r8-successor'])
-          await send('session.close', selector(id)).catch(() => undefined);
-      }
-    }, 60000);
+      },
+      fixtureTimeoutMs
+    );
+  }
 });
 
 it.each([

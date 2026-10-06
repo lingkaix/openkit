@@ -91,6 +91,8 @@ DeepSeek malformed-frame and stdout-tail regressions allow five seconds for comp
 
 The OpenCode managed Skill escape setup regression keeps the production close windows and records EOF, signal, exit and stream-close timing plus any rejected cleanup settlement. It still requires a clean start refusal, no inference, no escape link and successful retained close proof.
 
+The R8 forced pre-prompt cleanup fixture derives its outer timeout from two shared native-open allowances plus one native-stop allowance (130 seconds). It deliberately withholds stdin EOF, so preparation can spend its complete graceful-drain work window after session open before the Harness proves bounded cleanup. The other R8 cases keep their 60-second fixture budgets. Native RPC and signal windows, no-prompt assertions, confirmed host absence, rejected retaining close and the Harness release fence remain unchanged.
+
 OpenCode native failure diagnostics preserve up to eight cause levels with each cause's code and message, so SDK transport failures expose the underlying fetch/socket reason. Cycles stop traversal; request and socket metadata are not serialized. The existing 16 KiB UTF-8 bound and exact credential redaction apply after formatting, and HTTP URLs are omitted because vendor messages may contain unknown URL credentials. Diagnostic enrichment does not retry native requests or alter stop, settlement or persistence-flush proof.
 
 Rejected-settlement regressions wait for the inspected cleanup outcome after interrupt invocation; the invocation counter alone does not prove that asynchronous input removal finished.
