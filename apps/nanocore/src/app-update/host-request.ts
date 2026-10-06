@@ -1,9 +1,10 @@
 import {
-  AppUpdateHostErrorSchema,
+  AppUpdateHostErrorReaderSchema,
   AppUpdateImageDigestSchema,
   AppUpdateRequestIdSchema,
   AppUpdateSourceSchema,
-  AppUpdateStatusResponseSchema,
+  AppUpdateStatusResponseReaderSchema,
+  type AppUpdateStatusResponseSchema,
 } from '@openkit/app-api-schemas';
 import { z } from 'zod';
 
@@ -111,12 +112,12 @@ export function parseAppUpdateHostOutput(
     };
   }
 
-  const error = AppUpdateHostErrorSchema.safeParse(parsed);
+  const error = AppUpdateHostErrorReaderSchema.safeParse(parsed);
   if (error.success) {
     return { ok: false, code: error.data.error.code, message: error.data.error.message };
   }
 
-  const status = AppUpdateStatusResponseSchema.safeParse(parsed);
+  const status = AppUpdateStatusResponseReaderSchema.safeParse(parsed);
   if (!status.success) {
     return {
       ok: false,

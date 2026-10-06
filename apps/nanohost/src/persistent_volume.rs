@@ -134,6 +134,8 @@ pub struct StorageMount {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StoredTarget {
+    /// Owned descriptive additions retained only in identity.json, never in mount or result projections.
+    extensions: serde_json::Map<String, Value>,
     target: String,
     volume_ref: String,
     initialized: bool,
@@ -141,12 +143,16 @@ struct StoredTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StoredAttachment {
+    /// Owned descriptive additions retained only in identity.json, never in mount or result projections.
+    extensions: serde_json::Map<String, Value>,
     generation: u64,
     sandbox_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StorageMetadata {
+    /// Owned descriptive additions retained only in identity.json, never in mount or result projections.
+    extensions: serde_json::Map<String, Value>,
     storage_ref: String,
     scope_digest: String,
     layout_digest: String,
@@ -416,6 +422,7 @@ impl PersistentVolumeStore {
             }
             metadata.state = "initializing".to_string();
             metadata.targets.push(StoredTarget {
+                extensions: serde_json::Map::new(),
                 target: binding.target.clone(),
                 volume_ref: binding.volume_ref.clone(),
                 initialized: false,
@@ -455,6 +462,12 @@ impl PersistentVolumeStore {
         metadata.attachment_generation = request.attachment_generation;
         metadata.state = "attached".to_string();
         metadata.attachment = Some(StoredAttachment {
+            // Existing attachments were identity-checked above; a retry preserves their observations.
+            extensions: metadata
+                .attachment
+                .as_ref()
+                .map(|attachment| attachment.extensions.clone())
+                .unwrap_or_default(),
             generation: request.attachment_generation,
             sandbox_id: sandbox_id.to_string(),
         });
@@ -650,6 +663,7 @@ impl PersistentVolumeStore {
                 .create(association.join("volumes"))
                 .map_err(|_| "persistent storage association unavailable")?;
             let metadata = StorageMetadata {
+                extensions: serde_json::Map::new(),
                 storage_ref: request.storage_ref.clone(),
                 scope_digest: request.scope_digest.clone(),
                 layout_digest: request.layout_digest.clone(),
@@ -1639,8 +1653,15 @@ fn validate_seed_tree(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Rewrites known identity facts while preserving only additions retained by the same metadata owner.
+fn metadata_with_extensions(core: Value, extensions: &serde_json::Map<String, Value>) -> Value {
+    let mut fields = extensions.clone();
+    fields.extend(core.as_object().expect("metadata object").clone());
+    Value::Object(fields)
+}
+
 fn encode_metadata(metadata: &StorageMetadata) -> Result<Vec<u8>, &'static str> {
-    serde_json::to_vec(&json!({
+    serde_json::to_vec(&metadata_with_extensions(json!({
         "schemaVersion": 1,
         "storageRef": metadata.storage_ref,
         "scopeDigest": metadata.scope_digest,
@@ -1653,16 +1674,16 @@ fn encode_metadata(metadata: &StorageMetadata) -> Result<Vec<u8>, &'static str> 
         "architecture": metadata.architecture,
         "attachmentGeneration": metadata.attachment_generation,
         "state": metadata.state,
-        "attachment": metadata.attachment.as_ref().map(|attachment| json!({
+        "attachment": metadata.attachment.as_ref().map(|attachment| metadata_with_extensions(json!({
             "generation": attachment.generation,
             "sandboxId": attachment.sandbox_id,
-        })),
-        "targets": metadata.targets.iter().map(|target| json!({
+        }), &attachment.extensions)),
+        "targets": metadata.targets.iter().map(|target| metadata_with_extensions(json!({
             "target": target.target,
             "volumeRef": target.volume_ref,
             "initialized": target.initialized,
-        })).collect::<Vec<_>>(),
-    }))
+        }), &target.extensions)).collect::<Vec<_>>(),
+    }), &metadata.extensions))
     .map_err(|_| "persistent storage metadata invalid")
 }
 
@@ -1671,7 +1692,6 @@ fn decode_metadata(bytes: &[u8]) -> Result<StorageMetadata, &'static str> {
         serde_json::from_slice(bytes).map_err(|_| "persistent storage metadata invalid")?;
     let object = value
         .as_object()
-        .filter(|object| object.len() == 14)
         .ok_or("persistent storage metadata invalid")?;
     for key in [
         "schemaVersion",
@@ -1750,11 +1770,14 @@ fn decode_metadata(bytes: &[u8]) -> Result<StorageMetadata, &'static str> {
     let attachment = match object.get("attachment") {
         Some(Value::Null) => None,
         Some(Value::Object(attachment))
-            if attachment.len() == 2
-                && attachment.contains_key("generation")
-                && attachment.contains_key("sandboxId") =>
+            if attachment.contains_key("generation") && attachment.contains_key("sandboxId") =>
         {
             Some(StoredAttachment {
+                extensions: attachment
+                    .iter()
+                    .filter(|(key, _)| !["generation", "sandboxId"].contains(&key.as_str()))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
                 generation: attachment
                     .get("generation")
                     .and_then(Value::as_u64)
@@ -1784,8 +1807,7 @@ fn decode_metadata(bytes: &[u8]) -> Result<StorageMetadata, &'static str> {
             let target = target
                 .as_object()
                 .filter(|target| {
-                    target.len() == 3
-                        && target.contains_key("target")
+                    target.contains_key("target")
                         && target.contains_key("volumeRef")
                         && target.contains_key("initialized")
                 })
@@ -1803,6 +1825,13 @@ fn decode_metadata(bytes: &[u8]) -> Result<StorageMetadata, &'static str> {
             validate_target(&path)?;
             validate_opaque_ref(&volume_ref)?;
             Ok(StoredTarget {
+                extensions: target
+                    .iter()
+                    .filter(|(key, _)| {
+                        !["target", "volumeRef", "initialized"].contains(&key.as_str())
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
                 target: path,
                 volume_ref,
                 initialized: target
@@ -1830,6 +1859,29 @@ fn decode_metadata(bytes: &[u8]) -> Result<StorageMetadata, &'static str> {
         return Err("persistent storage metadata invalid");
     }
     Ok(StorageMetadata {
+        extensions: object
+            .iter()
+            .filter(|(key, _)| {
+                ![
+                    "schemaVersion",
+                    "storageRef",
+                    "scopeDigest",
+                    "layoutDigest",
+                    "uid",
+                    "gid",
+                    "family",
+                    "version",
+                    "os",
+                    "architecture",
+                    "attachmentGeneration",
+                    "state",
+                    "attachment",
+                    "targets",
+                ]
+                .contains(&key.as_str())
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
         storage_ref,
         scope_digest,
         layout_digest,
@@ -1978,10 +2030,12 @@ pub(crate) mod tests {
         metadata.attachment_generation = generation;
         metadata.state = "attached".into();
         metadata.attachment = Some(StoredAttachment {
+            extensions: serde_json::Map::new(),
             generation,
             sandbox_id: sandbox_id.into(),
         });
         metadata.targets.push(StoredTarget {
+            extensions: serde_json::Map::new(),
             target: "/workspace".into(),
             volume_ref: request.targets[0].volume_ref.clone(),
             initialized: true,
@@ -2532,6 +2586,7 @@ pub(crate) mod tests {
     #[test]
     fn metadata_round_trip_preserves_only_host_identity_facts() {
         let metadata = StorageMetadata {
+            extensions: serde_json::Map::new(),
             storage_ref: "storage-one".into(),
             scope_digest: digest('c'),
             layout_digest: digest('d'),
@@ -2544,10 +2599,12 @@ pub(crate) mod tests {
             attachment_generation: 2,
             state: "attached".into(),
             attachment: Some(StoredAttachment {
+                extensions: serde_json::Map::new(),
                 generation: 2,
                 sandbox_id: "sandbox-one".into(),
             }),
             targets: vec![StoredTarget {
+                extensions: serde_json::Map::new(),
                 target: "/workspace".into(),
                 volume_ref: "volume-one".into(),
                 initialized: true,
@@ -2557,6 +2614,81 @@ pub(crate) mod tests {
             decode_metadata(&encode_metadata(&metadata).unwrap()).unwrap(),
             metadata
         );
+    }
+
+    #[test]
+    fn retained_metadata_annotations_survive_file_rewrite_and_reopen() {
+        let root = temporary_root();
+        let store = test_store(&root);
+        let (association, volume) = stored_association(&store, "storage-one", "sandbox-one", 3);
+        fs::write(volume.join("retained.txt"), b"retained work").unwrap();
+        let metadata = store.read_metadata(&association).unwrap();
+        let mut extended: Value =
+            serde_json::from_slice(&encode_metadata(&metadata).unwrap()).unwrap();
+        extended["futureAnnotation"] = json!({"note": "root"});
+        extended["attachment"]["futureAnnotation"] = json!("attachment");
+        extended["targets"][0]["futureAnnotation"] = json!(["target"]);
+        let path = association.join("identity.json");
+        fs::write(&path, serde_json::to_vec(&extended).unwrap()).unwrap();
+        let read = store.read_metadata(&association).unwrap();
+        assert_eq!(read.storage_ref, metadata.storage_ref);
+        assert_eq!(read.scope_digest, metadata.scope_digest);
+        assert_eq!(read.layout_digest, metadata.layout_digest);
+        assert_eq!(read.attachment_generation, 3);
+        store.write_metadata(&association, &read).unwrap();
+        let mut reopened = test_store(&root);
+        assert_eq!(reopened.read_metadata(&association).unwrap(), read);
+        let layout = ImageStorageLayout {
+            digest: digest('a'),
+            family: read.family.clone(),
+            version: read.version.clone(),
+            uid: read.uid,
+            gid: read.gid,
+            working_directory: "/tmp/openkit-bootstrap".into(),
+            os: read.os.clone(),
+            architecture: read.architecture.clone(),
+            targets: vec!["/workspace".into()],
+            environment_defaults: parse_environment_defaults(None).unwrap(),
+        };
+        let request = StorageAttachmentRequest {
+            storage_ref: read.storage_ref.clone(),
+            scope_digest: read.scope_digest.clone(),
+            attachment_generation: read.attachment_generation,
+            layout_digest: layout.layout_digest(),
+            targets: vec![StorageTargetBinding {
+                target: read.targets[0].target.clone(),
+                volume_ref: read.targets[0].volume_ref.clone(),
+            }],
+        };
+        let mounts = reopened.attach("sandbox-one", &request, &layout).unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].target, "/workspace");
+        assert_eq!(mounts[0].source, volume);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(),
+            extended
+        );
+        assert_eq!(
+            fs::read(volume.join("retained.txt")).unwrap(),
+            b"retained work"
+        );
+        assert!(
+            !reopened
+                .inspect("storage-one", 3)
+                .to_string()
+                .contains("futureAnnotation")
+        );
+        for (key, value) in [
+            ("schemaVersion", json!(2)),
+            ("os", json!("future")),
+            ("state", json!("future")),
+            ("attachmentGeneration", json!(4)),
+        ] {
+            let mut bad = extended.clone();
+            bad[key] = value;
+            assert!(decode_metadata(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

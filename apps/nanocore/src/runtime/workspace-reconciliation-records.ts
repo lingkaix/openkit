@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   type WorkerOutputManifest,
   type WorkspaceReconciliationRecord,
+  WorkspaceReconciliationRecordReaderSchema,
   WorkspaceReconciliationRecordSchema,
   type WorkspaceRecoveryDecision,
 } from '@openkit/app-api-schemas';
@@ -18,7 +20,7 @@ interface ResumeWorkspaceRecoveryCollectionInput {
 }
 
 /**
- * Persists one durable workspace reconciliation record.
+ * Persists known reconciliation facts while preserving owned annotations and unchanged payload bytes.
  *
  * @param workspaceDb Open workspace-scope database handle.
  * @param record Reconciliation record to persist.
@@ -29,6 +31,25 @@ export function recordWorkspaceReconciliationRecord(
   record: WorkspaceReconciliationRecord
 ): WorkspaceReconciliationRecord {
   const parsed = WorkspaceReconciliationRecordSchema.parse(record);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      'SELECT payload_json FROM workspace_reconciliation_records WHERE workspace_id = ? AND reconciliation_record_id = ?'
+    )
+    .get(parsed.workspaceId, parsed.id) as WorkspaceReconciliationRecordRow | undefined;
+  const retained = existing ? JSON.parse(existing.payload_json) : null;
+  const retainedCore = existing ? WorkspaceReconciliationRecordReaderSchema.parse(retained) : null;
+  // Only fixed known facts change; retained root and reachability additions stay with this owner.
+  const payload = existing
+    ? {
+        ...retained,
+        ...parsed,
+        backendReachability: { ...retained.backendReachability, ...parsed.backendReachability },
+      }
+    : parsed;
+  const payloadJson =
+    existing && isDeepStrictEqual(retainedCore, parsed)
+      ? existing.payload_json
+      : JSON.stringify(payload);
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_reconciliation_records (
@@ -53,7 +74,7 @@ export function recordWorkspaceReconciliationRecord(
       parsed.workspaceId,
       parsed.triggerReason,
       parsed.stateAfter,
-      JSON.stringify(parsed),
+      payloadJson,
       parsed.startedAt,
       parsed.finishedAt,
       parsed.finishedAt ?? parsed.startedAt
@@ -84,7 +105,7 @@ export function listWorkspaceReconciliationRecords(
       .all(workspaceId) as WorkspaceReconciliationRecordRow[]
   )
     .map((row) =>
-      WorkspaceReconciliationRecordSchema.parse(JSON.parse(row.payload_json) as unknown)
+      WorkspaceReconciliationRecordReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
     )
     .reverse();
 }

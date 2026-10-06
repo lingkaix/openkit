@@ -2,17 +2,23 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type BackendWorkspaceHandle,
+  BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
   type StagedWorkspaceReview,
+  StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
   type StagedWorkspaceReviewStatus,
   type WorkerOutputManifest,
+  WorkerOutputManifestReaderSchema,
   WorkerOutputManifestSchema,
   type WorkspaceChangeSet,
+  WorkspaceChangeSetReaderSchema,
   WorkspaceChangeSetSchema,
   type WorkspaceInputSnapshot,
+  WorkspaceInputSnapshotReaderSchema,
   WorkspaceInputSnapshotSchema,
   type WorkspaceMaterializationRecord,
+  WorkspaceMaterializationRecordReaderSchema,
   WorkspaceMaterializationRecordSchema,
   WorkspaceSynchronizationBackendKindSchema,
   type WorkspaceSyncReviewItem,
@@ -463,6 +469,12 @@ export function updateWorkspaceSyncReviewDecision(
     );
   }
 
+  // Preserve the validated owner's original nested observations when only decision facts change.
+  const retainedReview = workspaceDb.sqlite
+    .prepare(
+      'SELECT payload_json FROM staged_workspace_reviews WHERE workspace_id = ? AND review_id = ?'
+    )
+    .get(input.workspaceId, input.reviewId) as { payload_json: string };
   const review = StagedWorkspaceReviewSchema.parse({
     ...item.review,
     status: input.status,
@@ -477,7 +489,11 @@ export function updateWorkspaceSyncReviewDecision(
     )
     .run(
       review.status,
-      JSON.stringify(review),
+      JSON.stringify({
+        ...JSON.parse(retainedReview.payload_json),
+        status: review.status,
+        updatedAt: review.updatedAt,
+      }),
       review.updatedAt,
       input.workspaceId,
       input.reviewId
@@ -514,7 +530,7 @@ export function listWorkspaceInputSnapshots(
     workspaceDb,
     'workspace_input_snapshots',
     workspaceId,
-    WorkspaceInputSnapshotSchema
+    WorkspaceInputSnapshotReaderSchema
   );
 }
 
@@ -533,7 +549,7 @@ export function listWorkspaceMaterializationRecords(
     workspaceDb,
     'workspace_materialization_records',
     workspaceId,
-    WorkspaceMaterializationRecordSchema
+    WorkspaceMaterializationRecordReaderSchema
   );
 }
 
@@ -552,7 +568,7 @@ export function listWorkspaceChangeSets(
     workspaceDb,
     'workspace_change_sets',
     workspaceId,
-    WorkspaceChangeSetSchema
+    WorkspaceChangeSetReaderSchema
   );
 }
 
@@ -571,7 +587,7 @@ export function listWorkerOutputManifests(
     workspaceDb,
     'worker_output_manifests',
     workspaceId,
-    WorkerOutputManifestSchema
+    WorkerOutputManifestReaderSchema
   );
 }
 
@@ -715,7 +731,9 @@ function recordWorkspaceInputSnapshot(
     )
     .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
   if (existing) {
-    const stored = WorkspaceInputSnapshotSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    const stored = WorkspaceInputSnapshotReaderSchema.parse(
+      JSON.parse(existing.payload_json) as unknown
+    );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Workspace input snapshot replay conflict: ${parsed.id}`);
     }
@@ -765,7 +783,7 @@ function recordWorkspaceMaterializationRecord(
     )
     .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
   if (existing) {
-    const stored = WorkspaceMaterializationRecordSchema.parse(
+    const stored = WorkspaceMaterializationRecordReaderSchema.parse(
       JSON.parse(existing.payload_json) as unknown
     );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
@@ -844,7 +862,7 @@ export function listBackendWorkspaceHandles(
     workspaceDb,
     'backend_workspace_handles',
     workspaceId,
-    BackendWorkspaceHandleSchema
+    BackendWorkspaceHandleReaderSchema
   );
 }
 
@@ -1044,18 +1062,21 @@ export function updateBackendWorkspaceHandleCleanupStatus(
     )
     .all(workspaceId, packageSnapshotId) as Array<{ payload_json: string }>;
   const resolved = rows.map((row) => {
-    const handle = BackendWorkspaceHandleSchema.parse(JSON.parse(row.payload_json) as unknown);
+    const handle = BackendWorkspaceHandleReaderSchema.parse(
+      JSON.parse(row.payload_json) as unknown
+    );
     const effectiveCleanupStatus =
       cleanupStatus === 'retained' && ['cleaned', 'failed'].includes(handle.cleanupStatus)
         ? handle.cleanupStatus
         : cleanupStatus;
 
     if (effectiveCleanupStatus === handle.cleanupStatus) {
-      return { changed: false, handle };
+      return { changed: false, handle, retained: row.payload_json };
     }
 
     return {
       changed: true,
+      retained: row.payload_json,
       handle: BackendWorkspaceHandleSchema.parse({
         ...handle,
         cleanupStatus: effectiveCleanupStatus,
@@ -1064,7 +1085,7 @@ export function updateBackendWorkspaceHandleCleanupStatus(
     };
   });
 
-  for (const { changed, handle } of resolved) {
+  for (const { changed, handle, retained } of resolved) {
     if (!changed) {
       continue;
     }
@@ -1074,7 +1095,16 @@ export function updateBackendWorkspaceHandleCleanupStatus(
          SET payload_json = ?, updated_at = ?
          WHERE workspace_id = ? AND backend_workspace_handle_id = ?`
       )
-      .run(JSON.stringify(handle), updatedAt, workspaceId, handle.id);
+      .run(
+        JSON.stringify({
+          ...JSON.parse(retained),
+          cleanupStatus: handle.cleanupStatus,
+          updatedAt: handle.updatedAt,
+        }),
+        updatedAt,
+        workspaceId,
+        handle.id
+      );
   }
 
   return resolved.map(({ handle }) => handle);
@@ -1101,7 +1131,9 @@ function recordBackendWorkspaceHandle(
     )
     .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
   if (existing) {
-    const stored = BackendWorkspaceHandleSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    const stored = BackendWorkspaceHandleReaderSchema.parse(
+      JSON.parse(existing.payload_json) as unknown
+    );
     const replayed = preserveCleanupProgress
       ? { ...parsed, cleanupStatus: stored.cleanupStatus, updatedAt: stored.updatedAt }
       : parsed;
@@ -1156,7 +1188,9 @@ export function recordWorkerOutputManifest(
     )
     .get(parsed.workspaceId, parsed.id) as { payload_json: string } | undefined;
   if (existing) {
-    const stored = WorkerOutputManifestSchema.parse(JSON.parse(existing.payload_json) as unknown);
+    const stored = WorkerOutputManifestReaderSchema.parse(
+      JSON.parse(existing.payload_json) as unknown
+    );
     if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
       throw new Error(`Worker output manifest replay conflict: ${parsed.id}`);
     }
@@ -1271,7 +1305,9 @@ function getWorkspaceInputSnapshot(
     )
     .get(workspaceId, inputSnapshotId) as { payload_json: string } | undefined;
 
-  return row ? WorkspaceInputSnapshotSchema.parse(JSON.parse(row.payload_json) as unknown) : null;
+  return row
+    ? WorkspaceInputSnapshotReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
+    : null;
 }
 
 /**
@@ -1296,7 +1332,7 @@ function getWorkspaceMaterializationRecord(
     .get(workspaceId, materializationRecordId) as { payload_json: string } | undefined;
 
   return row
-    ? WorkspaceMaterializationRecordSchema.parse(JSON.parse(row.payload_json) as unknown)
+    ? WorkspaceMaterializationRecordReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
     : null;
 }
 
@@ -1317,7 +1353,7 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
     .get(changeSet.workspaceId, changeSet.id) as { payload_json: string } | undefined;
   if (existing) {
     const existingPayloadJson = JSON.stringify(
-      WorkspaceChangeSetSchema.parse(JSON.parse(existing.payload_json) as unknown)
+      WorkspaceChangeSetReaderSchema.parse(JSON.parse(existing.payload_json) as unknown)
     );
     if (existingPayloadJson !== payloadJson) {
       throw new Error(`Workspace change set replay conflict: ${changeSet.id}`);
@@ -1381,7 +1417,7 @@ function withMaterializationSourceId(
     return changeSet;
   }
 
-  const materialization = WorkspaceMaterializationRecordSchema.parse(
+  const materialization = WorkspaceMaterializationRecordReaderSchema.parse(
     JSON.parse(row.payload_json) as unknown
   );
 
@@ -1426,18 +1462,21 @@ function mapWorkspaceReviewRow(
   workspaceDb: WorkspaceDb,
   row: StagedWorkspaceReviewRow
 ): WorkspaceSyncReviewItem {
-  const review = StagedWorkspaceReviewSchema.parse(JSON.parse(row.payload_json) as unknown);
+  const review = StagedWorkspaceReviewReaderSchema.parse(JSON.parse(row.payload_json) as unknown);
   const changeSet = requireWorkspaceChangeSet(workspaceDb, row.workspace_id, review.changeSetId);
   const patchPayload = row.patch_payload_json
     ? WorkspaceSyncReviewPatchPayloadSchema.parse(JSON.parse(row.patch_payload_json) as unknown)
     : null;
 
-  return {
-    artifactId: row.artifact_id,
-    changeSet,
-    patchPayload,
-    review,
-  };
+  return parseWorkspaceSyncReviewItem(
+    {
+      artifactId: row.artifact_id,
+      changeSet,
+      patchPayload,
+      review,
+    },
+    false
+  );
 }
 
 /**
@@ -1477,7 +1516,7 @@ function requireWorkspaceChangeSet(
     );
   }
 
-  return WorkspaceChangeSetSchema.parse(JSON.parse(row.payload_json) as unknown);
+  return WorkspaceChangeSetReaderSchema.parse(JSON.parse(row.payload_json) as unknown);
 }
 
 /**

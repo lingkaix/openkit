@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,11 +6,87 @@ import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
+  getWorkspaceApplyResult,
+  listExportableWorkspaceApplyResults,
   type RecordWorkspaceApplyResultInput,
   recordWorkspaceApplyResult,
 } from './workspace-apply-results.js';
 
 describe('workspace apply results', () => {
+  it('normalizes retained verification additions and preserves exact replay bytes after reopening', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-apply-result-extensions-'));
+    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const input: RecordWorkspaceApplyResultInput = {
+      requestId: 'request_apply_extensions',
+      result: {
+        id: 'war_extensions',
+        workspaceId: 'ws_demo',
+        reviewId: 'swr_extensions',
+        changeSetId: 'wcs_extensions',
+        status: 'conflicted',
+        appliedPaths: ['src/applied.ts'],
+        skippedPaths: ['src/conflict.ts'],
+        conflictRecords: ['Changed since staging'],
+        verification: [{ command: 'pnpm test', status: 'passed', ref: null }],
+        commitIds: [],
+        appliedAt: '2026-07-05T00:00:00.000Z',
+      },
+    };
+    try {
+      applyScopedMigrations(db);
+      recordWorkspaceApplyResult(db, input);
+      const verification = JSON.stringify(
+        input.result.verification.map((item) => ({
+          ...item,
+          futureAnnotation: { note: 'retained verification' },
+        })),
+        null,
+        2
+      );
+      db.sqlite
+        .prepare('UPDATE workspace_apply_results SET verification_json = ?')
+        .run(verification);
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      expect(getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toEqual(input.result);
+      expect(listExportableWorkspaceApplyResults(db, 'ws_demo')).toEqual([
+        { ...input.result, requestId: input.requestId },
+      ]);
+      expect(recordWorkspaceApplyResult(db, input)).toEqual(input.result);
+      expect(
+        db.sqlite.prepare('SELECT verification_json FROM workspace_apply_results').get()
+      ).toEqual({
+        verification_json: verification,
+      });
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      expect(getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toEqual(input.result);
+      for (const invalid of [
+        [{ ...input.result.verification[0], status: 'future', futureAnnotation: true }],
+        [{ ...input.result.verification[0], command: '', futureAnnotation: true }],
+      ]) {
+        db.sqlite
+          .prepare('UPDATE workspace_apply_results SET verification_json = ?')
+          .run(JSON.stringify(invalid));
+        expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+      }
+      db.sqlite
+        .prepare('UPDATE workspace_apply_results SET verification_json = ?, status = ?')
+        .run(verification, 'future');
+      expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+      db.sqlite
+        .prepare('UPDATE workspace_apply_results SET status = ?, conflict_records_json = ?')
+        .run(
+          'conflicted',
+          JSON.stringify([{ message: 'not a known conflict string', futureAnnotation: true }])
+        );
+      expect(() => getWorkspaceApplyResult(db, 'ws_demo', input.result.id)).toThrow();
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('records one linked audit event when an apply result is stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');

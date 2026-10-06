@@ -4,6 +4,7 @@ import {
   ArchivedGitPushRecordSchema,
   ArchivedWorkspaceRepositoryGitConfigSchema,
   ArtifactReviewViewSchema,
+  BackendWorkspaceHandleReaderSchema,
   BackendWorkspaceHandleSchema,
   EvidenceBundleRecordSchema,
   GoalCardSchema,
@@ -16,16 +17,23 @@ import {
   KnowledgeObservationSchema,
   KnowledgeRetrievalResponseSchema,
   RuntimeEvidenceRecordSchema,
+  StagedWorkspaceReviewReaderSchema,
   StagedWorkspaceReviewSchema,
+  WorkerOutputManifestReaderSchema,
   WorkerOutputManifestSchema,
   WorkspaceApplyPlanSchema,
+  WorkspaceApplyResultReaderSchema,
   WorkspaceApplyResultSchema,
+  WorkspaceChangeSetReaderSchema,
   WorkspaceChangeSetSchema,
+  WorkspaceInputSnapshotReaderSchema,
   WorkspaceInputSnapshotSchema,
+  WorkspaceMaterializationRecordReaderSchema,
   WorkspaceMaterializationRecordSchema,
   WorkspaceMaterialRevisionViewSchema,
   WorkspaceMaterialViewSchema,
   WorkspaceQuarantineRecordSchema,
+  WorkspaceReconciliationRecordReaderSchema,
   WorkspaceReconciliationRecordSchema,
   WorkspaceSyncReviewPatchPayloadSchema,
 } from '@openkit/app-api-schemas';
@@ -293,11 +301,21 @@ const ExportedStagedWorkspaceReviewSchema = z
 
 type ExportedStagedWorkspaceReview = z.infer<typeof ExportedStagedWorkspaceReviewSchema>;
 
+/** Portable review source reader; target emission still uses the exact review core. */
+const ExportedStagedWorkspaceReviewReaderSchema = ExportedStagedWorkspaceReviewSchema.safeExtend({
+  review: StagedWorkspaceReviewReaderSchema,
+});
+
 const ExportedWorkspaceApplyResultSchema = WorkspaceApplyResultSchema.extend({
   requestId: z.string().min(1),
 }).strip();
 
 type ExportedWorkspaceApplyResult = z.infer<typeof ExportedWorkspaceApplyResultSchema>;
+
+/** Portable apply-result observation with its required retained replay identity. */
+const ExportedWorkspaceApplyResultReaderSchema = WorkspaceApplyResultReaderSchema.safeExtend({
+  requestId: z.string().min(1),
+}).strip();
 
 const ExportedWorkspacePermissionDecisionSchema = z
   .object({
@@ -2198,7 +2216,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-input-snapshots.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceInputSnapshotSchema.parse(record);
+    const parsed = WorkspaceInputSnapshotReaderSchema.parse(record);
 
     return WorkspaceInputSnapshotSchema.parse({
       ...parsed,
@@ -2209,7 +2227,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-materialization-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceMaterializationRecordSchema.parse(record);
+    const parsed = WorkspaceMaterializationRecordReaderSchema.parse(record);
 
     return WorkspaceMaterializationRecordSchema.parse({
       ...parsed,
@@ -2230,7 +2248,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/backend-workspace-handles.jsonl'
   ).map((record) => {
-    const parsed = BackendWorkspaceHandleSchema.parse(record);
+    const parsed = BackendWorkspaceHandleReaderSchema.parse(record);
 
     return BackendWorkspaceHandleSchema.parse({
       ...parsed,
@@ -2254,7 +2272,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/worker-output-manifests.jsonl'
   ).map((record) => {
-    const parsed = WorkerOutputManifestSchema.parse(record);
+    const parsed = WorkerOutputManifestReaderSchema.parse(record);
 
     return WorkerOutputManifestSchema.parse({
       ...parsed,
@@ -2269,7 +2287,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-change-sets.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceChangeSetSchema.parse(record);
+    const parsed = WorkspaceChangeSetReaderSchema.parse(record);
 
     return WorkspaceChangeSetSchema.parse({
       ...parsed,
@@ -2284,7 +2302,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/staged-workspace-reviews.jsonl'
   ).map((record) => {
-    const parsed = ExportedStagedWorkspaceReviewSchema.parse(record);
+    const parsed = ExportedStagedWorkspaceReviewReaderSchema.parse(record);
 
     return ExportedStagedWorkspaceReviewSchema.parse({
       ...parsed,
@@ -2307,7 +2325,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-apply-results.jsonl'
   ).map((record) => {
-    const parsed = ExportedWorkspaceApplyResultSchema.parse(record);
+    const parsed = ExportedWorkspaceApplyResultReaderSchema.parse(record);
 
     return ExportedWorkspaceApplyResultSchema.parse({
       ...parsed,
@@ -2329,7 +2347,7 @@ function readWorkspaceSyncImportState(context: ImportRemintContext) {
     context.files,
     'records/workspace-reconciliation-records.jsonl'
   ).map((record) => {
-    const parsed = WorkspaceReconciliationRecordSchema.parse(record);
+    const parsed = WorkspaceReconciliationRecordReaderSchema.parse(record);
 
     return WorkspaceReconciliationRecordSchema.parse({
       ...parsed,

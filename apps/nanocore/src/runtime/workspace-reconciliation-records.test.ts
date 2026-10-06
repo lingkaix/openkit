@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +14,100 @@ import {
 const timestamp = '2026-07-08T00:00:00.000Z';
 
 describe('workspace reconciliation records', () => {
+  it('preserves retained annotations and unchanged bytes through updates, recovery and reopening', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-reconciliation-extensions-'));
+    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      applyScopedMigrations(db);
+      const original = recordWorkspaceReconciliationRecord(db, workspaceReconciliationRecord());
+      const extended = {
+        ...original,
+        futureAnnotation: { note: 'same owner', text: 'retained\nbytes' },
+        backendReachability: {
+          ...original.backendReachability,
+          futureAnnotation: ['retained observation'],
+        },
+      };
+      const payload = JSON.stringify(extended, null, 2);
+      db.sqlite
+        .prepare('UPDATE workspace_reconciliation_records SET payload_json = ?')
+        .run(payload);
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      expect(listWorkspaceReconciliationRecords(db, 'ws_demo')).toEqual([original]);
+      recordWorkspaceReconciliationRecord(db, original);
+      expect(
+        db.sqlite.prepare('SELECT payload_json FROM workspace_reconciliation_records').get()
+      ).toEqual({ payload_json: payload });
+      const inspected = {
+        ...original,
+        backendReachability: { ...original.backendReachability, detail: 'Inspected' },
+      };
+      recordWorkspaceReconciliationRecord(db, inspected);
+      const inspectedRow = db.sqlite
+        .prepare('SELECT payload_json FROM workspace_reconciliation_records')
+        .get() as { payload_json: string };
+      expect(JSON.parse(inspectedRow.payload_json)).toEqual({
+        ...extended,
+        backendReachability: { ...extended.backendReachability, detail: 'Inspected' },
+      });
+      const recovered = resolveWorkspaceReconciliationRecord({
+        workspaceDb: db,
+        workspaceId: 'ws_demo',
+        reconciliationRecordId: original.id,
+        decision: 'resume_collection',
+        decidedAt: '2026-07-08T00:10:00.000Z',
+        workerOutputManifests: [
+          {
+            id: 'wom_new',
+            workspaceId: 'ws_demo',
+            materializationRecordId: 'wmr_1',
+            inputSnapshotId: 'wis_1',
+            workerSessionId: 'session_1',
+            backendKind: 'openshell',
+            strategy: 'git',
+            changedPaths: [],
+            artifactIds: [],
+            logRefs: [],
+            testOutputRefs: [],
+            ignoredOutputs: [],
+            evidenceRefs: [],
+            collectedAt: timestamp,
+          },
+        ],
+      });
+      expect(recovered.stateAfter).toBe('recovered');
+      expect(recovered.backendReachability.status).toBe('unknown');
+      expect(JSON.stringify(recovered)).not.toContain('futureAnnotation');
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      expect(listWorkspaceReconciliationRecords(db, 'ws_demo')).toEqual([recovered]);
+      const row = db.sqlite
+        .prepare('SELECT payload_json FROM workspace_reconciliation_records')
+        .get() as { payload_json: string };
+      expect(JSON.parse(row.payload_json)).toEqual({
+        ...extended,
+        ...recovered,
+        backendReachability: { ...extended.backendReachability, ...recovered.backendReachability },
+      });
+      for (const change of [
+        { stateAfter: 'future' },
+        { triggerReason: 'future' },
+        { retentionDecision: 'future' },
+        { backendReachability: { ...extended.backendReachability, status: 'future' } },
+      ]) {
+        db.sqlite
+          .prepare('UPDATE workspace_reconciliation_records SET payload_json = ?')
+          .run(JSON.stringify({ ...extended, ...change }));
+        expect(() => listWorkspaceReconciliationRecords(db, 'ws_demo')).toThrow();
+        expect(() => recordWorkspaceReconciliationRecord(db, original)).toThrow();
+      }
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('records durable reconciliation state transitions', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-reconciliation-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');

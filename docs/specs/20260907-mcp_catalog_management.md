@@ -120,6 +120,8 @@ Implement configuration-version plus binding resolution, non-secret package fiel
 
 ## Testing Strategy / Acceptance Criteria
 
+Retained catalog framing, version provenance and binding observations ignore and preserve owned descriptive additions during revision-protected rewrites; public and Gateway projections include only known fields. Historical configuration identity remains the digest of the exact admitted declaration and package root, never a stripped declaration rehashed under its old digest. Executable transport declarations, credential bindings and sinks, and effect-facing binding authority remain exact, with corruption and stale revisions refused.
+
 1. Formatting-only changes retain configuration identity; semantic changes and package-root changes create new versions and change the effective `catalogDigest`. Binding changes affect effective identity independently of publisher/configuration labels.
 2. Imported stdio uses the verified package root when `cwd` is absent, receives correct reserved root/data variables, and preserves data across update and adoption. Expansion is nonrecursive, forbidden fields remain literal, and reserved-name or containment violations fail. Import stages inactive configurations without upstream contact. Missing bindings and unauthorized stdio activation fail; allowed HTTP and deployment-approved stdio use the existing governed Gateway.
 3. Compare-and-set updates reject stale writers. Rollback restores an exact configuration while preserving current grants, policy, schema choice, and mutable process data.

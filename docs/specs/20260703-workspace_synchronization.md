@@ -715,6 +715,10 @@ file APIs, and object-store transfer.
 
 ## Testing Strategy / Acceptance Criteria
 
+Retained input snapshots, materialization facts, backend handles, output manifests, change sets and staged reviews ignore unknown descriptive fields at every object level and expose only known fields to public and effect consumers. Exact replay preserves the original stored payload and patch bytes; review-decision and cleanup-status rewrites preserve owned descriptive additions while changing only their known mutable facts. Apply plans and rollback/preparation files remain exact instructions, and known lineage, paths, core values and patch integrity remain binding.
+
+Retained apply-result verification and reconciliation root/reachability observations also ignore descriptive additions in local and portable reads. Conflict summaries remain validated strings, and the declared backend-handle summary remains a consumed map. Reconciliation rewrites validate the retained known core, preserve owned root and reachability additions through state changes, and reuse original payload bytes when the known core is unchanged. Portable admission normalizes descriptive source rows before the existing target rewrite and exact emission; recovery decisions, apply plans, rollback and attachment authority remain exact.
+
 - Schema tests for workspace synchronization records, path safety, and raw-secret rejection.
 - Migration tests for synchronization, staging, and apply-result tables.
 - Runtime tests for input snapshot construction, materialization record construction, manifest parsing, path allowlists, and staged review creation.

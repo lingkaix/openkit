@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -30,6 +30,137 @@ const workspacePatchText = 'diff --git a/docs/loop.md b/docs/loop.md\n';
 const workspacePatchDigest = `sha256:${createHash('sha256').update(workspacePatchText).digest('hex')}`;
 
 describe('workspace sync records', () => {
+  it('reads extended retained payloads, preserves replay bytes and mutable annotations after reopen', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-extensions-'));
+    let db = openWorkspaceDb(dataRoot, 'ws_demo');
+    const fixture = workspaceSyncImportFixture();
+    fixture.inputSnapshots[0]!.generatedFiles.push({ id: 'generated', target: 'generated.txt' });
+    fixture.workerOutputManifests[0]!.logRefs.push({
+      kind: 'log',
+      ref: 'log://one',
+      digest: 'sha256:log',
+      bytes: 3,
+    });
+    fixture.workerOutputManifests[0]!.testOutputRefs.push({
+      kind: 'test',
+      ref: 'test://one',
+      digest: 'sha256:test',
+      bytes: 4,
+    });
+    fixture.workerOutputManifests[0]!.ignoredOutputs.push({
+      path: 'ignored.txt',
+      reason: 'ignored',
+    });
+    fixture.stagedReviews[0]!.review.validation.push({
+      command: 'test',
+      status: 'passed',
+      ref: null,
+    });
+    fixture.changeSets[0]!.bundle = { ref: 'bundle://one', digest: 'sha256:bundle', bytes: 5 };
+    fixture.changeSets[0]!.changedPaths[0]!.binaryReview = {
+      mode: 'artifact-only',
+      reason: 'binary-path',
+      summary: 'Binary',
+      digest: null,
+      mediaType: null,
+      bytes: null,
+    };
+    fixture.workerOutputManifests[0]!.changedPaths = fixture.changeSets[0]!.changedPaths;
+    const tables = [
+      'workspace_input_snapshots',
+      'workspace_materialization_records',
+      'backend_workspace_handles',
+      'worker_output_manifests',
+      'workspace_change_sets',
+      'staged_workspace_reviews',
+    ];
+    try {
+      applyScopedMigrations(db);
+      importWorkspaceSyncRecords(db, fixture);
+      const baseline = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      const retained = new Map<string, string>();
+      for (const table of tables) {
+        const row = db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get() as {
+          payload_json: string;
+        };
+        const json = JSON.stringify(annotateDescriptiveObjects(JSON.parse(row.payload_json)));
+        db.sqlite.prepare(`UPDATE ${table} SET payload_json = ?`).run(json);
+        retained.set(table, json);
+      }
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      const read = listExportableWorkspaceSyncRecords(db, 'ws_demo');
+      expect(JSON.stringify(read)).not.toContain('futureAnnotation');
+      expect(read).toEqual(baseline);
+      importWorkspaceSyncRecords(db, fixture);
+      for (const table of tables) {
+        expect(db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get()).toEqual({
+          payload_json: retained.get(table),
+        });
+      }
+      updateWorkspaceSyncReviewDecision(db, {
+        workspaceId: 'ws_demo',
+        reviewId: 'swr_1',
+        status: 'accepted',
+        requestId: 'decision_extensions',
+        updatedAt: '2026-07-05T00:01:00.000Z',
+      });
+      updateBackendWorkspaceHandleCleanupStatus(
+        db,
+        'ws_demo',
+        'aepsnap_1',
+        'retained',
+        '2026-07-05T00:01:00.000Z'
+      );
+      db.sqlite.close();
+      db = openWorkspaceDb(dataRoot, 'ws_demo');
+      expect(getWorkspaceSyncReview(db, 'ws_demo', 'swr_1')?.review.status).toBe('accepted');
+      expect(listBackendWorkspaceHandles(db, 'ws_demo')[0]?.cleanupStatus).toBe('retained');
+      for (const table of ['backend_workspace_handles', 'staged_workspace_reviews']) {
+        const row = db.sqlite.prepare(`SELECT payload_json FROM ${table}`).get() as {
+          payload_json: string;
+        };
+        const original = JSON.parse(retained.get(table)!);
+        const rewritten = JSON.parse(row.payload_json);
+        expect(rewritten).toEqual({
+          ...original,
+          ...(table === 'staged_workspace_reviews'
+            ? { status: 'accepted' }
+            : { cleanupStatus: 'retained' }),
+          updatedAt: '2026-07-05T00:01:00.000Z',
+        });
+      }
+      expect(JSON.stringify(listExportableWorkspaceSyncRecords(db, 'ws_demo'))).not.toContain(
+        'futureAnnotation'
+      );
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
+  it('refuses corrupted retained patch bytes after normalizing descriptive metadata', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-corrupt-retained-'));
+    const db = openWorkspaceDb(dataRoot, 'ws_demo');
+    try {
+      applyScopedMigrations(db);
+      importWorkspaceSyncRecords(db, workspaceSyncImportFixture());
+      const row = db.sqlite
+        .prepare('SELECT patch_payload_json FROM staged_workspace_reviews')
+        .get() as { patch_payload_json: string };
+      const patch = JSON.parse(row.patch_payload_json);
+      db.sqlite
+        .prepare('UPDATE staged_workspace_reviews SET patch_payload_json = ?')
+        .run(JSON.stringify({ ...patch, text: `${patch.text}corrupt`, futureAnnotation: true }));
+      expect(() => getWorkspaceSyncReview(db, 'ws_demo', 'swr_1')).toThrow(
+        /patch integrity conflict/
+      );
+    } finally {
+      db.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('rejects reviews without persisted input snapshot lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-sync-missing-input-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_demo');
@@ -1059,4 +1190,15 @@ function workspaceSyncImportFixture(): Parameters<typeof importWorkspaceSyncReco
       },
     ],
   };
+}
+
+/** Adds an inert annotation to every descriptive object in a retained test payload. */
+function annotateDescriptiveObjects(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(annotateDescriptiveObjects);
+  if (value && typeof value === 'object')
+    return Object.fromEntries([
+      ...Object.entries(value).map(([key, child]) => [key, annotateDescriptiveObjects(child)]),
+      ['futureAnnotation', 'retained'],
+    ]);
+  return value;
 }

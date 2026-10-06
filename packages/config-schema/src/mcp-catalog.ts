@@ -232,9 +232,9 @@ export type WorkspaceMcpServerCatalog = z.infer<typeof WorkspaceMcpServerCatalog
 /** Enabled catalog entry with its deterministic configuration digest. */
 export type ResolvedWorkspaceMcpServer = WorkspaceMcpServer & { readonly catalogDigest: string };
 
-/** Parses one strict Workspace MCP server catalog. */
+/** Parses descriptive catalog framing while keeping complete effect-facing server entries exact. */
 export function parseWorkspaceMcpServerCatalog(input: unknown): WorkspaceMcpServerCatalog {
-  return WorkspaceMcpServerCatalogSchema.parse(input);
+  return WorkspaceMcpServerCatalogSchema.strip().parse(input);
 }
 
 /** Resolves one enabled MCP server and stamps its stable catalog-entry digest, including transport, binding, and package-root identity. */

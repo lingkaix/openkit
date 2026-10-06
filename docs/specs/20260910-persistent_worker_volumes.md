@@ -166,6 +166,8 @@ Routine NanoCore/Web updates do not restart NanoHost or erase retained roots. A 
 
 ## Observable Acceptance
 
+Retained Host association metadata ignores unknown descriptive fields at its root, attachment and target objects and preserves them during same-association metadata rewrites. Mount and attachment instructions remain exact; descriptive additions neither change scope, layout, volume or generation identity nor appear in mount or inspection projections. Required identity fields, supported format/platform/state, ordered unique targets and attachment consistency remain mandatory.
+
 Read-only collection against association A never opens retained association B with the same slot spelling, including when only B contains that slot. Missing metadata, wrong ref or scope, wrong Sandbox or generation, detached, unknown, purging, or incomplete state, an uninitialized or absent `/workspace` target, a duplicate target mapping, or a current-epoch mismatch refuses collection and preserves retained bytes. Restart requires fresh live-attachment proof rather than stored metadata alone. Reattachment of the same association and selected volume under a new generation retains the same private scan store; different associations with identical slot names use distinct stores. File, FIFO, directory, or symbolic-link substitution before opening cannot bypass ownership, kind, and containment validation.
 
 - Preparation targets only the exact Server Agent manifest and binds its configuration-file SHA; a mismatched file, stale SHA or changed affected storage group cannot activate. The preview discloses all later admissions using a shared Agent; task-specific use selects a distinct Agent configuration and creates no Thread image override.

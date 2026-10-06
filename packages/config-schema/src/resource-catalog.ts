@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  digestMcpConfig,
   mcpCatalogContainsRawSecret,
   WorkspaceMcpCredentialBindingSchema,
   WorkspaceMcpToolNameSchema,
@@ -281,6 +282,130 @@ export const ResourceCatalogDocumentSchema = z
   })
   .strict();
 
+// Same-owner catalog rewrites retain descriptive additions; executable and credential subtrees remain exact.
+const CatalogProducerReaderSchema = CatalogProducerSchema.passthrough();
+const ResourceInventoryEntryReaderSchema = ResourceInventoryEntrySchema.passthrough();
+const SkillVersionRecordReaderSchema = SkillVersionRecordSchema.safeExtend({
+  inventory: z.array(ResourceInventoryEntryReaderSchema),
+  producer: CatalogProducerReaderSchema,
+  provenance: SkillVersionRecordSchema.shape.provenance.passthrough(),
+}).passthrough();
+const SkillCandidateRecordReaderSchema = SkillCandidateRecordSchema.safeExtend({
+  producer: CatalogProducerReaderSchema,
+}).passthrough();
+const PluginMemberRecordReaderSchema = PluginMemberRecordSchema.passthrough();
+const PluginVersionRecordReaderSchema = PluginVersionRecordSchema.safeExtend({
+  members: z.array(PluginMemberRecordReaderSchema),
+  provenance: PluginVersionRecordSchema.shape.provenance.passthrough(),
+}).passthrough();
+const PluginInstallationRecordReaderSchema = PluginInstallationRecordSchema.safeExtend({
+  memberOverrides: z.array(PluginMemberRecordReaderSchema).default([]),
+}).passthrough();
+const McpConfigVersionRecordReaderSchema = McpConfigVersionRecordSchema.safeExtend({
+  provenance: McpConfigVersionRecordSchema.shape.provenance.passthrough(),
+}).passthrough();
+
+/** Retained catalog reader preserving owned descriptive history while keeping effect declarations exact. */
+export const ResourceCatalogDocumentReaderSchema = ResourceCatalogDocumentSchema.safeExtend({
+  skills: ResourceCatalogDocumentSchema.shape.skills
+    .safeExtend({
+      candidates: z.array(SkillCandidateRecordReaderSchema).default([]),
+      entries: z.array(SkillEntryRecordSchema.passthrough()).default([]),
+      pins: z.array(SkillPinRecordSchema.passthrough()).default([]),
+      versions: z.array(SkillVersionRecordReaderSchema).default([]),
+    })
+    .passthrough(),
+  plugins: ResourceCatalogDocumentSchema.shape.plugins
+    .safeExtend({
+      entries: z.array(PluginEntryRecordSchema.passthrough()).default([]),
+      installations: z.array(PluginInstallationRecordReaderSchema).default([]),
+      versions: z.array(PluginVersionRecordReaderSchema).default([]),
+    })
+    .passthrough(),
+  mcp: ResourceCatalogDocumentSchema.shape.mcp
+    .safeExtend({
+      bindings: z.array(McpBindingRecordSchema.passthrough()).default([]),
+      entries: z.array(McpEntryRecordSchema.passthrough()).default([]),
+      versions: z.array(McpConfigVersionRecordReaderSchema).default([]),
+    })
+    .passthrough(),
+})
+  .passthrough()
+  .superRefine((value, context) => {
+    if (mcpCatalogContainsRawSecret(value)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Resource catalogs must not contain raw-secret-shaped strings.',
+      });
+    }
+    for (const [index, version] of value.mcp.versions.entries()) {
+      if (digestMcpConfig(version.declaration, version.packageRootDigest) !== version.digest) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Retained MCP configuration digest mismatch.',
+          path: ['mcp', 'versions', index, 'digest'],
+        });
+      }
+    }
+  });
+
+/** Known catalog projection for public and effect consumers; retained annotations stay at the owner. */
+export const ResourceCatalogDocumentViewSchema = ResourceCatalogDocumentSchema.safeExtend({
+  skills: ResourceCatalogDocumentSchema.shape.skills
+    .safeExtend({
+      candidates: z
+        .array(
+          SkillCandidateRecordSchema.safeExtend({ producer: CatalogProducerSchema.strip() }).strip()
+        )
+        .default([]),
+      entries: z.array(SkillEntryRecordSchema.strip()).default([]),
+      pins: z.array(SkillPinRecordSchema.strip()).default([]),
+      versions: z
+        .array(
+          SkillVersionRecordSchema.safeExtend({
+            inventory: z.array(ResourceInventoryEntrySchema.strip()),
+            producer: CatalogProducerSchema.strip(),
+            provenance: SkillVersionRecordSchema.shape.provenance.strip(),
+          }).strip()
+        )
+        .default([]),
+    })
+    .strip(),
+  plugins: ResourceCatalogDocumentSchema.shape.plugins
+    .safeExtend({
+      entries: z.array(PluginEntryRecordSchema.strip()).default([]),
+      installations: z
+        .array(
+          PluginInstallationRecordSchema.safeExtend({
+            memberOverrides: z.array(PluginMemberRecordSchema.strip()).default([]),
+          }).strip()
+        )
+        .default([]),
+      versions: z
+        .array(
+          PluginVersionRecordSchema.safeExtend({
+            members: z.array(PluginMemberRecordSchema.strip()),
+            provenance: PluginVersionRecordSchema.shape.provenance.strip(),
+          }).strip()
+        )
+        .default([]),
+    })
+    .strip(),
+  mcp: ResourceCatalogDocumentSchema.shape.mcp
+    .safeExtend({
+      bindings: z.array(McpBindingRecordSchema.strip()).default([]),
+      entries: z.array(McpEntryRecordSchema.strip()).default([]),
+      versions: z
+        .array(
+          McpConfigVersionRecordSchema.safeExtend({
+            provenance: McpConfigVersionRecordSchema.shape.provenance.strip(),
+          }).strip()
+        )
+        .default([]),
+    })
+    .strip(),
+}).strip();
+
 /** Empty catalog used when a scope has never published resources. */
 export const EMPTY_RESOURCE_CATALOG = ResourceCatalogDocumentSchema.parse({
   mcp: { bindings: [], entries: [], versions: [] },
@@ -397,9 +522,9 @@ export type PortableSkillPayload = z.infer<typeof PortableSkillPayloadSchema>;
 /** Parsed portable Skill tree file. */
 export type PortableCatalogTreeFile = z.infer<typeof PortableCatalogTreeFileSchema>;
 
-/** Parses one scope catalog document. */
+/** Parses owned catalog history for a same-scope read or rewrite; effect/public projections select known fields. */
 export function parseResourceCatalogDocument(input: unknown): ResourceCatalogDocument {
-  return ResourceCatalogDocumentSchema.parse(input);
+  return ResourceCatalogDocumentReaderSchema.parse(input);
 }
 
 /** Parses one portable Workspace catalog projection. */

@@ -649,6 +649,70 @@ export const ListWorkspaceApplyResultsResponseSchema = z
 /** App API response reading one durable workspace apply result by id. */
 export const GetWorkspaceApplyResultResponseSchema = WorkspaceApplyResultSchema;
 
+// Retained observations normalize to the exact producer core; apply instructions keep their producer schemas.
+const WorkspaceVersionRefReaderSchema = WorkspaceVersionRefSchema.strip();
+const WorkspaceEvidenceRefReaderSchema = WorkspaceEvidenceRefSchema.strip();
+const WorkspaceChangedPathReaderSchema = WorkspaceChangedPathSchema.safeExtend({
+  binaryReview: WorkspaceBinaryReviewPresentationSchema.strip().optional(),
+}).strip();
+
+/** Consumed retained input snapshot; unknown descriptive fields never reach materialization. */
+export const WorkspaceInputSnapshotReaderSchema = WorkspaceInputSnapshotSchema.safeExtend({
+  base: WorkspaceVersionRefReaderSchema,
+  backend: WorkspaceSynchronizationBackendSummarySchema.strip(),
+  generatedFiles: z.array(WorkspaceInputGeneratedFileSchema.strip()),
+}).strip();
+
+/** Consumed retained materialization fact, with immutable package and backend lineage intact. */
+export const WorkspaceMaterializationRecordReaderSchema =
+  WorkspaceMaterializationRecordSchema.safeExtend({
+    base: WorkspaceVersionRefReaderSchema,
+    readinessEvidence: z.array(WorkspaceEvidenceRefReaderSchema),
+  }).strip();
+
+/** Consumed retained backend handle; this observation grants no attachment authority. */
+export const BackendWorkspaceHandleReaderSchema = BackendWorkspaceHandleSchema.safeExtend({
+  transportRefs: z.array(BackendWorkspaceTransportRefSchema.strip()),
+}).strip();
+
+/** Consumed retained output observations, excluding unrecognized descriptive content. */
+export const WorkerOutputManifestReaderSchema = WorkerOutputManifestSchema.safeExtend({
+  changedPaths: z.array(WorkspaceChangedPathReaderSchema),
+  logRefs: z.array(WorkerOutputRefSchema.strip()),
+  testOutputRefs: z.array(WorkerOutputRefSchema.strip()),
+  ignoredOutputs: z.array(WorkerIgnoredOutputSchema.strip()),
+  evidenceRefs: z.array(WorkspaceEvidenceRefReaderSchema),
+}).strip();
+
+/** Consumed retained change set; original patch bytes and their digests stay separate. */
+export const WorkspaceChangeSetReaderSchema = WorkspaceChangeSetSchema.safeExtend({
+  base: WorkspaceVersionRefReaderSchema,
+  head: WorkspaceVersionRefReaderSchema,
+  changedPaths: z.array(WorkspaceChangedPathReaderSchema),
+  patch: WorkspacePayloadRefSchema.strip().nullable(),
+  bundle: WorkspacePayloadRefSchema.strip().nullable(),
+  evidenceRefs: z.array(WorkspaceEvidenceRefReaderSchema),
+  redaction: WorkspaceChangeSetRedactionSchema.strip(),
+}).strip();
+
+/** Consumed retained review; exact review decisions remain separate instructions. */
+export const StagedWorkspaceReviewReaderSchema = StagedWorkspaceReviewSchema.safeExtend({
+  staging: StagedWorkspaceReviewStagingRefSchema.strip(),
+  diffSummary: StagedWorkspaceReviewDiffSummarySchema.strip(),
+  validation: z.array(StagedWorkspaceReviewValidationSchema.strip()),
+}).strip();
+
+/** Consumed retained apply result; verification observations normalize while conflict strings stay validated. */
+export const WorkspaceApplyResultReaderSchema = WorkspaceApplyResultSchema.safeExtend({
+  verification: z.array(StagedWorkspaceReviewValidationSchema.strip()),
+}).strip();
+
+/** Consumed retained reconciliation observations; recovery decisions keep their exact instruction schema. */
+export const WorkspaceReconciliationRecordReaderSchema =
+  WorkspaceReconciliationRecordSchema.safeExtend({
+    backendReachability: WorkspaceReconciliationRecordSchema.shape.backendReachability.strip(),
+  }).strip();
+
 /** Product-safe workspace-relative path. */
 export type WorkspaceRelativePath = z.infer<typeof WorkspaceRelativePathSchema>;
 /** Workspace synchronization strategy selected by NanoCore. */

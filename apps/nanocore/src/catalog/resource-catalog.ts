@@ -27,6 +27,7 @@ import {
   type PluginVersionRecord,
   parseResourceCatalogDocument,
   type ResourceCatalogDocument,
+  ResourceCatalogDocumentViewSchema,
   type SkillCandidateRecord,
   type SkillVersionRecord,
   type WorkspaceMcpServer,
@@ -101,8 +102,8 @@ export interface CatalogTreeFile {
   readonly path: string;
 }
 
-/** Loads the Workspace catalog document, or the empty catalog when unpublished. */
-export function loadWorkspaceResourceCatalog(
+/** Reads the catalog within its owner so normal mutations preserve descriptive history. */
+function readWorkspaceResourceCatalog(
   dataRoot: string,
   workspaceId: string
 ): ResourceCatalogDocument {
@@ -114,6 +115,16 @@ export function loadWorkspaceResourceCatalog(
     throw new CatalogIntegrityError('Workspace catalog authority is missing after publication.');
   }
   return EMPTY_RESOURCE_CATALOG;
+}
+
+/** Loads a validated known-core catalog projection, or the empty catalog when unpublished. */
+export function loadWorkspaceResourceCatalog(
+  dataRoot: string,
+  workspaceId: string
+): ResourceCatalogDocument {
+  return ResourceCatalogDocumentViewSchema.parse(
+    readWorkspaceResourceCatalog(dataRoot, workspaceId)
+  );
 }
 
 /** Writes one catalog document after payloads exist, using compare-and-set revision. */
@@ -142,7 +153,7 @@ export function publishWorkspaceResourceCatalog(input: {
   });
   mkdirSync(dirname(path), { recursive: true });
   writeJsonAtomic(path, next);
-  return next;
+  return ResourceCatalogDocumentViewSchema.parse(next);
 }
 
 /**
@@ -165,7 +176,7 @@ export function importWorkspaceSkill(input: {
   readonly workspaceId: string;
 }): { catalog: ResourceCatalogDocument; version: SkillVersionRecord } {
   const current =
-    input.baseCatalog ?? loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+    input.baseCatalog ?? readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const entries = treeFilesToEntries(input.tree);
   const digest = hashOpenKitTreeEntries(entries);
   const id = input.id ?? skillIdFromDisplayName(input.displayName);
@@ -245,7 +256,7 @@ export function submitWorkspaceSkillCandidate(input: {
   readonly tree: readonly CatalogTreeFile[];
   readonly workspaceId: string;
 }): { candidate: SkillCandidateRecord; catalog: ResourceCatalogDocument } {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const entry = current.skills.entries.find((item) => item.id === input.entryId);
   if (!entry || entry.availability !== 'available') {
     throw new CatalogNotFoundError(`Skill not found: ${input.entryId}`);
@@ -261,7 +272,7 @@ export function submitWorkspaceSkillCandidate(input: {
     tree: input.tree,
     workspaceId: input.workspaceId,
   });
-  const published = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const published = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const candidate: SkillCandidateRecord = {
     baseDigest: input.baseDigest,
     candidateDigest: version.digest,
@@ -293,7 +304,7 @@ export function decideWorkspaceSkillCandidate(input: {
   readonly expectedRevision: number;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const candidate = current.skills.candidates.find((item) => item.id === input.candidateId);
   if (!candidate || candidate.disposition !== 'proposed') {
     throw new CatalogNotFoundError(`Skill candidate not found: ${input.candidateId}`);
@@ -337,13 +348,17 @@ export function setWorkspaceSkillPin(input: {
   readonly expectedRevision: number;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const pins =
     input.digest === null
       ? current.skills.pins.filter((pin) => pin.entryId !== input.entryId)
       : [
           ...current.skills.pins.filter((pin) => pin.entryId !== input.entryId),
-          { digest: input.digest, entryId: input.entryId },
+          {
+            ...current.skills.pins.find((pin) => pin.entryId === input.entryId),
+            digest: input.digest,
+            entryId: input.entryId,
+          },
         ];
   return publishWorkspaceResourceCatalog({
     catalog: { ...current, skills: { ...current.skills, pins } },
@@ -361,7 +376,7 @@ export function selectWorkspaceSkillDefault(input: {
   readonly expectedRevision: number;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   if (
     !current.skills.versions.some(
       (version) => version.entryId === input.entryId && version.digest === input.digest
@@ -411,7 +426,7 @@ export function createWorkspaceMcpConfig(input: {
     throw new CatalogForbiddenError('Catalog id is reserved for a built-in Worker MCP surface.');
   }
   const current =
-    input.baseCatalog ?? loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+    input.baseCatalog ?? readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const existingBinding = current.mcp.bindings.find((item) => item.entryId === id);
   const entry = current.mcp.entries.find((item) => item.id === id);
   const currentVersion = current.mcp.versions.find(
@@ -487,7 +502,7 @@ export function createWorkspaceMcpConfig(input: {
         ];
   const nextCatalog = parseResourceCatalogDocument({
     ...current,
-    mcp: { bindings, entries, versions },
+    mcp: { ...current.mcp, bindings, entries, versions },
   });
   if (input.persist === false) {
     return { catalog: nextCatalog, version };
@@ -511,7 +526,7 @@ export function updateWorkspaceMcpBinding(input: {
   readonly expectedRevision: number;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const existing = current.mcp.bindings.find((item) => item.entryId === input.entryId);
   if (current.revision !== input.expectedRevision) {
     throw new CatalogConflictError();
@@ -524,6 +539,7 @@ export function updateWorkspaceMcpBinding(input: {
     existing?.packageDataKey ?? input.binding.packageDataKey ?? `mcp_${input.entryId}`;
   mkdirSync(join(layout.catalogMcpData, packageDataKey), { recursive: true });
   const nextBinding: McpBindingRecord = {
+    ...existing,
     ...input.binding,
     entryId: input.entryId,
     packageDataKey,
@@ -567,7 +583,7 @@ export function selectWorkspaceMcpVersion(input: {
   readonly stdioHostAuthorized?: boolean;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const version = current.mcp.versions.find(
     (item) => item.entryId === input.entryId && item.digest === input.digest
   );
@@ -616,7 +632,7 @@ export function importWorkspacePlugin(input: {
   readonly treeRoot: string;
   readonly workspaceId: string;
 }): { catalog: ResourceCatalogDocument; version: PluginVersionRecord } {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   if (current.revision !== input.expectedRevision) {
     throw new CatalogConflictError();
   }
@@ -695,6 +711,7 @@ export function importWorkspacePlugin(input: {
   );
   const installation: PluginInstallationRecord | undefined = input.install
     ? {
+        ...existingInstallation,
         memberOverrides: existingInstallation?.memberOverrides ?? [],
         pluginId,
         selectedPackageKeys,
@@ -705,6 +722,7 @@ export function importWorkspacePlugin(input: {
     catalog: {
       ...catalog,
       plugins: {
+        ...catalog.plugins,
         entries: catalog.plugins.entries.some((entry) => entry.id === pluginId)
           ? catalog.plugins.entries.map((entry) =>
               entry.id === pluginId
@@ -847,7 +865,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   readonly dataRoot: string;
   readonly workspaceId: string;
 }): ResourceCatalogDocument {
-  const current = loadWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
+  const current = readWorkspaceResourceCatalog(input.dataRoot, input.workspaceId);
   const createdAt = input.createdAt ?? new Date().toISOString();
   const entries: ResourceCatalogDocument['mcp']['entries'] = [];
   const versions: ResourceCatalogDocument['mcp']['versions'] = [];
@@ -914,7 +932,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
   return publishWorkspaceResourceCatalog({
     catalog: {
       ...current,
-      mcp: { bindings, entries, versions },
+      mcp: { ...current.mcp, bindings, entries, versions },
     },
     dataRoot: input.dataRoot,
     expectedRevision: current.revision,

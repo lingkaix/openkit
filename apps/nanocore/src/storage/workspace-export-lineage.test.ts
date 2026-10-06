@@ -40,6 +40,14 @@ import {
   mcpToolSchemaContentDigest,
 } from '../runtime/mcp-tool-schema-snapshots.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
+import {
+  importWorkspaceApplyResults,
+  listExportableWorkspaceApplyResults,
+} from '../runtime/workspace-apply-results.js';
+import {
+  importWorkspaceReconciliationRecords,
+  listWorkspaceReconciliationRecords,
+} from '../runtime/workspace-reconciliation-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { openWorkspaceDb } from './db.js';
@@ -78,6 +86,20 @@ const source = {
   workspaceId: 'ws_source',
 } as const;
 const targetWorkspaceId = 'ws_imported';
+
+/** Extends fixed descriptive source objects; the declared backend summary remains an open consumed map. */
+function annotateSyncSource(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(annotateSyncSource);
+  if (value && typeof value === 'object')
+    return Object.fromEntries([
+      ...Object.entries(value).map(([key, child]) => [
+        key,
+        key === 'backendHandleSummary' ? child : annotateSyncSource(child),
+      ]),
+      ['futureAnnotation', 'portable observation'],
+    ]);
+  return value;
+}
 
 /** Builds one export containing every auxiliary record family that refers to canonical history. */
 function createLineageExportInput(
@@ -1229,6 +1251,169 @@ function createWorkResourceLineageExportInput(followUp?: {
 }
 
 describe('workspace auxiliary lineage reminting', () => {
+  it('imports annotated synchronization source rows and reopens their normalized target history', () => {
+    const input = createLineageExportInput();
+    const base = { commit: 'abc000', contentDigest: null };
+    input.workspaceInputSnapshots = [
+      {
+        id: 'wis_source',
+        workspaceId: source.workspaceId,
+        resourceId: 'repo_source',
+        resourceKind: 'git_repository',
+        strategy: 'git',
+        pathScope: ['src'],
+        writableRoots: ['src'],
+        ignoredPaths: [],
+        generatedFiles: [{ id: 'generated', target: 'src/generated.txt' }],
+        base,
+        backend: { kind: 'openshell', label: 'Worker', capabilitySummary: [] },
+        createdAt: timestamp,
+      },
+    ];
+    input.workspaceMaterializationRecords = [
+      {
+        id: 'wmr_source',
+        inputSnapshotId: 'wis_source',
+        workspaceId: source.workspaceId,
+        backendKind: 'openshell',
+        packageSnapshotId: input.agentEnvironmentPackageSnapshots![0]!.snapshotId,
+        workerSessionId: 'worker_source',
+        strategy: 'git',
+        materializedRootRef: `workspace:${source.workspaceId}/staging`,
+        base,
+        policyDigest: 'sha256:policy',
+        readinessEvidence: [{ kind: 'backend.ready', ref: 'version:1' }],
+        createdAt: timestamp,
+      },
+    ];
+    input.backendWorkspaceHandles = [
+      {
+        id: 'bwh_source',
+        workspaceId: source.workspaceId,
+        materializationRecordId: 'wmr_source',
+        backendKind: 'openshell',
+        packageSnapshotId: input.agentEnvironmentPackageSnapshots![0]!.snapshotId,
+        workerSessionId: 'worker_source',
+        transportRefs: [{ kind: 'workspace', ref: `workspace:${source.workspaceId}/staging` }],
+        cleanupStatus: 'pending',
+        retention: 'until-reconciliation',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    ];
+    input.stagedWorkspaceReviews = [
+      {
+        artifactId: source.artifactId,
+        patchPayload: null,
+        review: {
+          id: 'swr_source',
+          workspaceId: source.workspaceId,
+          changeSetId: 'wcs_source',
+          staging: {
+            strategy: 'git_worktree',
+            ref: `workspace:${source.workspaceId}/staging`,
+            branch: null,
+          },
+          status: 'pending',
+          diffSummary: { filesChanged: 0, additions: 0, deletions: 0 },
+          riskSummary: 'No risks',
+          validation: [{ command: 'pnpm test', status: 'passed', ref: null }],
+          actionCenterRowId: 'acr_source',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      },
+    ];
+    input.workspaceApplyResults = [
+      {
+        id: 'war_source',
+        workspaceId: source.workspaceId,
+        reviewId: 'swr_source',
+        changeSetId: 'wcs_source',
+        status: 'applied',
+        appliedPaths: ['src/file.ts'],
+        skippedPaths: [],
+        conflictRecords: [],
+        verification: [{ command: 'pnpm test', status: 'passed', ref: null }],
+        commitIds: [],
+        appliedAt: timestamp,
+        requestId: 'request_apply_source',
+      },
+    ];
+    input.workspaceReconciliationRecords = [
+      {
+        id: 'wrr_source',
+        workspaceId: source.workspaceId,
+        triggerReason: 'restart',
+        affectedRecordIds: ['wmr_source', 'bwh_source'],
+        backendHandleSummary: { handleId: 'bwh_source' },
+        backendReachability: { status: 'unknown', checkedAt: timestamp, detail: null },
+        collectedOutputManifestIds: ['wom_source'],
+        evidenceBundleIds: ['evb_source'],
+        stateBefore: 'ready',
+        stateAfter: 'requires-human',
+        quarantineRefs: [],
+        requiredHumanDecision: 'inspect',
+        retentionDecision: 'retain-backend',
+        startedAt: timestamp,
+        finishedAt: null,
+      },
+    ];
+    const families = [
+      ['workspaceInputSnapshots', 'workspace-input-snapshots'],
+      ['workspaceMaterializationRecords', 'workspace-materialization-records'],
+      ['backendWorkspaceHandles', 'backend-workspace-handles'],
+      ['workerOutputManifests', 'worker-output-manifests'],
+      ['workspaceChangeSets', 'workspace-change-sets'],
+      ['stagedWorkspaceReviews', 'staged-workspace-reviews'],
+      ['workspaceApplyResults', 'workspace-apply-results'],
+      ['workspaceReconciliationRecords', 'workspace-reconciliation-records'],
+    ] as const;
+    // The untouched producer-shaped export establishes that this graph is admissible before annotations.
+    importLineage(input);
+    input.exportRoot = join(mkdtempSync(join(tmpdir(), 'openkit-extended-sync-export-')), 'export');
+    for (const [property] of families) input[property] = input[property]!.map(annotateSyncSource);
+    const verified = writeWorkspaceExportTree(input);
+    const originalBytes = families.map(([, file]) =>
+      readFileSync(join(input.exportRoot, `records/${file}.jsonl`), 'utf8')
+    );
+    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
+    for (const [property] of families) {
+      expect(imported[property]).toHaveLength(1);
+      expect(JSON.stringify(imported[property])).not.toContain('futureAnnotation');
+    }
+    expect(imported.workspaceMaterializationRecords[0]!.packageSnapshotId).toBe(
+      imported.agentEnvironmentPackageSnapshots[0]!.snapshotId
+    );
+    expect(imported.backendWorkspaceHandles[0]!.packageSnapshotId).toBe(
+      imported.agentEnvironmentPackageSnapshots[0]!.snapshotId
+    );
+    expect(imported.agentEnvironmentPackageSnapshots[0]!.snapshotId).not.toBe(
+      input.agentEnvironmentPackageSnapshots![0]!.snapshotId
+    );
+    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-import-sync-target-'));
+    let db = openWorkspaceDb(targetRoot, targetWorkspaceId);
+    try {
+      applyScopedMigrations(db);
+      importWorkspaceApplyResults(db, imported.workspaceApplyResults);
+      importWorkspaceReconciliationRecords(db, imported.workspaceReconciliationRecords);
+      db.sqlite.close();
+      db = openWorkspaceDb(targetRoot, targetWorkspaceId);
+      expect(listExportableWorkspaceApplyResults(db, targetWorkspaceId)).toEqual(
+        imported.workspaceApplyResults
+      );
+      expect(listWorkspaceReconciliationRecords(db, targetWorkspaceId)).toEqual(
+        imported.workspaceReconciliationRecords
+      );
+    } finally {
+      db.sqlite.close();
+    }
+    for (const [index, [, file]] of families.entries())
+      expect(readFileSync(join(input.exportRoot, `records/${file}.jsonl`), 'utf8')).toBe(
+        originalBytes[index]
+      );
+  });
+
   it('refuses ordinary export containing private Thread history before collecting portable content', () => {
     const input = createLineageExportInput();
     input.threads = input.threads.map((thread) => ({

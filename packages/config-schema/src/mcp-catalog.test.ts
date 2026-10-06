@@ -111,6 +111,43 @@ describe('MCP credential presentation admission', () => {
 });
 
 describe('workspace MCP server catalog', () => {
+  it('normalizes descriptive catalog framing while keeping effect entries exact', () => {
+    const input = {
+      schemaVersion: 1,
+      servers: [
+        {
+          allowedTools: ['echo'],
+          enabled: true,
+          id: 'echo',
+          schemaPolicy: 'tracking',
+          transport: { command: 'node', kind: 'stdio' },
+        },
+      ],
+    };
+    const core = parseWorkspaceMcpServerCatalog(input);
+    expect(parseWorkspaceMcpServerCatalog({ ...input, futureAnnotation: true })).toEqual(core);
+    expect(() =>
+      WorkspaceMcpServerCatalogSchema.parse({ ...input, futureAnnotation: true })
+    ).toThrow();
+    expect(() =>
+      parseWorkspaceMcpServerCatalog({
+        ...input,
+        servers: [{ ...input.servers[0], futureInstruction: true }],
+      })
+    ).toThrow();
+    expect(() =>
+      parseWorkspaceMcpServerCatalog({
+        ...input,
+        servers: [
+          {
+            ...input.servers[0],
+            transport: { command: 'node', kind: 'stdio', futureInstruction: true },
+          },
+        ],
+      })
+    ).toThrow();
+  });
+
   it('preserves authored endpoint query strings while rejecting URL credentials and fragments', () => {
     const endpoint = 'https://mcp.example.test/mcp?read-only=true';
     expect(WorkspaceMcpHttpTransportSchema.parse({ kind: 'http', endpoint }).endpoint).toBe(

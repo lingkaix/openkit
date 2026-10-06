@@ -4,6 +4,8 @@
 
 `@openkit/config-schema` is the shared source of truth for OpenKit authored config schemas, policy metadata, JSON Schema catalog entries, workspace root materialization helpers, and session workspace layout planning schemas.
 
+`ResourceCatalogDocumentSchema` remains the exact producer assertion. `ResourceCatalogDocumentReaderSchema` and `parseResourceCatalogDocument` preserve same-owner descriptive catalog history; `ResourceCatalogDocumentViewSchema` selects its known-field projection. Executable declarations and credential binding/sink sections stay exact in both directions, and retained MCP version admission checks the admitted declaration and package-root digest against the existing configuration digest. `parseWorkspaceMcpServerCatalog` discards descriptive catalog framing additions while its complete effect-facing server entries remain exact.
+
 Provider profiles retain string model IDs and may add a per-ID `modelMetadata` map using the models.dev operational field names. Its known-field validation and native-ID membership checks feed the existing configuration validation and generated JSON Schema; the Gateway and backend owners define inheritance and actual runtime use.
 
 Provider model declarations require an effective positive maximum context length, inherited from the pinned model catalog or explicitly authored as `modelMetadata[modelId].limit.context`. Other metadata remains optional. Structural validation admits omission for catalog inheritance; composed validation must reject a model with no known context before replacing active configuration.

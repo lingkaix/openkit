@@ -1,4 +1,8 @@
-import { type WorkspaceApplyResult, WorkspaceApplyResultSchema } from '@openkit/app-api-schemas';
+import {
+  type WorkspaceApplyResult,
+  WorkspaceApplyResultReaderSchema,
+  WorkspaceApplyResultSchema,
+} from '@openkit/app-api-schemas';
 import { z } from 'zod';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
@@ -408,7 +412,7 @@ function requireMatchingWorkspaceApplyResultReplay(
  * @returns Public workspace apply result.
  */
 function mapWorkspaceApplyResultRow(row: WorkspaceApplyResultRow): WorkspaceApplyResult {
-  return WorkspaceApplyResultSchema.parse({
+  return WorkspaceApplyResultReaderSchema.parse({
     id: row.apply_result_id,
     workspaceId: row.workspace_id,
     reviewId: row.review_id,

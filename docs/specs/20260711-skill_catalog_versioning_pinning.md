@@ -146,6 +146,8 @@ Replace the hardcoded metadata table directly, implement the setup/AEP exact ref
 
 ## Testing Strategy / Acceptance Criteria
 
+Retained catalog, producer, version, inventory, entry, pin, candidate and plugin membership observations ignore and preserve owned descriptive additions on normal revision-protected rewrites. Public and selected Worker supply carry only known fields, and annotations do not change historical tree or version digests. Executable supply and effect-facing selection or binding authority remain exact; tree integrity and stale-revision refusals remain required.
+
 1. Known vectors prove framing and byte ordering. File, supporting-resource, path, empty-directory, and executable changes change identity; timestamps and traversal order do not. Unsafe, oversized, racing, and target-colliding trees cannot publish or escape.
 2. A plugin-imported Skill gains an independent candidate without changing its original membership or another Skill. Re-import is idempotent; reused labels with different bytes remain distinguishable.
 3. Candidates change no default; unauthorized promotion fails; valid promotion succeeds; stale/concurrent updates conflict; pins survive default advancement.

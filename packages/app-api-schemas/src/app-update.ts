@@ -267,3 +267,22 @@ export const AppUpdateHostOutputSchema = z.union([
 ]);
 /** Closed helper stdout object. */
 export type AppUpdateHostOutput = z.infer<typeof AppUpdateHostOutputSchema>;
+
+/** Descriptive source observation; source-selection commands keep exact source schemas. */
+const AppUpdateObservedSourceSchema = z.discriminatedUnion('kind', [
+  AppUpdateReleaseSourceSchema.strip(),
+  AppUpdateCommitSourceSchema.strip(),
+]);
+
+/** Helper stdout error reader that emits only the validated error core. */
+export const AppUpdateHostErrorReaderSchema = AppUpdateHostErrorSchema.safeExtend({
+  error: AppUpdateHostErrorSchema.shape.error.strip(),
+}).strip();
+
+/** Helper receipt reader preserving all outcome refinements while discarding descriptive additions. */
+export const AppUpdateStatusResponseReaderSchema = AppUpdateStatusResponseSchema.safeExtend({
+  candidateBoot: AppUpdateBootObservationSchema.strip().nullable(),
+  previousBoot: AppUpdateBootObservationSchema.strip().nullable(),
+  predicates: AppUpdatePredicatesSchema.strip().nullable(),
+  source: AppUpdateObservedSourceSchema,
+}).strip();

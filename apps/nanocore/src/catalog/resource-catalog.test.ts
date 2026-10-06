@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -19,6 +20,7 @@ import {
 import {
   CatalogForbiddenError,
   CatalogIntegrityError,
+  catalogDocumentPath,
   createWorkspaceMcpConfig,
   importWorkspacePlugin,
   importWorkspaceSkill,
@@ -83,6 +85,166 @@ function catalogHasStagingResidue(dataRoot: string, workspaceId: string): boolea
 }
 
 describe('workspace resource catalog', () => {
+  it('preserves every descriptive catalog annotation through revision mutations and reopening', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-extensions-'));
+    const packageRoot = join(dataRoot, 'plugin-source');
+    try {
+      writeStdioPluginPackage(packageRoot, 'console.log("echo");');
+      const imported = importWorkspacePlugin({
+        createdAt: '2026-09-08T00:00:00.000Z',
+        dataRoot,
+        expectedRevision: 0,
+        install: true,
+        producer: { id: 'user_local', kind: 'user' },
+        treeRoot: packageRoot,
+        workspaceId: 'ws_demo',
+      });
+      const skill = imported.catalog.skills.versions[0]!;
+      const pinned = setWorkspaceSkillPin({
+        dataRoot,
+        workspaceId: 'ws_demo',
+        entryId: skill.entryId,
+        digest: skill.digest,
+        expectedRevision: imported.catalog.revision,
+      });
+      const candidate = submitWorkspaceSkillCandidate({
+        baseDigest: skill.digest,
+        createdAt: '2026-09-08T00:01:00.000Z',
+        dataRoot,
+        entryId: skill.entryId,
+        expectedRevision: pinned.revision,
+        producer: { id: 'agent_one', kind: 'agent' },
+        summary: 'Improve the Skill',
+        tree: skillTree('# Improved'),
+        workspaceId: 'ws_demo',
+      });
+      const mcp = candidate.catalog.mcp.versions[0]!;
+      expect(mcp.packageRootDigest).toBe(imported.version.digest);
+      expect(mcp.digest).not.toBe(imported.version.digest);
+      const selected = selectWorkspaceMcpVersion({
+        dataRoot,
+        workspaceId: 'ws_demo',
+        entryId: mcp.entryId,
+        digest: mcp.digest,
+        expectedRevision: candidate.catalog.revision,
+        stdioHostAuthorized: true,
+      });
+      const bound = updateWorkspaceMcpBinding({
+        dataRoot,
+        workspaceId: 'ws_demo',
+        entryId: mcp.entryId,
+        expectedRevision: selected.revision,
+        binding: {
+          allowedTools: ['echo'],
+          approvalRequiredTools: [],
+          credentialBindings: [],
+          deniedTools: [],
+          enabled: true,
+          revision: 0,
+          schemaPolicy: 'tracking',
+          pinnedSchemaSnapshotId: null,
+          timeoutMs: 1000,
+        },
+      });
+      const path = catalogDocumentPath(dataRoot, 'ws_demo');
+      // Populate the override observation with a real package member, including its produced identity.
+      bound.plugins.installations[0]!.memberOverrides.push(bound.plugins.versions[0]!.members[0]!);
+      const extended = annotateCatalogHistory(bound);
+      writeFileSync(path, JSON.stringify(extended));
+      const loaded = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(loaded).toEqual(bound);
+      expect(JSON.stringify(loaded)).not.toContain('futureAnnotation');
+      const effective = projectEffectiveWorkspaceMcpCatalog(loaded);
+      expect(JSON.stringify(effective)).not.toContain('futureAnnotation');
+      const beforeDigest = resolveWorkspaceMcpServer({
+        catalog: projectEffectiveWorkspaceMcpCatalog(bound),
+        serverId: mcp.entryId,
+      }).catalogDigest;
+      expect(
+        resolveWorkspaceMcpServer({ catalog: effective, serverId: mcp.entryId }).catalogDigest
+      ).toBe(beforeDigest);
+      const next = setWorkspaceSkillPin({
+        dataRoot,
+        workspaceId: 'ws_demo',
+        entryId: skill.entryId,
+        digest: skill.digest,
+        expectedRevision: loaded.revision,
+      });
+      expect(loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toEqual(next);
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({
+        ...(extended as object),
+        revision: next.revision,
+      });
+      const updated = updateWorkspaceMcpBinding({
+        dataRoot,
+        workspaceId: 'ws_demo',
+        entryId: mcp.entryId,
+        expectedRevision: next.revision,
+        binding: { ...bound.mcp.bindings[0]!, timeoutMs: 2000 },
+      });
+      const reopened = loadWorkspaceResourceCatalog(dataRoot, 'ws_demo');
+      expect(reopened.mcp.bindings[0]).toEqual({
+        ...loaded.mcp.bindings[0],
+        revision: 2,
+        timeoutMs: 2000,
+      });
+      const retainedBinding = JSON.parse(readFileSync(path, 'utf8')).mcp.bindings[0];
+      expect(retainedBinding).toEqual({
+        ...(annotateCatalogHistory(loaded.mcp.bindings[0]) as object),
+        revision: 2,
+        timeoutMs: 2000,
+      });
+      expect(reopened.mcp.versions).toEqual(loaded.mcp.versions);
+      expect(reopened.skills.versions).toEqual(loaded.skills.versions);
+      expect(reopened.plugins.versions).toEqual(loaded.plugins.versions);
+      expect(updated.revision).toBe(next.revision + 1);
+      expect(() =>
+        setWorkspaceSkillPin({
+          dataRoot,
+          workspaceId: 'ws_demo',
+          entryId: skill.entryId,
+          digest: skill.digest,
+          expectedRevision: loaded.revision,
+        })
+      ).toThrow(/revision conflict/);
+      const bad = structuredClone(reopened);
+      Object.assign(bad.mcp.versions[0]!.declaration, { futureInstruction: 'execute' });
+      writeFileSync(path, JSON.stringify(bad));
+      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+      const corrupt = structuredClone(extended) as typeof bound;
+      const declaration = corrupt.mcp.versions[0]!.declaration;
+      if (declaration.kind !== 'stdio') throw new Error('Expected a produced stdio declaration');
+      declaration.command = 'different-command';
+      writeFileSync(path, JSON.stringify(corrupt));
+      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow(
+        /configuration digest mismatch/
+      );
+      for (const coreChange of [
+        { schemaVersion: 2 },
+        { revision: -1 },
+        { futureAnnotation: 'Bearer sk-catalog-canary-not-a-real-secret' },
+      ]) {
+        writeFileSync(path, JSON.stringify({ ...(extended as object), ...coreChange }));
+        expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+      }
+      const credentialChange = structuredClone(extended) as typeof bound;
+      Object.assign(credentialChange.mcp.bindings[0]!, {
+        credentialBindings: [
+          {
+            slot: 'token',
+            vaultGrantId: 'grant_one',
+            sink: { kind: 'env', name: 'TOKEN' },
+            futureInstruction: true,
+          },
+        ],
+      });
+      writeFileSync(path, JSON.stringify(credentialChange));
+      expect(() => loadWorkspaceResourceCatalog(dataRoot, 'ws_demo')).toThrow();
+    } finally {
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  });
+
   it('imports a Skill, pins it, and keeps candidate submission off the current pointer', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-'));
     try {
@@ -836,3 +998,19 @@ describe('workspace resource catalog', () => {
     }
   });
 });
+
+/** Extends descriptive catalog facts, leaving executable declarations and credentials exact. */
+function annotateCatalogHistory(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(annotateCatalogHistory);
+  if (value && typeof value === 'object')
+    return Object.fromEntries([
+      ...Object.entries(value).map(([key, child]) => [
+        key,
+        key === 'declaration' || key === 'credentialBindings'
+          ? child
+          : annotateCatalogHistory(child),
+      ]),
+      ['futureAnnotation', 'retained'],
+    ]);
+  return value;
+}
