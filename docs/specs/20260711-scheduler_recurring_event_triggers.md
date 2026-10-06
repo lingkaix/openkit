@@ -14,7 +14,7 @@ updated: 2026-09-09
 
 ## Does Not Own
 
-- Scheduler queue ordering, placement, leases, dispatch, Turn execution, worker-effect recovery, or Task and Goal workflow progression.
+- Scheduler queue ordering, placement, execution attempts, dispatch, Turn execution, worker-effect recovery, or Task and Goal workflow progression.
 - A second executor, event bus, cron parser, calendar system, general workflow engine, generic job registry, or recovery coordinator.
 - Domain events, webhooks, arbitrary operations, schedule dependencies, approval decisions, or actor substitution.
 - Physical table DDL, retention-class vocabulary, AuditEvent schema, backup archive layout, portable import activation, or Web presentation.
@@ -56,7 +56,7 @@ Each occurrence receives at most three committed admission-attempt outcomes: the
 
 The first recurring operation is one direct worker Turn admission using the same durable scheduler primitive already used by Task and Goal worker execution. A definition retains one Workspace, one existing Thread, one worker input, optional requested Agent/profile/model selections, and the concrete `AutomationIdentity` for this schedule. Its `ActorRef` is `{ kind: 'automation', id: scheduleId, responsibleUserId: creatorUserId }`. It does not invoke the higher-level Task or Goal coordinator, create a new Thread, or generalize arbitrary Core operations.
 
-The target Thread remains single-flight. At most one `admission-accepted` occurrence for a schedule may still link to a scheduler row whose current status is `queued`; one earlier occurrence may already be admitted or running. Distinct schedules targeting the same Thread may each have one queued occurrence, while scheduler admission and leases still prevent two Turns in that Thread from executing concurrently. This bounded waiting rule is the only trigger-specific overlap behavior; there is no skip policy or parallel execution mode.
+The target Thread remains single-flight. At most one `admission-accepted` occurrence for a schedule may still link to a scheduler row whose current status is `queued`; one earlier occurrence may already be admitted or running. Distinct schedules targeting the same Thread may each have one queued occurrence, while scheduler admission and execution-attempt exclusion still prevent two Turns in that Thread from executing concurrently. This bounded waiting rule is the only trigger-specific overlap behavior; there is no skip policy or parallel execution mode.
 
 The public cadence is `intervalSeconds`, an integer of at least five, plus the next exact UTC `scheduledAt` instant supplied on resume. Cron text is not accepted in this fixed-interval slice. Absolute UTC instants make recurrence independent of local time zones and daylight-saving changes. The five-second soft scanner grants no exact due-time precision guarantee.
 

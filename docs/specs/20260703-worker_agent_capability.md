@@ -343,7 +343,7 @@ The worker receives an actionable error without raw upstream secrets or backend 
 ## Resolved Decisions
 
 - Worker-facing capabilities use one governed worker-local capability API at `capability.local`, projected by Sandbox Integration onto `/capabilities/*` with a capability token distinct from inference and worker control.
-- Worker-local `inference.local` remains an LLM endpoint, not a generic capability endpoint, and Sandbox Integration projects it onto `/inference/*` with its own inference token and complete AEP and lease binding.
+- Worker-local `inference.local` remains an LLM endpoint, not a generic capability endpoint, and Sandbox Integration projects it onto `/inference/*` with its own inference token and complete AEP and execution-attempt binding.
 - Family-specific routes are acceptable for the first worker capability projection. They must still produce canonical `CapabilityCall` semantics.
 - `knowledge.*` is the canonical family name. The older `memory.*` implementation projection has been removed without compatibility aliases.
 - Capability catalog sources should remain manifest- or file-system-first, while the AEP stores the resolved per-session projection.

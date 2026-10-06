@@ -399,7 +399,7 @@ If reuse fails because the session is incompatible, NanoCore SHOULD create a rep
 
 ### Concurrency And Slot Hygiene
 
-Each AgentSession supports exactly one active Turn. Turn-scoped slots (`input`, `output`, and any slot with `retention: turn`) are single-occupant by design, and the durable scheduler's session lease model assumes one lease per AgentSession. Concurrent Turns in one AgentSession are not authorized.
+Each AgentSession supports exactly one active Turn. Turn-scoped slots (`input`, `output`, and any slot with `retention: turn`) are single-occupant by design, and the [durable scheduler](20260703-durable_scheduler_design.md#attempt-reconnect-and-cleanup) permits at most one non-closed execution attempt per AgentSession. Concurrent Turns in one AgentSession are not authorized.
 
 Separately, one Harness may hold multiple open AgentSessions for distinct Threads and may execute one Turn in each such AgentSession concurrently up to its declared capacity. Runtime-native child agents remain inside one outer AgentSession and do not create additional slots or Core AgentSession identities. Several compatibility-keyed Harness Instances may share one Sandbox under the runtime and Sandbox owners; this specification neither selects a Harness nor grants capacity beyond those owners.
 

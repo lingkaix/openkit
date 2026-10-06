@@ -70,7 +70,7 @@ The owning Core and feature specifications remain the authority for product beha
 
 The Markdown story is the authority for that acceptance run's intent, preconditions, supported entry point, deterministic assertions, allowed setup, and cleanup. Runner code is an execution projection and MUST NOT silently add stronger product requirements or hidden setup.
 
-Product records remain authoritative for Workspace, Thread, Turn, Item, Artifact, Goal, Task, AgentSession, lease, approval, usage, and audit state. An L6 evidence summary records observations and identifiers needed for triage but MUST NOT duplicate those records into another lifecycle.
+Product records remain authoritative for Workspace, Thread, Turn, Item, Artifact, Goal, Task, AgentSession, execution attempt, approval, usage, and audit state. An L6 evidence summary records observations and identifiers needed for triage but MUST NOT duplicate those records into another lifecycle.
 
 Screenshots, traces, transcripts, logs, and reports are supporting evidence, not product authority. Absence of optional evidence does not overturn an otherwise provable product result unless the story declared that evidence as a deterministic assertion.
 
@@ -241,7 +241,7 @@ An assertion reads from exactly one of two channels, and the channel decides wha
 
 **Outside-in** assertions read what the product returned to the actor: responses, statuses, visible state, and error surfaces. This is the product seen as a user sees it.
 
-**Inside-out** assertions read product records that the run produced: audit events, capability usage, approvals, leases, and the durable Workspace, Thread, Turn, Item, Artifact, Goal, Task, and AgentSession state named in Authority And Projection. This is whether the product did internally what it promises to do, and the stage manager collects it through the product's own public read surfaces.
+**Inside-out** assertions read product records that the run produced: audit events, capability usage, approvals, execution attempts, and the durable Workspace, Thread, Turn, Item, Artifact, Goal, Task, and AgentSession state named in Authority And Projection. This is whether the product did internally what it promises to do, and the stage manager collects it through the product's own public read surfaces.
 
 An inside-out assertion MUST name a product record that has an owning specification. That single rule is the whole boundary against implementation testing. An audit event is a product promise with a named owner; a log line, a function-call trace, a process argument, a configuration digest, and in-memory state are not, and a story that reaches for them has left the product contract and will have to define its own oracle from scratch — an obligation with no natural bound.
 

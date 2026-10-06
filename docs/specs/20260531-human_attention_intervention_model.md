@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: 2026-10-02
+updated: "2026-10-06"
 ---
 # Human Attention And Intervention Model
 
@@ -293,7 +293,7 @@ V1 has no Goal safe-point steering path. Generic `interrupt_then_apply`, `after_
 
 ### Runtime Constraints And Follow-up Input
 
-A budget wrap-up, recovery constraint, or similar Core-generated instruction is request-scoped input supplied by the owning mode service to its next Coordinator decision. It has no queue or durable steering record. If the constraint must survive restart, the mode service recomputes it from the existing budget, checkpoint, lease, or recovery owner that made it necessary; it MUST NOT reconstruct it from process memory or add a system-steering queue.
+A budget wrap-up, recovery constraint, or similar Core-generated instruction is request-scoped input supplied by the owning mode service to its next Coordinator decision. It has no queue or durable steering record. If the constraint must survive restart, the mode service recomputes it from the existing budget, checkpoint, execution-attempt, or recovery owner that made it necessary; it MUST NOT reconstruct it from process memory or add a system-steering queue.
 
 V1 has no generic user follow-up queue and no Goal pending-input row.
 
@@ -383,7 +383,7 @@ It should prefer approval only if continuing requires a sensitive action.
 
 After restart or crash, Core may know that a turn stopped at a checkpoint.
 
-The Action Center shows an interrupted-worker recovery row only after the exact Turn, scheduler lease, backend cleanup, worker-control revocation, and capacity-release predicate in `docs/specs/20260531-worker_turn_reliability_envelope.md` is complete. A checkpoint alone, a live worker, `awaiting-reconnect`, or cleanup-owned `needs-evidence` state produces no interrupted-worker row.
+The Action Center shows an interrupted-worker recovery row only after the exact Turn, execution attempt, exact backend cleanup/fencing, worker-control revocation, and exclusion-release predicate in `docs/specs/20260531-worker_turn_reliability_envelope.md` is complete. A checkpoint alone, a live worker, `awaiting-reconnect`, or cleanup-owned `needs-evidence` state produces no interrupted-worker row.
 
 The row may expose only actions already authorized by the checkpoint and mode owners. Adapter resume requires a replay-safe resume contract. `worker.recovery.retry` appears only when its stricter Task continuation predicate also holds, and it closes the authoritatively interrupted checkpoint without rewriting the old Turn. A later Task command owns replacement execution. A missing Goal removed by the accepted deletion is known absence and does not by itself hide an otherwise eligible Task retry. Contradictory non-Goal lineage remains inspection and guidance only. The row otherwise offers inspect, review partial Artifacts, request guidance, or a terminal action only where an owning command exists.
 

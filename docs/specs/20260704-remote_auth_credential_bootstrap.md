@@ -25,7 +25,7 @@ updated: "2026-10-02"
 - Canonical Workspace membership and user lifecycle, which are owned by `docs/core/identity.md`. Multi-user invitation, fixed-role, and owner-transfer mechanics belong to `docs/specs/20260715-multi_user_workspace_system.md`.
 - User-owned external-service secrets and provider credentials. Those belong to the vault specs (`docs/specs/20260703-vault_secret_injection.md`).
 - Better Auth implementation details, table layout, or session-cookie mechanics beyond their appearance in the Current Implementation Projection.
-- Worker sandbox session tokens and lease-bound worker authentication, owned by the scheduler and worker control protocol specs.
+- Worker sandbox session tokens and attempt-bound worker authentication, owned by the scheduler and worker control protocol specs.
 - The NanoHost transport token family owned by `docs/specs/20260802-nanohost_runtime_and_transport.md`: its tokens belong to a configured NanoHost `IntegrationIdentity`, use the distinct `nanohost-transport` token type and scope, authenticate only the NanoCore-to-NanoHost transport, and follow that specification's lifecycle. Reuse is limited to the `okt_` opaque-secret format, CSPRNG generation, hashing, constant-time verification, and redaction primitives; that reuse transfers no authority to this specification.
 - Workspace membership recovery. The local operator procedure does not make its target a Workspace member. Presented use of the recovered Token follows the administrator-credential rules in Scopes.
 - The remote MCP endpoint, its transport, and its authentication admission. [Remote MCP Interface](20261002-remote_mcp_interface.md) owns them.
@@ -58,7 +58,7 @@ The clean target for human remote access is a single credential family: server-i
 - Do not change local-mode loopback trust or the implicit local user posture.
 - Do not define permission policy semantics; scopes here are authentication-layer coarse gates, not the policy model.
 - Do not preserve the raw cookie/authorization env-var passthrough as a compatibility alias.
-- Do not design worker-side sandbox token minting, which stays lease-bound in the scheduler design.
+- Do not design worker-side sandbox token minting, which stays attempt-bound in the scheduler design.
 - Do not define `AutomationIdentity` token issuance or independent Workspace membership. The [Recurring Trigger specification](20260711-scheduler_recurring_event_triggers.md) separately owns its bounded schedule-to-responsible-user binding without a new credential.
 
 ## Background

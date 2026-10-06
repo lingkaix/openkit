@@ -70,12 +70,12 @@ and are not listed here.
 - `docs/specs/20260702-knowledge_store_governance_rules.md` — Accepted, Partial — OKF-compatible Markdown as the portable knowledge envelope.
 - `docs/specs/20260703-agent_manifest_aep_resolution.md` — Accepted, Partial — The concrete `AgentManifest` schema and validation for authored manifest inputs.
 - `docs/specs/20260703-audit_usage_evidence_records.md` — Accepted, Partial — Cross-record linkage between `AuditEvent`, `UsageRecord`, `EvidenceBundle`, `CapabilityCall`, `PermissionDecision`, `VaultUse`, and `RuntimeEvidence`.
-- `docs/specs/20260703-durable_scheduler_design.md` — Accepted, Partial — The current single-writer NanoCore scheduler for one configured `RuntimeTarget` that projects one local or remote NanoHost.
+- `docs/specs/20260703-durable_scheduler_design.md` — Accepted, Partial — The single-writer NanoCore admission queue for one configured execution backend.
 - `docs/specs/20260703-knowledge_store_implementation.md` — Accepted, Partial — The pinned OKF version decision and the conformance relationship between OpenKit and the OKF snapshot.
 - `docs/specs/20260703-openshell_mechanism_internalization.md` — Accepted, Partial — The internalization principle for OpenShell-backed credential injection, injection audit, and policy enforcement mechanisms: NanoCore definitions are canonical…
 - `docs/specs/20260703-pi_ai_provider_gateway_adoption.md` — Accepted, Partial — This spec owns NanoCore's adoption of the stock published `@earendil-works/pi-ai` package as the single internal LLM provider-adapter dependency, its exact ver…
 - `docs/specs/20260703-policy_enforcement_mapping.md` — Accepted, Partial — Product fact vocabulary for mapping NanoCore subjects, actions, resources, and context into policy evaluation.
-- `docs/specs/20260703-runtime_scheduling_scale.md` — Accepted, Partial — The current separation between Core mode and worker runtime placement.
+- `docs/specs/20260703-runtime_scheduling_scale.md` — Accepted, Partial — The separation between Core mode and worker backend deployment.
 - `docs/specs/20260703-schema_evolution_record_envelope.md` — Accepted, Partial — Forward-compatible extension rules for OpenKit-authored storage records and manifest-like files.
 - `docs/specs/20260703-storage_layout_record_ownership.md` — Accepted, Partial — Target physical `DATAROOT` ownership layout for server, user, and owner-independent workspace scopes.
 - `docs/specs/20260703-vault_secret_injection.md` — Accepted, Partial — Vault reference, grant, injection plan, injection receipt, and vault-use record requirements.

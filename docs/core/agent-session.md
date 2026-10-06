@@ -22,7 +22,7 @@ Language-conventional identifiers such as `agentSession`, `agentSessionId`, and 
 
 A runtime host instance is either a dedicated conversation process or a shared server that hosts several native conversations. The binding is the authorized activation of one native conversation on that instance, so it is not an operating-system process: a dedicated process and a native conversation inside a shared server are both bindings.
 
-AgentSession is not a Thread, Turn, Item, user-visible conversation, user-selectable session, physical connection, Agent process, runtime host, Harness Instance, Sandbox, scheduler lease, Runtime Epoch, native conversation, or native provider handle. A transport reconnect to the same surviving binding does not create a new AgentSession. Loss of the runtime host instance ends every binding it hosted, and a later binding is a successor AgentSession. Sharing a runtime host, Harness, or Sandbox does not merge AgentSessions.
+AgentSession is not a Thread, Turn, Item, user-visible conversation, user-selectable session, physical connection, Agent process, runtime host, Harness Instance, Sandbox, scheduler attempt, Runtime Epoch, native conversation, or native provider handle. A transport reconnect to the same surviving binding does not create a new AgentSession. Loss of the runtime host instance ends every binding it hosted, and a later binding is a successor AgentSession. Sharing a runtime host, Harness, or Sandbox does not merge AgentSessions.
 
 User-visible work remains:
 
@@ -80,7 +80,7 @@ Creation succeeds only after Core binds the exact Workspace and Thread, confirms
 
 ### Exact Reconnect
 
-A physical connection may reconnect without changing AgentSession identity only when the runtime proves the same AgentSession, the same surviving runtime host instance and binding, the active Turn when present, scheduler lease, worker identity, authorization lineage, and next protocol sequence under the accepted reconnect contract. A reconnect to a shared host restores only the bindings it validates, never blanket authority over every conversation on that host.
+A physical connection may reconnect without changing AgentSession identity only when the runtime proves the same AgentSession, the same surviving runtime host instance and binding, the active Turn when present, scheduler attempt, worker identity, authorization lineage, and next protocol sequence under the accepted reconnect contract. A reconnect to a shared host restores only the bindings it validates, never blanket authority over every conversation on that host.
 
 An exact reconnect changes connection generation. It does not create a successor AgentSession, replay a Turn, or replace Core history.
 
@@ -142,7 +142,7 @@ The AgentSession model is accepted only when observable evidence proves all of t
 - ordinary user surfaces offer continue-Thread and new-Thread behavior without exposing AgentSession selection, identity, history, or native handles
 - one Thread can accumulate historical AgentSessions but can never have more than one current AgentSession
 - successor admission atomically retires and fences its predecessor before the successor becomes current
-- exact transport reconnect preserves AgentSession, active-Turn, lease, worker, mode, and sequence identity
+- exact transport reconnect preserves AgentSession, active-Turn, attempt, worker, mode, and sequence identity
 - two consecutive Turns of one AgentSession run in the same live binding and native conversation, and the second model request uses the first Turn's context
 - a later Turn can reuse the current AgentSession only after binding readiness and existing authorization and scheduling gates pass
 - a close releases the binding while preserving native context and files; in a shared host, the host and sibling AgentSessions keep working
@@ -159,7 +159,7 @@ The AgentSession model is accepted only when observable evidence proves all of t
 - An AgentSession MUST remain bound to exactly one Workspace and one Thread.
 - A Thread MUST have at most one current AgentSession and MAY retain historical predecessors.
 - An AgentSession MUST have at most one active Turn, and an active Turn MUST execute through exactly one AgentSession.
-- A connection, process, native handle, Harness, Sandbox, Runtime Epoch, or lease MUST NOT replace AgentSession identity.
+- A connection, process, native handle, Harness, Sandbox, Runtime Epoch, or attempt MUST NOT replace AgentSession identity.
 - A successor MUST NOT become current before its predecessor is terminal, non-reusable, and runtime-fenced.
 - An active Turn MUST NOT move between AgentSessions or be replayed as continuity.
 - A successor MUST continue a Thread's native context only through native resume of the exact retained reference, and a failed resume MUST NOT be silently replaced by a new conversation.

@@ -564,7 +564,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 
 **Owner.** `docs/specs/20260703-runtime_scheduling_scale.md:126` (`NanoHost Boundary`): "NanoCore neither addresses nor stores Runtime Epoch identity."
 
-**Normative distinction.** Retaining runtime evidence on the observation axis MUST NOT be implemented as NanoCore addressing or storing Runtime Epoch identity for scheduling, placement, or capacity. Copied measured facts (for example image digest at bind time) are historical identity on the retention axis. Scheduler targeting, lease, and capacity remain the scheduling owner's records; Runtime Epoch identity remains NanoHost-private. The two obligations do not conflict when that separation is kept. Implementing retention as a second epoch-id scheduling key WOULD conflict with `:126` and is forbidden.
+**Normative distinction.** Retaining runtime evidence on the observation axis MUST NOT be implemented as NanoCore addressing or storing Runtime Epoch identity for scheduling, placement, or capacity. Copied measured facts (for example image digest at bind time) are historical identity on the retention axis. Scheduler admission and execution attempts remain the scheduling owner's records, while physical capacity and residency remain backend-adapter projections; Runtime Epoch identity remains NanoHost-private. The two obligations do not conflict when that separation is kept. Implementing retention as a second epoch-id scheduling key WOULD conflict with `:126` and is forbidden.
 
 **Disposition.** Live. This distinction is a requirement of this spec.
 

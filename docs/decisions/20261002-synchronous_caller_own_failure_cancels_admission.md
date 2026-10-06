@@ -1,5 +1,6 @@
 ---
-status: Accepted
+status: Superseded
+superseded-by: docs/decisions/20261006-execution_backend_port_in_nanocore.md
 date: "2026-10-02"
 decider: Engineer
 ---

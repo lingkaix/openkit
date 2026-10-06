@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: 2026-09-08
+updated: "2026-10-06"
 ---
 # Agent Manifest And AEP Resolution
 
@@ -486,7 +486,7 @@ Scale fields should include:
 
 Workspace and server policy may restrict every scale field.
 
-Scale intent fields should remain preferences and upper bounds. They must not select a backend, encode deployment or transport, name a concrete runtime target, force remote placement, allocate capacity, or bypass scheduler fairness. The scheduler owns placement plans, leases, queue order, warm-pool realization, and capacity records.
+Scale intent fields should remain preferences and upper bounds. They must not select a backend, encode deployment or transport, name a concrete runtime target, force remote placement, allocate capacity, or bypass scheduler fairness. The scheduler owns bounded FIFO admission order and the execution-attempt grant; the NanoCore-process backend adapter owns exact residency and enforces physical bounds. Manifest intent cannot create scheduling mechanisms outside the accepted profile in [Runtime Scheduling And Scale](20260703-runtime_scheduling_scale.md).
 
 ## Workspace-Local Agent Definitions
 
@@ -564,7 +564,7 @@ Qualification of native environment administration requires observable admitted-
 
 - Risk: Manifest surface becomes too large. Mitigation: keep most fields optional and use catalogs for reusable detail.
 - Risk: Profiles become sub-agents with their own hidden policies. Mitigation: profiles may extend only the identified behavior lists that the manifest marks composable and may reference only resources in the composed catalogs; runtime, network, credential, policy, and backend authority cannot widen through a profile.
-- Risk: Scale settings are mistaken for scheduler commands. Mitigation: manifest declares intent; scheduler records the actual placement plan.
+- Risk: Scale settings are mistaken for scheduler commands. Mitigation: manifest declares intent; the scheduler records actual admission and execution-attempt lineage.
 - Risk: MCP supply bypasses NanoCore. Mitigation: manifests and AEPs carry only non-executable catalog bindings; executable MCP access exists only through the governed `capability.local` plane.
 
 ## Resolved Decisions
