@@ -1375,6 +1375,7 @@ describe('private NanoHost Harness records', () => {
           operation: 'harness.drain',
           timestamp: now,
         });
+      // Buffer.equals compares every SQLite byte without deep equality enumerating byte indexes.
       const before = coreDb.sqlite.serialize();
       const extended = { ...body, ...collision, note: 'different inert addition' };
       expect(settle(extended)).toBe('replayed');
@@ -1385,10 +1386,10 @@ describe('private NanoHost Harness records', () => {
         // Even a collision in incoming metadata cannot affect the trusted predecessor reader.
         expect(settle(body)).toBe('replayed');
       }
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       for (const cleanupState of ['unknown', 'future']) {
         expect(() => settle({ ...extended, cleanupState })).toThrow();
-        expect(coreDb.sqlite.serialize()).toEqual(before);
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       }
       for (const missing of [
         'cleanupState',
@@ -1399,7 +1400,7 @@ describe('private NanoHost Harness records', () => {
         const incomplete: Record<string, unknown> = { ...extended };
         delete incomplete[missing];
         expect(() => settle(incomplete)).toThrow();
-        expect(coreDb.sqlite.serialize()).toEqual(before);
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       }
     } finally {
       coreDb.sqlite.close();
@@ -1470,7 +1471,7 @@ describe('private NanoHost Harness records', () => {
             : {}),
         })
       ).toBe('replayed');
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       expect(onSettled).not.toHaveBeenCalled();
       const changedBodies = [
         { ...body, reasonCode: 'conflict' },
@@ -1491,7 +1492,7 @@ describe('private NanoHost Harness records', () => {
       ];
       for (const changed of changedBodies) {
         expect(() => settle(changed)).toThrow();
-        expect(coreDb.sqlite.serialize()).toEqual(before);
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
         expect(onSettled).not.toHaveBeenCalled();
       }
     } finally {
@@ -1543,7 +1544,7 @@ describe('private NanoHost Harness records', () => {
           timestamp: now,
         })
       ).toThrow();
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
     } finally {
       coreDb.sqlite.close();
     }
@@ -1664,7 +1665,7 @@ describe('private NanoHost Harness records', () => {
         });
       if (inspectionCollision) expect(replay).toThrow(/result.*match|conflict/i);
       else expect(replay()).toBe('replayed');
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       expect(
         coreDb.sqlite
           .prepare(

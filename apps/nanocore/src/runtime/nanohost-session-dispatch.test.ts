@@ -1059,6 +1059,7 @@ describe('authoritative NanoHost session dispatch', () => {
           .run(bytes, createHash('sha256').update(bytes).digest('hex'));
       }
       const queued = coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get();
+      // Buffer.equals compares every SQLite byte without deep equality enumerating byte indexes.
       const before = coreDb.sqlite.serialize();
       expect(queued).toMatchObject({ operation_state: 'queued', operation_sequence: 1 });
       expect(
@@ -1083,7 +1084,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).toBe(204);
       expect(notify).not.toHaveBeenCalled();
       expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       expect(
         (
           await post('/worker-control/harness/result', {
@@ -1102,7 +1103,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).toBe(409);
       expect(notify).not.toHaveBeenCalled();
       expect(coreDb.sqlite.prepare('SELECT * FROM harness_instance_records').get()).toEqual(queued);
-      expect(coreDb.sqlite.serialize()).toEqual(before);
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       if (state === 'closed' || state === 'open') {
         for (const missing of [
           'cleanupState',
@@ -1115,7 +1116,7 @@ describe('authoritative NanoHost session dispatch', () => {
           expect((await post('/worker-control/harness/result', { ...result, body })).status).toBe(
             409
           );
-          expect(coreDb.sqlite.serialize()).toEqual(before);
+          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
           expect(notify).not.toHaveBeenCalled();
         }
         expect(
@@ -1126,7 +1127,7 @@ describe('authoritative NanoHost session dispatch', () => {
             })
           ).status
         ).toBe(409);
-        expect(coreDb.sqlite.serialize()).toEqual(before);
+        expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
       }
       if (refused) {
         const changedBodies = [
@@ -1152,7 +1153,7 @@ describe('authoritative NanoHost session dispatch', () => {
           expect((await post('/worker-control/harness/result', { ...result, body })).status).toBe(
             409
           );
-          expect(coreDb.sqlite.serialize()).toEqual(before);
+          expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
           expect(notify).not.toHaveBeenCalled();
         }
       }
