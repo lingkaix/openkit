@@ -1445,10 +1445,30 @@ export class PiAiGatewayClient {
       number,
       { readonly index: number; readonly id: string; readonly name: string }
     >();
-    const thinkingSent = new Map<number, string>();
+    const thinkingSent = new Map<number, { text: string; published: number }>();
     const textSent = new Map<number, string>();
     const toolArguments = new Map<number, string>();
     const toolIds = new Set<string>();
+    /** Publishes observed suffixes before later content, retaining the same-index completion hold. */
+    const drainThinking = (
+      controller: ReadableStreamDefaultController<Uint8Array>,
+      exceptIndex?: number
+    ) => {
+      let drained = false;
+      for (const [index, sent] of thinkingSent) {
+        if (index === exceptIndex) continue;
+        const remaining = sent.text.slice(sent.published);
+        if (!remaining) continue;
+        sent.published = sent.text.length;
+        controller.enqueue(
+          encoder.encode(
+            chatStreamEvent({ id, created, model, delta: { reasoning_content: remaining } })
+          )
+        );
+        drained = true;
+      }
+      return drained;
+    };
     const enqueueThinking = (
       controller: ReadableStreamDefaultController<Uint8Array>,
       index: number,
@@ -1456,13 +1476,21 @@ export class PiAiGatewayClient {
       text: string,
       delta = false
     ) => {
-      if (block.type !== 'thinking' || block.redacted || !text) return false;
-      const sent = thinkingSent.get(index) ?? '';
-      const remaining = delta ? text : text.startsWith(sent) ? text.slice(sent.length) : undefined;
-      if (remaining === undefined)
+      const drained = drainThinking(controller, index);
+      if (block.type !== 'thinking' || block.redacted) return drained;
+      const sent = thinkingSent.get(index) ?? { text: '', published: 0 };
+      const accumulated = delta ? sent.text + text : text;
+      // Stock summary-part completion appends a provisional separator that thinking_end removes.
+      // Hold within this index; content boundaries drain observed bytes to preserve stream order.
+      // A resumed whitespace-only delta cannot retract a suffix already drained at a boundary.
+      const publishable = delta
+        ? accumulated.slice(0, Math.max(sent.published, accumulated.trimEnd().length))
+        : accumulated;
+      if (!publishable.startsWith(sent.text.slice(0, sent.published)))
         throw new GatewayUnsupportedFeatureError('pi-ai Chat conflicting reasoning completion');
-      thinkingSent.set(index, sent + remaining);
-      if (!remaining) return false;
+      const remaining = publishable.slice(sent.published);
+      thinkingSent.set(index, { text: accumulated, published: publishable.length });
+      if (!remaining) return drained;
       controller.enqueue(
         encoder.encode(
           chatStreamEvent({ id, created, model, delta: { reasoning_content: remaining } })
@@ -1483,6 +1511,7 @@ export class PiAiGatewayClient {
       const remaining = delta ? text : text.slice(sent.length);
       textSent.set(index, sent + remaining);
       if (!remaining) return false;
+      drainThinking(controller);
       controller.enqueue(
         encoder.encode(chatStreamEvent({ id, created, model, delta: { content: remaining } }))
       );
@@ -1524,6 +1553,7 @@ export class PiAiGatewayClient {
       }
       toolArguments.set(index, completed);
       if (!suffix && !missingStart) return false;
+      drainThinking(controller);
       controller.enqueue(
         encoder.encode(
           chatStreamEvent({
@@ -1565,13 +1595,14 @@ export class PiAiGatewayClient {
             }
             if (result.done) {
               onModelEvent?.({ type: 'truncated' });
-              terminal = true;
-              controller.error(
-                piAiStreamFailure(
-                  'Provider stream ended before terminal result',
-                  'provider_stream_truncated'
-                )
+              terminalFailure = piAiStreamFailure(
+                'Provider stream ended before terminal result',
+                'provider_stream_truncated'
               );
+              // controller.error discards queued bytes; reject on the next pull after draining.
+              if (drainThinking(controller)) return;
+              terminal = true;
+              controller.error(terminalFailure);
               return;
             }
 
@@ -1617,6 +1648,11 @@ export class PiAiGatewayClient {
               continue;
             }
 
+            if (event.type === 'thinking_start') {
+              if (drainThinking(controller, event.contentIndex)) return;
+              continue;
+            }
+
             if (event.type === 'thinking_delta' || event.type === 'thinking_end') {
               const block = event.partial.content[event.contentIndex];
               if (!block || block.type !== 'thinking')
@@ -1649,6 +1685,7 @@ export class PiAiGatewayClient {
                 name: toolCall.name,
               });
               toolArguments.set(event.contentIndex, '');
+              drainThinking(controller);
               controller.enqueue(
                 encoder.encode(
                   chatStreamEvent({
@@ -1680,6 +1717,7 @@ export class PiAiGatewayClient {
               if (toolIndex === undefined) {
                 throw new GatewayUnsupportedFeatureError('pi-ai chat tool call stream');
               }
+              drainThinking(controller);
               controller.enqueue(
                 encoder.encode(
                   chatStreamEvent({
@@ -1706,6 +1744,7 @@ export class PiAiGatewayClient {
             }
 
             if (event.type === 'error') {
+              const drained = drainThinking(controller);
               if (!usageObserved) {
                 usageObserved = true;
                 onUsage?.(event.error.usage);
@@ -1724,11 +1763,14 @@ export class PiAiGatewayClient {
                   )
                 );
               }
-              if (!usage) {
+              if (!usage && !drained) {
                 terminal = true;
                 controller.error(terminalFailure);
               }
-              await iterator.return?.();
+              // Cleanup must neither block the next pull nor replace the queued terminal failure.
+              void Promise.resolve()
+                .then(() => iterator.return?.())
+                .catch(() => {});
               return;
             }
 
@@ -1768,16 +1810,23 @@ export class PiAiGatewayClient {
             return;
           }
 
-          terminal = true;
           const interrupted = signal.aborted;
           abortUpstream(error);
           try {
             onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
-            controller.error(attachPiAiFailure(error));
+            terminalFailure = attachPiAiFailure(error);
           } catch (captureError) {
-            controller.error(captureError);
+            terminalFailure = captureError;
           } finally {
-            await iterator.return?.();
+            // A conflicting completion may fail after this pull already queued a drained suffix.
+            if (!drainThinking(controller) && (controller.desiredSize ?? 0) > 0) {
+              terminal = true;
+              controller.error(terminalFailure);
+            }
+            // Stock return waits for an outstanding next; deliver failure independently of cleanup.
+            void Promise.resolve()
+              .then(() => iterator.return?.())
+              .catch(() => {});
           }
         }
       },

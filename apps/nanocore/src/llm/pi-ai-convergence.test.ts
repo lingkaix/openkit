@@ -14,6 +14,7 @@ import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { OpenAICompatibleResponsesResponse } from './openai-compatible-client.js';
@@ -454,6 +455,512 @@ describe('Gateway stock IR convergence', () => {
     expect(output.map((event) => event.choices[0]?.delta.reasoning_content ?? '').join('')).toBe(
       'completeterminal'
     );
+  });
+
+  it.each([
+    { name: 'no thinking', parts: [], completed: [], conflict: false },
+    {
+      name: 'one summary part',
+      parts: ['first paragraph'],
+      completed: ['first paragraph'],
+      conflict: false,
+    },
+    {
+      name: 'multiple summary parts',
+      parts: ['first paragraph', 'second paragraph'],
+      completed: ['first paragraph', 'second paragraph'],
+      conflict: false,
+    },
+    {
+      name: 'genuine whitespace',
+      parts: ['  first\t paragraph', 'second paragraph \t\n'],
+      completed: ['  first\t paragraph', 'second paragraph \t\n'],
+      conflict: false,
+    },
+    {
+      name: 'substantive conflict',
+      parts: ['published reasoning'],
+      completed: ['different reasoning'],
+      conflict: true,
+    },
+    {
+      name: 'removed substantive suffix',
+      parts: ['published reasoning'],
+      completed: ['published'],
+      conflict: true,
+    },
+  ])('reconciles stock Responses summary completion in Chat: $name', async ({
+    parts,
+    completed,
+    conflict,
+  }) => {
+    const models = createModels();
+    models.setProvider(xaiProvider());
+    const model = models.getModel('xai', 'grok-4.7');
+    expect(model?.api).toBe('openai-responses');
+    const provider = {
+      id: 'stock-profile',
+      adapterId: 'xai',
+      apiKey: 'synthetic',
+      baseUrl: null,
+      models: ['grok-4.7'],
+      requiresApiKey: true,
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    } as ResolvedLLMProviderConfig;
+    const reasoning = {
+      type: 'reasoning',
+      id: 'rs_fixture',
+      summary: completed.map((text) => ({ type: 'summary_text', text })),
+    };
+    const reply = 'exact assistant reply';
+    const text = {
+      type: 'message',
+      id: 'msg_fixture',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: reply, annotations: [] }],
+    };
+    const events: Record<string, unknown>[] = [
+      { type: 'response.created', response: { id: 'resp_fixture' } },
+    ];
+    if (parts.length) {
+      events.push({
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { ...reasoning, summary: [] },
+      });
+      for (const [summaryIndex, part] of parts.entries()) {
+        // Split the final character so the whitespace case ends with a whitespace-only delta.
+        for (const delta of [part.slice(0, -1), part.slice(-1)]) {
+          events.push({
+            type: 'response.reasoning_summary_text.delta',
+            output_index: 0,
+            summary_index: summaryIndex,
+            delta,
+          });
+        }
+        events.push({
+          type: 'response.reasoning_summary_part.done',
+          output_index: 0,
+          summary_index: summaryIndex,
+          part: { type: 'summary_text', text: part },
+        });
+      }
+      events.push({ type: 'response.output_item.done', output_index: 0, item: reasoning });
+    }
+    const textIndex = parts.length ? 1 : 0;
+    events.push(
+      {
+        type: 'response.output_item.added',
+        output_index: textIndex,
+        item: { ...text, content: [] },
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: textIndex,
+        content_index: 0,
+        delta: reply,
+      },
+      { type: 'response.output_item.done', output_index: textIndex, item: text },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'resp_fixture',
+          status: 'completed',
+          output: parts.length ? [reasoning, text] : [text],
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        },
+      }
+    );
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(''),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )
+      );
+    try {
+      const client = new PiAiGatewayClient({ models });
+      const usage = vi.fn();
+      const stream = await client.createChatCompletionStream(
+        provider,
+        {
+          model: 'grok-4.7',
+          messages: [{ role: 'user', content: 'hello' }],
+          stream: true,
+        },
+        usage
+      );
+      const result = new Response(stream).text();
+      if (conflict) {
+        await expect(result).rejects.toMatchObject({
+          code: 'unsupported_gateway_feature',
+          feature: 'pi-ai Chat conflicting reasoning completion',
+        });
+        expect(usage).not.toHaveBeenCalled();
+        return;
+      }
+      const wire = await result;
+      expect(wire.match(/data: \[DONE\]/g)).toHaveLength(1);
+      const output = wire
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)));
+      expect(output.map((event) => event.choices[0]?.delta.reasoning_content ?? '').join('')).toBe(
+        completed.join('\n\n')
+      );
+      expect(output.map((event) => event.choices[0]?.delta.content ?? '').join('')).toBe(reply);
+      expect(output.filter((event) => event.usage)).toHaveLength(1);
+      expect(output.at(-1)).toMatchObject({
+        choices: [{ finish_reason: 'stop' }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+      expect(usage).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('delivers held Chat thinking and cancellation before blocked stock iterator cleanup settles', async () => {
+    const { models, client, provider } = setup();
+    const events = createAssistantMessageEventStream();
+    const iterator = events[Symbol.asyncIterator]();
+    const stockNext = iterator.next.bind(iterator);
+    const prefetched = Promise.withResolvers<void>();
+    let pending = false;
+    const next = vi.spyOn(iterator, 'next').mockImplementation((...args) => {
+      const result = stockNext(...args);
+      if (next.mock.calls.length === 3) {
+        pending = true;
+        void result.then(() => {
+          pending = false;
+        });
+        prefetched.resolve();
+      }
+      return result;
+    });
+    const cleanup = vi.spyOn(iterator, 'return');
+    vi.spyOn(events, Symbol.asyncIterator).mockReturnValue(iterator);
+    vi.spyOn(models, 'stream').mockReturnValue(events);
+    const message = fauxAssistantMessage([fauxThinking('first \t')]);
+    events.push({ type: 'start', partial: message });
+    events.push({ type: 'thinking_delta', contentIndex: 0, delta: 'first \t', partial: message });
+    const caller = new AbortController();
+    const reason = new Error('caller cancelled while the stock iterator is blocked');
+    const reader = (
+      await client.createChatCompletionStream(
+        provider,
+        { model: 'physical', messages: [], stream: true },
+        undefined,
+        { signal: caller.signal }
+      )
+    ).getReader();
+    const decoder = new TextDecoder();
+    let wire = '';
+    /** Reads one content chunk without releasing the blocked upstream fixture. */
+    const readDelta = async () => {
+      const result = await reader.read();
+      expect(result.done).toBe(false);
+      const chunk = decoder.decode(result.value);
+      wire += chunk;
+      return JSON.parse(
+        chunk
+          .split('\n')
+          .find((line) => line.startsWith('data: {'))!
+          .slice(6)
+      ).choices[0].delta;
+    };
+    try {
+      expect(await readDelta()).toEqual({ role: 'assistant' });
+      expect(await readDelta()).toEqual({ reasoning_content: 'first' });
+      await prefetched.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(pending).toBe(true);
+      caller.abort(reason);
+      const suffix = readDelta();
+      const stillPending = Symbol('still pending at the next event-loop turn');
+      expect(
+        await Promise.race([
+          suffix,
+          new Promise((resolve) => setImmediate(() => resolve(stillPending))),
+        ])
+      ).toEqual({ reasoning_content: ' \t' });
+      const failure = reader.read().then(
+        (result) => result,
+        (error) => error
+      );
+      expect(
+        await Promise.race([
+          failure,
+          new Promise((resolve) => setImmediate(() => resolve(stillPending))),
+        ])
+      ).toBe(reason);
+      expect(pending).toBe(true);
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(wire).not.toContain('[DONE]');
+    } finally {
+      events.end();
+      await cleanup.mock.results[0]?.value;
+    }
+  });
+
+  it.each([
+    'terminal-error',
+    'thrown-error',
+  ])('preserves queued Chat thinking and the original %s when iterator cleanup rejects', async (ending) => {
+    const { models, client, provider } = setup();
+    const events = createAssistantMessageEventStream();
+    const iterator = events[Symbol.asyncIterator]();
+    const cleanup = vi.spyOn(iterator, 'return').mockRejectedValue(new Error('cleanup failed'));
+    vi.spyOn(events, Symbol.asyncIterator).mockReturnValue(iterator);
+    vi.spyOn(models, 'stream').mockReturnValue(events);
+    const message = fauxAssistantMessage([fauxThinking('first \t')]);
+    const reason = new Error('original provider failure');
+    events.push({ type: 'start', partial: message });
+    events.push({ type: 'thinking_delta', contentIndex: 0, delta: 'first \t', partial: message });
+    if (ending === 'terminal-error') {
+      events.push({
+        type: 'error',
+        reason: 'error',
+        error: { ...message, stopReason: 'error', errorMessage: reason.message },
+      });
+    } else {
+      const stockNext = iterator.next.bind(iterator);
+      vi.spyOn(iterator, 'next')
+        .mockImplementationOnce(stockNext)
+        .mockImplementationOnce(stockNext)
+        .mockRejectedValueOnce(reason);
+    }
+    const reader = (
+      await client.createChatCompletionStream(provider, {
+        model: 'physical',
+        messages: [],
+        stream: true,
+      })
+    ).getReader();
+    let wire = '';
+    let failure: unknown;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        wire += new TextDecoder().decode(result.value);
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      events.end();
+    }
+    if (ending === 'thrown-error') expect(failure).toBe(reason);
+    else expect(failure).toMatchObject({ message: reason.message });
+    const reasoning = wire
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)).choices[0]?.delta.reasoning_content)
+      .filter((text) => text !== undefined);
+    expect(reasoning).toEqual(['first', ' \t']);
+    expect(wire).not.toContain('[DONE]');
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'text',
+    'tool',
+    'two-thinking',
+    'eof',
+    'resumed-thinking',
+  ])('drains held Chat thinking whitespace at the stock Responses boundary: %s', async (boundary) => {
+    const models = createModels();
+    models.setProvider(xaiProvider());
+    expect(models.getModel('xai', 'grok-4.7')?.api).toBe('openai-responses');
+    const provider = {
+      id: 'stock-profile',
+      adapterId: 'xai',
+      apiKey: 'synthetic',
+      baseUrl: null,
+      models: ['grok-4.7'],
+      requiresApiKey: true,
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+    } as ResolvedLLMProviderConfig;
+    const first = {
+      type: 'reasoning',
+      id: 'rs_first',
+      summary: [
+        { type: 'summary_text', text: boundary === 'resumed-thinking' ? 'first \t\n' : 'first \t' },
+      ],
+    };
+    const second = {
+      type: 'reasoning',
+      id: 'rs_second',
+      summary: [{ type: 'summary_text', text: 'second ' }],
+    };
+    const answer = {
+      type: 'message',
+      id: 'msg_answer',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'answer', annotations: [] }],
+    };
+    const call = {
+      type: 'function_call',
+      id: 'fc_1',
+      call_id: 'call_1',
+      name: 'lookup',
+      arguments: '{}',
+    };
+    // No summary-part-done event: the pending suffix is genuine observed content.
+    const events: Record<string, unknown>[] = [
+      { type: 'response.created', response: { id: 'resp_boundary' } },
+      { type: 'response.output_item.added', output_index: 0, item: { ...first, summary: [] } },
+      {
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 0,
+        summary_index: 0,
+        delta: 'first \t',
+      },
+    ];
+    const output: Record<string, unknown>[] = [first];
+    if (boundary === 'text' || boundary === 'resumed-thinking') {
+      events.push(
+        { type: 'response.output_item.added', output_index: 1, item: { ...answer, content: [] } },
+        {
+          type: 'response.output_text.delta',
+          output_index: 1,
+          content_index: 0,
+          delta: 'answer',
+        },
+        { type: 'response.output_item.done', output_index: 1, item: answer }
+      );
+      output.push(answer);
+      if (boundary === 'resumed-thinking')
+        events.push({
+          type: 'response.reasoning_summary_text.delta',
+          output_index: 0,
+          summary_index: 0,
+          delta: '\n',
+        });
+    } else if (boundary === 'tool') {
+      events.push(
+        { type: 'response.output_item.added', output_index: 1, item: { ...call, arguments: '' } },
+        { type: 'response.output_item.done', output_index: 1, item: call }
+      );
+      output.push(call);
+    } else if (boundary === 'two-thinking') {
+      events.push(
+        { type: 'response.output_item.added', output_index: 1, item: { ...second, summary: [] } },
+        {
+          type: 'response.reasoning_summary_text.delta',
+          output_index: 1,
+          summary_index: 0,
+          delta: 'second ',
+        }
+      );
+      output.push(second);
+    }
+    if (boundary !== 'eof') {
+      events.push({ type: 'response.output_item.done', output_index: 0, item: first });
+      if (boundary === 'two-thinking')
+        events.push({ type: 'response.output_item.done', output_index: 1, item: second });
+      events.push({
+        type: 'response.completed',
+        response: {
+          id: 'resp_boundary',
+          status: 'completed',
+          output,
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        },
+      });
+    }
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(
+          events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(''),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )
+      );
+    try {
+      const client = new PiAiGatewayClient({ models });
+      const reader = (
+        await client.createChatCompletionStream(provider, {
+          model: 'grok-4.7',
+          messages: [],
+          stream: true,
+          tools: [
+            {
+              type: 'function',
+              function: { name: 'lookup', parameters: { type: 'object', properties: {} } },
+            },
+          ],
+        })
+      ).getReader();
+      let wire = '';
+      let failure: unknown;
+      try {
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          wire += new TextDecoder().decode(result.value);
+        }
+      } catch (error) {
+        failure = error;
+      }
+      if (boundary === 'eof') {
+        expect(failure).toMatchObject({
+          message: 'OpenAI Responses stream ended before a terminal response event',
+        });
+        expect(wire).not.toContain('[DONE]');
+      } else {
+        expect(failure).toBeUndefined();
+        expect(wire.match(/data: \[DONE\]/g)).toHaveLength(1);
+      }
+      const deltas = wire
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)).choices[0]?.delta)
+        .filter((delta) => delta && Object.keys(delta).length && !delta.role);
+      const expected = [{ reasoning_content: 'first' }, { reasoning_content: ' \t' }];
+      if (boundary === 'resumed-thinking') {
+        expect(deltas).toEqual([...expected, { content: 'answer' }, { reasoning_content: '\n' }]);
+      } else if (boundary === 'text') {
+        expect(deltas).toEqual([...expected, { content: 'answer' }]);
+      } else if (boundary === 'tool') {
+        expect(deltas).toEqual([
+          ...expected,
+          {
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_1',
+                type: 'function',
+                function: { name: 'lookup', arguments: '' },
+              },
+            ],
+          },
+          { tool_calls: [{ index: 0, function: { arguments: '{}' } }] },
+        ]);
+      } else if (boundary === 'two-thinking') {
+        expect(deltas).toEqual([
+          ...expected,
+          { reasoning_content: 'second' },
+          { reasoning_content: ' ' },
+        ]);
+      } else {
+        expect(deltas).toEqual(expected);
+      }
+      expect(deltas.map((delta) => delta.reasoning_content ?? '').join('')).toBe(
+        boundary === 'two-thinking'
+          ? 'first \tsecond '
+          : boundary === 'resumed-thinking'
+            ? 'first \t\n'
+            : 'first \t'
+      );
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it.each([
