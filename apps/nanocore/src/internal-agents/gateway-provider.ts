@@ -76,7 +76,8 @@ export function createInternalAgentGatewayProvider(
       name,
       description,
       parameters: inputSchema,
-      strict: true,
+      // The loop validates the original schema before execution; stock strict generation rewrites optional fields and rejects valid Tool schemas such as task_start's tuple prefixItems.
+      strict: false,
     }));
     assertBelowUnsupportedCompactionThreshold(
       { instructions: request.systemPrompt, input: providerInput, tools: providerTools },

@@ -203,7 +203,7 @@ describe('internal Agent Gateway provider', () => {
             name: 'environment.status',
             description: 'Read status.',
             parameters: { type: 'object' },
-            strict: true,
+            strict: false,
           },
         ],
       }),
@@ -339,7 +339,8 @@ describe('internal Agent Gateway provider', () => {
         expect(payloads[0]?.tools).toBeUndefined();
       } else {
         expect(payloads[0]?.tools).toMatchObject([{ functionDeclarations: [{ name: 'lookup' }] }]);
-        expect(payloads[0]?.toolConfig).toEqual({ functionCallingConfig: { mode: 'VALIDATED' } });
+        // Provider constrained generation is disabled; the internal loop retains schema admission.
+        expect(payloads[0]?.toolConfig).toBeUndefined();
       }
     } catch (error) {
       throw new Error(
