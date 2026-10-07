@@ -528,6 +528,8 @@ interface NanoHostIdleSandboxEviction {
   >;
   readonly bridgeOpen: boolean;
   readonly closeAgentSessions: boolean;
+  /** A settled exact local-close refusal requires wider cleanup rather than reuse or replay. */
+  readonly closeCleanupRequired: boolean;
   readonly originPhysicalEpoch: string;
   readonly physicalAbsent: boolean;
   readonly sandboxBindingRef: string;
@@ -1232,7 +1234,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return readNanoHostThreadAgentSessionBinding(this.coreDb, input);
   }
 
-  /** Proves exact retained continuity or closes one durable AgentSession-local binding. */
+  /** Proves retained continuity or closes the local binding, widening a settled refusal to Sandbox retirement. */
   public async prepareAgentSessionContinuity(
     input: WorkerGovernanceAgentSessionContinuityInput
   ): Promise<WorkerGovernanceAgentSessionContinuityDisposition> {
@@ -1256,7 +1258,53 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'The configured NanoHost RuntimeTarget is not ready for admission.'
       );
     }
-    const inspection = inspectNanoHostAgentSessionContinuity(this.coreDb, input);
+    const retirement = input.environmentPackage
+      ? this.inspectIncompatibleIdleSandbox(input.environmentPackage)
+      : null;
+    const widerRetirement =
+      retirement && retirement !== 'capacity-saturated' && retirement.closeCleanupRequired;
+    const replacesRequestedBinding =
+      widerRetirement &&
+      retirement.bindings.some((binding) => binding.agentSessionId === input.agentSessionId);
+    if (widerRetirement) {
+      if (!input.reuseAllowed || (!replacesRequestedBinding && input.admissionAttemptId)) {
+        if (!input.admissionAttemptId || !input.admissionAgentSessionId) {
+          throw new Error('NanoHost AgentSession retirement lacks admission lineage.');
+        }
+        const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.admissionAttemptId);
+        if (
+          attempt.phase !== 'open' ||
+          attempt.operationId !== null ||
+          attempt.backendId !== this.id ||
+          attempt.turnId !== input.environmentPackage!.scope.turnId ||
+          attempt.agentSessionId !== input.admissionAgentSessionId ||
+          attempt.workspaceId !== input.workspaceId ||
+          attempt.threadId !== input.threadId ||
+          input.environmentPackage!.scope.agentSessionId !== input.admissionAgentSessionId ||
+          input.environmentPackage!.scope.workspaceId !== input.workspaceId ||
+          input.environmentPackage!.scope.threadId !== input.threadId
+        ) {
+          throw new Error(
+            'NanoHost AgentSession retirement admission lineage changed concurrently.'
+          );
+        }
+      }
+      // Preserve read-only continuity inspection. Only the subsequent retirement may delete.
+      for (const binding of retirement.bindings) {
+        this.handoffDurableAgentSessionProof(
+          binding,
+          binding.agentSessionId === input.agentSessionId
+            ? input.recordNativeHandleDigest
+            : undefined
+        );
+      }
+      // Shared residency does not imply this Thread has a predecessor.
+      // Fresh admission retires the resident through the existing eviction below only after acquiring its attempt.
+      if (input.reuseAllowed && replacesRequestedBinding) return 'sandbox-replacement-required';
+    }
+    const inspection = replacesRequestedBinding
+      ? null
+      : inspectNanoHostAgentSessionContinuity(this.coreDb, input);
     if (!inspection) {
       if (input.environmentPackage && input.admissionAttemptId) {
         const responsibleUserId = responsibleUserIdForActor(
@@ -1285,6 +1333,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               },
             };
         } catch (error) {
+          // A settled local refusal permits one no-effect deferral; failed wider cleanup must terminate it.
+          if (widerRetirement) throw error;
           // This retirement is owned exclusively by the old resident. The incoming Turn has no Session or backend effect yet.
           if (
             this.inspectIncompatibleIdleSandbox(input.environmentPackage) === 'capacity-saturated'
@@ -1382,7 +1432,42 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         )!
       );
     }
-    await this.closeDurableAgentSession(inspection);
+    try {
+      await this.closeDurableAgentSession(inspection);
+    } catch (error) {
+      if (input.environmentPackage && input.admissionAttemptId && input.admissionAgentSessionId) {
+        const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.admissionAttemptId);
+        const retirement = this.inspectIncompatibleIdleSandbox(input.environmentPackage);
+        if (
+          attempt.phase === 'open' &&
+          attempt.disposition === 'not_accepted' &&
+          attempt.operationId === null &&
+          attempt.deadline === null &&
+          attempt.backendId === this.id &&
+          attempt.agentSessionId === input.admissionAgentSessionId &&
+          attempt.workspaceId === input.workspaceId &&
+          attempt.threadId === input.threadId &&
+          attempt.turnId === input.environmentPackage.scope.turnId &&
+          input.environmentPackage.scope.agentSessionId === input.admissionAgentSessionId &&
+          input.environmentPackage.scope.workspaceId === input.workspaceId &&
+          input.environmentPackage.scope.threadId === input.threadId &&
+          retirement &&
+          retirement !== 'capacity-saturated' &&
+          retirement.closeCleanupRequired &&
+          retirement.bindings.some(
+            (binding) =>
+              binding.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId &&
+              binding.harnessInstanceId === inspection.harnessInstanceId
+          )
+        ) {
+          // Only the predecessor close had effects. Requeue the same Turn so its next placement owns wider cleanup.
+          throw new WorkerGovernanceCapacityUnavailableError(
+            'The idle predecessor requires whole-Sandbox retirement before admission.'
+          );
+        }
+      }
+      throw error;
+    }
     for (const sharedHarness of this.sharedHarnesses.values()) {
       if (sharedHarness.harnessBindingRef === inspection.harnessBindingRef) {
         sharedHarness.bindings.delete(inspection.agentSessionId);
@@ -1906,13 +1991,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         `SELECT harness_instance_id AS harnessInstanceId,
                 harness_binding_ref AS harnessBindingRef,
                 lifecycle_state AS lifecycleState, drain_state AS drainState,
-                active_turn_count AS activeTurnCount, operation_state AS operationState
+                active_turn_count AS activeTurnCount, operation_state AS operationState,
+                (lifecycle_state = 'failed' AND drain_state = 'draining'
+                 AND operation = 'session.close' AND operation_state = 'settled'
+                 AND json_extract(result_json, '$.disposition') = 'refused'
+                 AND json_extract(result_json, '$.body.reasonCode') = 'cleanup_required'
+                 AND EXISTS (
+                   SELECT 1 FROM agent_session_runtime_bindings b
+                   WHERE b.harness_instance_id = harness_instance_records.harness_instance_id
+                     AND b.agent_session_id = json_extract(command_body_json, '$.agentSessionId')
+                     AND b.agent_session_runtime_binding_id = json_extract(command_body_json, '$.agentSessionRuntimeBindingId')
+                 )) AS closeCleanupRequired
          FROM harness_instance_records
          WHERE sandbox_runtime_id = ?
          ORDER BY harness_instance_id`
       )
       .all(sandbox.sandboxRuntimeId) as Array<{
       readonly activeTurnCount: number;
+      readonly closeCleanupRequired: number | null;
       readonly drainState: string;
       readonly harnessBindingRef: string;
       readonly harnessInstanceId: string;
@@ -1922,13 +2018,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (
       !physicalAbsent &&
       harnesses.some(
-        (harness) => harness.lifecycleState !== 'open' || harness.drainState !== 'accepting'
+        (harness) =>
+          (harness.lifecycleState !== 'open' || harness.drainState !== 'accepting') &&
+          harness.closeCleanupRequired !== 1
       )
     ) {
       return 'capacity-saturated';
     }
+    // A settled refused local close is cleanup work, never spare residency capacity.
+    // Retire its complete idle Sandbox through the old resident's deletion owner without replay.
+    const widenCleanup =
+      !physicalAbsent && harnesses.some((harness) => harness.closeCleanupRequired === 1);
     if (harnesses.some((harness) => harness.activeTurnCount !== 0)) return 'capacity-saturated';
-    if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && processLocalSandbox) {
+    if (
+      !forceRetirement &&
+      !widenCleanup &&
+      sandbox.sandboxCompatibilityKey === desiredKey &&
+      processLocalSandbox
+    ) {
       return null;
     }
     if (
@@ -2024,7 +2131,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     ) {
       return 'capacity-saturated';
     }
-    if (!forceRetirement && sandbox.sandboxCompatibilityKey === desiredKey && !physicalAbsent) {
+    if (
+      !forceRetirement &&
+      !widenCleanup &&
+      sandbox.sandboxCompatibilityKey === desiredKey &&
+      !physicalAbsent
+    ) {
       return null;
     }
     const retainedOwner = this.coreDb.sqlite
@@ -2061,7 +2173,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         reusable: false,
       })),
       bridgeOpen: this.sharedSandboxes.get(sandbox.sandboxCompatibilityKey)?.bridgeOpen ?? true,
-      closeAgentSessions: processLocalSandbox && !forceRetirement,
+      closeAgentSessions: processLocalSandbox && !forceRetirement && !widenCleanup,
+      closeCleanupRequired: widenCleanup,
       originPhysicalEpoch: sandboxOriginPhysicalEpoch,
       retirementOwner,
       physicalAbsent,
@@ -2124,7 +2237,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                  operation_state IN ('idle', 'settled')
                  OR ? = 1
                )
-               AND (? = 1 OR (lifecycle_state = 'open' AND drain_state = 'accepting'))`
+               AND (? = 1 OR (lifecycle_state = 'open' AND drain_state = 'accepting')
+                 OR (lifecycle_state = 'failed' AND drain_state = 'draining'
+                   AND operation = 'session.close' AND operation_state = 'settled'
+                   AND json_extract(result_json, '$.disposition') = 'refused'
+                   AND json_extract(result_json, '$.body.reasonCode') = 'cleanup_required'))`
           )
           .run(timestamp, eviction.sandboxRuntimeId, physicalAbsentFlag, physicalAbsentFlag);
         if (

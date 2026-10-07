@@ -10063,6 +10063,13 @@ describe('createConfiguredTurnExecutor', () => {
     'eviction-cleanup-required',
     'eviction-delete-failed',
     'eviction-live-cleanup',
+    'predecessor-close-required',
+    'predecessor-restart',
+    'predecessor-delete-failed',
+    'predecessor-effectful',
+    'predecessor-fresh-same-runtime',
+    'predecessor-fresh-different-runtime',
+    'predecessor-fresh-delete-failed',
     'retained_baseline_unavailable',
     'retained_baseline_conflict',
     'git_fetch_commit_unavailable',
@@ -10085,7 +10092,45 @@ describe('createConfiguredTurnExecutor', () => {
               .prepare('SELECT cleanup_state AS state FROM sandbox_runtime_records')
               .get()
           ).toEqual({ state: 'clean' });
-          if (request.kind === 'sandbox.delete' && startupRefused === 'eviction-delete-failed') {
+          if (startupRefused?.startsWith('predecessor-fresh-')) {
+            expect(
+              coreDb.sqlite
+                .prepare(
+                  'SELECT phase, operation_id, turn_id, agent_session_id, thread_id FROM scheduler_execution_attempts WHERE attempt_id = ?'
+                )
+                .get('attempt_fresh_retirement')
+            ).toEqual({
+              phase: 'open',
+              operation_id: null,
+              turn_id: 'turn_fresh_retirement',
+              agent_session_id: 'as_fresh_retirement',
+              thread_id: 'thread_fresh_retirement',
+            });
+            expect(
+              coreDb.sqlite
+                .prepare(
+                  'SELECT state FROM worker_storage_bindings WHERE current_sandbox_binding_ref IS NOT NULL'
+                )
+                .get()
+            ).toEqual({ state: 'attached' });
+          }
+          if (startupRefused?.startsWith('predecessor-')) {
+            expect(
+              coreDb.sqlite.prepare('SELECT open_session_count FROM harness_instance_records').get()
+            ).toEqual({ open_session_count: 1 });
+            expect(
+              coreDb.sqlite.prepare('SELECT drain_state FROM sandbox_runtime_records').get()
+            ).toEqual({ drain_state: 'draining' });
+            expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+          }
+          if (
+            request.kind === 'sandbox.delete' &&
+            [
+              'eviction-delete-failed',
+              'predecessor-delete-failed',
+              'predecessor-fresh-delete-failed',
+            ].includes(startupRefused ?? '')
+          ) {
             throw new Error('Eviction Sandbox delete failed.');
           }
         }
@@ -10132,13 +10177,13 @@ describe('createConfiguredTurnExecutor', () => {
                      1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-06T00:00:00.000Z');
-      const runtime = createConfiguredWorkerLifecycleRuntime({
+      let runtime = createConfiguredWorkerLifecycleRuntime({
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
         workerControlGateway: new WorkerControlGateway(),
       });
-      const backend = (
+      let backend = (
         runtime.turnExecutor as unknown as {
           readonly backend: WorkerGovernanceBackend & {
             inspectTerminalHarnessSession(session: unknown): Promise<void>;
@@ -10147,6 +10192,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
+      const requireAttemptId = backend.requireAttemptId.bind(backend);
       backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
       const native = backend as WorkerGovernanceBackend & {
         evictIncompatibleIdleSandbox(...args: unknown[]): Promise<unknown>;
@@ -10183,7 +10229,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
         snapshotId: 'snapshot_idle_eviction_a',
       });
-      const secondPackage = completeNanoHostPackage({
+      let secondPackage = completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
@@ -10232,7 +10278,7 @@ describe('createConfiguredTurnExecutor', () => {
         if (!command || command.operation !== operation) {
           throw new Error(`Expected queued ${operation} Harness command.`);
         }
-        if (operation === 'session.close') {
+        if (operation === 'session.close' && !startupRefused?.startsWith('predecessor-')) {
           expect(
             coreDb.sqlite
               .prepare(
@@ -10284,6 +10330,13 @@ describe('createConfiguredTurnExecutor', () => {
           sandboxIntegrationBindingRef: integrationRef,
           timestamp: '2026-09-06T00:00:01.000Z',
         });
+        if (operation === 'session.close' && startupRefused === 'predecessor-effectful') {
+          // A concurrent possible successor effect defeats no-effect deferral even after definite refusal.
+          recordSchedulerExecutionOperation(coreDb, {
+            attemptId: `lease-${secondPackage.snapshotId}`,
+            operationId: 'incoming-effect-before-close-settlement',
+          });
+        }
         runtime.acceptNanoHostHarnessResult(result);
       };
 
@@ -10305,7 +10358,11 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const launch = submitTestNanoHostTurn(coreDb, backend, firstMaterialization);
 
-      if (startupRefused && !startupRefused.startsWith('eviction-')) {
+      if (
+        startupRefused &&
+        !startupRefused.startsWith('eviction-') &&
+        !startupRefused.startsWith('predecessor-')
+      ) {
         const observedFailure =
           startupRefused === 'git_fetch_http_refused'
             ? ({
@@ -10464,6 +10521,7 @@ describe('createConfiguredTurnExecutor', () => {
         storageRef: selectedBinding.storageRef,
         taskId: null,
       };
+
       anchorNanoHostMaterialization(coreDb, backend, secondPackage);
       await expect(
         backend.prepareAgentSessionContinuity?.({
@@ -10486,31 +10544,405 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .get(firstPackage.scope.agentSessionId)
       ).toEqual({ state: 'open' });
-      const effectsBeforeReplacement = effects.length;
-      anchorNanoHostMaterialization(coreDb, backend, secondPackage);
-      await expect(
-        backend.materialize(secondPackage, {
-          sandboxBindingRef: factoryPackageBinding(coreDb, secondPackage),
-          workerStorageChoice: {
-            ...selectedChoice,
-            expectedRevision: selectedBinding.revision - 1,
-          },
-          workspaceRoots: [],
-        })
-      ).rejects.toThrow(
-        'Incompatible resident cleanup requires exact deletion or Epoch fence proof.'
-      );
-      expect(retirementFailures).toHaveLength(1);
-      expect(retirementFailures[0]).toMatchObject({
-        name: 'WorkerStorageBindingError',
-        code: 'revision_conflict',
-        message: 'Worker storage revision changed.',
-      });
-      expect(effects).toHaveLength(effectsBeforeReplacement);
-      expect(
-        coreDb.sqlite.prepare('SELECT drain_state AS drainState FROM sandbox_runtime_records').get()
-      ).toEqual({ drainState: 'accepting' });
+      if (!startupRefused?.startsWith('predecessor-')) {
+        const effectsBeforeReplacement = effects.length;
+        anchorNanoHostMaterialization(coreDb, backend, secondPackage);
+        await expect(
+          backend.materialize(secondPackage, {
+            sandboxBindingRef: factoryPackageBinding(coreDb, secondPackage),
+            workerStorageChoice: {
+              ...selectedChoice,
+              expectedRevision: selectedBinding.revision - 1,
+            },
+            workspaceRoots: [],
+          })
+        ).rejects.toThrow(
+          'Incompatible resident cleanup requires exact deletion or Epoch fence proof.'
+        );
+        expect(retirementFailures).toHaveLength(1);
+        expect(retirementFailures[0]).toMatchObject({
+          name: 'WorkerStorageBindingError',
+          code: 'revision_conflict',
+          message: 'Worker storage revision changed.',
+        });
+        expect(effects).toHaveLength(effectsBeforeReplacement);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT drain_state AS drainState FROM sandbox_runtime_records')
+            .get()
+        ).toEqual({ drainState: 'accepting' });
+      }
 
+      if (startupRefused?.startsWith('predecessor-')) {
+        const queuedAdmission = startupRefused !== 'predecessor-restart';
+        const close = backend.prepareAgentSessionContinuity!({
+          ...(queuedAdmission
+            ? {
+                admissionAgentSessionId: secondPackage.scope.agentSessionId,
+                admissionAttemptId: `lease-${secondPackage.snapshotId}`,
+              }
+            : {}),
+          agentSessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
+          agentSessionId: firstPackage.scope.agentSessionId,
+          environmentPackage: secondPackage,
+          reuseAllowed: false,
+          threadId: firstPackage.scope.threadId,
+          workspaceId: firstPackage.scope.workspaceId,
+          workerStorageChoice: selectedChoice,
+        });
+        const refused =
+          queuedAdmission && startupRefused !== 'predecessor-effectful'
+            ? expect(close).rejects.toMatchObject({
+                name: 'WorkerGovernanceCapacityUnavailableError',
+              })
+            : expect(close).rejects.toThrow(/session.close refused: cleanup_required/);
+        await settleNext('session.close', { reasonCode: 'cleanup_required' }, 'refused');
+        await refused;
+        await closeFactoryAttempt(coreDb, 'lease-snapshot_idle_eviction_b');
+        secondPackage = completeNanoHostPackage({
+          ...secondPackage,
+          ...(startupRefused === 'predecessor-close-required'
+            ? { runtime: firstPackage.runtime }
+            : {}),
+          scope: {
+            ...secondPackage.scope,
+            agentSessionId: 'as_idle_eviction_c',
+            turnId: 'turn_idle_eviction_c',
+            requestId: 'request_idle_eviction_c',
+          },
+          snapshotId: 'snapshot_idle_eviction_c',
+        });
+        authorizeNanoHostPackage(coreDb, secondPackage);
+        expect(backend.sessions.size).toBe(0);
+        expect(
+          coreDb.sqlite
+            .prepare("SELECT phase FROM scheduler_execution_attempts WHERE phase <> 'closed'")
+            .all()
+        ).toEqual([]);
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT lifecycle_state, drain_state, active_turn_count, open_session_count FROM harness_instance_records'
+            )
+            .get()
+        ).toEqual({
+          lifecycle_state: 'failed',
+          drain_state: 'draining',
+          active_turn_count: 0,
+          open_session_count: 1,
+        });
+        if (startupRefused === 'predecessor-restart') {
+          runtime = createConfiguredWorkerLifecycleRuntime({
+            coreDb,
+            env: {},
+            nanoHostSessionDispatch: sessionDispatch,
+            workerControlGateway: new WorkerControlGateway(),
+          });
+          backend = (runtime.turnExecutor as unknown as { backend: typeof backend }).backend;
+          backend.requireAttemptId = (packageSnapshotId) => `lease-${packageSnapshotId}`;
+        }
+        const otherRuntime = completeNanoHostPackage({
+          ...firstPackage,
+          agent: { ...firstPackage.agent, runtimeKind: 'opencode', runtimeVersion: '2.0.22' },
+        });
+        expect(backend.inspectMaterializationCapacity?.(otherRuntime)).toBe('available');
+        if (startupRefused === 'predecessor-close-required') {
+          // Checked-in version of the review's in-memory counterexample: co-location is not continuity.
+          const freshThreadPackage = completeNanoHostPackage({
+            ...secondPackage,
+            scope: {
+              ...secondPackage.scope,
+              threadId: 'th_review_fresh',
+              agentSessionId: 'as_review_fresh',
+            },
+          });
+          const effectsBeforePreview = effects.length;
+          await expect(
+            backend.prepareAgentSessionContinuity!({
+              agentSessionId: 'as_review_fresh',
+              environmentPackage: freshThreadPackage,
+              reuseAllowed: true,
+              workspaceId: freshThreadPackage.scope.workspaceId,
+              threadId: freshThreadPackage.scope.threadId,
+            })
+          ).resolves.toBe('absent');
+          expect(effects).toHaveLength(effectsBeforePreview);
+        }
+
+        coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 1');
+        expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe('capacity-saturated');
+        coreDb.sqlite.exec('UPDATE harness_instance_records SET active_turn_count = 0');
+        // Later admission may retire the refused resident, but never repeats its native close.
+        expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe('available');
+        expect(backend.inspectMaterializationCapacity?.(firstPackage)).toBe('available');
+      }
+
+      if (startupRefused?.startsWith('predecessor-fresh-')) {
+        const deleteFails = startupRefused === 'predecessor-fresh-delete-failed';
+        const setup = createTestAgentSetup({
+          adapter: startupRefused === 'predecessor-fresh-different-runtime' ? 'opencode' : 'codex',
+          agentId: 'agent_fresh_retirement',
+          imageRef: `sha256:${'1'.repeat(64)}`,
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        });
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        const freshPackage = completeNanoHostPackage({
+          agentSetup: setup,
+          scope: {
+            ...firstPackage.scope,
+            agentSessionId: 'as_fresh_retirement',
+            threadId: 'thread_fresh_retirement',
+            turnId: 'turn_fresh_retirement',
+          },
+          snapshotId: 'snapshot_fresh_retirement',
+        });
+        authorizeNanoHostPackage(coreDb, freshPackage);
+        const store = new FsStore({ dataRoot: coreDb.dataRoot });
+        // Use real scheduler package/attempt lookup from here; direct fixture aliases are no admission authority.
+        backend.requireAttemptId = requireAttemptId;
+        // Transcript decoding has separate coverage; this crossing observes retirement and native submission.
+        backend.collectTranscript = async () => ({ eventsJsonl: '', itemsJsonl: '' });
+        const submit = vi.spyOn(backend, 'submit');
+        const executor = new WorkerGovernanceTurnExecutor({
+          backend,
+          coreDb,
+          awaitWorkerCompletion: async (aep) => {
+            const acceptedAt = new Date().toISOString();
+            recordWorkerControlAcceptedRecord(coreDb, {
+              acceptedAt,
+              lineage: { ...aep.scope, packageSnapshotId: aep.snapshotId },
+              operation: 'final_status',
+              record: { sequence: 1, status: 'completed', stopReason: 'completed' },
+              recordKey: '1',
+              sequence: 1,
+            });
+            return { acceptedAt, status: 'completed', stopReason: 'completed' };
+          },
+        });
+        const entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: backend.id,
+          queueEntryId: 'queue_fresh_retirement',
+          requestId: '00000000-0000-4000-8000-000000000293',
+          requestedAgentId: setup.manifest.id,
+          threadId: freshPackage.scope.threadId,
+          turnId: freshPackage.scope.turnId,
+          turnInput: 'Run on a fresh Thread after resident close refusal',
+          triggerActor: freshPackage.scope.triggerActor,
+          workspaceId: freshPackage.scope.workspaceId,
+        });
+        publishFactoryAdmission(store, entry);
+        const effectsBeforeDispatch = effects.length;
+        let done = false;
+        const running = runSchedulerDispatchLoop({
+          agentManifests: [setup.manifest],
+          coreDb,
+          createAgentSessionId: () => freshPackage.scope.agentSessionId,
+          createAttemptId: () => 'attempt_fresh_retirement',
+          gatewayConfig: createTestGatewayConfig(),
+          maxDispatches: 1,
+          providerRegistry: new ProviderRegistry([
+            {
+              baseUrl: 'http://127.0.0.1:11434/v1',
+              defaultModel: 'openai/gpt-5.2',
+              displayName: 'Fresh retirement fixture',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          store,
+          turnExecutor: executor,
+          executionBackend: backend,
+        })
+          .then(async (result) => {
+            await Promise.all(result.startedTurns.map(({ handle }) => handle.completion));
+            return result;
+          })
+          .finally(() => {
+            done = true;
+          });
+        // Keep the rejection observed while the external command fixture drains actual production waiters.
+        const observed = running.catch((error: unknown) => error);
+        const commands: string[] = [];
+        for (let tick = 0; tick < 5000 && !done; tick += 1) {
+          const integrations = coreDb.sqlite
+            .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+            .all() as { ref: string }[];
+          for (const integration of integrations) {
+            const command = dispatchNanoHostHarnessOperation(coreDb, {
+              sandboxIntegrationBindingRef: integration.ref,
+            });
+            if (!command) continue;
+            commands.push(command.operation);
+            runtime.acceptNanoHostHarnessCommand(command);
+            if (command.operation === 'session.open') {
+              expect(command.body.resume).toBeNull();
+              expect(command.body.agentSessionId).toBe(freshPackage.scope.agentSessionId);
+            }
+            const body =
+              command.operation === 'session.close'
+                ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+                : command.operation === 'turn.start'
+                  ? {
+                      state: 'started',
+                      nativeHandleState: 'ready',
+                      nativeHandleDigest: 'b'.repeat(64),
+                    }
+                  : command.operation === 'session.open'
+                    ? {
+                        maxActiveTurns: 1,
+                        state: 'open',
+                        nativeHandleState: 'ready',
+                        nativeHandleDigest: 'b'.repeat(64),
+                      }
+                    : {
+                        state: 'open',
+                        childState: 'absent',
+                        cleanupState: 'clean',
+                        nativeHandleState: 'ready',
+                        nativeHandleDigest: 'b'.repeat(64),
+                      };
+            const result = {
+              body,
+              disposition: 'succeeded' as const,
+              harnessInstanceId: command.harnessInstanceId,
+              operationId: command.operationId,
+              schemaVersion: 2 as const,
+              sequence: command.sequence,
+            };
+            settleNanoHostHarnessOperation(coreDb, {
+              result,
+              sandboxIntegrationBindingRef: integration.ref,
+              timestamp: new Date().toISOString(),
+            });
+            runtime.acceptNanoHostHarnessResult(result);
+          }
+          if (!done) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        }
+        expect(done).toBe(true);
+        const dispatched = await observed;
+        if (!deleteFails) {
+          expect(store.getTurnById(entry.turnId)).toMatchObject({
+            status: 'completed',
+            error: null,
+          });
+        }
+        expect(
+          effects
+            .slice(effectsBeforeDispatch, effectsBeforeDispatch + 2)
+            .map((effect) => effect.kind)
+        ).toEqual(['bridge.close', 'sandbox.delete']);
+        expect(commands).not.toContain('session.close');
+        expect(store.getAgentSession(firstPackage.scope.agentSessionId).nativeHandleDigest).toBe(
+          'a'.repeat(64)
+        );
+        if (deleteFails) {
+          expect(dispatched).toMatchObject({ code: 'recovery_required' });
+          expect(store.getTurnById(entry.turnId)).toMatchObject({
+            status: 'failed',
+            error: { code: 'worker_preparation_failed' },
+          });
+          expect(submit).not.toHaveBeenCalled();
+          expect(
+            coreDb.sqlite.prepare('SELECT cleanup_state FROM sandbox_runtime_records').get()
+          ).toEqual({ cleanup_state: 'unknown' });
+          expect(
+            getWorkerStorageBinding(coreDb, { storageRef: selectedBinding.storageRef })
+          ).toMatchObject({ state: 'unknown' });
+        } else {
+          expect(dispatched).toMatchObject({
+            startedTurns: [{ dispatch: { entry: { turnId: entry.turnId } } }],
+          });
+          expect(store.getTurnById(entry.turnId)).toMatchObject({
+            status: 'completed',
+            agentSessionId: freshPackage.scope.agentSessionId,
+          });
+          expect(submit).toHaveBeenCalledTimes(1);
+          expect(commands.filter((operation) => operation === 'turn.start')).toHaveLength(1);
+          expect(
+            getWorkerStorageBinding(coreDb, { storageRef: selectedBinding.storageRef })
+          ).toMatchObject({ state: 'idle', currentSandboxBindingRef: null });
+        }
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT turn_id, queue_entry_id FROM scheduler_execution_attempts WHERE turn_id = ?'
+            )
+            .all(entry.turnId)
+        ).toEqual([{ turn_id: entry.turnId, queue_entry_id: entry.queueEntryId }]);
+        expect(store.listThreadTurns(entry.workspaceId, entry.threadId)).toHaveLength(1);
+        const effectsAfterDispatch = effects.length;
+        await runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: executor,
+          executionBackend: backend,
+        });
+        expect(effects).toHaveLength(effectsAfterDispatch);
+        expect(submit).toHaveBeenCalledTimes(deleteFails ? 0 : 1);
+        return;
+      }
+
+      anchorNanoHostMaterialization(coreDb, backend, secondPackage);
+      if (startupRefused?.startsWith('predecessor-')) {
+        const continuityInput = {
+          agentSessionCompatibilityKey: `sha256:${'e'.repeat(64)}`,
+          agentSessionId: firstPackage.scope.agentSessionId,
+          admissionAgentSessionId: secondPackage.scope.agentSessionId,
+          admissionAttemptId: `lease-${secondPackage.snapshotId}`,
+          environmentPackage: secondPackage,
+          threadId: firstPackage.scope.threadId,
+          workspaceId: firstPackage.scope.workspaceId,
+          workerStorageChoice: selectedChoice,
+        };
+        const effectsBeforeInspection = effects.length;
+        // The next scheduler pass previews continuity before acquiring its new attempt.
+        await expect(
+          backend.prepareAgentSessionContinuity!({
+            ...continuityInput,
+            admissionAttemptId: undefined,
+            admissionAgentSessionId: undefined,
+            reuseAllowed: true,
+          })
+        ).resolves.toBe('sandbox-replacement-required');
+        expect(effects).toHaveLength(effectsBeforeInspection);
+        await expect(
+          backend.prepareAgentSessionContinuity!({
+            ...continuityInput,
+            admissionAgentSessionId: 'wrong-session',
+            reuseAllowed: false,
+          })
+        ).rejects.toThrow('retirement admission lineage changed');
+        expect(effects).toHaveLength(effectsBeforeInspection);
+        await expect(
+          backend.prepareAgentSessionContinuity!({ ...continuityInput, reuseAllowed: true })
+        ).resolves.toBe('sandbox-replacement-required');
+        expect(effects).toHaveLength(effectsBeforeInspection);
+        const retired = await backend.prepareAgentSessionContinuity!({
+          ...continuityInput,
+          reuseAllowed: false,
+        }).catch((error: unknown) => error);
+        if (startupRefused === 'predecessor-delete-failed') {
+          expect(retired).toBeInstanceOf(Error);
+          expect(retired).not.toMatchObject({ name: 'WorkerGovernanceCapacityUnavailableError' });
+          expect(retired).toMatchObject({ message: 'Eviction Sandbox delete failed.' });
+          expect(backend.inspectMaterializationCapacity?.(secondPackage)).toBe(
+            'capacity-saturated'
+          );
+          expect(
+            coreDb.sqlite.prepare('SELECT cleanup_state FROM sandbox_runtime_records').get()
+          ).toEqual({ cleanup_state: 'unknown' });
+          expect(
+            getWorkerStorageBinding(coreDb, { storageRef: selectedBinding.storageRef })
+          ).toMatchObject({ state: 'unknown' });
+          return;
+        }
+        expect(retired).toMatchObject({
+          disposition: 'closed',
+          storageRevisionAdvance: { revision: selectedBinding.revision + 1 },
+        });
+        selectedChoice.expectedRevision += 1;
+      }
       const replacement = backend.materialize(secondPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, secondPackage),
         workerStorageChoice: selectedChoice,
@@ -10526,7 +10958,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
           'refused'
         );
-      } else {
+      } else if (!startupRefused?.startsWith('predecessor-')) {
         await settleNext('session.close', {
           childState: 'absent',
           privateState: 'absent',

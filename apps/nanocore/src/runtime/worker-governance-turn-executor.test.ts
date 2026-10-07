@@ -70,6 +70,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -120,6 +121,7 @@ import {
   raisePendingRequest,
 } from './pending-requests.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
+import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
@@ -144,6 +146,7 @@ import type {
 import {
   WORKER_ARTIFACT_COLLECTION_INVALID,
   WORKER_ARTIFACT_RECOVERY_REQUIRED,
+  WorkerGovernanceCapacityUnavailableError,
   WorkerNativeProofValidationError,
 } from './worker-governance-backend.js';
 import {
@@ -158,6 +161,7 @@ import {
 import {
   createWorkerStorageBinding,
   getWorkerStorageBinding,
+  releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
@@ -3771,6 +3775,212 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(inspect).not.toHaveBeenCalled();
     expect(backend.calls).toEqual([]);
     expect(store.getAgentSession(predecessor.id).nativeHandleDigest).toBe('a'.repeat(64));
+  });
+
+  it.each([
+    false,
+    true,
+  ])('keeps the triggering Turn queued through predecessor refusal, retirement failure=%s', async (retirementFails) => {
+    const coreDb = openCommitFixtureCore();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const target = recordTestNativeRuntimeTarget(coreDb);
+    const binding = createWorkerStorageBinding(coreDb, {
+      deploymentId: target.deploymentId,
+      runtimeTargetId: target.targetId,
+      workspaceId: 'ws_demo',
+      layout: {
+        family: 'openkit-worker',
+        version: '1',
+        uid: 1000,
+        gid: 1000,
+        workingDirectory: '/tmp/openkit-bootstrap',
+        platform: { architecture: 'amd64', os: 'linux' },
+        targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+      },
+    });
+    const reserved = reserveWorkerStorageAttachment(coreDb, {
+      storageRef: binding.storageRef,
+      expectedRevision: binding.revision,
+      layout: binding.layout,
+      purpose: 'work',
+      responsibleUserId: 'user_local',
+      threadId: 'th_demo',
+      workspaceId: 'ws_demo',
+      authorizeContributor: () => true,
+      agentSessionId: 'as_queued_predecessor',
+      runtimeTargetId: target.targetId,
+    });
+    releaseWorkerStorageAttachment(coreDb, {
+      storageRef: reserved.storageRef,
+      expectedRevision: reserved.revision,
+      attachmentGeneration: reserved.attachmentGeneration,
+      cleanupProved: true,
+    });
+    const predecessor = store.createAgentSession({
+      id: 'as_queued_predecessor',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      status: 'idle',
+      message: null,
+      createdAt: '2026-07-15T00:00:00.000Z',
+      updatedAt: '2026-07-15T00:00:00.000Z',
+      sessionCompatibilityKey: `sha256:${'0'.repeat(64)}`,
+      nativeHandleDigest: 'a'.repeat(64),
+      retainedStorage: {
+        storageRef: binding.storageRef,
+        workSlotRef: workerStorageDefaultWorkSlotRef('ws_demo', 'th_demo'),
+      },
+    });
+    let refused = false;
+    const effects: string[] = [];
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      prepareAgentSessionContinuity: async (input: { readonly reuseAllowed: boolean }) => {
+        if (input.reuseAllowed)
+          return refused
+            ? ('sandbox-replacement-required' as const)
+            : ('replacement-required' as const);
+        if (!refused) {
+          refused = true;
+          effects.push('predecessor-close-refused');
+          throw new WorkerGovernanceCapacityUnavailableError(
+            'Settled predecessor close needs retirement.'
+          );
+        }
+        effects.push('sandbox-retirement');
+        if (retirementFails) throw new Error('Sandbox retirement failed.');
+        return 'closed' as const;
+      },
+    });
+    const planSession = backend.planSession.bind(backend);
+    backend.planSession = (environmentPackage) => ({
+      ...planSession(environmentPackage),
+      deploymentId: target.deploymentId,
+      runtimeTargetId: target.targetId,
+    });
+    const materialize = backend.materialize.bind(backend);
+    backend.materialize = async (...args) => ({
+      ...(await materialize(...args)),
+      retainedStorage: predecessor.retainedStorage!,
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb,
+      awaitWorkerCompletion: async () => ({
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        status: 'completed' as const,
+        stopReason: 'completed',
+      }),
+    });
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'queue_refused_predecessor',
+      requestId: '00000000-0000-4000-8000-000000000291',
+      workspaceId: 'ws_demo',
+      threadId: 'th_demo',
+      turnId: 'turn_binding_change',
+      turnInput: 'Continue after the MCP binding change',
+      requestedAgentId: 'agent_codex_host',
+      triggerActor: { kind: 'user', id: 'user_local' },
+    });
+    store.createTurn(
+      entry.workspaceId,
+      entry.threadId,
+      entry.turnInput,
+      entry.triggerActor,
+      undefined,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: entry.requestedAgentId,
+        executorKind: 'worker',
+      }
+    );
+    store.recordCommandRequest({
+      command: 'turn.start',
+      requestId: entry.requestId,
+      inputHash: 'fixture:binding-change',
+      scope: { actorId: 'user_local', workspaceId: entry.workspaceId, threadId: entry.threadId },
+      response: { kind: 'turn', id: entry.turnId },
+      createdAt: new Date().toISOString(),
+    });
+    const dispatch = {
+      coreDb,
+      store,
+      turnExecutor: executor,
+      executionBackend: executor.executionBackend,
+      agentManifests: [createTestAgentSetup().manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Scheduler fixture provider',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+          modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+        },
+      ]),
+    };
+    try {
+      expect((await runSchedulerDispatchLoop(dispatch)).terminalResult).toEqual({
+        status: 'queued',
+        reason: 'backend-busy',
+      });
+      expect(store.getTurnById(entry.turnId)).toMatchObject({ status: 'pending' });
+      expect(store.getTurnById(entry.turnId).agentSessionId).toBeUndefined();
+      expect(store.getAgentSession(predecessor.id).status).toBe('idle');
+      expect(backend.calls).toEqual([]);
+      const firstAttempt = coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts')
+        .get() as { attempt_id: string };
+      expect(firstAttempt).toMatchObject({
+        phase: 'closed',
+        disposition: 'not_accepted',
+        operation_id: null,
+        terminal_cause: 'backend-busy',
+      });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+          .get(entry.queueEntryId)
+      ).toEqual({ status: 'queued' });
+      const next = runSchedulerDispatchLoop(dispatch);
+      if (retirementFails) {
+        await expect(next).rejects.toMatchObject({ code: 'recovery_required' });
+        expect(store.getTurnById(entry.turnId)).toMatchObject({
+          status: 'failed',
+          error: { code: 'worker_preparation_failed' },
+        });
+        expect(backend.calls).toEqual([]);
+        await runSchedulerDispatchLoop(dispatch);
+        expect(effects).toEqual(['predecessor-close-refused', 'sandbox-retirement']);
+      } else {
+        expect((await next).startedTurns[0]?.dispatch.entry.turnId).toBe(entry.turnId);
+        await vi.waitFor(() => expect(store.getTurnById(entry.turnId).status).toBe('completed'));
+        expect(backend.lastContext?.nativeResume).toEqual({
+          digest: predecessor.nativeHandleDigest,
+          locator: predecessor.id,
+        });
+        expect(store.getAgentSession(predecessor.id).status).toBe('closed');
+        expect(effects).toEqual(['predecessor-close-refused', 'sandbox-retirement']);
+        expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+      }
+      const attemptRows = coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+        .all() as { attempt_id: string; turn_id: string; queue_entry_id: string }[];
+      expect(attemptRows).toHaveLength(2);
+      expect(attemptRows[1]!.attempt_id).not.toBe(firstAttempt.attempt_id);
+      expect(attemptRows.map((attempt) => attempt.turn_id)).toEqual([entry.turnId, entry.turnId]);
+      expect(attemptRows.map((attempt) => attempt.queue_entry_id)).toEqual([
+        entry.queueEntryId,
+        entry.queueEntryId,
+      ]);
+      expect(store.listThreadTurns(entry.workspaceId, entry.threadId)).toHaveLength(1);
+    } finally {
+      await vi.waitFor(() => expect(executor.isTurnExecutionActive(entry.turnId)).toBe(false));
+    }
   });
 
   it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
