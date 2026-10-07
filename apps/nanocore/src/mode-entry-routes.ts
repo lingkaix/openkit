@@ -73,6 +73,7 @@ import type { ProviderSubscriptionAccountManager } from './llm/provider-subscrip
 import { createOperationInvocation } from './operation-composition.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
@@ -91,6 +92,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import { hasNanoHostAttemptPreEffectProof } from './runtime/nanohost-attempt-recovery.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import {
@@ -124,8 +126,10 @@ import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runti
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
+  requireSchedulerAdmissionEntry,
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
+  schedulerAdmissionInputHash,
 } from './scheduler-records.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
@@ -804,6 +808,18 @@ function replayTaskModeCommand(
               turnId: currentTurn.id,
               checkpoint,
             });
+          if (currentTurn.status === 'failed' && !currentTurn.agentSessionId)
+            return recoverSessionlessTaskAdmission({
+              coreDb,
+              store,
+              workspaceDb,
+              workspaceId,
+              threadId,
+              turnId: currentTurn.id,
+              requestId: record.requestId,
+              requestInputHash: record.inputHash,
+              checkpoint: null,
+            });
         } finally {
           workspaceDb.sqlite.close();
         }
@@ -994,6 +1010,8 @@ function recoverDirectTaskModeCheckpoint(input: {
   } catch {
     throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
   }
+  if (turn.status === 'failed' && !turn.agentSessionId && checkpoint.workerSessionId === null)
+    return recoverSessionlessTaskAdmission(input);
   const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
   if (
     initiatingItem?.type !== 'user-message' ||
@@ -1103,7 +1121,7 @@ function recoverDirectTaskModeCheckpoint(input: {
  * Classifies one conversation-owned Task checkpoint or one direct task.start checkpoint after scheduler restart fencing.
  *
  * @param input Exact Core, product, Workspace, and checkpoint owners.
- * @returns `live` for a reconnectable Turn, otherwise `complete` after receipt-first cleanup.
+ * @returns `live` for queued or reconnectable work, otherwise `complete` after receipt-first cleanup.
  * @throws TurnStartValidationError when the durable owner tuple cannot prove one safe outcome.
  */
 export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: {
@@ -1119,6 +1137,22 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     turnId: checkpoint.turnId,
   }).filter((attempt) => !isSchedulerExecutionBusyRefusal(attempt));
   const attempt = attempts[0];
+  if (checkpoint.workerSessionId === null && attempts.length <= 1 && !attempt?.agentSessionId) {
+    const entries = input.coreDb.sqlite
+      .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
+      .all(checkpoint.turnId) as { id: string }[];
+    if (entries.length > 0) {
+      if (entries.length !== 1)
+        throw directTaskModeRecoveryError('The sessionless Task has no unique admission owner.');
+      const recovered = recoverSessionlessTaskAdmission({ ...checkpoint, ...input });
+      if (recovered.turn.status !== 'failed') return 'live';
+      if (!(await clearWorkerCheckpointAfterTerminalState(input.workspaceDb, checkpoint)))
+        throw directTaskModeRecoveryError(
+          'The sessionless Task checkpoint is not ready for cleanup.'
+        );
+      return 'complete';
+    }
+  }
   if (attempts.length !== 1 || !attempt || attempt.agentSessionId !== checkpoint.workerSessionId) {
     return clearStaleDirectTaskCheckpointWithoutExactAttempt(input, attempts);
   }
@@ -1279,6 +1313,268 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     throw directTaskModeRecoveryError('The boot Task checkpoint is not ready for cleanup.');
   }
   return 'complete';
+}
+
+/**
+ * Recovers accepted Task admission before any AgentSession or native execution exists.
+ *
+ * Scheduler input is authoritative before the executor publishes its input Item.
+ * A failed preparation closes only with its original receipt and complete canonical failure proof; missing or contradictory execution owners remain inspectable.
+ * After checkpoint collection, replay validates the retained admission, receipt, canonical failure and execution absence without synthesizing checkpoint or session authority.
+ *
+ * @param input Exact Core, product, Workspace and checkpoint owners.
+ * @returns Current Task projection; a retained preparing checkpoint is projected failed only after complete proof.
+ * @throws TurnStartValidationError when admission, execution absence or terminal proof conflicts.
+ */
+function recoverSessionlessTaskAdmission(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+  readonly workspaceDb: WorkspaceDb;
+  readonly checkpoint: WorkerCheckpointRecord | null;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly requestId: string;
+  readonly requestInputHash: string;
+}): StartTaskModeResponse {
+  const { checkpoint } = input;
+  const entries = input.coreDb.sqlite
+    .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
+    .all(input.turnId) as { id: string }[];
+  const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, input).filter(
+    (attempt) => !isSchedulerExecutionBusyRefusal(attempt)
+  );
+  if (entries.length !== 1 || attempts.length > 1)
+    throw directTaskModeRecoveryError('The sessionless Task has no unique admission owner.');
+  const admission = requireSchedulerAdmissionEntry(input.coreDb, entries[0]!.id);
+  let turn: ReturnType<FsStore['getTurn']>;
+  try {
+    turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+  } catch {
+    throw directTaskModeRecoveryError('The Task checkpoint is missing its worker Turn.');
+  }
+  const attempt = attempts[0];
+  const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
+    JSON.parse(admission.turnInput)
+  );
+  const context = checkpoint
+    ? parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)
+    : null;
+  if (
+    (checkpoint !== null &&
+      (checkpoint.goalId !== null ||
+        checkpoint.taskId !== null ||
+        checkpoint.iteration !== 0 ||
+        checkpoint.workerSessionId !== null ||
+        checkpoint.workspaceId !== input.workspaceId ||
+        checkpoint.threadId !== input.threadId ||
+        checkpoint.turnId !== input.turnId ||
+        checkpoint.requestId !== input.requestId ||
+        checkpoint.requestInputHash !== input.requestInputHash ||
+        !checkpoint.contextDigest ||
+        context?.contextDigest !== checkpoint.contextDigest ||
+        commandInputHash(workerRequest) !== checkpoint.contextDigest)) ||
+    turn.agentSessionId ||
+    admission.workspaceId !== input.workspaceId ||
+    admission.threadId !== input.threadId ||
+    admission.turnId !== input.turnId ||
+    admission.requestId !== input.requestId ||
+    admission.inputHash !== schedulerAdmissionInputHash(admission) ||
+    admission.triggerActor.kind !== 'user' ||
+    turn.triggerActor.kind !== 'user' ||
+    admission.triggerActor.id !== turn.triggerActor.id ||
+    admission.requestedAgentId !== turn.agentId ||
+    (attempt &&
+      (attempt.queueEntryId !== admission.queueEntryId ||
+        attempt.backendId !== admission.backendId ||
+        attempt.agentSessionId !== null ||
+        attempt.phase === 'closing' ||
+        attempt.disposition !== 'not_accepted' ||
+        attempt.operationId !== null ||
+        attempt.inputRef !== null ||
+        attempt.bindingRef !== null ||
+        attempt.deadline !== null ||
+        attempt.outcomeRef !== null ||
+        attempt.fenceRef !== null ||
+        !hasNanoHostAttemptPreEffectProof(input.coreDb, attempt.attemptId)))
+  )
+    throw directTaskModeRecoveryError(
+      'The sessionless Task admission owner tuple requires recovery.'
+    );
+  const initiatingItem = turn.items.find((item) => item.id === `it_user_${turn.id}`);
+  if (
+    initiatingItem &&
+    (initiatingItem.type !== 'user-message' ||
+      initiatingItem.status !== 'completed' ||
+      initiatingItem.workspaceId !== input.workspaceId ||
+      initiatingItem.threadId !== input.threadId ||
+      initiatingItem.turnId !== input.turnId ||
+      initiatingItem.text !== admission.turnInput)
+  )
+    throw directTaskModeRecoveryError('The sessionless Task input contradicts its admission.');
+  const scope = {
+    actorId: admission.triggerActor.id,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+  };
+  const directReceipt = input.store.getCommandRequest(
+    'task.start',
+    input.requestId,
+    scope,
+    input.workspaceDb
+  );
+  const conversationReceipt = findExactConversationWorkerOwnerReceipt(input.store, {
+    actorId: admission.triggerActor.id,
+    workspaceId: input.workspaceId,
+    receivingThreadId: input.threadId,
+    requestId: input.requestId,
+    requestInputHash: input.requestInputHash,
+    turnId: input.turnId,
+  });
+  if (
+    directReceipt
+      ? conversationReceipt !== null ||
+        directReceipt.inputHash !== input.requestInputHash ||
+        directReceipt.response.kind !== 'turn' ||
+        directReceipt.response.id !== input.turnId ||
+        input.turnId !==
+          directTaskModeTurnId(scope.actorId, scope.workspaceId, scope.threadId, input.requestId)
+      : !conversationReceipt
+  )
+    throw directTaskModeRecoveryError(
+      'The sessionless Task has no exact initiating command receipt.'
+    );
+
+  // Null session alone is not absence proof: retained package, control or backend owners contradict it.
+  const executionOwner = input.coreDb.sqlite
+    .prepare(`
+    SELECT 1 FROM scheduler_execution_attempts WHERE turn_id = @turn AND (workspace_id <> @workspace OR thread_id <> @thread)
+    UNION ALL SELECT 1 FROM worker_backend_sessions WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_records WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_rejected_evidence WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM worker_control_sequence_fingerprints WHERE turn_id = @turn
+    UNION ALL SELECT 1 FROM agent_session_runtime_bindings WHERE current_turn_id = @turn
+    LIMIT 1`)
+    .get({
+      turn: input.turnId,
+      workspace: input.workspaceId,
+      thread: input.threadId,
+    });
+  if (
+    executionOwner ||
+    listExportableAgentEnvironmentPackageSnapshots(input.workspaceDb, input.workspaceId).some(
+      (record) => record.turnId === input.turnId
+    )
+  )
+    throw directTaskModeRecoveryError('The sessionless Task has contradictory execution evidence.');
+
+  if (
+    turn.status === 'pending' &&
+    checkpoint?.stage === 'preparing' &&
+    checkpoint.stopReason === null
+  ) {
+    validateLiveTaskAdmission({
+      ...input,
+      ...scope,
+    });
+    return StartTaskModeResponseSchema.parse({
+      state: pendingRequestTaskState(
+        input.store,
+        input.workspaceDb,
+        input.workspaceId,
+        input.threadId,
+        'running'
+      ),
+      turn,
+      completion: null,
+      evidence: taskModeEvidenceForTurn(
+        input.store,
+        input.workspaceDb,
+        input.workspaceId,
+        input.threadId,
+        turn
+      ),
+    });
+  }
+  const terminalEvents = input.store
+    .getTurnEvents(input.turnId)
+    .filter((event) => event.event === 'turn.completed');
+  const terminal = terminalEvents[0];
+  if (
+    turn.status !== 'failed' ||
+    !turn.completedAt ||
+    !turn.error ||
+    typeof turn.error.code !== 'string' ||
+    !['worker_preparation_failed', 'turn_start_failed'].includes(turn.error.code) ||
+    (attempt
+      ? attempt.phase !== 'closed' ||
+        attempt.terminalCause !== 'turn-start-failed' ||
+        admission.status !== 'admitted'
+      : !['denied', 'cancelled'].includes(admission.status)) ||
+    (checkpoint !== null &&
+      !(
+        (checkpoint.stage === 'preparing' && checkpoint.stopReason === null) ||
+        (checkpoint.stage === 'failed' && checkpoint.stopReason === 'error')
+      )) ||
+    terminalEvents.length !== 1 ||
+    terminal?.data.type !== 'turn-completed' ||
+    terminal.data.stopReason !== 'error' ||
+    terminal.requestId !== input.requestId ||
+    terminal.workspaceId !== input.workspaceId ||
+    terminal.threadId !== input.threadId ||
+    terminal.turnId !== input.turnId ||
+    terminal.data.turn.id !== turn.id ||
+    terminal.data.turn.workspaceId !== turn.workspaceId ||
+    terminal.data.turn.threadId !== turn.threadId ||
+    terminal.data.turn.agentSessionId ||
+    terminal.data.turn.status !== 'failed' ||
+    terminal.data.turn.completedAt !== turn.completedAt ||
+    terminal.data.turn.agentId !== turn.agentId ||
+    commandInputHash(terminal.data.turn.triggerActor) !== commandInputHash(turn.triggerActor) ||
+    commandInputHash(terminal.data.turn.error) !== commandInputHash(turn.error)
+  )
+    throw directTaskModeRecoveryError(
+      'The sessionless Task has no complete pre-effect failure proof.'
+    );
+  const evidence = taskModeEvidenceForTurn(
+    input.store,
+    input.workspaceDb,
+    input.workspaceId,
+    input.threadId,
+    turn
+  );
+  const recorded = checkpoint ? parseWorkerCheckpointEvidence(checkpoint.diagnosticsSummary) : null;
+  if (
+    evidence.artifactIds.length > 0 ||
+    (checkpoint?.stage === 'failed' && !recorded) ||
+    recorded?.itemIds.some((id) => !evidence.itemIds.includes(id)) ||
+    recorded?.artifactIds.some((id) => !evidence.artifactIds.includes(id))
+  )
+    throw directTaskModeRecoveryError(
+      'The sessionless Task failure evidence contradicts its owners.'
+    );
+  if (checkpoint?.stage === 'preparing')
+    updateWorkerCheckpoint(input.workspaceDb, {
+      authorityActor: turn.triggerActor,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+      stage: 'failed',
+      stopReason: 'error',
+      diagnosticsSummary: createWorkerCheckpointEvidenceDiagnostics(evidence, context),
+    });
+  return StartTaskModeResponseSchema.parse({
+    state: pendingRequestTaskState(
+      input.store,
+      input.workspaceDb,
+      input.workspaceId,
+      input.threadId,
+      'failed'
+    ),
+    turn,
+    completion: taskModeCompletionForTurn(input.store, input.workspaceId, input.threadId, turn),
+    evidence,
+  });
 }
 
 /**

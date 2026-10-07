@@ -17,6 +17,7 @@ import {
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
+import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import {
@@ -2699,6 +2700,38 @@ describe('route B queued Task receipts', () => {
         operation_id: `modeled:${first.turn.id}`,
         fence_ref: null,
       });
+      const queuedDb = openWorkspaceDb(dataRoot, 'ws_demo');
+      try {
+        const checkpoint = getWorkerCheckpoint(
+          queuedDb,
+          'ws_demo',
+          'th_task_second',
+          second.turn.id
+        )!;
+        await expect(
+          classifyDirectTaskCheckpointAfterSchedulerRecovery({
+            coreDb,
+            store,
+            workspaceDb: queuedDb,
+            checkpoint: { ...checkpoint, requestInputHash: 'contradictory-hash' },
+          })
+        ).rejects.toMatchObject({ code: 'recovery_required' });
+        for (let pass = 0; pass < 2; pass++) {
+          await expect(
+            classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb,
+              store: createDemoStore({ dataRoot }),
+              workspaceDb: queuedDb,
+              checkpoint,
+            })
+          ).resolves.toBe('live');
+          expect(
+            getWorkerCheckpoint(queuedDb, 'ws_demo', 'th_task_second', second.turn.id)
+          ).toEqual(checkpoint);
+        }
+      } finally {
+        queuedDb.sqlite.close();
+      }
       expect(second.state).toBe('queued');
       expect(second.turn.agentSessionId ?? null).toBeNull();
       expect(executor.launches).toBe(1);
@@ -2754,9 +2787,17 @@ describe('route B queued Task receipts', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('publishes the receipt while preparation is held and preserves the original Turn on later failure=%s', async (failPreparation) => {
+    { failPreparation: false, entry: 'direct' },
+    { failPreparation: true, entry: 'direct', replayBeforeCollection: false },
+    { failPreparation: true, entry: 'direct', replayBeforeCollection: true },
+    { failPreparation: true, entry: 'selected-conversation' },
+    { failPreparation: true, entry: 'direct', proofGap: 'native' },
+    { failPreparation: true, entry: 'direct', proofGap: 'input' },
+  ] as const)('publishes the receipt while preparation is held through $entry and preserves the original Turn on later failure=$failPreparation replayBeforeCollection=$replayBeforeCollection proofGap=$proofGap', async ({
+    failPreparation,
+    entry,
+    ...scenario
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'route-b-held-preparation-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2790,7 +2831,7 @@ describe('route B queued Task receipts', () => {
     const pending = Promise.resolve(
       app.request(
         ...operationRequest(
-          'task.start',
+          entry === 'direct' ? 'task.start' : 'conversation.submit',
           { workspaceId: 'ws_demo', threadId: 'th_demo' },
           {
             method: 'POST',
@@ -2798,6 +2839,9 @@ describe('route B queued Task receipts', () => {
             body: JSON.stringify({
               requestId,
               input: 'Implement a focused change and run its tests.',
+              ...(entry === 'selected-conversation'
+                ? { targetRef: 'new-task-worker', artifactRefs: [] }
+                : {}),
             }),
           }
         )
@@ -2816,11 +2860,15 @@ describe('route B queued Task receipts', () => {
       const accepted = await observed!.json();
       const admittedId = accepted.turn.id;
       expect(
-        store.getCommandRequest('task.start', requestId, {
-          actorId: 'user_local',
-          workspaceId: 'ws_demo',
-          threadId: 'th_demo',
-        })
+        store.getCommandRequest(
+          entry === 'direct' ? 'task.start' : 'conversation.submit',
+          requestId,
+          {
+            actorId: 'user_local',
+            workspaceId: 'ws_demo',
+            threadId: 'th_demo',
+          }
+        )
       ).toMatchObject({ response: { kind: 'turn', id: admittedId } });
       expect(executor.launches).toBe(0);
       release.resolve();
@@ -2833,6 +2881,268 @@ describe('route B queued Task receipts', () => {
             statuses: ['queued', 'admitted', 'cancelled', 'denied'],
           }).map((row) => row.turnId)
         ).toEqual([admittedId]);
+        await vi.waitFor(() =>
+          expect(
+            observeExecutionAttempts(coreDb).find((a) => a.turn_id === admittedId)
+          ).toMatchObject({
+            phase: 'closed',
+            disposition: 'not_accepted',
+            agent_session_id: null,
+            input_ref: null,
+            binding_ref: null,
+            operation_id: null,
+            outcome_ref: null,
+            fence_ref: null,
+          })
+        );
+        const checkpointDb = openWorkspaceDb(dataRoot, 'ws_demo');
+        try {
+          if (entry === 'selected-conversation') {
+            await vi.waitFor(() =>
+              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull()
+            );
+            expect(
+              store.getCommandRequest('task.start', requestId, {
+                actorId: 'user_local',
+                workspaceId: 'ws_demo',
+                threadId: 'th_demo',
+              })
+            ).toBeNull();
+            expect(store.getTurnById(admittedId)).toMatchObject({
+              id: admittedId,
+              status: 'failed',
+            });
+            expect(store.getTurnById(admittedId).agentSessionId ?? null).toBeNull();
+            return;
+          }
+          const checkpoint = getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)!;
+          expect(checkpoint).toMatchObject({ stage: 'preparing', workerSessionId: null });
+          expect(
+            store.getTurnById(admittedId).items.some((item) => item.id === `it_user_${admittedId}`)
+          ).toBe(false);
+          /** Replays the original admitted command without another worker launch. */
+          const replay = () =>
+            app.request(
+              ...operationRequest(
+                'task.start',
+                { workspaceId: 'ws_demo', threadId: 'th_demo' },
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    requestId,
+                    input: 'Implement a focused change and run its tests.',
+                  }),
+                }
+              )
+            );
+          const attemptId = observeExecutionAttempts(coreDb).find(
+            (a) => a.turn_id === admittedId
+          )!.attempt_id;
+          if ('proofGap' in scenario && scenario.proofGap === 'native') {
+            for (const patch of [
+              {
+                worker_process_key_hash: 'retained-process-proof',
+                last_accepted_heartbeat_at: new Date().toISOString(),
+              },
+              { worker_process_key_hash: 'retained-process-proof' },
+              { last_accepted_heartbeat_at: new Date().toISOString() },
+              { last_worker_sequence: 1 },
+              { worker_control_token_hash: 'retained-control-proof' },
+              { worker_inference_token_hash: 'retained-inference-proof' },
+              { worker_capability_token_hash: 'retained-capability-proof' },
+            ]) {
+              const columns = Object.keys(patch);
+              coreDb.sqlite
+                .prepare(
+                  `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE attempt_id = ?`
+                )
+                .run(...Object.values(patch), attemptId);
+              const before = await replay();
+              expect(before.status, 'Native evidence must prevent pre-effect replay.').toBe(409);
+              expect(await before.json()).toMatchObject({ code: 'recovery_required' });
+              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
+                checkpoint
+              );
+              await expect(
+                classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                  coreDb,
+                  store,
+                  workspaceDb: checkpointDb,
+                  checkpoint,
+                })
+              ).rejects.toMatchObject({ code: 'recovery_required' });
+              const after = await replay();
+              expect(after.status, 'Attempted collection must preserve contradictory proof.').toBe(
+                409
+              );
+              expect(await after.json()).toMatchObject({ code: 'recovery_required' });
+              expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
+                checkpoint
+              );
+              coreDb.sqlite
+                .prepare(
+                  `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = NULL`).join(', ')} WHERE attempt_id = ?`
+                )
+                .run(attemptId);
+            }
+            expect(executor.launches).toBe(0);
+            expect(prepare).toHaveBeenCalledTimes(1);
+            expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
+            return;
+          }
+          if ('proofGap' in scenario && scenario.proofGap === 'input') {
+            const row = coreDb.sqlite
+              .prepare('SELECT turn_input FROM scheduler_admission_entries WHERE turn_id = ?')
+              .get(admittedId) as { turn_input: string };
+            const changed = JSON.parse(row.turn_input);
+            changed.objective = 'Contradictory retained instruction';
+            const changedInput = JSON.stringify(changed);
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
+              .run(changedInput, admittedId);
+            const before = await replay();
+            expect(before.status, 'Retained checkpoint must reject changed admission input.').toBe(
+              409
+            );
+            expect(await before.json()).toMatchObject({ code: 'recovery_required' });
+            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
+              checkpoint
+            );
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
+              .run(row.turn_input, admittedId);
+            await expect(
+              classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                coreDb,
+                store,
+                workspaceDb: checkpointDb,
+                checkpoint,
+              })
+            ).resolves.toBe('complete');
+            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+            coreDb.sqlite
+              .prepare('UPDATE scheduler_admission_entries SET turn_input = ? WHERE turn_id = ?')
+              .run(changedInput, admittedId);
+            const after = await replay();
+            expect(
+              after.status,
+              'Collected checkpoint must still reject changed admission input.'
+            ).toBe(409);
+            expect(await after.json()).toMatchObject({ code: 'recovery_required' });
+            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+            expect(executor.launches).toBe(0);
+            expect(prepare).toHaveBeenCalledTimes(1);
+            expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
+            return;
+          }
+          for (const patch of [
+            { disposition: 'unknown', operation_id: 'possible-native-effect' },
+            { input_ref: 'unexpected-package' },
+            { binding_ref: 'unexpected-binding' },
+            { phase: 'closing' },
+          ]) {
+            const columns = Object.keys(patch);
+            coreDb.sqlite
+              .prepare(
+                `UPDATE scheduler_execution_attempts SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE attempt_id = ?`
+              )
+              .run(...Object.values(patch), attemptId);
+            await expect(
+              classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                coreDb,
+                store,
+                workspaceDb: checkpointDb,
+                checkpoint,
+              })
+            ).rejects.toMatchObject({ code: 'recovery_required' });
+            const rejected = await replay();
+            expect(rejected.status).toBe(409);
+            expect(await rejected.json()).toMatchObject({ code: 'recovery_required' });
+            expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toEqual(
+              checkpoint
+            );
+            coreDb.sqlite
+              .prepare(
+                `UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'not_accepted', operation_id = NULL, input_ref = NULL, binding_ref = NULL WHERE attempt_id = ?`
+              )
+              .run(attemptId);
+          }
+          const events = vi.spyOn(store, 'getTurnEvents').mockReturnValueOnce([]);
+          await expect(
+            classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb,
+              store,
+              workspaceDb: checkpointDb,
+              checkpoint,
+            })
+          ).rejects.toMatchObject({ code: 'recovery_required' });
+          events.mockRestore();
+          await expect(
+            classifyDirectTaskCheckpointAfterSchedulerRecovery({
+              coreDb,
+              store,
+              workspaceDb: checkpointDb,
+              checkpoint: { ...checkpoint, requestInputHash: 'contradictory-hash' },
+            })
+          ).rejects.toMatchObject({ code: 'recovery_required' });
+          if ('replayBeforeCollection' in scenario && scenario.replayBeforeCollection) {
+            const response = await replay();
+            expect(response.status, await response.clone().text()).toBe(202);
+            expect(await response.json()).toMatchObject({
+              state: 'failed',
+              turn: {
+                id: admittedId,
+                status: 'failed',
+                error: store.getTurnById(admittedId).error,
+              },
+            });
+          } else {
+            await expect(
+              classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                coreDb,
+                store: createDemoStore({ dataRoot }),
+                workspaceDb: checkpointDb,
+                checkpoint,
+              })
+            ).resolves.toBe('complete');
+          }
+          expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+          expect(checkpointOwners.listExportableWorkerCheckpoints(checkpointDb, 'ws_demo')).toEqual(
+            []
+          );
+          const response = await replay();
+          expect(response.status, await response.clone().text()).toBe(202);
+          expect(await response.json()).toMatchObject({
+            state: 'failed',
+            turn: { id: admittedId, status: 'failed', error: store.getTurnById(admittedId).error },
+          });
+          expect(executor.launches).toBe(0);
+          expect(prepare).toHaveBeenCalledTimes(1);
+          expect(observeExecutionAttempts(coreDb)).toHaveLength(1);
+          // Collected checkpoints do not weaken the retained failure and execution proof.
+          const terminalEvents = vi.spyOn(store, 'getTurnEvents').mockReturnValue([]);
+          const partial = await replay();
+          expect(partial.status).toBe(409);
+          expect(await partial.json()).toMatchObject({ code: 'recovery_required' });
+          terminalEvents.mockRestore();
+          coreDb.sqlite
+            .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE attempt_id = ?')
+            .run('unexpected-package-after-collection', attemptId);
+          const contradictory = await replay();
+          expect(contradictory.status).toBe(409);
+          expect(await contradictory.json()).toMatchObject({ code: 'recovery_required' });
+          coreDb.sqlite
+            .prepare(
+              'UPDATE scheduler_execution_attempts SET input_ref = NULL WHERE attempt_id = ?'
+            )
+            .run(attemptId);
+          expect(getWorkerCheckpoint(checkpointDb, 'ws_demo', 'th_demo', admittedId)).toBeNull();
+          expect(executor.launches).toBe(0);
+          expect(prepare).toHaveBeenCalledTimes(1);
+        } finally {
+          checkpointDb.sqlite.close();
+        }
       } else {
         await executor.launched.promise;
         expect(executor.launches).toBe(1);

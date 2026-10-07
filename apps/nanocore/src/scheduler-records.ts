@@ -180,6 +180,38 @@ export interface ListSchedulerAdmissionEntriesForWorkspaceInput {
 }
 
 /**
+ * Reproduces the immutable admission input binding for creation and retained-owner validation.
+ *
+ * @param input Exact admission metadata; queue identity and mutable status are not hashed.
+ * @returns Canonical hash of normalized request, input and provenance.
+ * @throws Error when actor, storage choice or reasoning effort is invalid.
+ */
+export function schedulerAdmissionInputHash(input: CreateSchedulerAdmissionEntryInput): string {
+  return commandInputHash({
+    backendId: input.backendId,
+    requestId: input.requestId ?? null,
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    turnInput: input.turnInput,
+    workerStorageChoice: input.workerStorageChoice
+      ? parseSchedulerWorkerStorageChoice(input.workerStorageChoice)
+      : null,
+    requestedAgentId: input.requestedAgentId,
+    profileRef: input.profileRef ?? null,
+    modelId: input.modelId ?? null,
+    reasoningEffort:
+      input.reasoningEffort !== undefined
+        ? ReasoningEffortSchema.parse(input.reasoningEffort)
+        : null,
+    triggerActor: ActorRefSchema.parse(input.triggerActor),
+    serverAdminTokenId: input.serverAdminTokenId ?? null,
+    workspaceCwd: input.workspaceCwd ?? null,
+    workspaceRoots: input.workspaceRoots ?? [],
+  });
+}
+
+/**
  * Creates one queued scheduler admission entry.
  *
  * @param coreDb Open Core database handle.
@@ -198,25 +230,10 @@ export function createSchedulerAdmissionEntry(
     : null;
   if (!input.backendId)
     throw new SchedulerAdmissionTransitionError('Configured backend identity is required.');
-  const inputHash = commandInputHash({
-    backendId: input.backendId,
-    requestId: input.requestId ?? null,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    turnInput: input.turnInput,
-    workerStorageChoice: storageChoice,
-    requestedAgentId: input.requestedAgentId,
-    profileRef: input.profileRef ?? null,
-    modelId: input.modelId ?? null,
-    reasoningEffort:
-      input.reasoningEffort !== undefined
-        ? ReasoningEffortSchema.parse(input.reasoningEffort)
-        : null,
+  const inputHash = schedulerAdmissionInputHash({
+    ...input,
     triggerActor,
-    serverAdminTokenId: input.serverAdminTokenId ?? null,
-    workspaceCwd: input.workspaceCwd ?? null,
-    workspaceRoots: input.workspaceRoots ?? [],
+    workerStorageChoice: storageChoice,
   });
   return coreDb.sqlite
     .transaction(() => {

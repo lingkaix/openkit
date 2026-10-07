@@ -617,6 +617,37 @@ function hasRecoveredTerminalHandoff(
   return session.status === sessionStatus;
 }
 
+/**
+ * Proves definite non-acceptance against retained backend-owned execution evidence.
+ *
+ * A closed phase never erases heartbeat, sequence, process or credential evidence.
+ * Compatibility planning alone is pre-effect and therefore does not contradict this proof.
+ *
+ * @param coreDb Existing attempt, runtime binding and backend owners.
+ * @param attemptId Exact attempt whose absence of execution must be established.
+ * @returns Whether no native execution evidence or competing binding remains.
+ * @throws Error when the exact generic attempt is absent or invalid.
+ */
+export function hasNanoHostAttemptPreEffectProof(coreDb: CoreDb, attemptId: string): boolean {
+  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  const nativeProof = coreDb.sqlite
+    .prepare(`SELECT last_accepted_heartbeat_at, last_worker_sequence, worker_process_key_hash,
+      worker_control_token_hash, worker_inference_token_hash, worker_capability_token_hash
+      FROM scheduler_execution_attempts WHERE attempt_id = ?`)
+    .get(attemptId) as Record<string, string | number | null>;
+  const binding = coreDb.sqlite
+    .prepare(`SELECT 1 FROM agent_session_runtime_bindings
+      WHERE agent_session_id = ? OR current_turn_id = ? OR current_attempt_id = ? LIMIT 1`)
+    .get(attempt.agentSessionId, attempt.turnId, attemptId);
+  return (
+    attempt.disposition === 'not_accepted' &&
+    attempt.operationId === null &&
+    !getWorkerBackendSession(coreDb, attemptId) &&
+    !binding &&
+    Object.values(nativeProof).every((value) => value === null)
+  );
+}
+
 /** Proves one failed-start attempt has no remaining execution owner before asking its product owner to finish publication. */
 async function settleTerminalFailedStart(
   coreDb: CoreDb,
@@ -740,20 +771,9 @@ async function settleTerminalFailedStart(
     )
       return false;
     const nativeProof = coreDb.sqlite
-      .prepare(`SELECT session_compatibility_key AS sessionCompatibilityKey,
-      last_accepted_heartbeat_at AS lastAcceptedHeartbeatAt, last_worker_sequence AS lastWorkerSequence,
-      worker_process_key_hash AS workerProcessKeyHash, worker_control_token_hash AS workerControlTokenHash,
-      worker_inference_token_hash AS workerInferenceTokenHash, worker_capability_token_hash AS workerCapabilityTokenHash
+      .prepare(`SELECT session_compatibility_key AS sessionCompatibilityKey
       FROM scheduler_execution_attempts WHERE attempt_id = ?`)
-      .get(attemptId) as {
-      sessionCompatibilityKey: string | null;
-      lastAcceptedHeartbeatAt: string | null;
-      lastWorkerSequence: number | null;
-      workerProcessKeyHash: string | null;
-      workerControlTokenHash: string | null;
-      workerInferenceTokenHash: string | null;
-      workerCapabilityTokenHash: string | null;
-    };
+      .get(attemptId) as { sessionCompatibilityKey: string | null };
     const bindings = coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId, thread_id AS threadId, agent_session_id AS agentSessionId,
@@ -801,14 +821,7 @@ async function settleTerminalFailedStart(
       assertSessionMatchesAttempt(backend, requireNanoHostExecutionAttempt(coreDb, attemptId));
       assertEnvironmentPackageMatchesSession(pkg, backend);
       requireCompleteBackendWorkspaceHandleHandoff(workspace.db, pkg);
-    } else if (
-      attempt.disposition !== 'not_accepted' ||
-      attempt.operationId !== null ||
-      bindings.length !== 0 ||
-      Object.entries(nativeProof).some(
-        ([key, value]) => key !== 'sessionCompatibilityKey' && value !== null
-      )
-    ) {
+    } else if (!hasNanoHostAttemptPreEffectProof(coreDb, attemptId)) {
       throw new Error('Failed-start attempt has no positive pre-effect proof.');
     }
     const deliveryRows = workspace.db.sqlite
