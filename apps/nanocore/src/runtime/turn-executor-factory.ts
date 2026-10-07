@@ -81,9 +81,10 @@ import {
   removeNanoHostSandboxRuntimeForHarness,
 } from './nanohost-harness-records.js';
 import { requireStoredNanoHostPhysicalEpoch } from './nanohost-runtime-target.js';
-import type {
-  NanoHostEffectOperation,
-  NanoHostSessionDispatch,
+import {
+  NanoHostEffectNotEnqueuedError,
+  type NanoHostEffectOperation,
+  type NanoHostSessionDispatch,
 } from './nanohost-session-dispatch.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import type { TurnExecutor } from './types.js';
@@ -3814,9 +3815,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           operationId: request.requestId!,
         })
       : null;
-    const result = requireNanoHostResultObject(
-      await this.sessionDispatch.effect({ ...request, ...(signal ? { signal } : {}) })
-    );
+    let reply: unknown;
+    try {
+      reply = await this.sessionDispatch.effect({ ...request, ...(signal ? { signal } : {}) });
+    } catch (error) {
+      // Only the dispatch owner's correlated pre-enqueue refusal proves this operation absent.
+      // Earlier effects still require the ordinary cleanup fence; arbitrary failures stay unknown.
+      if (
+        recorded &&
+        error instanceof NanoHostEffectNotEnqueuedError &&
+        error.operation === operation &&
+        error.requestId === request.requestId
+      )
+        acceptSchedulerExecutionObservation(this.coreDb, {
+          ...schedulerExecutionCorrelation(recorded),
+          disposition: 'not_accepted',
+          execution: 'unknown',
+          fenceRef: null,
+          outcomeRef: null,
+        });
+      throw error;
+    }
+    const result = requireNanoHostResultObject(reply);
     if (recorded)
       acceptSchedulerExecutionObservation(this.coreDb, {
         ...schedulerExecutionCorrelation(recorded),

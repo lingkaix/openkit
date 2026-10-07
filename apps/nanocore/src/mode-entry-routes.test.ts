@@ -28,6 +28,7 @@ import {
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
 import { runSchedulerDispatchLoop } from './runtime/scheduler-dispatch-loop.js';
+import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
 import {
   markWorkerBackendWorkspaceHandoffComplete,
@@ -36,6 +37,7 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import * as checkpointOwners from './runtime/worker-checkpoints.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
+import type { WorkerGovernanceBackend } from './runtime/worker-governance-backend.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
@@ -1179,6 +1181,93 @@ describe('conversation.submit worker acceptance wait', () => {
       } finally {
         rmSync(dataRoot, { force: true, recursive: true });
       }
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('replays the original failed Task after native image preparation refusal only when cleanup completes (%s)', async (cleanupFails) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-image-refusal-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: 'ws_demo', ownerUserId: 'user_local' });
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    recordTestNativeRuntimeTarget(coreDb);
+    const effect = vi.fn(async (request: { kind: string }) => {
+      expect(request.kind).toBe('image.acquire');
+      throw new Error('Controlled native image preparation refusal.');
+    });
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      store,
+      env: {},
+      nanoHostSessionDispatch: {
+        effect,
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('No native route.');
+        },
+      },
+    });
+    const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+      .backend;
+    if (cleanupFails)
+      vi.spyOn(backend, 'cleanupSession').mockRejectedValue(new Error('Cleanup is unproved.'));
+    const app = createAppWithWorkspaceAuthority({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: runtime.turnExecutor,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    const submit = () =>
+      app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId: 'ws_demo', threadId: 'th_demo' },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: '0190f4c8-0000-7000-8000-000000000699',
+              input: 'Implement one bounded change.',
+            }),
+          }
+        )
+      );
+    try {
+      const accepted = await submit();
+      expect(accepted.status, await accepted.clone().text()).toBe(202);
+      const original = await accepted.json();
+      await vi.waitFor(() => expect(store.getTurnById(original.turn.id).status).toBe('failed'));
+      await vi.waitFor(() =>
+        expect(runtime.turnExecutor.isTurnExecutionActive?.(original.turn.id)).toBe(false)
+      );
+      const before = observeExecutionAttempts(coreDb);
+      expect(effect).toHaveBeenCalledOnce();
+      const replay = await submit();
+      expect(replay.status, await replay.clone().text()).toBe(cleanupFails ? 409 : 202);
+      if (cleanupFails)
+        await expect(replay.json()).resolves.toMatchObject({ code: 'recovery_required' });
+      else
+        expect(StartTaskModeResponseSchema.parse(await replay.json())).toMatchObject({
+          state: 'failed',
+          turn: { id: original.turn.id, status: 'failed' },
+        });
+      expect(observeExecutionAttempts(coreDb)).toEqual(before);
+      expect(effect).toHaveBeenCalledOnce();
+      expect(store.listThreadAgentSessions('ws_demo', original.turn.threadId)).toHaveLength(1);
+    } finally {
+      coreDb.sqlite.close();
     }
   });
 

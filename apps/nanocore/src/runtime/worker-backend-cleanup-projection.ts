@@ -25,6 +25,8 @@ export type ProjectWorkerBackendCleanupInput = Omit<
   readonly outcome: 'succeeded';
   /** Durable Core proof of whether the workspace handoff transaction was published. */
   readonly workspaceHandoffState: 'pending' | 'complete';
+  /** Exact failed preparation and successful cleanup prove no materialization was published; absence alone is insufficient. */
+  readonly materializationNotPublished?: boolean;
 };
 
 /** Atomic workspace projection produced after one physical backend cleanup attempt. */
@@ -62,8 +64,14 @@ export function projectWorkerBackendCleanup(
     const workspaceHandoffComplete =
       input.workspaceHandoffState === 'complete' ||
       anyHandoffRows ||
-      input.environmentPackage.workspace.inputs.length === 0;
-    if (input.workspaceHandoffState === 'complete' || anyHandoffRows) {
+      input.environmentPackage.workspace.inputs.length === 0 ||
+      input.materializationNotPublished === true;
+    // Exact no-materialization proof survives the complete marker.
+    // Any published row still requires the full handoff validator, even when the caller supplies that proof.
+    if (
+      anyHandoffRows ||
+      (input.workspaceHandoffState === 'complete' && input.materializationNotPublished !== true)
+    ) {
       const verifiedHandles = requireCompleteBackendWorkspaceHandleHandoff(
         workspaceDb,
         input.environmentPackage,

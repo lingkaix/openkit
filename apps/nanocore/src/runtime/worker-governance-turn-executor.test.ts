@@ -100,6 +100,7 @@ import {
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
@@ -989,6 +990,158 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(backend.calls).toEqual([]);
     } finally {
       fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])('releases definite image refusal after failed publication only with successful cleanup (unknown=%s, release interrupted=%s)', async (cleanupFails, releaseInterrupted) => {
+    const f = createWorkerContextExecutorFixture(
+      `image-refusal-${cleanupFails}-${releaseInterrupted}`
+    );
+    const backend = new FakeWorkerGovernanceBackend();
+    const refusal = new Error('NanoHost effect image.acquire already has a pending command.');
+    backend.materialize = async (pkg) => {
+      backend.calls.push('materialize');
+      const intent = attempts.recordSchedulerExecutionOperation(f.coreDb, {
+        attemptId: `lease_${f.turn.id}`,
+        operationId: createNanoHostEffectRequest(
+          backend.planSession(pkg),
+          `lease_${f.turn.id}`,
+          'image.acquire',
+          {
+            imageReference:
+              pkg.runtime.environment?.imageDigest ?? (pkg.runtime.image as { ref: string }).ref,
+          }
+        ).requestId!,
+      });
+      attempts.acceptSchedulerExecutionObservation(f.coreDb, {
+        ...attempts.schedulerExecutionCorrelation(intent),
+        disposition: 'not_accepted',
+        execution: 'unknown',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+      expect(pkg.workspace.inputs.length).toBeGreaterThan(0);
+      throw refusal;
+    };
+    backend.failTeardown = cleanupFails;
+    const release = vi.spyOn(backend, 'release');
+    const releaseError = new Error('live release interrupted after handoff publication');
+    if (releaseInterrupted) release.mockRejectedValueOnce(releaseError);
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: f.coreDb,
+      createAgentSessionId: () => f.agentSessionId,
+      now: () => '2026-07-15T00:00:03.000Z',
+    });
+    try {
+      const error = await executor
+        .startTurn(f.store, f.turn.id, f.workerRequest, {
+          attemptId: `lease_${f.turn.id}`,
+          agentSessionId: f.agentSessionId,
+          agentSetup: createTestAgentSetup(),
+          requestId: f.requestId,
+          sandboxBindingRef: f.sandboxBindingRef,
+          triggerActor: f.turn.triggerActor,
+          workspaceRoots: [],
+        })
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(f.store.getTurnById(f.turn.id)).toMatchObject({
+        status: 'failed',
+        error: { message: expect.stringContaining(refusal.message) },
+      });
+      expect(backend.calls).not.toContain('submit');
+      expect(
+        attempts.requireSchedulerExecutionAttempt(f.coreDb, `lease_${f.turn.id}`)
+      ).toMatchObject({
+        phase: cleanupFails || releaseInterrupted ? 'closing' : 'closed',
+        disposition: 'not_accepted',
+        terminalCause: 'execution-failed',
+        ...(cleanupFails
+          ? {}
+          : {
+              outcomeRef: `turn:${f.turn.id}:failed`,
+              fenceRef: releaseInterrupted ? null : expect.any(String),
+            }),
+      });
+      expect(release).toHaveBeenCalledTimes(cleanupFails ? 0 : 1);
+      if (!cleanupFails && !releaseInterrupted) expect(error).toBe(refusal);
+      if (releaseInterrupted) {
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors).toEqual([refusal, releaseError]);
+        const original = f.store.getTurnById(f.turn.id);
+        const originalSession = f.store.getAgentSession(f.agentSessionId);
+        const cleanup = vi.spyOn(backend, 'cleanupSession');
+        expect(getWorkerBackendSession(f.coreDb, `lease_${f.turn.id}`)).toMatchObject({
+          state: 'cleaned',
+          workspaceHandoffState: 'complete',
+        });
+        const workspaceDb = openTestWorkspaceDb(f.coreDb);
+        const evidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo');
+        workspaceDb.sqlite.close();
+        const recovery = {
+          executionBackend: backend,
+          store: f.store,
+          now: () => '2026-07-15T00:00:05.000Z',
+          cleanupBackendSession: () => backend.cleanupSession(),
+          prepareBackendCleanup: () => {},
+          restoreBackendSession: async () => {},
+          reconcileAcceptedFinalStatus: async () => {
+            throw new Error('Failed preparation has no final status.');
+          },
+          projectRecoveredTurn: async () => {
+            const result = terminalizeGovernedWorkerTurn({
+              store: f.store,
+              turnId: f.turn.id,
+              agentSessionId: f.agentSessionId,
+              requestId: f.requestId,
+              completedAt: '2026-07-15T00:00:05.000Z',
+              outcome: 'interrupted',
+              errorCode: 'worker_governance_restart_recovery',
+              message: 'Worker execution was interrupted during scheduler recovery.',
+            });
+            return { status: result.status };
+          },
+        };
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)
+        ).resolves.toBeUndefined();
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery)
+        ).resolves.toBeUndefined();
+        expect(release).toHaveBeenCalledTimes(2);
+        await expect(release.mock.results[1]?.value).resolves.toMatchObject({ state: 'released' });
+        expect(release.mock.calls[1]).toEqual(release.mock.calls[0]);
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(f.store.getTurnById(f.turn.id)).toEqual(original);
+        expect(f.store.getAgentSession(f.agentSessionId)).toEqual(originalSession);
+        expect(
+          attempts.requireSchedulerExecutionAttempt(f.coreDb, `lease_${f.turn.id}`)
+        ).toMatchObject({
+          phase: 'closed',
+          terminalCause: 'execution-failed',
+          outcomeRef: `turn:${f.turn.id}:failed`,
+          fenceRef: expect.any(String),
+        });
+        const reloaded = new FsStore({ dataRoot: f.coreDb.dataRoot });
+        expect(reloaded.getTurnById(f.turn.id)).toEqual(original);
+        const after = openTestWorkspaceDb(f.coreDb);
+        expect(listWorkspaceRuntimeEvidence(after, 'ws_demo')).toEqual(evidence);
+        after.sqlite.close();
+      }
+      const db = openTestWorkspaceDb(f.coreDb);
+      try {
+        expect(listBackendWorkspaceHandles(db, 'ws_demo')).toEqual([]);
+        expect(listWorkspaceMaterializationRecords(db, 'ws_demo')).toEqual([]);
+      } finally {
+        db.sqlite.close();
+      }
+    } finally {
+      f.coreDb.sqlite.close();
     }
   });
 
@@ -7783,11 +7936,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(getWorkerBackendSession(coreDb, `lease_${turn.id}`)).toMatchObject({
         state: expectedState,
       });
-      expect(['open', 'closing']).toContain(
-        observeExecutionAttempts(coreDb).find(
-          (attempt) => attempt.attempt_id === `lease_${turn.id}`
-        )?.phase
-      );
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, `lease_${turn.id}`)).toMatchObject({
+        phase: failTeardown ? 'closing' : 'closed',
+        // Cleanup fences the possible effect; it never proves that the prior materialization was absent.
+        disposition: 'unknown',
+        fenceRef: failTeardown ? null : expect.any(String),
+        ...(failTeardown ? {} : { outcomeRef: `turn:${turn.id}:failed` }),
+      });
     } finally {
       materializeSpy.mockRestore();
       coreDb.sqlite.close();
@@ -9620,8 +9775,11 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     expect(attempt.deadline).toEqual(fault === 'corrupt-receipt' ? null : expect.any(String));
     if (fault === 'corrupt-receipt')
       expect(acceptedPreparationOperations).toContain(attempt.operationId);
-    expect(attempt.phase).toBe('closing');
-    expect(attempt.fenceRef).toBeNull();
+    // Receipt decoding and startup expiry precede submit; failures inside submit retain unknown output/evidence barriers.
+    const failedBeforeSubmit = fault === 'corrupt-receipt' || fault === 'startup-deadline';
+    expect(attempt.phase).toBe(failedBeforeSubmit ? 'closed' : 'closing');
+    expect(attempt.fenceRef).toEqual(failedBeforeSubmit ? expect.any(String) : null);
+    if (failedBeforeSubmit) expect(attempt.outcomeRef).toBe(`turn:${turn.id}:failed`);
   } finally {
     preparing.mockRestore();
     cleanup.mockRestore();

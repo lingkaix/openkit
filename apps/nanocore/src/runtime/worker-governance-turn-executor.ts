@@ -1486,6 +1486,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let environmentPackage: AgentEnvironmentPackage | null = null;
     let preparedWorkerContext: PreparedWorkerTurnContext | null = null;
     let workerFinalStatus: AcceptedWorkerFinalStatus | null = null;
+    let submissionInvoked = false;
     let primaryFailed = false;
     let primaryError: unknown;
 
@@ -1955,6 +1956,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ReturnType<import('./execution-backend.js').ExecutionBackend['submit']>
       >;
       try {
+        submissionInvoked = true;
         observation = await this.executionBackend.submit({
           ...schedulerExecutionCorrelation(submission),
           deadline: submission.deadline!,
@@ -2084,7 +2086,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
 
     if (errors.length === 0 && backendLifecycle?.session?.state === 'cleaned')
-      await this.releaseCompletedAttempt(store, context.attemptId!);
+      await this.releaseTerminalAttempt(store, context.attemptId!);
     if (errors.length > 0) {
       const error =
         errors.length === 1
@@ -2118,6 +2120,24 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           throw new AggregateError(
             [error, failureError],
             'Worker execution failed and the failed turn could not be persisted.'
+          );
+        }
+      }
+      // Cleanup after a possibly accepted submit cannot prove unread output or evidence.
+      if (
+        primaryFailed &&
+        errors.length === 1 &&
+        (!submissionInvoked || failedAttempt.disposition === 'not_accepted') &&
+        !backendCleanupRequired &&
+        backendLifecycle?.session?.state === 'cleaned' &&
+        backendLifecycle.session.workspaceHandoffState === 'complete'
+      ) {
+        try {
+          await this.releaseTerminalAttempt(store, context.attemptId!);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [error, releaseError],
+            'Worker execution failed and attempt release failed.'
           );
         }
       }
@@ -2272,7 +2292,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       if (turn.status === recoveredStatus) {
-        await this.releaseCompletedAttempt(store, session.attemptId);
+        await this.releaseTerminalAttempt(store, session.attemptId);
         return recoveredStatus;
       }
 
@@ -2284,7 +2304,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         accepted,
         environmentPackage.snapshotId
       );
-      await this.releaseCompletedAttempt(store, session.attemptId);
+      await this.releaseTerminalAttempt(store, session.attemptId);
       return recoveredStatus;
     } finally {
       workspaceDb.sqlite.close();
@@ -2292,7 +2312,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /** Releases only after this owner's full output, evidence, collection, drain and terminal path succeeds. */
-  private async releaseCompletedAttempt(store: FsStore, attemptId: string): Promise<void> {
+  private async releaseTerminalAttempt(store: FsStore, attemptId: string): Promise<void> {
     if (!this.coreDb) throw new Error('Attempt release requires Core authority.');
     let attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
     if (attempt.phase === 'closed') return;
@@ -2712,6 +2732,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return;
     }
 
+    // A live materialize refusal plus successful physical cleanup proves the unpublished handoff boundary.
+    // Restart must derive its own exact proof instead of reconstructing this fact.
+    const materializationNotPublished =
+      failedCloseout && lifecycle.session?.state === 'materializing';
     if (!lifecycle.physicalCleanedAt) {
       if (lifecycle.session) {
         const session = lifecycle.session;
@@ -2774,6 +2798,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               normalizeUnanchoredReferenceLineage(environmentPackage.runtime.image)
             ),
         workspaceHandoffState: lifecycle.workspaceHandoffState,
+        materializationNotPublished,
         workspaceId: environmentPackage.scope.workspaceId,
       });
       if (

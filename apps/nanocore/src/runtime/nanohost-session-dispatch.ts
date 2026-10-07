@@ -111,6 +111,17 @@ const SANDBOX_CREATE_INPUT_KEYS = [
 /** One fixed NanoHost-owned runtime effect operation. */
 export type NanoHostEffectOperation = (typeof NANO_HOST_EFFECT_OPERATIONS)[number];
 
+/** Definite local refusal of this exact effect before it enters the transport queue. */
+export class NanoHostEffectNotEnqueuedError extends Error {
+  /** Creates a correlated refusal; timeouts and transport failures never use this proof. */
+  public constructor(
+    public readonly operation: NanoHostEffectOperation,
+    public readonly requestId: string
+  ) {
+    super(`NanoHost effect ${operation} already has a pending command.`);
+  }
+}
+
 /** Exact private command/result paths for the closed NanoHost effect vocabulary. */
 const NANO_HOST_EFFECT_PATHS = {
   'workspace.collect': {
@@ -532,7 +543,7 @@ export function createNanoHostSessionDispatch(
               'Another file capture is still in progress. Use a new request after it settles.',
               409
             );
-          throw new Error(`NanoHost effect ${operation} already has a pending command.`);
+          throw new NanoHostEffectNotEnqueuedError(operation, requestId);
         }
         const readiness = currentReadiness;
         if (!readiness) {

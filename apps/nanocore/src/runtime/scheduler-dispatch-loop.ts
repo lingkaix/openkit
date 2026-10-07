@@ -138,7 +138,7 @@ export async function runSchedulerDispatchLoop(
     [...claims.keys()].some((queueEntryId) =>
       input.coreDb.sqlite
         .prepare(
-          "SELECT 1 FROM scheduler_execution_attempts WHERE queue_entry_id = ? AND phase = 'open' AND operation_id IS NULL"
+          "SELECT 1 FROM scheduler_execution_attempts WHERE queue_entry_id = ? AND phase = 'open' AND deadline IS NULL"
         )
         .get(queueEntryId)
     )

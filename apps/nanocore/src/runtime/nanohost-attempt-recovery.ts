@@ -23,6 +23,7 @@ import {
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import { markFrozenDeliveryUnknown, readPendingRequest } from './pending-requests.js';
 import type { RunSchedulerRestartRecoveryInput } from './scheduler-restart-recovery.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
@@ -41,7 +42,11 @@ import {
   listWorkspaceReconciliationRecords,
   recordWorkspaceReconciliationRecord,
 } from './workspace-reconciliation-records.js';
-import { requireCompleteBackendWorkspaceHandleHandoff } from './workspace-sync-records.js';
+import {
+  listBackendWorkspaceHandles,
+  listWorkspaceMaterializationRecords,
+  requireCompleteBackendWorkspaceHandleHandoff,
+} from './workspace-sync-records.js';
 
 /** NanoHost-only recovery uses the existing physical cleanup and full accepted-final closeout owners. */
 export interface RunNanoHostAttemptRecoveryInput extends RunSchedulerRestartRecoveryInput {
@@ -182,7 +187,39 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           workspace.environmentPackage.agent.agentId !== admission.requestedAgentId
         )
           throw new Error('Native recovery package does not match its exact admission.');
+        const anyHandoffRows =
+          listBackendWorkspaceHandles(workspace.db, native.workspaceId).some(
+            (handle) => handle.packageSnapshotId === native.inputRef
+          ) ||
+          listWorkspaceMaterializationRecords(workspace.db, native.workspaceId).some(
+            (record) => record.packageSnapshotId === native.inputRef
+          );
+        // Handoff publication does not invalidate the original proof.
+        // Release failure or Core exit before attempt closure leaves this same empty package to finish next pass.
+        const materializationNotPublished =
+          !anyHandoffRows &&
+          native.deadline === null &&
+          ['execution-failed', 'turn-start-failed'].includes(native.terminalCause ?? '') &&
+          ['physical-cleaned', 'cleaned'].includes(session.state) &&
+          session.physicalCleanedAt !== null &&
+          isInitialImagePreparation(native, session, workspace.environmentPackage);
         if (
+          !materializationNotPublished &&
+          session.workspaceHandoffState === 'pending' &&
+          !anyHandoffRows &&
+          workspace.environmentPackage.workspace.inputs.length > 0
+        ) {
+          // Empty tables do not prove no materialization.
+          // Preserve the existing inspection classification without retrying unchanged unknown cleanup on every maintenance pass.
+          coreDb.sqlite
+            .prepare(
+              "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ? AND phase = 'closing'"
+            )
+            .run(native.attemptId);
+          continue;
+        }
+        if (
+          !materializationNotPublished &&
           recordWorkspaceRecoveryEvaluation(
             workspace.db,
             native,
@@ -193,7 +230,12 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         )
           continue;
         session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
-        const projection = projectCleanup(workspace.db, session, workspace.environmentPackage);
+        const projection = projectCleanup(
+          workspace.db,
+          session,
+          workspace.environmentPackage,
+          materializationNotPublished
+        );
         if (!projection.workspaceHandoffComplete)
           throw new Error('Native cleanup workspace handoff is incomplete.');
         if (session.workspaceHandoffState === 'pending')
@@ -239,9 +281,16 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           integrationDrain: true,
           routesRevoked: true,
         } as const;
-        const correlation = schedulerExecutionCorrelation(
-          requireSchedulerExecutionAttempt(coreDb, native.attemptId)
-        );
+        const terminal = input.store?.getTurnById(native.turnId);
+        const settledAttempt = terminal
+          ? markSchedulerExecutionAttemptClosing(coreDb, {
+              attemptId: native.attemptId,
+              cause: `turn-${terminal.status}`,
+              outcomeRef: `turn:${terminal.id}:${terminal.status}`,
+              now,
+            })
+          : requireSchedulerExecutionAttempt(coreDb, native.attemptId);
+        const correlation = schedulerExecutionCorrelation(settledAttempt);
         const release = await input.executionBackend.release({ ...correlation, proof });
         if (
           release.state !== 'released' ||
@@ -454,7 +503,8 @@ function moveSessionToCleanupPending(
 function projectCleanup(
   workspaceDb: WorkspaceDb,
   session: WorkerBackendSessionRecord,
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackage,
+  materializationNotPublished = false
 ): ReturnType<typeof projectWorkerBackendCleanup> {
   if (!session.physicalCleanedAt) {
     throw new Error(`Worker backend session ${session.attemptId} has no physical cleanup time.`);
@@ -473,6 +523,7 @@ function projectCleanup(
     turnId: session.turnId,
     workerImage: workerBackendImageIdentity(session.backendLineage),
     workspaceHandoffState: session.workspaceHandoffState,
+    materializationNotPublished,
     workspaceId: session.workspaceId,
   });
 }
@@ -863,6 +914,37 @@ function withoutItemDisplayFields(turn: ReturnType<FsStore['getTurnById']>) {
       )
     ),
   };
+}
+
+/** Correlates the initial image effect, which precedes Sandbox and Workspace materialization. */
+function isInitialImagePreparation(
+  attempt: NanoHostExecutionAttemptRecord,
+  session: WorkerBackendSessionRecord,
+  pkg: AgentEnvironmentPackage
+): boolean {
+  const image = pkg.runtime.environment
+    ? { kind: 'reference' as const, ref: pkg.runtime.environment.imageDigest }
+    : pkg.runtime.image;
+  if (image.kind === 'reference')
+    return (
+      attempt.operationId ===
+      createNanoHostEffectRequest(session, attempt.attemptId, 'image.acquire', {
+        imageReference: image.ref,
+      }).requestId
+    );
+  const request = createNanoHostEffectRequest(session, attempt.attemptId, 'image.build', {
+    arguments: image.arguments,
+    argumentsDigest: image.argumentsDigest,
+    contextDigest: image.contextDigest,
+    contextRef: image.contextRef,
+    dockerfile: image.input.content,
+    dockerfileDigest: image.input.digest,
+    egress: image.egress,
+    layerLimit: image.layerLimit,
+    outputLimitBytes: image.outputLimitBytes,
+    timeLimitSeconds: image.timeLimitSeconds,
+  });
+  return attempt.operationId === request.requestId;
 }
 
 /** Evaluates stale Workspace ownership before teardown, preserving the existing synchronization decision ledger. */

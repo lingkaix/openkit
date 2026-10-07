@@ -188,6 +188,59 @@ const exactHandoffTamperCases: ReadonlyArray<
 ];
 
 describe('worker backend cleanup projection', () => {
+  it.each([
+    'pending',
+    'complete',
+  ] as const)('replays exact no-materialization proof with a %s handoff', (workspaceHandoffState) => {
+    const { environmentPackage, workspaceDb } = createFixture();
+    try {
+      workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+      workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
+      const input = {
+        ...cleanupInput(environmentPackage),
+        workspaceHandoffState,
+        materializationNotPublished: true,
+      };
+      expect(projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+        handles: [],
+        workspaceHandoffComplete: true,
+      });
+      const evidence = listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo');
+      expect(projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+        handles: [],
+        workspaceHandoffComplete: true,
+      });
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo')).toEqual(evidence);
+      expect(listWorkspaceMaterializationRecords(workspaceDb, 'ws_demo')).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'pending',
+    'complete',
+  ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', (workspaceHandoffState) => {
+    const { environmentPackage, workspaceDb } = createFixture();
+    try {
+      workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+      expect(() =>
+        projectWorkerBackendCleanup(workspaceDb, {
+          ...cleanupInput(environmentPackage),
+          workspaceHandoffState,
+          materializationNotPublished: true,
+        })
+      ).toThrow('handoff is incomplete');
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, 'ws_demo').filter(
+          (record) => record.phase === 'teardown'
+        )
+      ).toEqual([]);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', () => {
     const { environmentPackage, workspaceDb } = createFixture({ omitBackendStatus: true });
     const sandboxOnlyReadiness = [

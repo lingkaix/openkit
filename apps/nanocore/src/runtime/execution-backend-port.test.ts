@@ -37,6 +37,8 @@ import {
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
 } from './scheduler-restart-recovery.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 
@@ -303,6 +305,76 @@ function fixture(
 }
 
 describe('execution backend port through real Core coordination', () => {
+  it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
+    const f = fixture();
+    f.port.id = 'nanohost';
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    admitTestNativeEnvironment(f.db, setup.manifest);
+    const held = Promise.withResolvers<void>();
+    const effects = vi.fn(async (request: { kind: string }) => {
+      expect(request.kind).toBe('image.acquire');
+      if (effects.mock.calls.length === 1) {
+        await held.promise;
+      }
+      throw new Error('Controlled image refusal after acquisition entry.');
+    });
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb: f.db,
+      store: f.store,
+      env: {},
+      workerControlGateway: new WorkerControlGateway(),
+      nanoHostSessionDispatch: {
+        effect: effects,
+        async poll() {
+          return null;
+        },
+        async result() {},
+        async route() {
+          throw new Error('No native route.');
+        },
+      },
+    });
+    const first = f.queue('native-first');
+    const second = f.queue('native-second', 'thread_native_second');
+    const input = {
+      ...f.dispatchInput,
+      now: () => new Date().toISOString(),
+      agentManifests: [setup.manifest],
+      turnExecutor: runtime.turnExecutor,
+      executionBackend: runtime.turnExecutor.executionBackend!,
+    };
+    const preparing = runSchedulerDispatchLoop(input).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(
+        () =>
+          expect(effects, JSON.stringify(f.store.getTurnById(first.turnId))).toHaveBeenCalledOnce(),
+        { timeout: 2000 }
+      );
+      expect(attempts(f.db)[0]).toMatchObject({ operation_id: expect.any(String), deadline: null });
+      const overlap = await runSchedulerDispatchLoop(input);
+      expect(overlap.startedTurns).toEqual([]);
+      expect(effects).toHaveBeenCalledOnce();
+      expect(f.store.getTurnById(second.turnId)).toMatchObject({ status: 'pending' });
+      expect(f.store.listThreadAgentSessions('ws_demo', second.threadId)).toEqual([]);
+      held.resolve();
+      expect(await preparing).toBeInstanceOf(Error);
+      expect(requireSchedulerAdmissionEntry(f.db, first.queueEntryId).status).toBe('admitted');
+      expect(attempts(f.db)[0]).toMatchObject({
+        phase: 'closed',
+        outcome_ref: `turn:${first.turnId}:failed`,
+      });
+      await runSchedulerDispatchLoop(input).catch(() => undefined);
+      expect(effects).toHaveBeenCalledTimes(2);
+      expect(attempts(f.db)).toHaveLength(2);
+    } finally {
+      held.resolve();
+      await preparing;
+      f.db.sqlite.close();
+    }
+  });
+
   it.each([
     'local',
     'remote',
@@ -723,8 +795,12 @@ describe('execution backend port through real Core coordination', () => {
       // This private action binding must move with its owner; a fake observation setter is no ingestion proof.
       const ingest = async (db: typeof f.db) => {
         const accepted = attemptRecords.acceptSchedulerExecutionObservation(db, observation);
-        expect(accepted?.attemptId).toBe(correlation.attemptId);
-        expect(accepted?.phase).toBe('closed');
+        // Failed closeout now retains its canonical outcome before closure; contradictory evidence must be refused.
+        if (kind === 'conflicting' && protectedFirst.outcome !== null) expect(accepted).toBeNull();
+        else {
+          expect(accepted?.attemptId).toBe(correlation.attemptId);
+          expect(accepted?.phase).toBe('closed');
+        }
         expect(protectedFacts(db)).toEqual(protectedFirst);
         expect(f.port.submit).toHaveBeenCalledOnce();
         expect(f.nativeStarts).toEqual([]);
@@ -879,6 +955,9 @@ describe('execution backend port through real Core coordination', () => {
       f.queue('boot');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
+      // Settle the live failed closeout first, so this check measures only pre-listen recovery effects.
+      await vi.waitFor(() => expect(f.dispatchErrors).toHaveLength(1));
+      const liveReleaseCalls = f.port.release.mock.calls.length;
       const gate = Promise.withResolvers<void>();
       const entered = Promise.withResolvers<void>();
       let concurrent = 0;
@@ -893,7 +972,7 @@ describe('execution backend port through real Core coordination', () => {
       const _boot = await runSchedulerRestartRecovery(f.db, f.recoveryInput);
       expect(f.port.inspect).not.toHaveBeenCalled();
       expect(f.port.cancel).not.toHaveBeenCalled();
-      expect(f.port.release).not.toHaveBeenCalled();
+      expect(f.port.release).toHaveBeenCalledTimes(liveReleaseCalls);
       const service = startSchedulerAttemptMaintenanceService({
         intervalMs: 30_000,
         setInterval: () => 'fixture-timer',

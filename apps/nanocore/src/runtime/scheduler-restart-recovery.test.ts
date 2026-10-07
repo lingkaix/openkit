@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -42,10 +43,12 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
+  recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import * as attempts from './execution-attempt-records.js';
@@ -60,6 +63,7 @@ import {
   type RunNanoHostAttemptRecoveryInput,
   runNanoHostAttemptRecoveryMaintenance,
 } from './nanohost-attempt-recovery.js';
+import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import {
   deriveNanoHostAgentSessionCompatibilityKey,
   openNanoHostAgentSessionBinding,
@@ -119,6 +123,7 @@ import {
 } from './workspace-reconciliation-records.js';
 import {
   listBackendWorkspaceHandles,
+  listWorkspaceMaterializationRecords,
   recordWorkspaceInputSnapshots,
   recordWorkspaceMaterializationRecords,
 } from './workspace-sync-records.js';
@@ -4505,6 +4510,112 @@ describe('minimal scheduler reconnect contract', () => {
     }
   });
 
+  it.each([
+    'proved',
+    'proved-interrupted',
+    'unknown',
+    'partial',
+  ] as const)('classifies failed preparation with Context input and zero handles without repeated cleanup: %s', async (proof) => {
+    const f = await createFinalReviewRecoveryFixture(`early_image_${proof}`, 'failed-preparation');
+    const original = f.store.getTurnById(f.turnId);
+    dispatchLease(f.coreDb, 'early_image_sibling');
+    recordBackendSession(f.coreDb, 'early_image_sibling');
+    const sibling = getWorkerBackendSession(f.coreDb, 'lease_early_image_sibling');
+    const db = openWorkspaceDb(f.coreDb.dataRoot, 'ws_demo');
+    const cleanup = vi.fn(f.input.cleanupBackendSession);
+    const release = vi.spyOn(f.input.executionBackend, 'release');
+    try {
+      const pkg = requireAgentEnvironmentPackageSnapshot(
+        db,
+        'ws_demo',
+        `aepsnap_${f.turnId}_${f.agentSessionId}`
+      ).snapshot;
+      expect(pkg.workspace.inputs).toMatchObject([
+        { access: 'read-only', id: `context_${f.turnId}`, source: { kind: 'generated' } },
+      ]);
+      if (proof === 'unknown')
+        f.coreDb.sqlite
+          .prepare(
+            "UPDATE scheduler_execution_attempts SET disposition = 'unknown', operation_id = 'unproved-preparation' WHERE attempt_id = ?"
+          )
+          .run(f.attemptId);
+      if (proof === 'partial') {
+        recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+        db.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
+      }
+      const input = { ...f.input, cleanupBackendSession: cleanup };
+      let interruptedAttempt: ReturnType<typeof attempts.requireSchedulerExecutionAttempt> | null =
+        null;
+      if (proof === 'proved-interrupted') {
+        release.mockRejectedValueOnce(new Error('release interrupted after handoff publication'));
+        await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
+          'Native attempt recovery failed.'
+        );
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+          state: 'cleaned',
+          workspaceHandoffState: 'complete',
+        });
+        interruptedAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+        expect(interruptedAttempt).toMatchObject({
+          phase: 'closing',
+          terminalCause: 'execution-failed',
+          outcomeRef: `turn:${f.turnId}:failed`,
+          fenceRef: null,
+        });
+        expect(f.store.getTurnById(f.turnId)).toEqual(original);
+      }
+      const evidenceBeforeRetry = listWorkspaceRuntimeEvidence(db, 'ws_demo');
+      if (proof === 'partial')
+        await expect(drainTestRecovery(f.coreDb, input)).rejects.toThrow(
+          'Native attempt recovery failed.'
+        );
+      else {
+        await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
+        const evidence = listWorkspaceRuntimeEvidence(db, 'ws_demo');
+        if (interruptedAttempt) expect(evidence).toEqual(evidenceBeforeRetry);
+        f.clock.now = '2026-07-05T00:01:30.000Z';
+        await expect(drainTestRecovery(f.coreDb, input)).resolves.toBeUndefined();
+        expect(listWorkspaceRuntimeEvidence(db, 'ws_demo')).toEqual(evidence);
+      }
+      expect(f.store.getTurnById(f.turnId)).toEqual(original);
+      expect(cleanup).not.toHaveBeenCalled();
+      const proved = proof === 'proved' || proof === 'proved-interrupted';
+      expect(release).toHaveBeenCalledTimes(proof === 'proved-interrupted' ? 2 : proved ? 1 : 0);
+      const finalAttempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+      expect(finalAttempt.phase).toBe(proved ? 'closed' : 'closing');
+      if (interruptedAttempt) {
+        expect(finalAttempt).toMatchObject({
+          terminalCause: interruptedAttempt.terminalCause,
+          outcomeRef: interruptedAttempt.outcomeRef,
+          fenceRef: expect.any(String),
+        });
+        expect(release.mock.calls[1]).toEqual(release.mock.calls[0]);
+        expect(release.mock.results.filter((result) => result.type === 'return')).toHaveLength(2);
+        await expect(release.mock.results[0]?.value).rejects.toThrow(
+          'release interrupted after handoff publication'
+        );
+        await expect(release.mock.results[1]?.value).resolves.toMatchObject({ state: 'released' });
+      }
+      expect(getWorkerBackendSession(f.coreDb, 'lease_early_image_sibling')).toEqual(sibling);
+      if (proof !== 'partial') {
+        expect(listBackendWorkspaceHandles(db, 'ws_demo')).toEqual([]);
+        expect(listWorkspaceMaterializationRecords(db, 'ws_demo')).toEqual([]);
+      }
+      if (proof === 'unknown')
+        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+          recoveryState: 'needs-evidence',
+          disposition: 'unknown',
+          outcomeRef: null,
+          fenceRef: null,
+        });
+      expect(f.store.listArtifacts('ws_demo')).toEqual([]);
+      if (proved) assertRecoveryClosedAndNextTurnAdmitted(f);
+    } finally {
+      db.sqlite.close();
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('finishes failed-start cleanup before the real NanoHost release can close its attempt', async () => {
     const f = await createFinalReviewRecoveryFixture('failed_start_release_order', 'failed-start');
     try {
@@ -4741,10 +4852,10 @@ function hasRecoveryFailure(error: unknown, expected: string | RegExp): boolean 
     : expected.test(error.message);
 }
 
-/** Retains exact product and Native facts at a crash boundary, with no Workspace input or accepted output to drain. */
+/** Retains exact product and Native crash facts, optionally with an unpublished read-only Context input. */
 async function createFinalReviewRecoveryFixture(
   suffix: string,
-  boundary: 'running' | 'completed' | 'failed-start'
+  boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation'
 ) {
   const coreDb = createMigratedCoreDb();
   const store = createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -4783,18 +4894,81 @@ async function createFinalReviewRecoveryFixture(
   store.updateTurn(turnId, { status: 'running' });
   if (boundary === 'running') await prepareReconnectLease(coreDb, suffix);
   else {
-    dispatchLease(coreDb, suffix);
-    recordBackendSession(coreDb, suffix, boundary === 'completed' ? 'cleaned' : 'physical-cleaned');
+    dispatchLease(coreDb, suffix, undefined, boundary !== 'failed-preparation');
+    if (boundary === 'failed-preparation') {
+      const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
+      try {
+        applyScopedMigrations(workspace);
+        const contextRoot = mkdtempSync(join(tmpdir(), 'openkit-recovery-context-'));
+        const context = '# Original bounded Task Context\n';
+        writeFileSync(join(contextRoot, 'context.md'), context);
+        const setup = createTestAgentSetup();
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        recordAgentEnvironmentPackageSnapshot(workspace, {
+          createdAt: '2026-07-05T00:00:03.000Z',
+          environmentPackage: resolveAgentEnvironmentPackage({
+            coreDb,
+            agentSetup: setup,
+            agentSessionId,
+            backend: { kind: 'openshell' },
+            requestId: `request_${suffix}`,
+            triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+            turn: store.getTurnById(turnId),
+            turnInput: `Run ${suffix}`,
+            workspaceRoots: [],
+            preparedContextPackage: {
+              contentDigest: `sha256:${createHash('sha256').update(context).digest('hex')}`,
+              workspaceRoot: {
+                access: 'read-only',
+                id: `context_${turnId}`,
+                sourceKind: 'materialized-dir',
+                sourcePath: contextRoot,
+                workerPath: workerSessionInputPaths(agentSessionId).contextRoot,
+              },
+            },
+          }),
+        });
+      } finally {
+        workspace.sqlite.close();
+      }
+    }
+    recordBackendSession(
+      coreDb,
+      suffix,
+      boundary === 'failed-preparation' || boundary === 'completed' ? 'cleaned' : 'physical-cleaned'
+    );
   }
   const db = openWorkspaceDb(coreDb.dataRoot, 'ws_demo');
   try {
     applyScopedMigrations(db);
     const pkg = requireAgentEnvironmentPackageSnapshot(db, 'ws_demo', packageSnapshotId).snapshot;
-    recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+    if (boundary !== 'failed-preparation')
+      recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:00:04.000Z');
+    else {
+      const anchor = getWorkerBackendSession(coreDb, attemptId)!;
+      const request = createNanoHostEffectRequest(anchor, attemptId, 'image.acquire', {
+        imageReference:
+          pkg.runtime.environment?.imageDigest ?? (pkg.runtime.image as { ref: string }).ref,
+      });
+      const intent = attempts.recordSchedulerExecutionOperation(coreDb, {
+        attemptId,
+        operationId: request.requestId!,
+      });
+      attempts.acceptSchedulerExecutionObservation(coreDb, {
+        ...attempts.schedulerExecutionCorrelation(intent),
+        disposition: 'not_accepted',
+        execution: 'unknown',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+    }
   } finally {
     db.sqlite.close();
   }
-  if (getWorkerBackendSession(coreDb, attemptId)?.workspaceHandoffState === 'pending')
+  if (
+    boundary !== 'failed-preparation' &&
+    getWorkerBackendSession(coreDb, attemptId)?.workspaceHandoffState === 'pending'
+  )
     markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
   store.recordCommandRequest({
     command: 'turn.start',
@@ -4816,6 +4990,18 @@ async function createFinalReviewRecoveryFixture(
       outcome: 'interrupted',
       errorCode: 'worker_governance_restart_recovery',
       message: 'Recover original worker.',
+    });
+  } else if (boundary === 'failed-preparation') {
+    attempts.markSchedulerExecutionAttemptClosing(coreDb, { attemptId, cause: 'execution-failed' });
+    terminalizeGovernedWorkerTurn({
+      store,
+      turnId,
+      agentSessionId,
+      requestId: `request_${suffix}`,
+      completedAt: '2026-07-05T00:00:08.000Z',
+      outcome: 'failed',
+      errorCode: 'worker_governance_turn_failed',
+      message: 'Original image refusal.',
     });
   } else if (boundary === 'failed-start') {
     attempts.markSchedulerExecutionAttemptClosing(coreDb, {

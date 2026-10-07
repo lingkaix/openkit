@@ -56,6 +56,7 @@ import {
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions';
+import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 
 const extraCoreHandles: ReturnType<typeof openCoreDb>[] = [];
 afterEach(() => {
@@ -823,6 +824,107 @@ describe('scheduler dispatch loop', () => {
       sameRoot.sqlite.close();
       second.sqlite.close();
       first.sqlite.close();
+    }
+  });
+
+  it('excludes a second FIFO preparation after image operation intent until submission', async () => {
+    const coreDb = createMigratedCoreDb();
+    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const executor = new RecordingTurnExecutor(coreDb);
+    const manifest = agentManifest();
+    const gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+    executor.prepareAgentSessionForTurn = async (owner, input) => {
+      if (
+        coreDb.sqlite
+          .prepare(
+            "SELECT 1 FROM scheduler_execution_attempts WHERE phase = 'open' AND deadline IS NOT NULL"
+          )
+          .get()
+      )
+        throw new WorkerGovernanceCapacityUnavailableError();
+      return prepare(owner, input);
+    };
+    const start = executor.startTurn.bind(executor);
+    executor.startTurn = async (owner, turnId, input, context) => {
+      if (turnId === 'turn_image_first') {
+        const intent = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
+          attemptId: context!.attemptId!,
+          operationId: 'image:first',
+        });
+        entered.resolve();
+        await gate.promise;
+        attemptRecords.acceptSchedulerExecutionObservation(coreDb, {
+          ...attemptRecords.schedulerExecutionCorrelation(intent),
+          disposition: 'accepted',
+          execution: 'pending',
+          fenceRef: null,
+          outcomeRef: null,
+        });
+      }
+      await start(owner, turnId, input, context);
+    };
+    const dispatch = {
+      coreDb,
+      store,
+      turnExecutor: executor,
+      executionBackend: executor.executionBackend,
+      agentManifests: [manifest],
+      providerRegistry: localProviderRegistry(),
+      gatewayConfig: createTestGatewayConfig(),
+      maxDispatches: 1,
+    };
+    for (const suffix of ['first', 'second']) {
+      const thread = store.createThread('ws_demo', suffix);
+      publishTestAdmission(
+        store,
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue_image_${suffix}`,
+          requestId: `request_image_${suffix}`,
+          turnId: `turn_image_${suffix}`,
+          workspaceId: 'ws_demo',
+          threadId: thread.id,
+          turnInput: suffix,
+          requestedAgentId: manifest.id,
+          triggerActor: { kind: 'user', id: 'user_local' },
+        })
+      );
+    }
+    const first = runSchedulerDispatchLoop(dispatch);
+    try {
+      await entered.promise;
+      expect(executionAttempts(coreDb)).toMatchObject([
+        { operation_id: 'image:first', deadline: null },
+      ]);
+      const overlap = await runSchedulerDispatchLoop(dispatch);
+      expect(overlap.startedTurns).toEqual([]);
+      expect(executor.prepareCalls).toHaveLength(1);
+      expect(store.getTurnById('turn_image_second').status).toBe('pending');
+      expect(store.getTurnById('turn_image_second').agentSessionId).toBeUndefined();
+      expect(executionAttempts(coreDb)).toHaveLength(1);
+      gate.resolve();
+      const admitted = await first;
+      expect((await runSchedulerDispatchLoop(dispatch)).startedTurns).toEqual([]);
+      expect(store.getTurnById('turn_image_second').status).toBe('pending');
+      expect(executor.prepareCalls).toHaveLength(1);
+      await closeOwnedExecutionAttempt(coreDb, store, {
+        attemptId: admitted.startedTurns[0]!.dispatch.attempt.attemptId,
+        firstTerminalCause: 'turn-completed',
+      });
+      expect(
+        (await runSchedulerDispatchLoop(dispatch)).startedTurns[0]?.dispatch.entry.queueEntryId
+      ).toBe('queue_image_second');
+      expect(executor.calls.map((call) => call.turnId)).toEqual([
+        'turn_image_first',
+        'turn_image_second',
+      ]);
+    } finally {
+      gate.resolve();
+      await first;
+      await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
+      coreDb.sqlite.close();
     }
   });
 

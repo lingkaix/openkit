@@ -56,7 +56,10 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
-import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
+import {
+  bindNanoHostAttemptPreparation,
+  requireNanoHostExecutionAttempt,
+} from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
 import {
   createNanoHostEffectRequest,
@@ -7436,6 +7439,7 @@ describe('createConfiguredTurnExecutor', () => {
     'image.acquire',
     'image.build',
     'image.inspect',
+    'image.acquire.pending',
   ] as const)('keeps the ready connection usable after rejected %s and live cleanup', async (operation) => {
     const coreDb = createFactoryCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
@@ -7523,11 +7527,21 @@ describe('createConfiguredTurnExecutor', () => {
       });
       authorizeNanoHostPackage(coreDb, environmentPackage);
       anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      const predecessor =
+        operation === 'image.acquire.pending'
+          ? dispatch.effect({
+              kind: 'image.acquire',
+              requestId: 'd'.repeat(64),
+              input: { imageReference: `sha256:${'c'.repeat(64)}` },
+            })
+          : null;
       const materialization = backend.materialize(environmentPackage, {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
         workspaceRoots: [],
       });
-      const rejected = expect(materialization).rejects.toThrow('effect_failed');
+      const rejected = expect(materialization).rejects.toThrow(
+        operation === 'image.acquire.pending' ? 'already has a pending command' : 'effect_failed'
+      );
       let command: Record<string, unknown> | null = null;
       await vi.waitFor(async () => {
         command = await dispatch.poll(
@@ -7536,7 +7550,7 @@ describe('createConfiguredTurnExecutor', () => {
         );
         expect(command).not.toBeNull();
       });
-      if (operation !== 'image.build') {
+      if (operation !== 'image.build' && operation !== 'image.acquire.pending') {
         expect(command).toMatchObject({ imageReference: 'openkit/worker-codex:dev' });
       }
       if (operation === 'image.inspect') {
@@ -7549,11 +7563,30 @@ describe('createConfiguredTurnExecutor', () => {
           expect(command).not.toBeNull();
         });
       }
-      await dispatch.result(physical, operation, {
-        requestId: command!.requestId,
-        failureCode: 'effect_failed',
-      });
+      if (operation === 'image.acquire.pending') {
+        await rejected;
+        const owned = requireNanoHostExecutionAttempt(
+          coreDb,
+          (
+            coreDb.sqlite
+              .prepare(
+                'SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE input_ref = ?'
+              )
+              .get(environmentPackage.snapshotId) as { id: string }
+          ).id
+        );
+        expect(owned).toMatchObject({ disposition: 'not_accepted', deadline: null });
+      }
+      await dispatch.result(
+        physical,
+        operation === 'image.acquire.pending' ? 'image.acquire' : operation,
+        {
+          requestId: command!.requestId,
+          failureCode: 'effect_failed',
+        }
+      );
       await rejected;
+      if (predecessor) await predecessor.catch(() => undefined);
       const cleanup = runtime.cleanupBackendSession(backend.planSession(environmentPackage));
       void cleanup.catch(() => undefined);
       // The next fair poll must stay idle instead of fencing the healthy session with HTTP 409.
