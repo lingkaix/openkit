@@ -1363,6 +1363,144 @@ describe('Worker Harness resident AgentSessions', () => {
     });
   });
 
+  it('stops heartbeat scheduling before final-status submission while its accepted response is delayed', async () => {
+    const clock = controlSchedulingTime();
+    const integration = fakeIntegration();
+    const fetch = integration.client.workerControlFetch;
+    const finalEntered = observation();
+    const releaseFinal = observation();
+    const cleared = observation();
+    let heartbeatAttempts = 0;
+    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+      clear(id);
+      cleared.resolve();
+    });
+    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+      if (url.endsWith('/heartbeat')) heartbeatAttempts += 1;
+      const response = await fetch(url, init);
+      if (url.endsWith('/final-status')) {
+        finalEntered.resolve();
+        await releaseFinal.promise;
+      }
+      return response;
+    }) satisfies WorkerControlFetch);
+    const f = harnessFixture({ integration });
+    try {
+      await f.open('as-a');
+      await f.start('as-a', 'turn-1');
+      await finalEntered.promise;
+      const before = heartbeatAttempts;
+      await clock.advance(3200);
+      expect(heartbeatAttempts).toBe(before);
+      expect(integration.calls).not.toContain('clear:as-a');
+    } finally {
+      releaseFinal.resolve();
+      await cleared.promise;
+      clock.restore();
+      await f.settle('as-a');
+    }
+    expect(integration.finalStatuses.map((status) => status.body.status)).toEqual(['completed']);
+  });
+
+  it.each([
+    'completed',
+    'drain-failed',
+  ] as const)('joins an in-flight heartbeat before %s final status and sends none while its accepted response is delayed', async (outcome) => {
+    const clock = controlSchedulingTime();
+    const integration = fakeIntegration();
+    const fetch = integration.client.workerControlFetch;
+    const draining = observation();
+    const releaseDrain = observation();
+    const heartbeatEntered = observation();
+    const releaseHeartbeat = observation();
+    const terminalWritten = observation();
+    const finalEntered = observation();
+    const releaseFinal = observation();
+    const cleared = observation();
+    let heartbeatPending = false;
+    let authorityLive = true;
+    let heartbeatAttempts = 0;
+    let rejectedHeartbeats = 0;
+    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+    const terminalSpy = vi
+      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+        const record = await writeTerminal.call(this, input);
+        terminalWritten.resolve();
+        return record;
+      });
+    const clear = integration.client.clearTurnRouteTokens.bind(integration.client);
+    vi.spyOn(integration.client, 'clearTurnRouteTokens').mockImplementation((id) => {
+      clear(id);
+      cleared.resolve();
+    });
+    vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
+      draining.resolve();
+      await releaseDrain.promise;
+      if (outcome === 'drain-failed') throw new Error('Integration drain failed.');
+      return 0;
+    });
+    vi.spyOn(integration.client, 'workerControlFetch').mockImplementation((async (url, init) => {
+      if (url.endsWith('/heartbeat')) {
+        heartbeatAttempts += 1;
+        if (JSON.parse(init.body).sequence > 0) {
+          heartbeatPending = true;
+          heartbeatEntered.resolve();
+          await releaseHeartbeat.promise;
+          heartbeatPending = false;
+        }
+        if (!authorityLive) {
+          rejectedHeartbeats += 1;
+          return {
+            ok: false,
+            status: 403,
+            text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
+          };
+        }
+      }
+      const response = await fetch(url, init);
+      if (url.endsWith('/final-status')) {
+        // Core revokes authority at acceptance, before physical cleanup or response delivery.
+        authorityLive = false;
+        finalEntered.resolve();
+        await releaseFinal.promise;
+      }
+      return response;
+    }) satisfies WorkerControlFetch);
+    const f = harnessFixture({ integration });
+    try {
+      await f.open('as-a');
+      await f.start('as-a', 'turn-1');
+      await draining.promise;
+      await clock.advance(1000);
+      await heartbeatEntered.promise;
+      releaseDrain.resolve();
+      await terminalWritten.promise;
+      await clock.advance(0);
+      expect(heartbeatPending).toBe(true);
+      expect.soft(integration.finalStatuses).toHaveLength(0);
+      releaseHeartbeat.resolve();
+      await finalEntered.promise;
+      const before = heartbeatAttempts;
+      await clock.advance(3200);
+      expect.soft(heartbeatAttempts).toBe(before);
+      expect.soft(rejectedHeartbeats).toBe(0);
+      expect(integration.calls).not.toContain('clear:as-a');
+    } finally {
+      releaseDrain.resolve();
+      releaseHeartbeat.resolve();
+      releaseFinal.resolve();
+      await cleared.promise;
+      terminalSpy.mockRestore();
+      clock.restore();
+      await f.settle('as-a');
+    }
+    expect(integration.finalStatuses.map((status) => status.body.status)).toEqual([
+      outcome === 'completed' ? 'completed' : 'failed',
+    ]);
+  });
+
   it.each([
     'settlement',
     'drain',
@@ -1401,10 +1539,7 @@ describe('Worker Harness resident AgentSessions', () => {
       }
       if (body.record?.event.data.status === 'turn.started') started.resolve();
       if (body.record?.event.data.status === 'running') firstEvent.resolve();
-      if (
-        (stage === 'settlement' && body.record?.event.data.status === 'turn.settled') ||
-        (stage === 'terminal' && url.endsWith('/final-status'))
-      ) {
+      if (stage === 'settlement' && body.record?.event.data.status === 'turn.settled') {
         blocked.resolve();
         await release.promise;
       }
@@ -1412,6 +1547,17 @@ describe('Worker Harness resident AgentSessions', () => {
       if (url.endsWith('/final-status')) authorityLive = false;
       return result;
     }) satisfies WorkerControlFetch);
+    const writeTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+    const terminalSpy = vi
+      .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+      .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+        const record = await writeTerminal.call(this, input);
+        if (stage === 'terminal') {
+          blocked.resolve();
+          await release.promise;
+        }
+        return record;
+      });
     if (stage === 'drain')
       vi.spyOn(integration.client, 'drainTurn').mockImplementation(async () => {
         blocked.resolve();
@@ -1449,6 +1595,7 @@ describe('Worker Harness resident AgentSessions', () => {
       const accepted = heartbeats.length;
       await clock.advance(1100);
       expect(heartbeats).toHaveLength(accepted);
+      terminalSpy.mockRestore();
       clock.restore();
       await f.settle('as-a');
     }
@@ -1729,7 +1876,7 @@ describe('Worker Harness resident AgentSessions', () => {
     'readiness',
     'heartbeat',
     'final-status',
-  ] as const)('joins the losing %s request before clearing Turn routes', async (kind) => {
+  ] as const)('joins the unsettled %s request before clearing Turn routes', async (kind) => {
     const clock = controlSchedulingTime();
     const integration = fakeIntegration();
     const fetch = integration.client.workerControlFetch;
@@ -1800,16 +1947,17 @@ describe('Worker Harness resident AgentSessions', () => {
           text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
         };
       }
-      if (kind === 'final-status' && url.endsWith('/heartbeat') && body.sequence > 0)
+      if (kind === 'final-status' && url.endsWith('/final-status')) {
+        requestEntered.resolve();
         return {
           ok: false,
           status: 403,
           text: async () => JSON.stringify({ code: 'worker_control_lease_not_live' }),
         };
+      }
       if (
         (kind === 'readiness' && url.endsWith('/heartbeat') && body.sequence === 0) ||
-        (kind === 'heartbeat' && url.endsWith('/heartbeat') && body.sequence === 2) ||
-        (kind === 'final-status' && url.endsWith('/final-status'))
+        (kind === 'heartbeat' && url.endsWith('/heartbeat') && body.sequence === 2)
       ) {
         requestEntered.resolve();
         return new Promise<never>((_resolve, reject) => {

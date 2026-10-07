@@ -144,7 +144,7 @@ export interface ResidentTurnResult {
 }
 
 /**
- * Runs one admitted Turn on a resident binding: validates the AEP, materializes supply and workspace inputs, binds routes, proves worker-control readiness, starts native work on the retained conversation, drains the loopback after settlement, publishes output, and reports final status. One lease-heartbeat schedule remains independent of transcript delivery through final-status acceptance or authority loss. Setup and execution rejections retain their bounded, redacted explanation in final-status diagnostics while closed startup metadata stays value-free. The binding stays open.
+ * Runs one admitted Turn on a resident binding: validates the AEP, materializes supply and workspace inputs, binds routes, proves worker-control readiness, starts native work on the retained conversation, drains the loopback after settlement, publishes output, and reports final status. One lease-heartbeat schedule remains independent of transcript delivery until the terminal handoff or authority loss. Setup and execution rejections retain their bounded, redacted explanation in final-status diagnostics while closed startup metadata stays value-free. The binding stays open.
  *
  * @param options Turn inputs.
  * @returns The worker-local terminal status.
@@ -242,6 +242,12 @@ async function runResidentTurnImplementation(
   const heartbeatDelivery = {
     request: null as Promise<unknown> | null,
     signal: controlAbortController.signal,
+  };
+  /** Stops scheduling and joins the current request before final status revokes its lease. */
+  const stopHeartbeats = async (): Promise<void> => {
+    heartbeatAbortController.abort();
+    await heartbeat;
+    await heartbeatDelivery.request;
   };
   let terminalPublication: Promise<void> | null = null;
   let terminalOutcomeAttempted = false;
@@ -418,7 +424,7 @@ async function runResidentTurnImplementation(
       throw error;
     }
 
-    // Lease authority continues through settlement, loopback drain, and terminal publication.
+    // Lease heartbeats continue through settlement, loopback drain, and output sealing.
     await Promise.race([
       writer.writeAndAppendEvent({
         data: { adapter: options.adapterId, status: 'turn.settled' },
@@ -479,9 +485,11 @@ async function runResidentTurnImplementation(
       session,
       terminalInput,
       timeline,
-      controlAbortController.signal
+      controlAbortController.signal,
+      stopHeartbeats
     );
-    await Promise.race([terminalPublication, heartbeatFailure]);
+    // Publication joins heartbeat failure itself; an orderly schedule stop is not a race loser.
+    await terminalPublication;
     return {
       ...(adapterResult.nativeEvidence ? { nativeEvidence: adapterResult.nativeEvidence } : {}),
       status,
@@ -504,7 +512,8 @@ async function runResidentTurnImplementation(
           stopReason: 'error',
         },
         timeline,
-        controlAbortController.signal
+        controlAbortController.signal,
+        stopHeartbeats
       );
       // Failure to publish cannot replace the deciding native, Integration, or control failure.
       await terminalPublication.catch(() => undefined);
@@ -751,13 +760,15 @@ export function describeWorkerStartupFailure(
  * @param input Worker-local terminal outcome.
  * @param timeline Shared recorder frozen synchronously before terminal transcript sealing.
  * @param signal Existing control-delivery cancellation; no fresh publication authority or retry budget is created.
+ * @param stopHeartbeats Joins the live heartbeat owner after output acknowledgement and before terminal submission.
  */
 async function writeAndReportTerminalOutcome(
   writer: WorkerTranscriptWriter,
   client: WorkerControlClient | null,
   input: WorkerTerminalOutcomeInput,
   timeline: TurnTimeline,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  stopHeartbeats?: () => Promise<void>
 ): Promise<void> {
   let snapshot: string | undefined;
   try {
@@ -775,6 +786,8 @@ async function writeAndReportTerminalOutcome(
   if (!client) return;
   // Sealing prevents new events from extending the barrier on normal and exceptional closeout.
   await writer.drainLiveEvents();
+  // Core can revoke the lease before returning the final-status response. Cancellation alone cannot fence a request already in flight, so join it without aborting control delivery.
+  await stopHeartbeats?.();
   signal?.throwIfAborted();
   const terminalData = WorkerCanonicalTerminalEventDataSchema.parse(record.event.data);
 
@@ -1565,11 +1578,11 @@ function redactDiagnosticOutput(output: string, credentialValues: readonly strin
 }
 
 /**
- * Keeps one serialized lease-heartbeat schedule through final-status acceptance; transcript delivery retains its ordered queue without delaying the next control heartbeat.
+ * Keeps one serialized lease-heartbeat schedule until terminal handoff; transcript delivery retains its ordered queue without delaying the next control heartbeat.
  *
  * @param client Sole lease-heartbeat and reconnect sequence owner.
  * @param transcript Ordered local/live event owner, sealed before final publication.
- * @param signal Stops scheduling at final acceptance or supervisor closeout.
+ * @param signal Stops scheduling before final submission or at supervisor closeout.
  * @param delivery Sole periodic request retained for closeout join, with the existing control signal.
  * @returns Promise that resolves on scheduling cancellation and rejects on control or live-event failure.
  */
