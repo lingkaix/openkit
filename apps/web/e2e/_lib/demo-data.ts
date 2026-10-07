@@ -79,13 +79,13 @@ async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
  *
  * This is fixture-only synthetic Epoch authority: `physicalEpoch` is `'a'.repeat(64)`, identity is
  * `identity_local`, and no NanoHost observation or real-host connection is claimed. Production
- * backend-session guards stay unchanged. Mirrors `configureLocalSchedulerCapacity` target setup in
+ * backend-session guards stay unchanged. Mirrors `configureNativeRuntimeTarget` target setup in
  * `apps/nanocore/src/lib/simulator.test.ts`.
  *
  * Call after Core startup, which invalidates the previous physical generation.
  *
  * @param dataRoot Disposable NanoCore data root whose Core startup has completed.
- * @returns Resolves after `target_local` is ready and the local scheduler baseline exists.
+ * @returns Resolves after the configured native backend's `target_local` is ready.
  * @throws When Core storage, layout marker, allocation, or readiness projection fails.
  */
 export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promise<void> {
@@ -93,12 +93,10 @@ export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promi
     { openCoreDb },
     { readDataRootLayoutMarker },
     { allocateNanoHostRuntimeTargetConnectionGeneration, upsertNanoHostRuntimeTarget },
-    { ensureConfiguredSchedulerBaseline },
   ] = await Promise.all([
     import('../../../nanocore/dist/storage/db.js'),
     import('../../../nanocore/dist/storage/fs-layout.js'),
     import('../../../nanocore/dist/runtime/nanohost-runtime-target.js'),
-    import('../../../nanocore/dist/scheduler-records.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
 
@@ -118,7 +116,6 @@ export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promi
       predecessorFenced: true,
       ready: true,
     });
-    ensureConfiguredSchedulerBaseline(coreDb, { placement: 'local' });
   } finally {
     coreDb.sqlite.close();
   }

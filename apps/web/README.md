@@ -76,6 +76,8 @@ The package `test` command remains the full-suite command. Adding `-- <file>` to
 
 `e2e` expects a built NanoCore (`pnpm --filter @openkit/nanocore build`). Specs start an isolated stack on dynamic ports via `e2e/_lib/servers.ts` and set `VITE_CORE_BASE_URL` so the SPA talks to that Core. Run the self-contained root gate with `pnpm -w test:e2e:web`; it builds NanoCore before invoking the Web `e2e` command.
 
+The local simulator fixture seeds only the current native RuntimeTarget readiness evidence after Core startup; retired scheduler baseline and capacity rows are not fixture prerequisites. Scheduler fixtures use the current FIFO admission schema and its closed denial reasons.
+
 Run alongside NanoCore for the product loop:
 
 ```bash

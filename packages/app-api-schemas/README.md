@@ -143,4 +143,6 @@ The eleven Material definitions live in `src/material-operations.ts`, reusing co
 
 Scheduler diagnostics expose the configured backend identity and execution attempt identity, phase and disposition. Admission schemas project the checked FIFO queue without priority, aging, placement or capacity accounting. Action Center uncertainty reads the existing attempt instead of an orphan-evidence owner.
 
+Admission test fixtures use that same current FIFO shape; obsolete scheduling fields do not stand in for additive-reader coverage.
+
 Task Mode's attempt state includes queued for an accepted pending Turn whose worker execution has not begun. This is a projection over the existing Turn and admission, separate from running execution; it adds no durable Task lifecycle state.

@@ -2954,28 +2954,39 @@ describe('round 4 failure boundaries', () => {
     expect(await observed).toBe('rejected');
   });
 
-  it('bounds initialization of a stopped real vendor process inside ten seconds', async () => {
+  it('bounds initialization of a stopped real vendor process by the native request deadline', async () => {
     const roots = await tempRoots();
     closers.push(async () => rm(roots.base, { recursive: true, force: true }));
     let child: ChildProcessWithoutNullStreams | undefined;
-    const before = performance.now();
+    let spawnedAt = 0;
+    let initializationTimedOutAt: number | undefined;
+    // The adapter spec bounds the initialization RPC separately from native stop proof.
+    // Allow 250 ms for event-loop scheduling and RPC setup, not the two signal grace windows.
+    const schedulingMarginMs = 250;
     await expect(
       openCodexResidentSession(openInput(roots), {
         binaryPath: vendorBinary,
-        // Real SIGKILL exit delivery measured up to 18 ms in the CI image.
-        // Keep the production stop grace; the ten-second assertion still owns the bound.
         spawnProcess: (binary, args, options) => {
           child = spawn(binary, [...args], {
             ...options,
             stdio: ['pipe', 'pipe', 'pipe'],
           }) as ChildProcessWithoutNullStreams;
           process.kill(child.pid!, 'SIGSTOP');
+          spawnedAt = performance.now();
+          const kill = child.kill.bind(child);
+          child.kill = (signal) => {
+            if (signal === 'SIGTERM') initializationTimedOutAt ??= performance.now();
+            return kill(signal);
+          };
           trackChild(child);
           return child;
         },
       })
-    ).rejects.toThrow();
-    expect(performance.now() - before).toBeLessThanOrEqual(10_000);
+    ).rejects.toThrow('Codex app-server timed out: initialize');
+    expect(initializationTimedOutAt).toBeDefined();
+    expect(initializationTimedOutAt! - spawnedAt).toBeLessThanOrEqual(
+      LIFECYCLE_DEFAULTS.nativeRequestMs + schedulingMarginMs
+    );
     expect(processIsGone(child!.pid!)).toBe(true);
   }, 12_000);
 

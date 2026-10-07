@@ -577,7 +577,7 @@ function expectedSmokeObservation() {
       backend: { state: 'cleaned', workspaceHandoffState: 'complete' },
       call: { itemIdValid: true, schemaSnapshotIdValid: true, status: 'succeeded' },
       item: { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' },
-      lease: { status: 'released' },
+      attempt: { phase: 'closed' },
       permission: [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }],
       schema: { catalogEntryId: 'echo', source: 'live', toolNames: ['echo'] },
       usage: [{ quantity: 1, unit: 'tool_calls' }],
@@ -833,7 +833,7 @@ async function issueNanoHostToken(dataRoot) {
   }
 }
 
-/** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and lease facts. */
+/** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and attempt facts. */
 async function readDurableOutcome(dataRoot, turnId) {
   const [{ FsStore }, { openCoreDb, openWorkspaceDb }] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
@@ -841,7 +841,7 @@ async function readDurableOutcome(dataRoot, turnId) {
   ]);
   const coreDb = openCoreDb(dataRoot);
   let backend;
-  let lease;
+  let attempt;
   try {
     backend = coreDb.sqlite
       .prepare(
@@ -849,8 +849,14 @@ async function readDurableOutcome(dataRoot, turnId) {
          FROM worker_backend_sessions WHERE turn_id = ?`
       )
       .get(turnId);
-    lease = coreDb.sqlite
-      .prepare('SELECT status FROM scheduler_session_leases WHERE turn_id = ?')
+    // Correlate release to the physical session, excluding closed pre-submit busy refusals.
+    attempt = coreDb.sqlite
+      .prepare(
+        `SELECT attempt.phase
+         FROM scheduler_execution_attempts AS attempt
+         JOIN worker_backend_sessions AS backend ON backend.attempt_id = attempt.attempt_id
+         WHERE attempt.turn_id = ?`
+      )
       .get(turnId);
   } finally {
     coreDb.sqlite.close();
@@ -927,7 +933,7 @@ async function readDurableOutcome(dataRoot, turnId) {
       tool: item?.tool,
       type: item?.type,
     },
-    lease,
+    attempt,
     permission,
     schema,
     usage,

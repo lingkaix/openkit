@@ -12,4 +12,6 @@ pnpm -w test:smoke
 
 Individual scripts may be run directly after building their owning artifact. Smoke scripts do not receive sibling unit tests; non-trivial behavior must move to the lowest existing L1-L4 owner instead.
 
+The Worker MCP smoke reads `scheduler_execution_attempts.phase = 'closed'` as durable execution-release proof alongside the cleaned backend and complete Workspace handoff; product completion alone does not satisfy release.
+
 The NanoCore health smoke first probes the recovered deletion fence through `POST /api/app/operations/workspace.dashboard` and requires HTTP 403 `workspace_access_denied`. It then continues its exact retained deletion request through `POST /api/app/operations/workspace.delete` with the logical Workspace selector and `x-openkit-request-id`, and checks the cleaned lifecycle outcome.
