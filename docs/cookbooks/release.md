@@ -192,13 +192,13 @@ The workflow then:
 - proves that the tagged commit belongs to `main`,
 - reruns L0-L3 and L5,
 - runs the isolated fixed-path NanoHost installer gate without service lifecycle,
-- builds the portable Skill and native arm64 NanoHost assets,
+- builds the portable Skill and native amd64 and arm64 NanoHost assets,
 - derives the image matrix from `containers/images.json`,
 - pushes digest-only multi-platform image candidates,
 - smokes each exact candidate digest on every declared platform,
 - promotes the passed digest to immutable version and source-revision tags,
 - preserves `latest` for prereleases,
-- creates the GitHub prerelease with the two portable archives and their shared checksum attachment,
+- creates the GitHub prerelease with the three portable archives and their shared checksum attachment,
 - downloads and independently verifies the final assets and image digests,
 - logs out of GHCR and verifies the exact `worker-common` digest anonymously.
 
@@ -230,7 +230,7 @@ gh release view "${OPENKIT_RELEASE_TAG}" --json tagName,isDraft,isPrerelease,ass
 gh run view <run-id>
 ```
 
-Close the release change record only when the workflow is green, the GitHub Release is published with exactly the two archives plus `SHA256SUMS`, the downloaded NanoHost archive passes the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
+Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives plus `SHA256SUMS`, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
 
 ## Failure And Retry
 
