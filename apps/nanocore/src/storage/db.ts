@@ -133,13 +133,13 @@ export function verifyAndMigrateExistingScopedDatabases(dataRoot: string): void 
     verifyAndMigrateUserDatabase(dataRoot, userId);
   }
 
-  for (const workspaceId of listChildDirectories(join(dataRoot, 'workspaces'))) {
+  for (const workspaceId of listWorkspaceDirectories(dataRoot)) {
     verifyAndMigrateWorkspaceDatabase(dataRoot, workspaceId);
   }
 }
 
 /**
- * Lists existing workspace database scopes without re-running boot verification.
+ * Lists existing workspace database scopes without re-running boot verification, excluding the reserved staging container.
  *
  * @param dataRoot Data root whose existing workspace directories should be scanned.
  * @returns Workspace ids for every existing workspace scope.
@@ -149,7 +149,7 @@ export function listExistingWorkspaceDatabaseScopes(
   dataRoot: string
 ): Array<{ readonly workspaceId: string }> {
   ensureLayoutDirectories(dataRoot);
-  return listChildDirectories(join(dataRoot, 'workspaces')).map((workspaceId) => ({ workspaceId }));
+  return listWorkspaceDirectories(dataRoot).map((workspaceId) => ({ workspaceId }));
 }
 
 /**
@@ -293,6 +293,16 @@ function assertSqliteIntegrity(path: string): void {
   }
 
   throw new Error(`SQLite integrity check failed for ${path}: ${integrity.detail}`);
+}
+
+/**
+ * Lists Workspace directories without admitting the unpublished staging container as a scope.
+ *
+ * @param dataRoot Data root whose Workspace tree should be scanned.
+ * @returns Workspace directory names in stable order, including scopes with missing databases.
+ */
+function listWorkspaceDirectories(dataRoot: string): string[] {
+  return listChildDirectories(join(dataRoot, 'workspaces')).filter((name) => name !== '.staging');
 }
 
 /**

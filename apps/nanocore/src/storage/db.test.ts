@@ -15,6 +15,7 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import {
+  listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openCoreDb,
   openCoreDbWithIntegrityCheck,
@@ -174,6 +175,69 @@ describe('scoped storage databases', () => {
 
     expect(() => openBootVerifiedWorkspaceDb(dataRoot, 'ws_missing')).toThrow();
     expect(existsSync(join(dataRoot, 'workspaces', 'ws_missing'))).toBe(false);
+  });
+
+  it('discovers only published Workspace scopes and preserves staging bytes', () => {
+    const dataRoot = createDataRoot();
+    const created = openWorkspaceDb(dataRoot, 'ws_1');
+    created.sqlite.close();
+    const stagingRoot = join(dataRoot, 'workspaces', '.staging');
+    const stagedChild = join(stagingRoot, 'ws_pending');
+    const sentinel = Buffer.from([0, 1, 127, 255]);
+    mkdirSync(stagedChild, { recursive: true });
+    writeFileSync(join(stagedChild, 'sentinel'), sentinel);
+
+    const scopes = listExistingWorkspaceDatabaseScopes(dataRoot);
+    expect(scopes).toEqual([{ workspaceId: 'ws_1' }]);
+    for (const { workspaceId } of scopes) {
+      const reopened = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+      reopened.sqlite.close();
+    }
+
+    expect(readdirSync(stagingRoot)).toEqual(['ws_pending']);
+    expect(readdirSync(stagedChild)).toEqual(['sentinel']);
+    expect(readFileSync(join(stagedChild, 'sentinel'))).toEqual(sentinel);
+    expect(existsSync(join(stagingRoot, 'db'))).toBe(false);
+  });
+
+  it('keeps a real Workspace with a missing database discoverable and refuses its open', () => {
+    const dataRoot = createDataRoot();
+    const workspaceRoot = join(dataRoot, 'workspaces', 'ws_missing');
+    mkdirSync(workspaceRoot, { recursive: true });
+
+    expect(listExistingWorkspaceDatabaseScopes(dataRoot)).toEqual([{ workspaceId: 'ws_missing' }]);
+    expect(() => openBootVerifiedWorkspaceDb(dataRoot, 'ws_missing')).toThrow();
+    expect(readdirSync(workspaceRoot)).toEqual([]);
+  });
+
+  it('migrates real scoped databases without treating Workspace staging as a scope', () => {
+    const dataRoot = createDataRoot();
+    const created = openWorkspaceDb(dataRoot, 'ws_1');
+    created.sqlite.close();
+    const stagingRoot = join(dataRoot, 'workspaces', '.staging');
+    const stagedChild = join(stagingRoot, 'ws_pending');
+    const sentinel = Buffer.from([0, 1, 127, 255]);
+    mkdirSync(stagedChild, { recursive: true });
+    writeFileSync(join(stagedChild, 'sentinel'), sentinel);
+    // The reserved container name applies only to Workspace discovery.
+    const userDb = openUserDb(dataRoot, '.staging');
+    userDb.sqlite.close();
+
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+
+    expect(readdirSync(stagingRoot)).toEqual(['ws_pending']);
+    expect(readdirSync(stagedChild)).toEqual(['sentinel']);
+    expect(readFileSync(join(stagedChild, 'sentinel'))).toEqual(sentinel);
+    expect(existsSync(join(stagingRoot, 'db'))).toBe(false);
+    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, 'ws_1');
+    const migratedUserDb = openUserDb(dataRoot, '.staging');
+    try {
+      expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual(['workspace_0000_setup']);
+      expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual(['user_0000_setup']);
+    } finally {
+      workspaceDb.sqlite.close();
+      migratedUserDb.sqlite.close();
+    }
   });
 
   it('stores the three Material authorities with their native graph and binding uniqueness', () => {
