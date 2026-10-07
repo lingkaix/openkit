@@ -364,7 +364,7 @@ export class PiResidentBinding implements WorkerResidentSession {
   }
 
   /**
-   * Spawns the host and proves a resume handle before the process exists.
+   * Proves a resume handle before spawning, then proves the fresh host's request listener.
    *
    * A rejection means no host process remains. A process that was spawned is stopped and its
    * exit is observed before that rejection. When the exit is not observed, the returned binding
@@ -372,7 +372,7 @@ export class PiResidentBinding implements WorkerResidentSession {
    *
    * @param input Resident open input. The working directory and model arrive later, on the Turn.
    * @param hostCommand Executable and arguments.
-   * @param observeChannel Optional channel observer.
+   * @param options Optional test seams.
    * @returns The live binding, or a fenced binding when its process could not be proved gone.
    */
   public static async open(
@@ -432,6 +432,20 @@ export class PiResidentBinding implements WorkerResidentSession {
       return binding;
     }
     options.observeChannel?.(binding.#channel);
+    // Cold SDK loading belongs to open, before the bounded stop exchange can begin.
+    // No state-changing request has been sent; require the fresh-host refusal, not a closing refusal.
+    try {
+      const readiness = await binding.#request({ op: 'inspect' }, deadline.workRemainingMs());
+      if (
+        readiness.ok ||
+        readiness.error.code !== 'invalid_state' ||
+        readiness.error.message !== 'Host is not open.'
+      ) {
+        throw new PiAdapterError('Pi unopened host readiness was not proved.');
+      }
+    } catch (error) {
+      await binding.#releaseOrSurface(error, deadline);
+    }
     return binding;
   }
 

@@ -153,6 +153,26 @@ channel.on('data', (chunk) => {
         send(first);
       }
     } else if (request.op === 'inspect') {
+      if (!handle) {
+        send(
+          mode === 'ready-open'
+            ? {
+                id: request.id,
+                ok: true,
+                result: { state: 'idle', nativeHandle: { state: 'pending' }, turnId: null },
+              }
+            : {
+                id: request.id,
+                ok: false,
+                error: {
+                  code: mode === 'ready-error' ? 'setup_failed' : 'invalid_state',
+                  message: mode === 'ready-closing' ? 'Host is closing.' : 'Host is not open.',
+                },
+              }
+        );
+        newline = buffer.indexOf('\n');
+        continue;
+      }
       if (mode === 'active-inspect-silent') {
         newline = buffer.indexOf('\n');
         continue;

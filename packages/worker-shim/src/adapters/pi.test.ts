@@ -20,7 +20,7 @@ import type { Duplex } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LifecycleDeadline } from '../lifecycle-deadline.js';
+import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
 
@@ -143,6 +143,11 @@ channel.on('data', (chunk) => {
         turnId: message.turnId,
       });
     } else if (message.op === 'inspect') {
+      if (!handle) {
+        reply({ id: message.id, ok: false, error: { code: 'invalid_state', message: 'Host is not open.' } });
+        newline = buffer.indexOf('\\n');
+        continue;
+      }
       reply({
         id: message.id,
         ok: true,
@@ -522,7 +527,7 @@ describe('Pi resume proof', () => {
       hostCommand: [
         process.execPath,
         '--eval',
-        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1'); setInterval(() => {}, 1000);`,
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '1'); import(${JSON.stringify(PEER_BIN)});`,
       ],
     });
     const open = (reference: string) =>
@@ -674,7 +679,20 @@ describe('Pi resume proof', () => {
 });
 
 describe('Pi rejected open and Turn', () => {
-  const liveHost = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+  // This peer proves listener readiness but never acknowledges native session or Turn admission.
+  const liveHost = `const { Socket } = require('node:net');
+const channel = new Socket({ fd: 3, readable: true, writable: true });
+let buffer = '';
+channel.on('data', chunk => {
+  buffer += chunk.toString();
+  while (buffer.includes('\\n')) {
+    const index = buffer.indexOf('\\n');
+    const request = JSON.parse(buffer.slice(0, index));
+    buffer = buffer.slice(index + 1);
+    if (request.op === 'inspect') channel.write(JSON.stringify({ id: request.id, ok: false, error: { code: 'invalid_state', message: 'Host is not open.' } }) + '\\n');
+  }
+});
+process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
 
   async function openLive(
     dirs: Dirs,
@@ -805,6 +823,91 @@ describe('Pi rejected open and Turn', () => {
   });
 });
 
+describe('Pi listener admission', () => {
+  /** A fresh fd-3 listener whose loading delay is independent of the control request ceiling. */
+  async function openListener(delayMs: number | null) {
+    const dirs = await createDirs();
+    stops.push(() => rm(dirs.root, { force: true, recursive: true }));
+    const adapter = createPiResidentAdapter({
+      hostCommand: [
+        process.execPath,
+        '--input-type=module',
+        '--eval',
+        `import { Socket } from 'node:net';
+const channel = new Socket({ fd: 3, readable: true, writable: true });
+setInterval(() => {}, 1000);
+${
+  delayMs === null
+    ? ''
+    : `setTimeout(() => {
+  let pending = '';
+  channel.on('data', chunk => {
+    pending += chunk.toString();
+    while (pending.includes('\\n')) {
+      const index = pending.indexOf('\\n');
+      const request = JSON.parse(pending.slice(0, index));
+      pending = pending.slice(index + 1);
+      if (request.op === 'inspect') channel.write(JSON.stringify({ id: request.id, ok: false, error: { code: 'invalid_state', message: 'Host is not open.' } }) + '\\n');
+      else if (request.op === 'close') {
+        channel.write(JSON.stringify({ id: request.id, ok: true, result: { state: 'closed', nativeHandle: { state: 'pending' } } }) + '\\n');
+        channel.end(() => process.exit(0));
+      } else throw new Error('No native open or Turn is allowed.');
+    }
+  });
+}, ${delayMs});`
+}`,
+      ],
+      requestTimeoutMs: 100,
+    });
+    return adapter.openSession({
+      agentSessionId: 'session-a',
+      controlRoot: join(dirs.root, 'control'),
+      environment: { HOME: dirs.home, PATH: process.env.PATH ?? '' },
+      loopback: {
+        capabilityBaseUrl: 'http://127.0.0.1:9/capabilities',
+        capabilityCredential: credential(),
+        inferenceBaseUrl: 'http://127.0.0.1:9/inference/v1',
+        inferenceCredential: credential(),
+      },
+      resumeReference: null,
+      stateRoot: dirs.stateRoot,
+    });
+  }
+
+  it('admits a delayed listener before immediate no-Turn close with exit 0 and output EOF', async () => {
+    const session = await openListener(200);
+    sessions.push(session);
+    expect(await session.nativeHandle()).toEqual({ state: 'pending' });
+    expect(session.nativeEventCount).toBe(0);
+    await session.close();
+    const child = spawnControl.children.at(-1);
+    if (!child) throw new Error('No host process was spawned.');
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout?.readableEnded).toBe(true);
+    expect(child.stderr?.readableEnded).toBe(true);
+    expect((child.stdio[3] as Duplex).readableEnded).toBe(true);
+    expect(session.nativeEvidence()).toEqual({
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
+  });
+
+  it(
+    'rejects a never-responsive host within the open deadline after proving process absence',
+    async () => {
+      const started = performance.now();
+      await expect(openListener(null)).rejects.toThrow('Pi host request timed out.');
+      expect(performance.now() - started).toBeLessThan(LIFECYCLE_DEFAULTS.nativeOpenMs);
+      const child = spawnControl.children.at(-1);
+      if (!child || child.pid === undefined) throw new Error('No host process was spawned.');
+      expect(child.signalCode).toBe('SIGKILL');
+      expect(() => process.kill(child.pid as number, 0)).toThrow();
+    },
+    TIMEOUT
+  );
+});
+
 describe('Pi controlled channel faults', () => {
   async function peer(
     mode: string,
@@ -843,6 +946,18 @@ describe('Pi controlled channel faults', () => {
     await readiness;
     return { dirs, session };
   }
+
+  it.each([
+    'ready-closing',
+    'ready-open',
+    'ready-error',
+  ])('rejects %s as fresh-host readiness after proving process absence', async (mode) => {
+    await expect(peer(mode)).rejects.toThrow('Pi unopened host readiness was not proved.');
+    const child = spawnControl.children.at(-1);
+    if (!child || child.pid === undefined) throw new Error('No host process was spawned.');
+    expect(child.signalCode).toBe('SIGKILL');
+    expect(() => process.kill(child.pid as number, 0)).toThrow();
+  });
 
   it('landing omits unobserved evidence and reports independent terminal and close facts', async () => {
     const running = await peer('interrupt-no-terminal', undefined, { requestTimeoutMs: 100 });
